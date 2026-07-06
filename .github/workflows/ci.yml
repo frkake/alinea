@@ -58,7 +58,11 @@ jobs:
       - run: uv sync --all-packages --frozen
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run mypy .
+      # mypy はパッケージ単位で実行する(各 tests/conftest.py がルート一括だとモジュール名衝突するため)
+      - run: uv run mypy packages/py-core
+      - run: uv run mypy packages/llm
+      - run: uv run mypy apps/api
+      - run: uv run mypy apps/worker
       - run: psql "postgresql://yakudoku:yakudoku@localhost:5432/yakudoku" -c "CREATE EXTENSION IF NOT EXISTS pgroonga; CREATE EXTENSION IF NOT EXISTS pgcrypto;"
       - run: uv run alembic upgrade head
         working-directory: apps/api

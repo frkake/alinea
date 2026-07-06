@@ -35,7 +35,9 @@ def _doc() -> ParsedDocument:
 # ============================ PY-PARSE-01 ============================
 def test_step1_parses_heading_paragraph_math() -> None:
     """plan Step 1 のシード(実モデルに合わせ type / equation を検証)。"""
-    doc = parse_arxiv_html("<section><h2>Introduction</h2><p>Rectified flow.</p><math>x</math></section>")
+    doc = parse_arxiv_html(
+        "<section><h2>Introduction</h2><p>Rectified flow.</p><math>x</math></section>"
+    )
     kinds = [b.type for b in doc.blocks]
     assert "heading" in kinds
     assert "paragraph" in kinds

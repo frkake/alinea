@@ -14,7 +14,7 @@
     "./css/theme.css": "./css/theme.css"
   },
   "scripts": {
-    "gen": "tsx scripts/gen-accents.ts",
+    "gen": "tsx src/gen-accents.ts",
     "build": "pnpm gen && tsc -p tsconfig.json",
     "test": "vitest run",
     "lint": "eslint .",

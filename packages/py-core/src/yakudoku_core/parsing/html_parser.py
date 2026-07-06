@@ -51,7 +51,7 @@ _ARXIV_RE = re.compile(
 _YEAR_PAREN_RE = re.compile(r"\((19|20)\d{2}\)")
 _YEAR_RE = re.compile(r"(19|20)\d{2}")
 # reference_entry のタイトル抽出用: typographic/ASCII の引用符。unicode エスケープで曖昧文字回避。
-_TITLE_QUOTE_RE = re.compile("[\u201c\"\u2018]([^\u201d\"\u2019]+)[\u201d\"\u2019]")
+_TITLE_QUOTE_RE = re.compile('[\u201c"\u2018]([^\u201d"\u2019]+)[\u201d"\u2019]')
 _DOI_RE = re.compile(r"doi\.org/(\S+)", re.IGNORECASE)
 
 # 相互参照 id パターン → ref.kind(plans/05 §4.3.1)。

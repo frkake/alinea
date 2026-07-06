@@ -12,9 +12,9 @@ export type AccentKey = keyof typeof ACCENTS; // 'slate' | 'green' | 'purple' | 
 export const DEFAULT_ACCENT: AccentKey = "slate";
 
 export function hexToRgb(hex: string): [number, number, number] {
-  const m = /^#([0-9a-f]{6})$/i.exec(hex);
-  if (!m) throw new Error(`invalid hex: ${hex}`);
-  const n = parseInt(m[1]!, 16);
+  const g = /^#([0-9a-f]{6})$/i.exec(hex)?.[1];
+  if (!g) throw new Error(`invalid hex: ${hex}`);
+  const n = parseInt(g, 16);
   return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
 }
 

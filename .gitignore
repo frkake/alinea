@@ -14,6 +14,11 @@ dist/
 build/
 coverage/
 .nyc_output/
+.coverage
+.hypothesis/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # NOTE: generated files that ARE committed (drift checks depend on tracking them):
 #   packages/tokens/css/accents.css (pnpm gen), packages/api-client/src/generated (openapi-ts)
