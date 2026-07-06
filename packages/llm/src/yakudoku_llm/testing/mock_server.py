@@ -1,0 +1,514 @@
+"""E2E / CI 用の決定的モックサーバ(plans/12 §8.4・Task 8)。
+
+FakeLLMProvider と同一の決定的応答規則を HTTP で提供する。5 社チャット/生成・画像・
+arXiv(abs / e-print / Atom)・GitHub/YouTube oEmbed 相当をエミュレートする。外部
+ネットワークには一切出ない。同一リクエストは常にバイト同一のレスポンスを返す。
+
+接続(§8.4・§15 ⚠-2/3):
+    YAKUDOKU_OPENAI_BASE_URL   = http://localhost:8090/openai/v1
+    YAKUDOKU_ANTHROPIC_BASE_URL= http://localhost:8090/anthropic
+    YAKUDOKU_GOOGLE_BASE_URL   = http://localhost:8090/google
+    YAKUDOKU_DEEPSEEK_BASE_URL = http://localhost:8090/deepseek
+    YAKUDOKU_XAI_BASE_URL      = http://localhost:8090/xai/v1
+    YAKUDOKU_ARXIV_BASE_URL    = http://localhost:8090/arxiv
+
+単体起動: python -m yakudoku_llm.testing.mock_server [--host 127.0.0.1] [--port 8090]
+"""
+
+from __future__ import annotations
+
+import base64
+import gzip
+import json
+from collections.abc import AsyncIterator
+from typing import Any
+
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
+from starlette.routing import Route
+
+from yakudoku_llm.testing._assets import png_bytes
+from yakudoku_llm.testing.fake_provider import FakeLLMProvider
+from yakudoku_llm.types import ContentPart, LLMRequest, LLMResponse, Message
+
+_FAKE = FakeLLMProvider()
+
+
+# --- 入力テキスト抽出(各社フォーマットの content を平坦化) ---------------------
+
+
+def _flatten_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                chunks.append(part)
+            elif isinstance(part, dict):
+                # OpenAI(input_text/text)・Anthropic(text)・Google(text)
+                text = part.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+        return "".join(chunks)
+    return ""
+
+
+def _last_user_text(messages: list[dict[str, Any]]) -> str:
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            return _flatten_content(msg.get("content"))
+    if messages:
+        return _flatten_content(messages[-1].get("content"))
+    return ""
+
+
+async def _afake_response(model: str, user_text: str) -> LLMResponse:
+    req = LLMRequest(
+        model=model or "mock-model",
+        messages=[Message(role="user", parts=[ContentPart(type="text", text=user_text)])],
+        metadata={"task": "mock"},
+    )
+    return await _FAKE.generate(req)
+
+
+# --- OpenAI 互換 Chat Completions(OpenAI / DeepSeek / xAI) --------------------
+
+
+async def openai_chat(request: Request) -> Response:
+    body = await request.json()
+    model = body.get("model", "mock-model")
+    messages = body.get("messages", [])
+    text = _last_user_text(messages)
+    resp = await _afake_response(model, text)
+    if body.get("stream"):
+        return _openai_chat_sse(model, resp.text, resp)
+    payload = {
+        "id": "chatcmpl-mock",
+        "object": "chat.completion",
+        "created": 0,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": resp.text},
+                "finish_reason": "stop",
+                "logprobs": None,
+            }
+        ],
+        "usage": {
+            "prompt_tokens": resp.usage.input_tokens,
+            "completion_tokens": resp.usage.output_tokens,
+            "total_tokens": resp.usage.input_tokens + resp.usage.output_tokens,
+            "prompt_cache_hit_tokens": 0,
+            "prompt_cache_miss_tokens": resp.usage.input_tokens,
+        },
+    }
+    return JSONResponse(payload)
+
+
+def _sse(event: dict[str, Any]) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+def _openai_chat_sse(model: str, text: str, resp: LLMResponse) -> StreamingResponse:
+    async def gen() -> AsyncIterator[bytes]:
+        for i in range(0, len(text), 20):
+            chunk = {
+                "id": "chatcmpl-mock",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": model,
+                "choices": [{"index": 0, "delta": {"content": text[i : i + 20]}}],
+            }
+            yield _sse(chunk).encode()
+        final = {
+            "id": "chatcmpl-mock",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": model,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": resp.usage.input_tokens,
+                "completion_tokens": resp.usage.output_tokens,
+                "total_tokens": resp.usage.input_tokens + resp.usage.output_tokens,
+            },
+        }
+        yield _sse(final).encode()
+        yield b"data: [DONE]\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# --- OpenAI Responses API ------------------------------------------------------
+
+
+async def openai_responses(request: Request) -> Response:
+    body = await request.json()
+    model = body.get("model", "mock-model")
+    raw_input = body.get("input", [])
+    if isinstance(raw_input, str):
+        text = raw_input
+    else:
+        text = _last_user_text(raw_input)
+    resp = await _afake_response(model, text)
+    payload = {
+        "id": "resp-mock",
+        "object": "response",
+        "created_at": 0,
+        "model": model,
+        "status": "completed",
+        "output": [
+            {
+                "id": "msg-mock",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": resp.text, "annotations": []}],
+            }
+        ],
+        "output_text": resp.text,
+        "usage": {
+            "input_tokens": resp.usage.input_tokens,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens": resp.usage.output_tokens,
+            "output_tokens_details": {"reasoning_tokens": 0},
+            "total_tokens": resp.usage.input_tokens + resp.usage.output_tokens,
+        },
+    }
+    return JSONResponse(payload)
+
+
+# --- Anthropic Messages --------------------------------------------------------
+
+
+async def anthropic_messages(request: Request) -> Response:
+    body = await request.json()
+    model = body.get("model", "mock-model")
+    messages = body.get("messages", [])
+    text = _last_user_text(messages)
+    resp = await _afake_response(model, text)
+    if body.get("stream"):
+        return _anthropic_sse(model, resp.text, resp)
+    payload = {
+        "id": "msg-mock",
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": [{"type": "text", "text": resp.text}],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": resp.usage.input_tokens,
+            "output_tokens": resp.usage.output_tokens,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        },
+    }
+    return JSONResponse(payload)
+
+
+def _anthropic_sse(model: str, text: str, resp: LLMResponse) -> StreamingResponse:
+    async def gen() -> AsyncIterator[bytes]:
+        def ev(name: str, data: dict[str, Any]) -> bytes:
+            return f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode()
+
+        yield ev(
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg-mock",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": model,
+                    "content": [],
+                    "stop_reason": None,
+                    "usage": {"input_tokens": resp.usage.input_tokens, "output_tokens": 0},
+                },
+            },
+        )
+        yield ev(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+        )
+        for i in range(0, len(text), 20):
+            yield ev(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": text[i : i + 20]},
+                },
+            )
+        yield ev("content_block_stop", {"type": "content_block_stop", "index": 0})
+        yield ev(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"output_tokens": resp.usage.output_tokens},
+            },
+        )
+        yield ev("message_stop", {"type": "message_stop"})
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# --- Google generateContent / streamGenerateContent / 画像 ---------------------
+
+
+def _google_usage(resp: LLMResponse) -> dict[str, int]:
+    return {
+        "promptTokenCount": resp.usage.input_tokens,
+        "candidatesTokenCount": resp.usage.output_tokens,
+        "totalTokenCount": resp.usage.input_tokens + resp.usage.output_tokens,
+    }
+
+
+def _google_text_from_contents(contents: Any) -> str:
+    if isinstance(contents, str):
+        return contents
+    if isinstance(contents, list):
+        for item in reversed(contents):
+            if isinstance(item, dict):
+                parts = item.get("parts", [])
+                text = _flatten_content(parts)
+                if text:
+                    return text
+    return ""
+
+
+async def google_generate(request: Request) -> Response:
+    spec = request.path_params.get("spec", "")
+    model, _, method = spec.rpartition(":")
+    body = await request.json()
+    contents = body.get("contents", [])
+    text = _google_text_from_contents(contents)
+    config = body.get("generationConfig") or body.get("config") or {}
+    modalities = config.get("responseModalities") or config.get("response_modalities") or []
+    if any(str(m).upper() == "IMAGE" for m in modalities):
+        b64 = base64.b64encode(png_bytes(1024, 1024)).decode()
+        payload_img: dict[str, Any] = {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [{"inlineData": {"mimeType": "image/png", "data": b64}}],
+                    },
+                    "finishReason": "STOP",
+                    "index": 0,
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 0,
+                "candidatesTokenCount": 0,
+                "totalTokenCount": 0,
+            },
+            "modelVersion": model,
+            "responseId": "resp-mock",
+        }
+        return JSONResponse(payload_img)
+
+    resp = await _afake_response(model, text)
+    candidate = {
+        "content": {"role": "model", "parts": [{"text": resp.text}]},
+        "finishReason": "STOP",
+        "index": 0,
+    }
+    payload: dict[str, Any] = {
+        "candidates": [candidate],
+        "usageMetadata": _google_usage(resp),
+        "modelVersion": model,
+        "responseId": "resp-mock",
+    }
+    if method == "streamGenerateContent":
+        return _google_sse(model, resp)
+    return JSONResponse(payload)
+
+
+def _google_sse(model: str, resp: LLMResponse) -> StreamingResponse:
+    async def gen() -> AsyncIterator[bytes]:
+        text = resp.text
+        for i in range(0, len(text), 20):
+            chunk = {
+                "candidates": [
+                    {
+                        "content": {"role": "model", "parts": [{"text": text[i : i + 20]}]},
+                        "index": 0,
+                    }
+                ],
+                "modelVersion": model,
+                "responseId": "resp-mock",
+            }
+            yield _sse(chunk).encode()
+        final = {
+            "candidates": [
+                {
+                    "content": {"role": "model", "parts": [{"text": ""}]},
+                    "finishReason": "STOP",
+                    "index": 0,
+                }
+            ],
+            "usageMetadata": _google_usage(resp),
+            "modelVersion": model,
+            "responseId": "resp-mock",
+        }
+        yield _sse(final).encode()
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# --- 画像生成(OpenAI / xAI: images/generations) ------------------------------
+
+
+async def image_generations(request: Request) -> Response:
+    body = await request.json()
+    prompt = body.get("prompt", "")
+    b64 = base64.b64encode(png_bytes(1024, 1024)).decode()
+    payload = {
+        "created": 0,
+        "data": [{"b64_json": b64, "revised_prompt": prompt}],
+    }
+    return JSONResponse(payload)
+
+
+# --- arXiv --------------------------------------------------------------------
+
+_ABS_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>[{arxiv_id}] Mock Paper</title></head>
+<body>
+<h1 class="title">Title: Mock Paper for {arxiv_id}</h1>
+<div class="authors">Authors: Mock Author</div>
+<blockquote class="abstract">Abstract: A deterministic mock abstract for {arxiv_id}.</blockquote>
+<div class="dateline">Submitted on 6 Jul 2026</div>
+</body></html>
+"""
+
+_ATOM = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>ArXiv Query: {id_list}</title>
+  <entry>
+    <id>http://arxiv.org/abs/{id_list}v1</id>
+    <title>Mock Paper for {id_list}</title>
+    <summary>A deterministic mock abstract for {id_list}.</summary>
+    <author><name>Mock Author</name></author>
+    <published>2026-07-06T00:00:00Z</published>
+    <updated>2026-07-06T00:00:00Z</updated>
+  </entry>
+</feed>
+"""
+
+
+async def arxiv_abs(request: Request) -> Response:
+    arxiv_id = request.path_params.get("arxiv_id", "")
+    return PlainTextResponse(
+        _ABS_HTML.format(arxiv_id=arxiv_id), media_type="text/html; charset=utf-8"
+    )
+
+
+async def arxiv_query(request: Request) -> Response:
+    params = request.query_params
+    id_list = params.get("id_list", "") or params.get("search_query", "")
+    return PlainTextResponse(
+        _ATOM.format(id_list=id_list), media_type="application/atom+xml; charset=utf-8"
+    )
+
+
+async def arxiv_eprint(request: Request) -> Response:
+    arxiv_id = request.path_params.get("arxiv_id", "")
+    # 決定的な gzip(mtime=0)。中身は最小の LaTeX ソースを模した固定バイト列。
+    source = f"\\documentclass{{article}}\\begin{{document}}Mock {arxiv_id}\\end{{document}}\n"
+    blob = gzip.compress(source.encode(), mtime=0)
+    return Response(blob, media_type="application/gzip")
+
+
+# --- oEmbed(GitHub / YouTube 相当) -------------------------------------------
+
+
+async def youtube_oembed(request: Request) -> Response:
+    url = request.query_params.get("url", "")
+    return JSONResponse(
+        {
+            "type": "video",
+            "version": "1.0",
+            "provider_name": "YouTube",
+            "title": "Mock YouTube Video",
+            "author_name": "Mock Channel",
+            "thumbnail_url": "http://localhost:8090/arxiv/thumb.jpg",
+            "html": f'<iframe src="{url}"></iframe>',
+            "duration": 615,
+        }
+    )
+
+
+async def github_oembed(request: Request) -> Response:
+    url = request.query_params.get("url", "")
+    return JSONResponse(
+        {
+            "type": "rich",
+            "version": "1.0",
+            "provider_name": "GitHub",
+            "title": "Mock GitHub Repository",
+            "author_name": "mock-owner",
+            "html": f'<a href="{url}">mock/repo</a>',
+            "stargazers_count": 1234,
+        }
+    )
+
+
+async def healthz(_request: Request) -> Response:
+    return JSONResponse({"status": "ok"})
+
+
+def build_app() -> Starlette:
+    """モックサーバの Starlette アプリを構築する(決定的・in-process テスト可能)。"""
+    chat_paths = [
+        "/v1/chat/completions",
+        "/openai/v1/chat/completions",
+        "/deepseek/chat/completions",
+        "/deepseek/v1/chat/completions",
+        "/xai/v1/chat/completions",
+    ]
+    responses_paths = ["/v1/responses", "/openai/v1/responses"]
+    image_paths = [
+        "/v1/images/generations",
+        "/openai/v1/images/generations",
+        "/xai/v1/images/generations",
+    ]
+    routes: list[Route] = [Route("/healthz", healthz, methods=["GET"])]
+    routes += [Route(p, openai_chat, methods=["POST"]) for p in chat_paths]
+    routes += [Route(p, openai_responses, methods=["POST"]) for p in responses_paths]
+    routes += [Route(p, image_generations, methods=["POST"]) for p in image_paths]
+    routes += [
+        Route("/anthropic/v1/messages", anthropic_messages, methods=["POST"]),
+        Route("/v1/messages", anthropic_messages, methods=["POST"]),
+        Route("/google/v1beta/models/{spec:path}", google_generate, methods=["POST"]),
+        Route("/arxiv/abs/{arxiv_id:path}", arxiv_abs, methods=["GET"]),
+        Route("/arxiv/api/query", arxiv_query, methods=["GET"]),
+        Route("/arxiv/e-print/{arxiv_id:path}", arxiv_eprint, methods=["GET"]),
+        Route("/youtube/oembed", youtube_oembed, methods=["GET"]),
+        Route("/github/oembed", github_oembed, methods=["GET"]),
+    ]
+    return Starlette(routes=routes)
+
+
+def main() -> None:
+    import argparse
+
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="YAKUDOKU deterministic mock server")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8090)
+    args = parser.parse_args()
+    uvicorn.run(build_app(), host=args.host, port=args.port, log_level="warning")
+
+
+if __name__ == "__main__":
+    main()
