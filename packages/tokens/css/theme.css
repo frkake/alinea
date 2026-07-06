@@ -1,0 +1,93 @@
+/* @yakudoku/tokens — css/theme.css(Tailwind v4。plans/08 §4.1 の逐語) */
+@theme inline {
+  /* 既定パレット・フォントを無効化(トークン外の値を禁止) */
+  --color-*: initial;
+  --font-*: initial;
+  --shadow-*: initial;
+
+  /* 背景・面 */
+  --color-canvas: var(--pr-bg-canvas);
+  --color-app: var(--pr-bg-app);
+  --color-app-alt: var(--pr-bg-app-alt);
+  --color-pane: var(--pr-bg-pane);
+  --color-card: var(--pr-bg-card);
+  --color-pop: var(--pr-bg-pop);
+  --color-control: var(--pr-bg-control);
+  --color-inset: var(--pr-bg-inset);
+  --color-muted: var(--pr-bg-muted);
+  --color-thumb: var(--pr-bg-thumb);
+  --color-feed: var(--pr-bg-feed);
+  --color-hover: var(--pr-bg-hover);
+  --color-unread: var(--pr-bg-unread);
+  --color-knowledge: var(--pr-bg-knowledge);
+  --color-comment: var(--pr-bg-comment);
+  --color-seg-selected: var(--pr-bg-seg-selected);
+  --color-elev: var(--pr-elev-bg);
+  --color-elev-fg: var(--pr-elev-fg);
+  --color-elev-muted: var(--pr-elev-fg-muted);
+  --color-elev-divider: var(--pr-elev-divider);
+
+  /* 文字 */
+  --color-ink: var(--pr-text);
+  --color-ink-body: var(--pr-text-body);
+  --color-ink-en: var(--pr-text-en);
+  --color-ink-mid: var(--pr-text-mid);
+  --color-ink-nav: var(--pr-text-nav);
+  --color-ink-sub: var(--pr-text-sub);
+  --color-ink-sub2: var(--pr-text-sub2);
+  --color-ink-muted: var(--pr-text-muted);
+  --color-ink-icon: var(--pr-text-icon);
+  --color-ink-faint: var(--pr-text-faint);
+  --color-ink-eq: var(--pr-text-eq);
+
+  /* 境界 */
+  --color-line-frame: var(--pr-border-frame);
+  --color-line-header: var(--pr-border-header);
+  --color-line-pane: var(--pr-border-pane);
+  --color-line-soft: var(--pr-border-soft);
+  --color-line-card: var(--pr-border-card);
+  --color-line-hair: var(--pr-border-hair);
+  --color-line-row: var(--pr-border-row);
+  --color-line-control: var(--pr-border-control);
+  --color-line-pop: var(--pr-border-pop);
+  --color-line-keycap: var(--pr-border-keycap);
+  --color-line-dashed: var(--pr-border-dashed);
+  --color-line-quote: var(--pr-border-quote);
+  --color-line-check: var(--pr-border-check);
+  --color-line-thumb: var(--pr-border-thumb);
+
+  /* アクセント(意味エイリアス経由。テーマ追随) */
+  --color-accent: var(--pr-acc);
+  --color-accent-soft: var(--pr-acc-s);
+  --color-accent-border: var(--pr-acc-m);
+
+  /* 注釈・ステータス・意味色 */
+  --color-ann-important: var(--pr-ann-important);
+  --color-ann-question: var(--pr-ann-question);
+  --color-ann-idea: var(--pr-ann-idea);
+  --color-ann-term: var(--pr-ann-term);
+  --color-status-to-read: var(--pr-status-to-read);
+  --color-status-read-next: var(--pr-status-read-next);
+  --color-status-reading: var(--pr-status-reading);
+  --color-status-done: var(--pr-status-done);
+  --color-status-reread: var(--pr-status-reread);
+  --color-status-on-hold: var(--pr-status-on-hold);
+  --color-warn: var(--pr-warn);
+  --color-amber: var(--pr-amber);
+  --color-green: var(--pr-green);
+
+  /* フォント */
+  --font-ui: var(--pr-font-ui);
+  --font-body: var(--pr-jp);
+  --font-en: var(--pr-font-en);
+  --font-mono: var(--pr-font-mono);
+
+  /* 影 */
+  --shadow-seg: var(--pr-shadow-seg);
+  --shadow-float: var(--pr-shadow-float);
+  --shadow-banner: var(--pr-shadow-banner);
+  --shadow-menu: var(--pr-shadow-menu);
+  --shadow-bar: var(--pr-shadow-bar);
+  --shadow-pop: var(--pr-shadow-pop);
+  --shadow-modal: var(--pr-shadow-modal);
+}

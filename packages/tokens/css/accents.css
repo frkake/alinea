@@ -1,0 +1,42 @@
+/* 生成物: pnpm gen で再生成。手編集禁止 */
+:root, html[data-accent="slate"] {
+  --pr-a: #3E5C76;
+  --pr-as: rgba(62,92,118,0.1);
+  --pr-am: rgba(62,92,118,0.32);
+  --pr-ad: #8FAECB;
+  --pr-ads: rgba(143,174,203,0.14);
+  --pr-adm: rgba(143,174,203,0.4);
+  --pr-selection: rgba(62,92,118,0.22);
+  --pr-selection-dark: rgba(143,174,203,0.3);
+}
+html[data-accent="green"] {
+  --pr-a: #4A6B57;
+  --pr-as: rgba(74,107,87,0.1);
+  --pr-am: rgba(74,107,87,0.32);
+  --pr-ad: #96BBA3;
+  --pr-ads: rgba(150,187,163,0.14);
+  --pr-adm: rgba(150,187,163,0.4);
+  --pr-selection: rgba(74,107,87,0.22);
+  --pr-selection-dark: rgba(150,187,163,0.3);
+}
+html[data-accent="purple"] {
+  --pr-a: #6E5A7E;
+  --pr-as: rgba(110,90,126,0.1);
+  --pr-am: rgba(110,90,126,0.32);
+  --pr-ad: #B3A1C4;
+  --pr-ads: rgba(179,161,196,0.14);
+  --pr-adm: rgba(179,161,196,0.4);
+  --pr-selection: rgba(110,90,126,0.22);
+  --pr-selection-dark: rgba(179,161,196,0.3);
+}
+html[data-accent="terracotta"] {
+  --pr-a: #7A5C48;
+  --pr-as: rgba(122,92,72,0.1);
+  --pr-am: rgba(122,92,72,0.32);
+  --pr-ad: #C4A78F;
+  --pr-ads: rgba(196,167,143,0.14);
+  --pr-adm: rgba(196,167,143,0.4);
+  --pr-selection: rgba(122,92,72,0.22);
+  --pr-selection-dark: rgba(196,167,143,0.3);
+}
+html[data-theme="dark"] { --pr-selection: var(--pr-selection-dark); }

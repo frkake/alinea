@@ -1,0 +1,208 @@
+/* @yakudoku/tokens — css/tokens.css
+   出典: 確定デザイン『論文読解システム デザイン.dc.html』ヘッダコメント+Tweaksスクリプト。
+   このファイルの値を書き換える場合は必ずデザイン抽出ファイル(plans/08 §2)と突き合わせること。 */
+
+:root {
+  /* ── 背景・面(ライト) ─────────────────────────── */
+  --pr-bg-canvas: #e8e6df; /* 最下層キャンバス */
+  --pr-bg-app: #fbfaf7; /* ビューア系画面の地 */
+  --pr-bg-app-alt: #f4f3ef; /* ライブラリ・設定系画面の地 */
+  --pr-bg-pane: #f7f6f2; /* 目次ペイン・サイドバー */
+  --pr-bg-card: #ffffff; /* カード・パネル・ヘッダ */
+  --pr-bg-pop: #ffffff; /* ポップオーバー面(ダークで #22262D に分岐) */
+  --pr-bg-control: #ffffff; /* ピル・キーキャップ等の小物面 */
+  --pr-bg-inset: #f1efe9; /* 検索ボックス・タグチップのくぼみ面 */
+  --pr-bg-muted: #efede6; /* セグメンテッドコントロールのトラック */
+  --pr-bg-thumb: #efede6; /* サムネイルプレースホルダ */
+  --pr-bg-feed: #fcfbf8; /* チャットメッセージ領域・注釈リスト背景 */
+  --pr-bg-hover: #faf9f5; /* リスト行のホバー/キーボード選択 */
+  --pr-bg-unread: #fcfbf6; /* 未読通知の行背景 */
+  --pr-bg-knowledge: #f5f3ec; /* 「論文外の知識」ボックス */
+  --pr-bg-knowledge-label: #e7e4da;
+  --pr-bg-comment: #f7f5ef; /* 注釈コメントボックス */
+  --pr-bg-seg-selected: #ffffff; /* セグメント選択中の面 */
+
+  /* 常時ダークの浮遊UI(選択メニュー・一括操作バー・選択中FilterChip・Toast)
+     ライト/ダーク両テーマで同一値を使う(1b・1e の描画値) */
+  --pr-elev-bg: #26292e;
+  --pr-elev-fg: #e8e6e1;
+  --pr-elev-fg-muted: #9ba1a9;
+  --pr-elev-divider: #4a4e55;
+
+  /* ── 文字(ライト) ────────────────────────────── */
+  --pr-text: #1e2227; /* 基準文字色(見出し・強) */
+  --pr-text-body: #24272b; /* 訳文本文 */
+  --pr-text-en: #33373c; /* 原文英語本文 */
+  --pr-text-mid: #3c4046; /* コントロールラベル */
+  --pr-text-nav: #3a3e44; /* サイドバー項目 */
+  --pr-text-sub: #5b6067; /* 補助1 */
+  --pr-text-sub2: #777b81; /* 補助2 */
+  --pr-text-muted: #9a9ea4; /* 淡 */
+  --pr-text-icon: #8a8e94; /* アイコン・プレースホルダ */
+  --pr-text-faint: #b6bac0; /* 最淡(段落対応⇄ 等) */
+  --pr-text-thumb: #b0b4ba; /* サムネイル内ラベル */
+  --pr-text-eq: #6a6e74; /* 式番号・知識ラベル文字 */
+
+  /* ── 境界(ライト) ────────────────────────────── */
+  --pr-border-frame: #d6d3c9;
+  --pr-border-header: #e6e3da; /* ヘッダ下線 */
+  --pr-border-pane: #e7e4db; /* ペイン境界 */
+  --pr-border-soft: #ece9df; /* タブ行下線・カラム見出し下線 */
+  --pr-border-card: #e2dfd5; /* カード枠 */
+  --pr-border-hair: #f0ede4; /* カード内行区切り */
+  --pr-border-row: #f4f1e9; /* テーブル行区切り */
+  --pr-border-control: #ddd9cf; /* ピル・ボタン・チップ枠 */
+  --pr-border-pop: #ddd9cf; /* ポップオーバー枠(ダークで #3A404A) */
+  --pr-border-keycap: #dad7cd;
+  --pr-border-dashed: #d5d1c5; /* 未翻訳付録の破線 */
+  --pr-border-quote: #d8d5cb; /* 引用ブロック左線 */
+  --pr-border-check: #c9c5ba; /* チェックボックス枠 */
+  --pr-border-thumb: #e0ddd3; /* サムネイル枠 */
+
+  /* ── 注釈4色(固定。テーマ非依存) ─────────────── */
+  --pr-ann-important: #c49432;
+  --pr-ann-important-bg: rgba(196, 148, 50, 0.26);
+  --pr-ann-important-chip-bg: rgba(196, 148, 50, 0.3);
+  --pr-ann-important-chip-fg: #8a6a24;
+  --pr-ann-important-count-bg: rgba(196, 148, 50, 0.18); /* 目次の注釈数バッジ */
+  --pr-ann-question: #5884aa;
+  --pr-ann-question-bg: rgba(88, 132, 170, 0.22);
+  --pr-ann-question-chip-bg: rgba(88, 132, 170, 0.3);
+  --pr-ann-question-chip-fg: #4a6e8e;
+  --pr-ann-idea: #659471;
+  --pr-ann-idea-bg: rgba(101, 148, 113, 0.22);
+  --pr-ann-idea-chip-bg: rgba(101, 148, 113, 0.3);
+  --pr-ann-idea-chip-fg: #47694f;
+  --pr-ann-term: #82827e;
+  --pr-ann-term-bg: rgba(130, 130, 126, 0.18);
+  --pr-ann-term-chip-bg: rgba(130, 130, 126, 0.3);
+  --pr-ann-term-chip-fg: #5c5c59;
+
+  /* ── ステータス6色(1e。読んでいる=アクセント連動) ── */
+  --pr-status-to-read: #9aa0a6;
+  --pr-status-read-next: #c49432;
+  --pr-status-reading: var(--pr-acc);
+  --pr-status-done: #659471;
+  --pr-status-reread: #8e7aa6;
+  --pr-status-on-hold: #b0aca2;
+
+  /* ── 意味色 ──────────────────────────────────── */
+  --pr-warn: #a05a42; /* 締切・優先度: 高 */
+  --pr-warn-bg: rgba(176, 104, 79, 0.14); /* 締切バッジ面 */
+  --pr-amber: #c49432; /* 琥珀(未読ドット・すぐ読む) */
+  --pr-green: #659471; /* 緑(読了・翻訳済み✓) */
+  --pr-green-check: #7e9c88; /* 目次の翻訳済み✓グリフ(1a 実測。テーマ非依存) */
+
+  /* ── 横断検索ヒット源バッジ(1e・4e) ───────────── */
+  --pr-src-body-bg: var(--pr-acc-s);
+  --pr-src-body-fg: var(--pr-acc);
+  --pr-src-note-bg: rgba(101, 148, 113, 0.16);
+  --pr-src-note-fg: #4c7458;
+  --pr-src-chat-bg: rgba(110, 90, 126, 0.14);
+  --pr-src-chat-fg: #6e5a7e;
+  --pr-src-article-bg: #f1efe9;
+  --pr-src-article-fg: #777b81;
+
+  /* ── 画面固有色(5a・1h・1d) ─────────────────── */
+  --pr-youtube: #b3423a; /* YouTube アイコン面・再生ボタン(5a。白文字。テーマ非依存) */
+  --pr-article-icon-bg: rgba(88, 132, 170, 0.18); /* 解説記事アイコン面(5a) */
+  --pr-article-icon-fg: #4a6e8e; /* 解説記事アイコン文字(5a) */
+  --pr-official-fg: #4c7458; /* 「公式実装」バッジ文字(5a) */
+  --pr-bg-locked-badge: #e4e1d7; /* 「自動挿入 · 削除不可」バッジ面(1h)・統計棒グラフ過去週(1d) */
+
+  /* ── 影 ─────────────────────────────────────── */
+  --pr-shadow-seg: 0 1px 2px rgba(28, 30, 34, 0.1); /* セグメント選択 */
+  --pr-shadow-float: 0 2px 6px rgba(28, 30, 34, 0.08); /* 「対」ボタン */
+  --pr-shadow-mono: 0 1px 4px rgba(28, 30, 34, 0.14); /* サムネ上モノグラム */
+  --pr-shadow-banner: 0 8px 24px rgba(28, 30, 34, 0.1); /* 前回位置バナー */
+  --pr-shadow-menu: 0 10px 28px rgba(20, 22, 26, 0.35); /* 選択メニュー */
+  --pr-shadow-bar: 0 16px 40px rgba(20, 22, 26, 0.35); /* 一括操作バー・Toast */
+  --pr-shadow-pop: 0 24px 56px rgba(28, 30, 34, 0.18); /* ポップオーバー */
+  --pr-shadow-modal: 0 32px 80px rgba(20, 22, 26, 0.35); /* モーダル */
+  --pr-shadow-frame: 0 20px 44px rgba(28, 30, 34, 0.12); /* 1440フレーム */
+
+  /* ── モーダルスクリム(1g) ───────────────────── */
+  --pr-scrim: rgba(30, 32, 36, 0.38);
+
+  /* ── z-index 階層(§7.3) ─────────────────────── */
+  --z-content: 0;
+  --z-banner: 3;
+  --z-selection-menu: 4;
+  --z-inline-popover: 5;
+  --z-floating-bar: 5;
+  --z-dropdown: 6;
+  --z-popover: 6;
+  --z-toast: 7;
+  --z-modal: 8;
+
+  /* ── アクセント意味エイリアス(テーマで分岐) ────── */
+  --pr-acc: var(--pr-a);
+  --pr-acc-s: var(--pr-as);
+  --pr-acc-m: var(--pr-am);
+}
+
+/* ══════════════ ダークモード(1c の実測値) ══════════════ */
+html[data-theme="dark"] {
+  --pr-bg-canvas: #14171b;
+  --pr-bg-app: #181b20;
+  --pr-bg-app-alt: #181b20;
+  --pr-bg-pane: #1b1e24;
+  --pr-bg-card: #1e2228;
+  --pr-bg-pop: #22262d;
+  --pr-bg-control: #22262d;
+  --pr-bg-inset: #14171b;
+  --pr-bg-muted: #14171b;
+  --pr-bg-thumb: #191c21;
+  --pr-bg-feed: #1b1e24;
+  --pr-bg-hover: #22262d;
+  --pr-bg-unread: #22262d;
+  --pr-bg-knowledge: #22262d;
+  --pr-bg-knowledge-label: #2c313a;
+  --pr-bg-comment: #22262d;
+  --pr-bg-seg-selected: #2c313a;
+
+  --pr-text: #f0eee9; /* 1c 実測: 見出し・選択中の強文字 */
+  --pr-text-body: #dedcd7;
+  --pr-text-en: #c4c7cc;
+  --pr-text-mid: #c9ccd1;
+  --pr-text-nav: #c9ccd1;
+  --pr-text-sub: #9ba1a9;
+  --pr-text-sub2: #9ba1a9; /* 1c 実測 */
+  --pr-text-muted: #7a7f87;
+  --pr-text-icon: #7a7f87;
+  --pr-text-faint: #5c626b;
+  --pr-text-thumb: #5c626b;
+  --pr-text-eq: #8a9099;
+
+  --pr-border-frame: #101216;
+  --pr-border-header: #2a2f37;
+  --pr-border-pane: #2a2f37;
+  --pr-border-soft: #262b32;
+  --pr-border-card: #2a2f37;
+  --pr-border-hair: #262b32;
+  --pr-border-row: #262b32;
+  --pr-border-control: #333942;
+  --pr-border-pop: #3a404a;
+  --pr-border-keycap: #333942;
+  --pr-border-dashed: #333942;
+  --pr-border-quote: #3a404a;
+  --pr-border-check: #4a4e55;
+  --pr-border-thumb: #2e343d;
+
+  --pr-article-icon-fg: #7c9fbe;
+  --pr-official-fg: #7fa98b;
+  --pr-bg-locked-badge: #2c313a;
+
+  --pr-shadow-pop: 0 22px 52px rgba(8, 10, 13, 0.55);
+  --pr-shadow-frame: 0 20px 44px rgba(28, 30, 34, 0.2);
+
+  /* アクセントはダーク対応色系へ切替(--pr-a 系の単純流用禁止。1c) */
+  --pr-acc: var(--pr-ad);
+  --pr-acc-s: var(--pr-ads);
+  --pr-acc-m: var(--pr-adm);
+}
+
+/* テキスト選択色(Tweaks 準拠。accents.css がアクセント別に上書き) */
+::selection {
+  background: var(--pr-selection);
+}

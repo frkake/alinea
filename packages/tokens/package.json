@@ -1,0 +1,28 @@
+{
+  "name": "@yakudoku/tokens",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./css/tokens.css": "./css/tokens.css",
+    "./css/accents.css": "./css/accents.css",
+    "./css/fonts.css": "./css/fonts.css",
+    "./css/theme.css": "./css/theme.css"
+  },
+  "scripts": {
+    "gen": "tsx scripts/gen-accents.ts",
+    "build": "pnpm gen && tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "tsx": "4.19.2",
+    "typescript": "5.8.3",
+    "vitest": "3.2.4"
+  }
+}
