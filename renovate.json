@@ -1,0 +1,18 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "Asia/Tokyo",
+  "schedule": ["* 6 * * 1"],
+  "packageRules": [
+    {
+      "description": "メジャー更新は自動マージしない",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
+    {
+      "description": "LLM SDK はモデル世代交代に追随するため毎日チェック (docs/09 §3.2)",
+      "matchPackageNames": ["openai", "anthropic", "google-genai"],
+      "schedule": ["* * * * *"]
+    }
+  ]
+}

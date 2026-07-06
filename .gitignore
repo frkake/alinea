@@ -1,0 +1,35 @@
+# dependencies
+node_modules/
+.pnpm-store/
+.venv/
+__pycache__/
+*.egg-info/
+*.pyc
+
+# build outputs
+.turbo/
+.next/
+.output/
+dist/
+build/
+coverage/
+.nyc_output/
+
+# NOTE: generated files that ARE committed (drift checks depend on tracking them):
+#   packages/tokens/css/accents.css (pnpm gen), packages/api-client/src/generated (openapi-ts)
+# so they are intentionally NOT ignored here.
+
+# env & secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# playwright
+playwright-report/
+test-results/
+apps/web/e2e/.auth/
+
+# misc
+.DS_Store
+*.log

@@ -1,0 +1,14 @@
+node_modules/
+.venv/
+.turbo/
+.next/
+.output/
+dist/
+build/
+coverage/
+pnpm-lock.yaml
+uv.lock
+packages/api-client/src/generated/
+packages/tokens/css/accents.css
+論文読解システム デザイン.dc.html
+support.js
