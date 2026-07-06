@@ -1,0 +1,57 @@
+/* apps/web グローバルスタイル(plans/08 §4.2 取り込み順)。
+   Tailwind v4 → tokens → accents(生成物)→ fonts → theme(@theme inline)。 */
+@import "tailwindcss";
+@import "@yakudoku/tokens/css/tokens.css";
+@import "@yakudoku/tokens/css/accents.css";
+@import "@yakudoku/tokens/css/fonts.css";
+@import "@yakudoku/tokens/css/theme.css";
+
+/* デスクトップ基準: min-width 1200px(plans/08 §7.2 MIN_APP_WIDTH)。 */
+html,
+body {
+  min-width: 1200px;
+}
+
+body {
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* キーボードフォーカス共通表現(plans/08 §5 共通事項)。 */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible,
+[role="button"]:focus-visible,
+[role="radio"]:focus-visible,
+[role="switch"]:focus-visible,
+[role="tab"]:focus-visible {
+  outline: 1.5px solid var(--pr-acc);
+  outline-offset: 1px;
+}
+
+/* セグメント選択の影はダークで消す(plans/08 §5.1・§8.3 の唯一の例外)。 */
+html[data-theme="dark"] .yk-seg-selected {
+  box-shadow: none;
+}
+
+/* ライブラリテーブル行のホバー(plans/08 §5.15 決定)。選択中行はインライン bg が優先。 */
+.yk-lib-row:hover {
+  background: var(--pr-bg-hover);
+}
+
+/* 横断検索スニペットのヒットマーク(plans/08 §5.17 決定)。 */
+.yk-search-hit {
+  background: rgba(196, 148, 50, 0.3);
+  border-radius: 2px;
+  padding: 0 1px;
+}
