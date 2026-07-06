@@ -1,0 +1,320 @@
+"use client";
+
+import type { CSSProperties, KeyboardEvent } from "react";
+import { type ReadingStatus } from "@yakudoku/tokens";
+import { StatusPill } from "@/components/ui/StatusPill";
+import { QualityBadge } from "@/components/ui/QualityBadge";
+import { TagChip } from "@/components/ui/TagChip";
+import { PriorityBadge } from "@/components/ui/PriorityBadge";
+import { DeadlineBadge } from "@/components/ui/DeadlineBadge";
+
+/** ライブラリ専用テーブル(plans/08 §5.15、plans/09 1e §2.6)。10 列固定。 */
+export interface LibraryTableRow {
+  id: string;
+  title: string;
+  titleBadge?: "pdf_import";
+  authorsLine: string;
+  thumbnailUrl: string | null;
+  status: ReadingStatus;
+  quality: "A" | "B";
+  tags: string[];
+  priority: "high" | "mid" | "low" | null;
+  deadline: string | null;
+  readingHours: number | null;
+  comprehension: number | null;
+  addedAt: string;
+}
+
+export type SortKey =
+  | "title"
+  | "status"
+  | "quality"
+  | "priority"
+  | "deadline"
+  | "reading_time"
+  | "comprehension"
+  | "added_at"
+  | "updated_at";
+
+export interface LibraryTableProps {
+  rows: LibraryTableRow[];
+  selectedIds: ReadonlySet<string>;
+  onToggleSelect: (id: string) => void;
+  onToggleSelectAll: () => void;
+  sort: { key: SortKey; dir: "asc" | "desc" };
+  onSortChange: (s: { key: SortKey; dir: "asc" | "desc" }) => void;
+  onOpenRow: (id: string) => void;
+}
+
+const GRID_COLUMNS = "34px 1fr 108px 44px 168px 64px 66px 76px 64px 64px";
+
+const HEADERS: Array<{ label: string; key?: SortKey }> = [
+  { label: "論文", key: "title" },
+  { label: "ステータス", key: "status" },
+  { label: "品質", key: "quality" },
+  { label: "タグ" },
+  { label: "優先度", key: "priority" },
+  { label: "締切", key: "deadline" },
+  { label: "読書時間", key: "reading_time" },
+  { label: "理解度", key: "comprehension" },
+  { label: "追加日", key: "added_at" },
+];
+
+function Checkbox({
+  checked,
+  onToggle,
+  ariaLabel,
+}: {
+  checked: boolean;
+  onToggle: () => void;
+  ariaLabel: string;
+}) {
+  const onKey = (e: KeyboardEvent<HTMLSpanElement>) => {
+    if (e.key === " " || e.key === "Enter") {
+      e.preventDefault();
+      onToggle();
+    }
+  };
+  return (
+    <span
+      role="checkbox"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      tabIndex={0}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+      onKeyDown={onKey}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 14,
+        height: 14,
+        border: checked ? "1.5px solid var(--pr-acc)" : "1.5px solid var(--pr-border-check)",
+        borderRadius: 3,
+        background: checked ? "var(--pr-acc)" : "transparent",
+        color: "#FFFFFF",
+        fontSize: 9,
+        cursor: "pointer",
+      }}
+    >
+      {checked ? "✓" : null}
+    </span>
+  );
+}
+
+const cellText = (mid: boolean): CSSProperties => ({
+  fontSize: 11,
+  color: mid ? "var(--pr-text-mid)" : "var(--pr-text-muted)",
+});
+
+export function LibraryTable({
+  rows,
+  selectedIds,
+  onToggleSelect,
+  onToggleSelectAll,
+  sort,
+  onSortChange,
+  onOpenRow,
+}: LibraryTableProps) {
+  const allSelected = rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
+  const sortGlyph = sort.dir === "asc" ? " ↑" : " ↓";
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        background: "var(--pr-bg-card)",
+        border: "1px solid var(--pr-border-card)",
+        borderRadius: 10,
+        overflow: "hidden",
+      }}
+    >
+      {/* ヘッダ行 */}
+      <div
+        role="row"
+        style={{
+          display: "grid",
+          gridTemplateColumns: GRID_COLUMNS,
+          alignItems: "center",
+          gap: 8,
+          padding: "8px 14px",
+          borderBottom: "1px solid var(--pr-border-soft)",
+          fontSize: 10.5,
+          fontWeight: 600,
+          color: "var(--pr-text-muted)",
+        }}
+      >
+        <Checkbox checked={allSelected} onToggle={onToggleSelectAll} ariaLabel="すべて選択" />
+        {HEADERS.map((h) => {
+          const isSorted = h.key !== undefined && h.key === sort.key;
+          if (h.key === undefined) {
+            return <div key={h.label}>{h.label}</div>;
+          }
+          const key = h.key;
+          return (
+            <button
+              key={h.label}
+              type="button"
+              onClick={() => {
+                onSortChange({
+                  key,
+                  dir: isSorted && sort.dir === "asc" ? "desc" : "asc",
+                });
+              }}
+              style={{
+                border: "none",
+                background: "transparent",
+                padding: 0,
+                textAlign: "left",
+                cursor: "pointer",
+                font: "inherit",
+                color: "inherit",
+              }}
+            >
+              {h.label}
+              {isSorted ? sortGlyph : ""}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* 行 */}
+      {rows.map((row, index) => {
+        const selected = selectedIds.has(row.id);
+        return (
+          <div
+            key={row.id}
+            role="row"
+            className="yk-lib-row"
+            onClick={() => {
+              onOpenRow(row.id);
+            }}
+            style={{
+              display: "grid",
+              gridTemplateColumns: GRID_COLUMNS,
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 14px",
+              borderBottom:
+                index === rows.length - 1 ? undefined : "1px solid var(--pr-border-row)",
+              background: selected ? "var(--pr-acc-s)" : undefined,
+              cursor: "pointer",
+            }}
+          >
+            <Checkbox
+              checked={selected}
+              onToggle={() => {
+                onToggleSelect(row.id);
+              }}
+              ariaLabel={`${row.title} を選択`}
+            />
+
+            {/* 論文セル */}
+            <div style={{ display: "flex", gap: 10, minWidth: 0, alignItems: "center" }}>
+              <span
+                style={{
+                  width: 26,
+                  height: 34,
+                  flex: "none",
+                  borderRadius: 2,
+                  border: "1px solid var(--pr-border-thumb)",
+                  background: row.thumbnailUrl
+                    ? `center/cover no-repeat url(${row.thumbnailUrl})`
+                    : "var(--pr-bg-thumb)",
+                }}
+              />
+              <div style={{ minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "var(--pr-text)",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <span
+                    style={{
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {row.title}
+                  </span>
+                  {row.titleBadge === "pdf_import" ? <TagChip size="card">PDF 取り込み</TagChip> : null}
+                </div>
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: "var(--pr-text-muted)",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {row.authorsLine}
+                </div>
+              </div>
+            </div>
+
+            {/* ステータス */}
+            <div>
+              <StatusPill status={row.status} variant="dot-label" />
+            </div>
+
+            {/* 品質 */}
+            <div>
+              <QualityBadge level={row.quality} size={17} />
+            </div>
+
+            {/* タグ */}
+            <div style={{ display: "flex", gap: 4, overflow: "hidden" }}>
+              {row.tags.map((tag) => (
+                <TagChip key={tag}>{tag}</TagChip>
+              ))}
+            </div>
+
+            {/* 優先度 */}
+            <div>
+              {row.priority ? (
+                <PriorityBadge priority={row.priority} />
+              ) : (
+                <span style={cellText(false)}>—</span>
+              )}
+            </div>
+
+            {/* 締切 */}
+            <div>
+              <DeadlineBadge date={row.deadline} variant="text" />
+            </div>
+
+            {/* 読書時間 */}
+            <div style={cellText(row.readingHours !== null)}>
+              {row.readingHours !== null ? `${row.readingHours}h` : "—"}
+            </div>
+
+            {/* 理解度 */}
+            <div style={cellText(row.comprehension !== null)}>
+              {row.comprehension !== null ? `${row.comprehension}/5` : "—"}
+            </div>
+
+            {/* 追加日 */}
+            <div style={cellText(true)}>{row.addedAt}</div>
+          </div>
+        );
+      })}
+
+      {/* 最下段スペーサ */}
+      <div style={{ flex: 1 }} />
+    </div>
+  );
+}
