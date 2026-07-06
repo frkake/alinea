@@ -45,6 +45,11 @@ strict = true
 plugins = ["pydantic.mypy"]
 exclude = ["alembic/versions/"]
 
+# 型スタブを提供しないサードパーティ(aioboto3/botocore 等)は import 追跡を無視する
+[[tool.mypy.overrides]]
+module = ["aioboto3.*", "botocore.*", "selectolax.*", "xxhash.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["packages", "apps"]
