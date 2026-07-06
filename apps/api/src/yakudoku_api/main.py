@@ -1,0 +1,45 @@
+"""FastAPI アプリ生成。ルータ登録・ミドルウェア・例外ハンドラ・OpenAPI(/api/openapi.json)。
+
+M0-10 API 共通基盤(plans/03 §1・plans/01 §9)。
+"""
+
+from __future__ import annotations
+
+from fastapi import FastAPI
+
+from yakudoku_api.errors import register_exception_handlers
+from yakudoku_api.logging import configure_logging
+from yakudoku_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
+from yakudoku_api.ratelimit import RateLimitMiddleware
+from yakudoku_api.redis_client import get_redis
+from yakudoku_api.routers import auth, health, jobs
+from yakudoku_api.settings import get_api_settings
+
+
+def create_app() -> FastAPI:
+    settings = get_api_settings()
+    configure_logging(json_logs=True)
+
+    app = FastAPI(
+        title="訳読 / YAKUDOKU API",
+        version="0.1.0",
+        openapi_url="/api/openapi.json",
+        docs_url="/api/docs",
+        redoc_url="/api/redoc",
+    )
+
+    register_exception_handlers(app)
+
+    # ミドルウェア(最後に add したものが最外周)。外→内: RequestId → RateLimit → OriginCsrf。
+    app.add_middleware(OriginCsrfMiddleware, settings=settings)
+    app.add_middleware(RateLimitMiddleware, redis_factory=get_redis)
+    app.add_middleware(RequestIdMiddleware)
+
+    app.include_router(health.router)
+    app.include_router(auth.router)
+    app.include_router(jobs.router)
+
+    return app
+
+
+app = create_app()
