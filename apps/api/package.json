@@ -1,0 +1,11 @@
+{
+  "name": "@yakudoku/api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "uv run uvicorn yakudoku_api.main:app --reload --port 8000",
+    "lint": "uv run ruff check .",
+    "typecheck": "uv run mypy .",
+    "test": "uv run pytest"
+  }
+}

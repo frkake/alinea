@@ -4,7 +4,10 @@ name: yakudoku
 
 services:
   db:
-    image: groonga/pgroonga:4.0.1-alpine-16
+    # 決定: debian 版を使う。理由: alpine 版は英語ステミング用の token_filters/stem.so を同梱せず
+    # PGroonga 索引(plans/11 §2.2 の英語面 TokenFilterStem)が作れない(実測)。debian 版は
+    # stem.so + tokenizers/mecab.so を同梱し plans/11 §2.3-2.4 の前提を満たす。
+    image: groonga/pgroonga:4.0.1-debian-16
     container_name: yakudoku-db
     ports:
       - "5432:5432"
@@ -13,6 +16,13 @@ services:
       POSTGRES_PASSWORD: yakudoku
       POSTGRES_DB: yakudoku
       POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    # PGroonga のクラッシュ後索引破損防止(plans/02 §7・plans/11 §2.3)
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pgroonga_wal_resource_manager"
+      - "-c"
+      - "pgroonga.enable_wal=on"
     volumes:
       - db-data:/var/lib/postgresql/data
       - ./docker/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro

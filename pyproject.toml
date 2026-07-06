@@ -31,7 +31,10 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "ASYNC", "S", "RUF"]
 ignore = ["S101"]
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**" = ["S"]
+# tests は SQL リテラルが長くなりがちで、assert(S101)も使う
+"**/tests/**" = ["S", "E501"]
+# Alembic マイグレーションは verbatim SQL(plans/02 §4)を持つため行長チェック対象外
+"**/alembic/versions/**" = ["E501"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
