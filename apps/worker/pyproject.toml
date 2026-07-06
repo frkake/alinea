@@ -1,0 +1,24 @@
+[project]
+name = "yakudoku-worker"
+version = "0.1.0"
+description = "訳読 / YAKUDOKU — arq 非同期ワーカー(InteractiveWorker/BulkWorker)"
+requires-python = "==3.12.*"
+dependencies = [
+  "yakudoku-core",
+  "yakudoku-llm",
+  "arq==0.26.3",
+  "pydantic==2.11.7",
+  "pydantic-settings==2.10.1",
+  "sqlalchemy[asyncio]==2.0.41",
+  "asyncpg==0.30.0",
+  "redis>=5.0.0",
+  "httpx==0.28.1",
+  "structlog>=24.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/yakudoku_worker"]

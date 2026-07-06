@@ -1,0 +1,11 @@
+{
+  "name": "@yakudoku/worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "uv run arq yakudoku_worker.main.InteractiveWorker --watch src",
+    "lint": "uv run ruff check .",
+    "typecheck": "uv run mypy .",
+    "test": "uv run pytest"
+  }
+}
