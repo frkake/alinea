@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head><title>Flow Straight and Fast</title></head>
+<body>
+<article class="ltx_document ltx_authors_1line">
+  <h1 class="ltx_title ltx_title_document">Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow</h1>
+  <div class="ltx_authors"><span class="ltx_personname">Xingchao Liu, Chengyue Gong, Qiang Liu</span></div>
+  <div class="ltx_dates">September 2022</div>
+  <div class="ltx_abstract"><h6 class="ltx_title ltx_title_abstract">Abstract</h6><p class="ltx_p">We present rectified flow.</p></div>
+
+  <section class="ltx_section" id="S1">
+    <h2 class="ltx_title ltx_title_section"><span class="ltx_tag ltx_tag_section">1 </span>Introduction</h2>
+    <div class="ltx_para" id="S1.p1">
+      <p class="ltx_p">Rectified flow is an <em class="ltx_emph">ODE</em> model<span class="ltx_note ltx_role_footnote" id="footnote1"><sup class="ltx_note_mark">1</sup><span class="ltx_note_outer"><span class="ltx_note_content"><sup class="ltx_note_mark">1</sup>The map is causal.</span></span></span> that transports <math display="inline" alttext="\pi_{0}"><semantics><annotation encoding="application/x-tex">\pi_{0}</annotation></semantics></math> to <math display="inline"><semantics><annotation encoding="application/x-tex">\pi_{1}</annotation></semantics></math>, following <cite class="ltx_cite">[<a href="#bib.bib1">1</a>]</cite>. See <a class="ltx_ref" href="#S1.E1" title="Equation 1">Eq. (1)</a> and <a class="ltx_ref" href="#S1.F1" title="Figure 1">Figure 1</a>. Code at <a class="ltx_url" href="https://github.com/gnobitab/RectifiedFlow">github.com/gnobitab/RectifiedFlow</a> uses <code class="ltx_font_typewriter">rectified_flow()</code>.</p>
+    </div>
+    <table class="ltx_equation ltx_eqn_table" id="S1.E1">
+      <tr class="ltx_equation ltx_eqn_row">
+        <td class="ltx_eqn_cell ltx_eqn_center_padleft"></td>
+        <td class="ltx_eqn_cell ltx_align_center"><math display="block" alttext="\mathrm{d}Z_t = v(Z_t,t)\,\mathrm{d}t"><semantics><annotation encoding="application/x-tex">\mathrm{d}Z_{t}=v(Z_{t},t)\,\mathrm{d}t</annotation></semantics></math></td>
+        <td class="ltx_eqn_cell ltx_eqn_center_padright"></td>
+        <td class="ltx_eqn_cell ltx_eqn_eqno"><span class="ltx_tag ltx_tag_equation">(1)</span></td>
+      </tr>
+    </table>
+    <figure class="ltx_figure" id="S1.F1">
+      <img class="ltx_graphics" src="x1.png" alt="overview"/>
+      <figcaption class="ltx_caption ltx_centering"><span class="ltx_tag ltx_tag_figure">Figure 1: </span>Overview of <em class="ltx_emph">rectified flow</em> transport.</figcaption>
+    </figure>
+
+    <section class="ltx_subsection" id="S1.SS1">
+      <h3 class="ltx_title ltx_title_subsection"><span class="ltx_tag ltx_tag_subsection">1.1 </span>Contributions</h3>
+      <div class="ltx_para" id="S1.SS1.p1"><p class="ltx_p">We show straightness reduces cost.</p></div>
+    </section>
+  </section>
+
+  <section class="ltx_section" id="S2">
+    <h2 class="ltx_title ltx_title_section"><span class="ltx_tag ltx_tag_section">2 </span>Method</h2>
+    <div class="ltx_para" id="S2.p1"><p class="ltx_p">We optimize the reflow objective.</p></div>
+
+    <table class="ltx_equationgroup ltx_eqn_table" id="S2.EGx1">
+      <tr class="ltx_equation ltx_eqn_row" id="S2.E2">
+        <td class="ltx_eqn_cell ltx_align_center"><math display="block"><semantics><annotation encoding="application/x-tex">v^{*}=\arg\min_{v}\mathbb{E}\|(X_{1}-X_{0})-v\|^{2}</annotation></semantics></math></td>
+        <td class="ltx_eqn_cell ltx_eqn_eqno"><span class="ltx_tag ltx_tag_equation">(2)</span></td>
+      </tr>
+      <tr class="ltx_equation ltx_eqn_row" id="S2.E3">
+        <td class="ltx_eqn_cell ltx_align_center"><math display="block"><semantics><annotation encoding="application/x-tex">Z_{0}=X_{0}</annotation></semantics></math></td>
+        <td class="ltx_eqn_cell ltx_eqn_eqno"><span class="ltx_tag ltx_tag_equation">(3)</span></td>
+      </tr>
+    </table>
+
+    <ul class="ltx_itemize" id="S2.I1">
+      <li class="ltx_item"><span class="ltx_tag ltx_tag_item">•</span><div class="ltx_para"><p class="ltx_p">Straight paths lower discretization error.</p></div></li>
+      <li class="ltx_item"><span class="ltx_tag ltx_tag_item">•</span><div class="ltx_para"><p class="ltx_p">Reflow can be iterated per <a class="ltx_ref" href="#S1.E1">Eq. (1)</a>.</p></div></li>
+    </ul>
+
+    <blockquote class="ltx_quote"><div class="ltx_para"><p class="ltx_p">The velocity field is learned by regression.</p></div></blockquote>
+
+    <div class="ltx_theorem ltx_theorem_theorem" id="Thmtheorem1">
+      <h6 class="ltx_title ltx_title_theorem"><span class="ltx_tag ltx_tag_theorem">Theorem 1</span>.</h6>
+      <div class="ltx_para"><p class="ltx_p">Rectified flow does not increase transport cost.</p></div>
+    </div>
+
+    <figure class="ltx_float ltx_float_algorithm" id="alg1">
+      <figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_float">Algorithm 1: </span>Rectified Flow training.</figcaption>
+      <div class="ltx_listing ltx_lst_language_Python">for step in range(N):
+    v = model(z, t)
+    loss = mse(v, x1 - x0)</div>
+    </figure>
+
+    <figure class="ltx_table" id="S2.T1">
+      <figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">Table 1: </span>FID on CIFAR-10.</figcaption>
+      <table class="ltx_tabular"><tbody><tr class="ltx_tr"><td class="ltx_td">Method</td><td class="ltx_td">FID</td></tr><tr class="ltx_tr"><td class="ltx_td">Rectified Flow</td><td class="ltx_td">2.58</td></tr></tbody></table>
+    </figure>
+
+    <pre class="ltx_verbatim ltx_font_typewriter">pip install rectified-flow</pre>
+  </section>
+
+  <section class="ltx_appendix" id="A1">
+    <h2 class="ltx_title ltx_title_appendix"><span class="ltx_tag ltx_tag_appendix">Appendix A </span>Proofs</h2>
+    <div class="ltx_para" id="A1.p1"><p class="ltx_p">See <a class="ltx_ref" href="#Thmtheorem1">Theorem 1</a> for details.</p></div>
+  </section>
+
+  <section class="ltx_bibliography" id="bib">
+    <h2 class="ltx_title ltx_title_bibliography">References</h2>
+    <ul class="ltx_biblist">
+      <li class="ltx_bibitem" id="bib.bib1"><span class="ltx_bibblock">Liu, X., Gong, C., Liu, Q. (2022). "Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow". arXiv:2209.03003.</span></li>
+      <li class="ltx_bibitem" id="bib.bib2"><span class="ltx_bibblock">Ho, J., Jain, A., Abbeel, P. (2020). "Denoising Diffusion Probabilistic Models". https://doi.org/10.48550/arXiv.2006.11239.</span></li>
+    </ul>
+  </section>
+</article>
+</body>
+</html>
