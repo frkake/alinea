@@ -1,0 +1,60 @@
+# タスクルーティングのシード(plans/04 §8)。実行時の正は DB(llm_task_routes /
+# user_task_model_overrides)。タスクは 8 種で固定(DB の CHECK 制約とも一致)。
+version: "2026-07-06"
+
+retry_defaults:                       # §9 のモデル内リトライ規則
+  max_attempts: 3                     # 初回 + リトライ2回
+  backoff_base_s: 1.0                 # 待機 = base * factor^(attempt-1) + jitter
+  backoff_factor: 4.0                 # → 1s, 4s(+ 0〜1s の full jitter)
+  jitter_s: 1.0
+  respect_retry_after: true           # 429 の Retry-After を優先(上限 retry_after_cap_s)
+  retry_after_cap_s: 30
+
+tasks:
+  translation:                        # docs/03 §11: 安価な大量処理向け
+    chain: [deepseek-v4-flash, gemini-3.5-flash, gpt-5.4-mini]
+    effort: none
+    max_output_tokens: 4096           # ブロック単位翻訳(docs/03 §3)
+    timeout_s: 120
+    structured: true                  # プレースホルダ検証しやすい JSON 出力(plans/06 で定義)
+  retranslation_escalation:           # docs/03 §9: 上位モデルへエスカレーション
+    chain: [claude-sonnet-5, gpt-5.5, gemini-3.1-pro-preview]
+    effort: high
+    max_output_tokens: 4096
+    timeout_s: 180
+    structured: true
+  chat:                               # docs/05。ストリーミング必須(初回トークン p50 5秒)
+    chain: [claude-opus-4-8, gpt-5.5, gemini-3.5-flash]
+    effort: medium
+    max_output_tokens: 8192
+    timeout_s: 120
+    streaming: true
+  summary:                            # ✦3行要約(p50 20秒)・詳細要約
+    chain: [claude-opus-4-8, gpt-5.5, gemini-3.5-flash]
+    effort: low
+    max_output_tokens: 2048
+    timeout_s: 60
+    structured: true                  # 3行要約+提案タグ = plans/05、詳細要約等 = plans/07
+  article:                            # docs/07 §2。記事全体の生成・再生成(p50 30秒)
+    chain: [claude-opus-4-8, gpt-5.5]
+    effort: high
+    max_output_tokens: 32000
+    timeout_s: 300
+    structured: true                  # Article ブロック構造 JSON(plans/07 で schema 定義)
+  overview_figure_dsl:                # docs/07 §1.2。3カードフロー図 DSL
+    chain: [claude-opus-4-8, gpt-5.5]
+    effort: high
+    max_output_tokens: 4096
+    timeout_s: 120
+    structured: true                  # OverviewFigure DSL schema(plans/07)
+  vocab:                              # docs/11 §8: 小型・低価格・低レイテンシ(p50 3秒)
+    chain: [claude-haiku-4-5, gpt-5.4-mini, gemini-3.5-flash]
+    effort: none
+    max_output_tokens: 2048
+    timeout_s: 30
+    structured: true                  # VocabEntry.ai フィールド一式の JSON(plans/07)
+  explainer_image:                    # docs/07 §1.3 + 概要図ラスターモード
+    chain: [gemini-3.1-flash-image, grok-imagine-image, gpt-image-2]
+    size: "1536x1024"
+    quality: standard
+    timeout_s: 120

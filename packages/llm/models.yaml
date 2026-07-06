@@ -1,0 +1,149 @@
+# モデルレジストリのシード(plans/04 §7)。実行時の正は DB(llm_models)。
+# 価格は 2026-07-06 時点(scratchpad/extract/_models.md)。
+# 登録禁止(下記は登録しない): deepseek-chat / deepseek-reasoner(2026-07-24 廃止)、
+# imagen-4.0-generate-001(2026-08-17 停止予定)、gpt-image-1.5(gpt-image-2 に一本化)。
+version: "2026-07-06"
+
+providers:
+  openai:
+    sdk: openai
+    base_url: null                      # SDK 既定(https://api.openai.com/v1)
+    env_key: OPENAI_API_KEY
+    modalities: [text, image]
+  anthropic:
+    sdk: anthropic
+    base_url: null                      # SDK 既定(https://api.anthropic.com)
+    env_key: ANTHROPIC_API_KEY
+    modalities: [text]
+  google:
+    sdk: google-genai
+    base_url: null                      # SDK 既定(generativelanguage.googleapis.com)
+    env_key: GEMINI_API_KEY
+    modalities: [text, image]
+  deepseek:
+    sdk: openai                         # OpenAI 互換
+    base_url: "https://api.deepseek.com"
+    env_key: DEEPSEEK_API_KEY
+    modalities: [text]
+  xai:
+    sdk: openai                         # OpenAI 互換
+    base_url: "https://api.x.ai/v1"
+    env_key: XAI_API_KEY
+    modalities: [text, image]
+
+text_models:
+  - id: gpt-5.5
+    provider: openai
+    display_name: "GPT-5.5"
+    context_window: 1000000
+    max_output_tokens: 128000
+    pricing: {input_per_mtok: 5.00, cached_input_per_mtok: 0.50, output_per_mtok: 30.00}
+    capabilities: {streaming: true, structured_native: true, vision: true,
+                   prompt_cache: implicit, effort: true}
+    enabled: true
+  - id: gpt-5.4-mini
+    provider: openai
+    display_name: "GPT-5.4 mini"
+    context_window: 400000
+    max_output_tokens: 128000
+    pricing: {input_per_mtok: 0.75, cached_input_per_mtok: 0.075, output_per_mtok: 4.50}
+    capabilities: {streaming: true, structured_native: true, vision: true,
+                   prompt_cache: implicit, effort: true}
+    enabled: true
+  - id: claude-opus-4-8
+    provider: anthropic
+    display_name: "Claude Opus 4.8"
+    context_window: 1000000
+    max_output_tokens: 128000
+    pricing: {input_per_mtok: 5.00, cached_input_per_mtok: 0.50,
+              cache_write_per_mtok: 6.25, output_per_mtok: 25.00}
+    capabilities: {streaming: true, structured_native: true, vision: true,
+                   prompt_cache: explicit, effort: true}
+    enabled: true
+  - id: claude-sonnet-5
+    provider: anthropic
+    display_name: "Claude Sonnet 5"
+    context_window: 1000000
+    max_output_tokens: 64000
+    pricing: {input_per_mtok: 3.00, cached_input_per_mtok: 0.30,
+              cache_write_per_mtok: 3.75, output_per_mtok: 15.00}
+    capabilities: {streaming: true, structured_native: true, vision: true,
+                   prompt_cache: explicit, effort: true}
+    enabled: true
+  - id: claude-haiku-4-5
+    provider: anthropic
+    display_name: "Claude Haiku 4.5"
+    context_window: 200000
+    max_output_tokens: 64000
+    pricing: {input_per_mtok: 1.00, cached_input_per_mtok: 0.10,
+              cache_write_per_mtok: 1.25, output_per_mtok: 5.00}
+    capabilities: {streaming: true, structured_native: true, vision: true,
+                   prompt_cache: explicit, effort: true}
+    enabled: true
+  - id: gemini-3.5-flash
+    provider: google
+    display_name: "Gemini 3.5 Flash"
+    context_window: 1000000
+    max_output_tokens: 65000
+    pricing: {input_per_mtok: 1.50, cached_input_per_mtok: 0.375, output_per_mtok: 9.00}
+    capabilities: {streaming: true, structured_native: true, vision: true,
+                   prompt_cache: implicit, effort: true}
+    enabled: true
+  - id: gemini-3.1-pro-preview
+    provider: google
+    display_name: "Gemini 3.1 Pro (preview)"
+    context_window: 1000000
+    max_output_tokens: 64000
+    pricing: {input_per_mtok: 2.00, cached_input_per_mtok: 0.50, output_per_mtok: 12.00}
+    capabilities: {streaming: true, structured_native: true, vision: true,
+                   prompt_cache: implicit, effort: true}
+    enabled: true
+  - id: deepseek-v4-flash
+    provider: deepseek
+    display_name: "DeepSeek V4 Flash"
+    context_window: 1000000
+    max_output_tokens: 384000
+    pricing: {input_per_mtok: 0.14, cached_input_per_mtok: 0.0028, output_per_mtok: 0.28}
+    capabilities: {streaming: true, structured_native: false, vision: false,
+                   prompt_cache: implicit, effort: true}
+    enabled: true
+  - id: deepseek-v4-pro
+    provider: deepseek
+    display_name: "DeepSeek V4 Pro"
+    context_window: 1000000
+    max_output_tokens: 384000
+    pricing: {input_per_mtok: 1.74, cached_input_per_mtok: 0.0145, output_per_mtok: 3.48}
+    capabilities: {streaming: true, structured_native: false, vision: false,
+                   prompt_cache: implicit, effort: true}
+    enabled: true
+  - id: grok-4.3
+    provider: xai
+    display_name: "Grok 4.3"
+    context_window: 1000000
+    max_output_tokens: 64000
+    pricing: {input_per_mtok: 1.25, cached_input_per_mtok: 1.25, output_per_mtok: 2.50}
+    capabilities: {streaming: true, structured_native: true, vision: true,
+                   prompt_cache: none, effort: false}
+    enabled: true
+
+image_models:
+  - id: gemini-3.1-flash-image
+    provider: google
+    display_name: "Gemini 3.1 Flash Image (Nano Banana 2)"
+    pricing_per_image: {standard: 0.067, high: 0.134}    # 1K / 2K
+    enabled: true
+  - id: gemini-3-pro-image
+    provider: google
+    display_name: "Gemini 3 Pro Image (Nano Banana Pro)"
+    pricing_per_image: {standard: 0.134, high: 0.24}     # 1K/2K / 4K
+    enabled: true
+  - id: gpt-image-2
+    provider: openai
+    display_name: "GPT Image 2"
+    pricing_per_image: {standard: 0.053, high: 0.211}    # medium / high(1024x1024 目安)
+    enabled: true
+  - id: grok-imagine-image
+    provider: xai
+    display_name: "Grok Imagine"
+    pricing_per_image: {standard: 0.02, high: 0.05}      # high は -quality に自動置換(§6.6)
+    enabled: true
