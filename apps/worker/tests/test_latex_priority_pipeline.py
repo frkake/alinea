@@ -1,0 +1,278 @@
+"""M2-01: arXiv 取り込みの取得優先順位 LaTeX > HTML > PDF(plans/05 §1.3・§5)。
+
+- LaTeX ソース(e-print)が取得・解析できる場合、品質 A・`source_format='latex'`・
+  `parser_version='latex-1.0.0'` で構造化され、HTML 取得(SourceAsset kind='arxiv_html')は
+  行われない(優先順位の主経路化)。
+- LaTeX の取得/解析に失敗した場合は既存の HTML 経路へ**可視的に**フォールバックする
+  (`jobs.log` に warn を記録。P3)。
+
+本ファイルは独自の LaTeX 応答 ASGI スタブ+ctx フィクスチャ(``latex_worker_ctx``)を
+新規に定義し、``apps/worker/tests/conftest.py`` の既定 ``arxiv_http``/``worker_ctx``
+(空バイト e-print → 既存 HTML 経路)は変更しない(読み取り専用)。フォールバック側は
+既定の ``worker_ctx`` をそのまま使う。
+"""
+
+from __future__ import annotations
+
+import gzip
+import io
+import random
+import re
+import tarfile
+import time
+from collections.abc import AsyncIterator
+from typing import Any
+
+import httpx
+import pytest
+import pytest_asyncio
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import Response
+from starlette.routing import Route
+from yakudoku_core.arxiv.fetch import RedisLike
+from yakudoku_core.db.models import DocumentRevision, SourceAsset
+from yakudoku_core.ingest import build_timeline
+from yakudoku_core.jobs.store import JobStore
+from yakudoku_core.settings import CoreSettings
+from yakudoku_llm.router import LLMRouter
+from yakudoku_worker.tasks.ingest import ingest_paper
+
+# --------------------------------------------------------------------------- #
+# ローカル LaTeX e-print フィクスチャ(自作。tar.gz を動的構築)
+# --------------------------------------------------------------------------- #
+
+_LATEX_MAIN_TEX = (
+    "\\documentclass{article}\n"
+    "\\begin{document}\n"
+    "\\section{Introduction}\n"
+    "\\label{sec:intro}\n"
+    "This is a deterministic mock introduction for pipeline testing purposes here.\n"
+    "\\begin{equation}\n"
+    "\\label{eq:one}\n"
+    "E = mc^2\n"
+    "\\end{equation}\n"
+    "\\section{Method}\n"
+    "The method section describes the approach in detail for testing purposes here.\n"
+    "\\end{document}\n"
+)
+
+
+def _build_latex_archive() -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        data = _LATEX_MAIN_TEX.encode()
+        info = tarfile.TarInfo(name="main.tex")
+        info.size = len(data)
+        info.mtime = 0
+        tar.addfile(info, io.BytesIO(data))
+    return gzip.compress(buf.getvalue(), mtime=0)
+
+
+_ATOM_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <entry>
+    <id>http://arxiv.org/abs/{id}v1</id>
+    <published>2022-09-07T13:00:00Z</published>
+    <title>Mock LaTeX Priority Paper</title>
+    <summary>A deterministic mock abstract for the LaTeX-priority pipeline test.</summary>
+    <author><name>Mock Author</name></author>
+    <arxiv:primary_category term="cs.LG"/>
+  </entry>
+</feed>
+"""
+
+_OAI_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
+  <GetRecord><record><metadata>
+    <arXiv xmlns="http://arxiv.org/OAI/arXiv/">
+      <license>http://creativecommons.org/licenses/by/4.0/</license>
+    </arXiv>
+  </metadata></record></GetRecord>
+</OAI-PMH>
+"""
+
+_MINIMAL_PDF = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+
+
+async def _query(request: Request) -> Response:
+    id_list = request.query_params.get("id_list", "0000.00000")
+    arxiv_id = re.sub(r"v\d+$", "", id_list)
+    return Response(_ATOM_XML.format(id=arxiv_id), media_type="application/atom+xml")
+
+
+async def _oai2(_request: Request) -> Response:
+    return Response(_OAI_XML, media_type="text/xml")
+
+
+async def _eprint_valid_latex(_request: Request) -> Response:
+    return Response(_build_latex_archive(), media_type="application/x-eprint-tar")
+
+
+async def _html_unused(_request: Request) -> Response:  # pragma: no cover
+    """LaTeX 成功時は呼ばれないはず(優先順位検証)。呼ばれたら分かるよう 500 で明示する。"""
+    return Response("html should not be fetched when latex succeeds", status_code=500)
+
+
+async def _pdf(_request: Request) -> Response:
+    return Response(_MINIMAL_PDF, media_type="application/pdf")
+
+
+def _make_latex_arxiv_stub() -> Starlette:
+    return Starlette(
+        routes=[
+            Route("/api/query", _query, methods=["GET"]),
+            Route("/oai2", _oai2, methods=["GET"]),
+            Route("/e-print/{arxiv_id:path}", _eprint_valid_latex, methods=["GET"]),
+            Route("/html/{path:path}", _html_unused, methods=["GET"]),
+            Route("/pdf/{arxiv_id:path}", _pdf, methods=["GET"]),
+        ]
+    )
+
+
+async def _noop_throttle(_redis: RedisLike) -> None:
+    return None
+
+
+class _FakeRedis:
+    """in-memory の最小 Redis(conftest の FakeRedis と同形。本ファイル専用に複製)。"""
+
+    def __init__(self) -> None:
+        self._store: dict[str, bytes] = {}
+
+    async def get(self, name: str) -> bytes | None:
+        return self._store.get(name)
+
+    async def set(
+        self,
+        name: str,
+        value: bytes,
+        *,
+        ex: int | None = None,
+        px: int | None = None,
+        nx: bool = False,
+    ) -> bool | None:
+        if nx and name in self._store:
+            return None
+        self._store[name] = value
+        return True
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest_asyncio.fixture
+async def latex_arxiv_http() -> AsyncIterator[httpx.AsyncClient]:
+    """有効な LaTeX tar.gz を e-print で返す ASGI スタブ(``latex_worker_ctx`` 専用)。"""
+    transport = httpx.ASGITransport(app=_make_latex_arxiv_stub())
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as client:
+        yield client
+
+
+@pytest.fixture
+def latex_worker_ctx(router: LLMRouter, latex_arxiv_http: httpx.AsyncClient) -> dict[str, Any]:
+    """``conftest.worker_ctx`` と同形だが LaTeX 応答スタブを使う独自 ctx(名前衝突なし)。"""
+    return {
+        "router": router,
+        "arxiv_http": latex_arxiv_http,
+        "redis": _FakeRedis(),
+        "settings": CoreSettings(yakudoku_arxiv_base_url="http://arxiv.test"),
+        "throttle": _noop_throttle,
+    }
+
+
+def _arxiv_id() -> str:
+    n = (int(time.time() * 1000) + random.randint(0, 9999)) % 100000
+    return f"{random.randint(1001, 2912)}.{n:05d}"
+
+
+async def _source_asset_kinds(db: AsyncSession, paper_id: str) -> set[str]:
+    rows = (
+        await db.execute(select(SourceAsset.kind).where(SourceAsset.paper_id == paper_id))
+    ).scalars()
+    return set(rows.all())
+
+
+# ============================ LaTeX 優先経路(成功時) ============================
+
+
+async def test_ingest_prefers_latex_source_when_available(
+    db_session: AsyncSession,
+    latex_worker_ctx: dict[str, Any],
+    seed_ingest_job: Any,
+) -> None:
+    arxiv_id = _arxiv_id()
+    ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
+    store = JobStore(db_session)
+
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(latex_worker_ctx, store, job)  # arq プール無し → その場駆動
+
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    assert job.status == "succeeded"
+    assert job.stage == "complete"
+
+    rev = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert rev.source_format == "latex"
+    assert rev.parser_version == "latex-1.0.0"
+    assert rev.quality_level == "A"
+
+    kinds = await _source_asset_kinds(db_session, ids["paper_id"])
+    assert "arxiv_latex" in kinds
+    assert "arxiv_html" not in kinds  # 優先順位: LaTeX 成功時は HTML を取得しない
+
+    timeline = build_timeline(job.log)
+    assert timeline
+    assert "LaTeX ソース取得" in timeline[0]["label"]
+
+
+# ============================ HTML への可視的フォールバック(既存経路の保護) ============================
+
+
+async def test_ingest_falls_back_to_html_and_logs_warning_when_latex_unavailable(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],  # conftest 既定(e-print は空バイト = LaTeX ソース無し)
+    seed_ingest_job: Any,
+) -> None:
+    arxiv_id = _arxiv_id()
+    ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
+    store = JobStore(db_session)
+
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(worker_ctx, store, job)
+
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    assert job.status == "succeeded"
+
+    rev = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert rev.source_format == "arxiv_html"
+    assert rev.parser_version == "html-1.0.0"
+
+    kinds = await _source_asset_kinds(db_session, ids["paper_id"])
+    assert "arxiv_html" in kinds
+    assert "arxiv_latex" not in kinds
+
+    warn_entries = [row for row in job.log if row.get("level") == "warn"]
+    assert any("LaTeX" in row.get("message", "") for row in warn_entries)
