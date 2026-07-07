@@ -1,9 +1,11 @@
 """解説図ジョブ(plans/07 §6、kind='figure' / payload.figure_kind='explainer')。
 
 - 新規生成は記事生成・再生成に付随する(単体の新規作成 API は無い。docs/07 §1.4)。
-  :func:`create_explainer_figures_v1` を記事ジョブ(:mod:`yakudoku_worker.tasks.
-  generate_article`)の rendering 段から呼ぶ想定 — **その呼び出し配線は generate_article.py
-  側の担当(M2-03/04 レーン)であり、本ファイルの所有範囲外のため followups に記載する。**
+  :func:`create_explainer_figures_v1`(初回。version は常に 1)と
+  :func:`sync_explainer_figures_for_regenerate`(✦ 指示つき再生成。既存 slot は version+1、
+  ``image_brief_en`` から組み立てたプロンプトが現行版と同一なら再利用してコストを節約する —
+  plans/07 §4.5 step8)は、記事ジョブ(:mod:`yakudoku_worker.tasks.generate_article`)の
+  rendering 段から呼ぶ(呼び出し配線は generate_article.py 側)。
 - 単体再生成(``POST /api/explainer-figures/{figure_id}/regenerate``)は
   :func:`run_explainer_figure_job` が ``jobs(kind='figure')`` として処理する(plans/03 §20.2)。
 - ``run_figure_job`` は ``kind='figure'`` 全体のディスパッチャ(``payload.figure_kind`` で
@@ -19,11 +21,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import structlog
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from yakudoku_core.article import EvidenceDisplayResolver, build_evidence_wire
 from yakudoku_core.article.sources import ArticleSources, collect_article_sources
 from yakudoku_core.db.models import (
     Article,
+    ArticleBlock,
     DocumentRevision,
     ExplainerFigure,
     Job,
@@ -208,6 +212,77 @@ async def create_explainer_figures_v1(
     return created
 
 
+async def _current_explainer_figure(
+    session: AsyncSession, article_id: str, slot: int
+) -> ExplainerFigure | None:
+    return (
+        await session.execute(
+            select(ExplainerFigure).where(
+                ExplainerFigure.article_id == article_id,
+                ExplainerFigure.slot == slot,
+                ExplainerFigure.is_current.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def sync_explainer_figures_for_regenerate(
+    ctx: dict[str, Any],
+    session: AsyncSession,
+    *,
+    article: Article,
+    sources: ArticleSources,
+    job: Job,
+    briefs: list[ExplainerBrief],
+) -> dict[int, ExplainerFigure]:
+    """記事 ✦指示つき再生成の rendering 段で slot ごとに解説図を同期する(plans/07 §4.5 step8)。
+
+    ``image_brief_en`` から組み立てたプロンプトが現行版(is_current な行)の ``prompt`` と
+    一致する slot は画像を再生成せず再利用する(キャプション・根拠のみ最新化)。異なる場合・
+    新規 slot の場合のみ新版を生成し、既存版の ``(article_id, slot, version)`` と衝突しない
+    ``current.version + 1``(新規なら 1)を採番する — :func:`create_explainer_figures_v1` を
+    再生成経路にそのまま使うと version=1 固定のため一意制約に衝突する既知問題の解消。
+
+    画像生成チェーン全滅時は該当 slot をスキップし記事ジョブ自体は成功させる(部分成功)。
+    """
+    updated: dict[int, ExplainerFigure] = {}
+    for brief in briefs:
+        current = await _current_explainer_figure(session, str(article.id), brief.slot)
+        candidate_prompt = build_explainer_prompt(brief.image_brief_en)
+        evidence_wire = resolve_evidence_wire(list(brief.evidence), sources)
+        if current is not None and current.prompt == candidate_prompt:
+            # 再利用: image_brief_en 不変 → 画像は生成し直さず、キャプション・根拠のみ更新する。
+            current.caption = brief.caption_ja
+            current.evidence_anchors = evidence_wire
+            session.add(current)
+            await session.flush()
+            updated[brief.slot] = current
+            continue
+        try:
+            row = await _generate_and_store(
+                ctx,
+                session,
+                article=article,
+                job=job,
+                slot=brief.slot,
+                version=(current.version + 1) if current is not None else 1,
+                image_brief_en=brief.image_brief_en,
+                caption=brief.caption_ja,
+                evidence_wire=evidence_wire,
+                current=current,
+            )
+        except ProviderChainExhausted as exc:
+            await log.awarning(
+                "explainer_figure_regenerate_failed",
+                article_id=str(article.id),
+                slot=brief.slot,
+                error=str(exc),
+            )
+            continue
+        updated[brief.slot] = row
+    return updated
+
+
 # --------------------------------------------------------------------------- #
 # jobs(kind='figure', payload.figure_kind='explainer')ディスパッチ(単体再生成。plans/03 §20.2)
 # --------------------------------------------------------------------------- #
@@ -230,6 +305,36 @@ async def _load_figure_article_context(
     if user is None:
         raise LookupError(f"user not found: {item.user_id}")
     return article, item, paper, revision, user
+
+
+async def _find_explainer_image_brief_en(
+    session: AsyncSession, article_id: str, slot: int
+) -> str | None:
+    """現行記事ブロック(``article_blocks.content.explainer.image_brief_en``)から、
+    記事生成時にモデルへ渡した英語ブリーフを再取得する(plans/07 §4.3 の永続化。
+    figures レーン deviations #6 の解消: 単体再生成でも忠実に同一ブリーフを再現できる)。
+
+    ブロックが見つからない(削除済み等)場合は None を返し、呼び出し側でキャプションを
+    代替に使う(既存挙動を保つフォールバック)。
+    """
+    rows = (
+        (
+            await session.execute(
+                select(ArticleBlock).where(
+                    ArticleBlock.article_id == article_id,
+                    ArticleBlock.type == "explainer_figure",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        content = row.content or {}
+        if int(content.get("slot", -1)) == slot:
+            brief = content.get("image_brief_en")
+            return str(brief) if brief else None
+    return None
 
 
 async def run_explainer_figure_job(ctx: dict[str, Any], store: JobStore, job: Job) -> None:
@@ -261,11 +366,12 @@ async def run_explainer_figure_job(ctx: dict[str, Any], store: JobStore, job: Jo
     image_router: ImageRouter | None = ctx.get("image_router")
     if image_router is None:
         raise RuntimeError("no image provider configured (ctx['image_router'] is None)")
-    # ``image_brief_en`` は記事生成時のみモデルへ渡す材料(§4.3)であり再生成時は保存済みプロンプト
-    # から Concept 節を再利用できないため、直近キャプションを英語ブリーフの代替として使う
-    # (deviations: 厳密には image_brief_en の保存が必要。followups 参照)。
+    # ``image_brief_en`` は article_blocks.content.explainer に永続化済み(§4.3)のため、
+    # 単体再生成でも記事生成時と同一のブリーフを忠実に再現できる(見つからない場合のみ
+    # キャプションを代替に使う — ブロック削除後の再生成等のフォールバック)。
+    image_brief_en = await _find_explainer_image_brief_en(session, str(article.id), current.slot)
     prompt = build_explainer_prompt(
-        current.caption or "the concept of this figure",
+        image_brief_en or current.caption or "the concept of this figure",
         instruction=str(instruction) if instruction else None,
     )
 
@@ -333,4 +439,5 @@ __all__ = [
     "resolve_evidence_wire",
     "run_explainer_figure_job",
     "run_figure_job",
+    "sync_explainer_figures_for_regenerate",
 ]

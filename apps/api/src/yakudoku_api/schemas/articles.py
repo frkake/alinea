@@ -55,6 +55,9 @@ class FigureContentOut(BaseModel):
     caption_ja: str
     credit: str
     license_badge: str
+    # docs/09 §5.2: CC BY-ND はキャプション分離、CC BY-SA は SA 表示(article/wire.py が供給)。
+    caption_separated: bool = False
+    share_alike: bool = False
 
 
 class FigureLinkCardOut(BaseModel):

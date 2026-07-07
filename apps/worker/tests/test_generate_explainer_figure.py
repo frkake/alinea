@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yakudoku_core.article.sources import collect_article_sources
 from yakudoku_core.db.models import (
     Article,
+    ArticleBlock,
     DocumentRevision,
     ExplainerFigure,
     Job,
@@ -29,6 +30,7 @@ from yakudoku_core.db.models import (
 from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
 from yakudoku_core.document.inlines import Inline
 from yakudoku_core.jobs.store import JobStore
+from yakudoku_llm.errors import ErrorKind
 from yakudoku_llm.router import ImageRouter
 from yakudoku_llm.testing.fake_provider import FakeImageProvider
 from yakudoku_worker.tasks.generate_explainer_figure import (
@@ -37,6 +39,7 @@ from yakudoku_worker.tasks.generate_explainer_figure import (
     build_explainer_prompt,
     create_explainer_figures_v1,
     run_explainer_figure_job,
+    sync_explainer_figures_for_regenerate,
 )
 
 
@@ -243,6 +246,204 @@ async def test_py_fig_05_regenerate_bumps_version_and_flips_current(
     assert current.id != v1.id
     assert "もう少し明るい配色で" in current.prompt
     assert image_provider.calls == 2
+
+
+async def test_py_fig_05_single_regenerate_reuses_persisted_image_brief_en(
+    db_session: AsyncSession,
+) -> None:
+    """単体再生成は article_blocks.content.explainer.image_brief_en を忠実に再現する
+    (figures レーン deviations #6 の解消。plans/07 §4.3 の永続化を使い、キャプションの
+    代替に頼らない)。
+    """
+    seed = await _seed(db_session)
+    sources = await _sources(db_session, seed)
+    job = _job(seed)
+    image_provider = FakeImageProvider(name="google")
+    ctx = {"image_router": ImageRouter([("google", "gemini-3.1-flash-image", image_provider)])}
+    briefs = [
+        ExplainerBrief(
+            slot=0,
+            image_brief_en="a straight path between two distributions",
+            caption_ja="キャプションはブリーフと異なる文言",
+            evidence=[],
+        )
+    ]
+    created = await create_explainer_figures_v1(
+        ctx, db_session, article=seed["article"], sources=sources, job=job, briefs=briefs
+    )
+    v1 = created[0]
+    # 記事ブロック側にも image_brief_en が永続化されている状態を模す(§4.3)。
+    db_session.add(
+        ArticleBlock(
+            article_id=str(seed["article"].id),
+            position=0,
+            type="explainer_figure",
+            content={
+                "slot": 0,
+                "image_brief_en": "a straight path between two distributions",
+                "caption_ja": "キャプションはブリーフと異なる文言",
+            },
+        )
+    )
+    await db_session.commit()
+
+    store = JobStore(db_session)
+    regen_job_id = await store.enqueue(
+        kind="figure",
+        priority="interactive",
+        user_id=str(seed["user"].id),
+        library_item_id=str(seed["library_item"].id),
+        article_id=str(seed["article"].id),
+        payload={"figure_kind": "explainer", "figure_id": str(v1.id)},
+    )
+    regen_job = await store.claim(regen_job_id)
+    assert regen_job is not None
+    await run_explainer_figure_job(ctx, store, regen_job)
+
+    current = (
+        await db_session.execute(
+            select(ExplainerFigure).where(
+                ExplainerFigure.article_id == seed["article"].id,
+                ExplainerFigure.slot == 0,
+                ExplainerFigure.is_current.is_(True),
+            )
+        )
+    ).scalar_one()
+    assert "a straight path between two distributions" in current.prompt
+    assert "キャプションはブリーフと異なる文言" not in current.prompt
+
+
+# --------------------------------------------------------------------------- #
+# 記事 ✦指示つき再生成の version-aware 解説図同期(plans/07 §4.5 step8)
+# --------------------------------------------------------------------------- #
+async def test_sync_creates_v1_for_new_slot(db_session: AsyncSession) -> None:
+    seed = await _seed(db_session)
+    sources = await _sources(db_session, seed)
+    job = _job(seed)
+    image_provider = FakeImageProvider(name="google")
+    ctx = {"image_router": ImageRouter([("google", "gemini-3.1-flash-image", image_provider)])}
+    briefs = [
+        ExplainerBrief(slot=0, image_brief_en="concept", caption_ja="キャプション", evidence=[])
+    ]
+
+    updated = await sync_explainer_figures_for_regenerate(
+        ctx, db_session, article=seed["article"], sources=sources, job=job, briefs=briefs
+    )
+    await db_session.commit()
+
+    assert updated[0].version == 1
+    assert updated[0].is_current is True
+    assert image_provider.calls == 1
+
+
+async def test_sync_reuses_when_prompt_unchanged_and_bumps_when_changed(
+    db_session: AsyncSession,
+) -> None:
+    seed = await _seed(db_session)
+    sources = await _sources(db_session, seed)
+    job = _job(seed)
+    image_provider = FakeImageProvider(name="google")
+    ctx = {"image_router": ImageRouter([("google", "gemini-3.1-flash-image", image_provider)])}
+    briefs = [
+        ExplainerBrief(
+            slot=0, image_brief_en="concept v1", caption_ja="旧キャプション", evidence=[]
+        )
+    ]
+    v1_map = await create_explainer_figures_v1(
+        ctx, db_session, article=seed["article"], sources=sources, job=job, briefs=briefs
+    )
+    await db_session.commit()
+    v1 = v1_map[0]
+    assert image_provider.calls == 1
+
+    # 同一 image_brief_en(プロンプト不変)→ 画像は再生成せず、キャプションのみ更新する。
+    unchanged_briefs = [
+        ExplainerBrief(
+            slot=0, image_brief_en="concept v1", caption_ja="新キャプション", evidence=[]
+        )
+    ]
+    reused = await sync_explainer_figures_for_regenerate(
+        ctx, db_session, article=seed["article"], sources=sources, job=job, briefs=unchanged_briefs
+    )
+    await db_session.commit()
+    assert image_provider.calls == 1  # 増えない(再利用)
+    assert reused[0].id == v1.id
+    assert reused[0].version == 1
+    assert reused[0].caption == "新キャプション"
+
+    rows_after_reuse = (
+        (
+            await db_session.execute(
+                select(ExplainerFigure).where(
+                    ExplainerFigure.article_id == seed["article"].id,
+                    ExplainerFigure.slot == 0,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows_after_reuse) == 1  # 一意制約 (article_id, slot, version) に衝突しない
+
+    # image_brief_en が変わる → version+1・is_current 付替え。
+    changed_briefs = [
+        ExplainerBrief(
+            slot=0, image_brief_en="concept v2", caption_ja="新キャプション", evidence=[]
+        )
+    ]
+    bumped = await sync_explainer_figures_for_regenerate(
+        ctx, db_session, article=seed["article"], sources=sources, job=job, briefs=changed_briefs
+    )
+    await db_session.commit()
+    assert image_provider.calls == 2
+    assert bumped[0].version == 2
+    assert bumped[0].id != v1.id
+
+    refreshed_v1 = await db_session.get(ExplainerFigure, v1.id)
+    assert refreshed_v1 is not None
+    assert refreshed_v1.is_current is False
+
+    rows_after_bump = (
+        (
+            await db_session.execute(
+                select(ExplainerFigure).where(
+                    ExplainerFigure.article_id == seed["article"].id,
+                    ExplainerFigure.slot == 0,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows_after_bump) == 2  # v1(旧版)+ v2(新版)。一意制約に衝突しない。
+
+
+async def test_sync_skips_slot_on_provider_chain_exhausted(db_session: AsyncSession) -> None:
+    seed = await _seed(db_session)
+    sources = await _sources(db_session, seed)
+    job = _job(seed)
+    failing_provider = FakeImageProvider(name="google", fail=True, error_kind=ErrorKind.SERVER)
+    ctx = {"image_router": ImageRouter([("google", "gemini-3.1-flash-image", failing_provider)])}
+    briefs = [
+        ExplainerBrief(slot=0, image_brief_en="concept", caption_ja="キャプション", evidence=[])
+    ]
+
+    updated = await sync_explainer_figures_for_regenerate(
+        ctx, db_session, article=seed["article"], sources=sources, job=job, briefs=briefs
+    )
+    await db_session.commit()
+
+    assert updated == {}  # 部分成功: 例外を伝播させず該当 slot をスキップする
+    rows = (
+        (
+            await db_session.execute(
+                select(ExplainerFigure).where(ExplainerFigure.article_id == seed["article"].id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert rows == []
 
 
 # --------------------------------------------------------------------------- #

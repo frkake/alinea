@@ -197,8 +197,65 @@ def _article_payload(*, discussion_items: list[dict[str, Any]] | None = None) ->
     }
 
 
+def _article_payload_with_explainer(
+    *, image_brief_en: str = "a straight path between two distributions"
+) -> dict[str, Any]:
+    """§4.3 の explainer_figure ブロック(slot 0)を 1 個含む記事ペイロード。"""
+    payload = _article_payload()
+    payload["blocks"].insert(
+        -1,  # discussion の直前(§2.3 の順序どおり解説図は本文中。末尾は discussion+attribution)
+        {
+            "type": "explainer_figure",
+            "explainer": {
+                "slot": 0,
+                "image_brief_en": image_brief_en,
+                "caption_ja": "直線経路と 1 ステップ生成の直感",
+            },
+            "evidence": ["blk-p1"],
+        },
+    )
+    return payload
+
+
+def _default_overview_dsl_payload() -> dict[str, Any]:
+    """全体概要図 DSL(plans/07 §5.1)の決定的フィクスチャ。数値トークンを含めない
+    (§5.2 の数値照合チェックが本ファイルの素材(数値なし)と食い違わないようにするため)。
+    """
+    return {
+        "layout": "flow-3",
+        "cards": [
+            {
+                "role": "problem",
+                "label": "課題",
+                "heading": "拡散モデルの生成が遅い",
+                "body": "多数のサンプリングステップを要する。",
+                "tone": "neutral",
+            },
+            {
+                "role": "proposal",
+                "label": "提案 — RECTIFIED FLOW",
+                "heading": "直線輸送を学習する",
+                "body": "始点と終点を直線で結ぶ経路を学習する。",
+                "tone": "accent",
+            },
+            {
+                "role": "result",
+                "label": "結果",
+                "heading": "少ないステップで生成",
+                "body": "蒸留と組み合わせて高速化する。",
+                "tone": "green",
+            },
+        ],
+        "connectors": [{"from": 0, "to": 1}, {"from": 1, "to": 2}],
+        "evidence": ["blk-p1", "blk-p2"],
+    }
+
+
 class ArticleScriptProvider:
-    """決定的 LLMProvider。article_v1 / article_block_v1 を返す(実 jsonschema 検証つき)。"""
+    """決定的 LLMProvider。article_v1 / article_block_v1 / overview_figure_dsl_v1 を返す
+    (実 jsonschema 検証つき)。記事生成が rendering 段で概要図 DSL も生成するようになった
+    ため(plans/07 §5.3)、既存テストを壊さないよう既定の概要図ペイロードを常に用意する。
+    """
 
     name = "fake"
 
@@ -206,11 +263,15 @@ class ArticleScriptProvider:
         self,
         article_payload: dict[str, Any] | None = None,
         block_payload: dict[str, Any] | None = None,
+        overview_payload: dict[str, Any] | None = None,
     ) -> None:
         self.article_payload = (
             article_payload if article_payload is not None else _article_payload()
         )
         self.block_payload = block_payload
+        self.overview_payload = (
+            overview_payload if overview_payload is not None else _default_overview_dsl_payload()
+        )
         self.calls = 0
 
     async def generate_structured(self, req: LLMRequest) -> LLMResponse:
@@ -222,6 +283,8 @@ class ArticleScriptProvider:
         elif spec.name == "article_block_v1":
             assert self.block_payload is not None
             data = self.block_payload
+        elif spec.name == "overview_figure_dsl_v1":
+            data = self.overview_payload
         else:  # pragma: no cover — 未知スキーマはテスト書き漏れ
             raise ProviderError(ErrorKind.SCHEMA_VALIDATION, self.name, req.model, "unknown schema")
         resp = LLMResponse(
@@ -538,3 +601,211 @@ async def test_block_rewrite_of_attribution_is_rejected(db_session: AsyncSession
     # 出典ブロックの内容は変わらない。
     await db_session.refresh(attribution)
     assert attribution.type == "attribution"
+
+
+# ===========================================================================
+# 概要図・解説図の自動生成配線(前 wave の申し送り解消。plans/07 §4.5 step8・§5.3・§6.1)
+# ===========================================================================
+async def test_generate_auto_creates_overview_and_explainer_figures(
+    db_session: AsyncSession,
+) -> None:
+    from yakudoku_core.db.models import ExplainerFigure, OverviewFigure
+    from yakudoku_llm.router import ImageRouter
+    from yakudoku_llm.testing.fake_provider import FakeImageProvider
+
+    ctx_data = await _seed(db_session)
+    provider = ArticleScriptProvider(article_payload=_article_payload_with_explainer())
+    job_id = await _enqueue_generate(db_session, ctx_data=ctx_data)
+    store = JobStore(db_session)
+    job = await store.claim(job_id)
+    assert job is not None
+
+    image_provider = FakeImageProvider(name="google")
+    ctx = {
+        "router": _router(provider),
+        "image_router": ImageRouter([("google", "gemini-3.1-flash-image", image_provider)]),
+    }
+    await run_article_job(ctx, store, job)
+
+    job = await store.get(job_id)
+    assert job is not None and job.status == "succeeded", job.error if job else None
+    article_id = job.result["article_id"]
+
+    overview = (
+        await db_session.execute(
+            select(OverviewFigure).where(OverviewFigure.article_id == article_id)
+        )
+    ).scalar_one()
+    assert overview.version == 1
+    assert overview.is_current is True
+    assert overview.dsl["cards"][1]["label"] == "提案 — RECTIFIED FLOW"
+
+    explainer = (
+        await db_session.execute(
+            select(ExplainerFigure).where(ExplainerFigure.article_id == article_id)
+        )
+    ).scalar_one()
+    assert explainer.slot == 0
+    assert explainer.version == 1
+    assert explainer.is_current is True
+    assert explainer.provider == "google"
+    assert image_provider.calls == 1
+
+    # article_blocks.content.explainer に image_brief_en が永続化される(§4.3。単体再生成の
+    # 忠実再現に使う — figures レーン deviations #6 の解消)。
+    blocks = await _current_blocks(db_session, article_id)
+    explainer_block = next(b for b in blocks if b.type == "explainer_figure")
+    assert explainer_block.content["image_brief_en"] == (
+        "a straight path between two distributions"
+    )
+
+
+async def test_generate_without_image_router_skips_explainer_but_succeeds(
+    db_session: AsyncSession,
+) -> None:
+    from yakudoku_core.db.models import ExplainerFigure, OverviewFigure
+
+    ctx_data = await _seed(db_session)
+    provider = ArticleScriptProvider(article_payload=_article_payload_with_explainer())
+    job_id = await _enqueue_generate(db_session, ctx_data=ctx_data)
+    store = JobStore(db_session)
+    job = await store.claim(job_id)
+    assert job is not None
+
+    # image_router を注入しない: 記事生成自体は成功し、概要図は生成される(explainer のみ
+    # スキップされ部分失敗としてログに残る — P3。docs/07 §1.4)。
+    await run_article_job({"router": _router(provider)}, store, job)
+
+    job = await store.get(job_id)
+    assert job is not None and job.status == "succeeded", job.error if job else None
+    article_id = job.result["article_id"]
+
+    overview_count = (
+        (
+            await db_session.execute(
+                select(OverviewFigure).where(OverviewFigure.article_id == article_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(overview_count) == 1
+
+    explainer_count = (
+        (
+            await db_session.execute(
+                select(ExplainerFigure).where(ExplainerFigure.article_id == article_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert explainer_count == []
+
+    assert any(
+        entry.get("level") == "partial_failure"
+        and entry.get("error", {}).get("reason") == "explainer_image_provider_not_configured"
+        for entry in job.log
+    )
+
+
+async def test_regenerate_reuses_unchanged_explainer_and_bumps_changed_slot(
+    db_session: AsyncSession,
+) -> None:
+    from yakudoku_core.db.models import ExplainerFigure, OverviewFigure
+    from yakudoku_llm.router import ImageRouter
+    from yakudoku_llm.testing.fake_provider import FakeImageProvider
+
+    ctx_data = await _seed(db_session)
+    provider = ArticleScriptProvider(article_payload=_article_payload_with_explainer())
+    job_id = await _enqueue_generate(db_session, ctx_data=ctx_data)
+    store = JobStore(db_session)
+    job = await store.claim(job_id)
+    assert job is not None
+    image_provider = FakeImageProvider(name="google")
+    image_router = ImageRouter([("google", "gemini-3.1-flash-image", image_provider)])
+    ctx = {"router": _router(provider), "image_router": image_router}
+    await run_article_job(ctx, store, job)
+    job = await store.get(job_id)
+    assert job is not None
+    article_id = job.result["article_id"]
+
+    overview_before = (
+        await db_session.execute(
+            select(OverviewFigure).where(OverviewFigure.article_id == article_id)
+        )
+    ).scalar_one()
+
+    # 指示なし再生成: explainer_figure の image_brief_en が不変 → 画像は再生成されず
+    # version はそのまま(コスト最適化。plans/07 §4.5 step8)。概要図は再生成されない(§5.3)。
+    regen_job_id = await store.enqueue(
+        kind="article",
+        priority="interactive",
+        user_id=str(ctx_data["user"].id),
+        library_item_id=str(ctx_data["library_item"].id),
+        article_id=article_id,
+        payload={"op": "regenerate", "article_id": article_id},
+    )
+    regen_job = await store.claim(regen_job_id)
+    assert regen_job is not None
+    await run_article_job(ctx, store, regen_job)
+
+    explainer_rows = (
+        (
+            await db_session.execute(
+                select(ExplainerFigure).where(ExplainerFigure.article_id == article_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(explainer_rows) == 1  # 再利用のため新版行は作られない
+    assert explainer_rows[0].version == 1
+    assert image_provider.calls == 1  # 初回生成の 1 回のみ(再生成では画像生成を呼ばない)
+
+    overview_rows = (
+        (
+            await db_session.execute(
+                select(OverviewFigure).where(OverviewFigure.article_id == article_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(overview_rows) == 1  # 再生成では概要図を作り直さない(§5.3)
+    assert overview_rows[0].id == overview_before.id
+
+    # 指示つき再生成で image_brief_en を変える: 新版が作られ is_current が付け替わる。
+    provider2 = ArticleScriptProvider(
+        article_payload=_article_payload_with_explainer(image_brief_en="a totally new concept")
+    )
+    ctx2 = {"router": _router(provider2), "image_router": image_router}
+    regen_job_id2 = await store.enqueue(
+        kind="article",
+        priority="interactive",
+        user_id=str(ctx_data["user"].id),
+        library_item_id=str(ctx_data["library_item"].id),
+        article_id=article_id,
+        payload={"op": "regenerate", "article_id": article_id, "instruction": "図を変えて"},
+    )
+    regen_job2 = await store.claim(regen_job_id2)
+    assert regen_job2 is not None
+    await run_article_job(ctx2, store, regen_job2)
+
+    explainer_rows2 = (
+        (
+            await db_session.execute(
+                select(ExplainerFigure).where(
+                    ExplainerFigure.article_id == article_id, ExplainerFigure.slot == 0
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(explainer_rows2) == 2  # v1(旧版)+ v2(新版)
+    current = next(r for r in explainer_rows2 if r.is_current)
+    old = next(r for r in explainer_rows2 if not r.is_current)
+    assert current.version == 2
+    assert old.version == 1
+    assert image_provider.calls == 2  # 変更された slot のみ新規生成

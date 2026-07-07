@@ -149,6 +149,11 @@ def block_content_to_wire(
                 "caption_ja": content.get("caption_ja", ""),
                 "credit": content.get("credit", ""),
                 "license_badge": content.get("license_badge", ""),
+                # docs/09 §5.2: CC BY-ND はキャプションを図と分離、CC BY-SA は SA 表示を要する。
+                # 現行 apps/api の FigureContentOut はこの 2 キーを未対応(followups 参照) —
+                # 追加キーは Pydantic 既定の extra="ignore" で無害に無視される。
+                "caption_separated": bool(content.get("caption_separated", False)),
+                "share_alike": bool(content.get("share_alike", False)),
             }
         }
     if type_ == "explainer_figure":

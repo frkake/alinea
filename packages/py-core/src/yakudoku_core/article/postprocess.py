@@ -219,6 +219,8 @@ def _normalize_figure(
         "credit": _figure_credit(sources.paper),
         "license_badge": _figure_license_badge(sources.paper),
         "caption_separated": fig.policy == "caption_separate",
+        # CC BY-SA 系: クレジットに加え記事の該当部分に SA 表示を出す(docs/09 §5.2)。
+        "share_alike": sources.license_policy.share_alike,
     }
 
 

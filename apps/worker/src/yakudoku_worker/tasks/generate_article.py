@@ -9,6 +9,11 @@
 
 LLMRouter は ``ctx['router']`` から注入する(apps 間 import を避けるための DI。translate.py
 と同じ規約)。素材収集・検証・正規化のロジックは :mod:`yakudoku_core.article` に委譲する。
+
+図の生成(plans/07 §4.5 step8)は本ファイルが :mod:`yakudoku_worker.tasks.
+generate_overview_figure` / :mod:`yakudoku_worker.tasks.generate_explainer_figure` を呼び出して
+配線する(初回生成時のみ全体概要図 v1 を生成し記事単体で概要図は作らない — §5.3。解説図は初回は
+v1、✦ 指示つき再生成は version-aware に同期する — §4.5 step8)。
 """
 
 from __future__ import annotations
@@ -56,8 +61,19 @@ from yakudoku_core.document.blocks import DocumentContent
 from yakudoku_core.document.plaintext import article_block_to_plain
 from yakudoku_core.jobs.store import JobStore
 from yakudoku_core.storage.s3 import S3Storage
+from yakudoku_llm.errors import ProviderChainExhausted
 from yakudoku_llm.router import LLMRouter
 from yakudoku_llm.types import ContentPart, LLMRequest, LLMResponse, Message
+
+from yakudoku_worker.tasks.generate_explainer_figure import (
+    ExplainerBrief,
+    create_explainer_figures_v1,
+    sync_explainer_figures_for_regenerate,
+)
+from yakudoku_worker.tasks.generate_overview_figure import (
+    OverviewFigureGenerationError,
+    create_overview_figure_v1,
+)
 
 log = structlog.get_logger("yakudoku.worker")
 
@@ -131,6 +147,95 @@ def _dump_blocks_plain(blocks: list[ArticleBlock]) -> str:
         plain = article_block_to_plain(blk.type, blk.content or {})
         lines.append(f"[{blk.type}] {plain}" if plain else f"[{blk.type}]")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 図の生成(§4.5 step8: 全体概要図・解説図)
+# ---------------------------------------------------------------------------
+def _explainer_briefs_from_normalized(blocks: list[NormalizedBlock]) -> list[ExplainerBrief]:
+    """正規化済み記事ブロックから解説図の生成材料を抽出する(§4.3)。
+
+    ``evidence_anchors`` は既に :mod:`yakudoku_core.article.postprocess` の
+    ``_evidence_anchors`` で実在検証済みの anchor dict(``block_id`` = 元の evidence 参照)
+    なので、そこから参照文字列を復元して :class:`ExplainerBrief.evidence` に渡す。
+    """
+    briefs: list[ExplainerBrief] = []
+    for block in blocks:
+        if block.type != "explainer_figure":
+            continue
+        briefs.append(
+            ExplainerBrief(
+                slot=int(block.content.get("slot", 0)),
+                image_brief_en=str(block.content.get("image_brief_en", "")),
+                caption_ja=str(block.content.get("caption_ja", "")),
+                evidence=[str(a.get("block_id", "")) for a in block.evidence_anchors],
+            )
+        )
+    return briefs
+
+
+async def _generate_explainer_figures(
+    ctx: dict[str, Any],
+    store: JobStore,
+    *,
+    article: Article,
+    sources: ArticleSources,
+    job: Job,
+    briefs: list[ExplainerBrief],
+    is_regenerate: bool,
+) -> None:
+    """explainer_figure ブロックの briefs から解説図を生成する(§4.5 step8)。
+
+    ``ctx['image_router']`` が無い場合でも記事生成自体は成功させ、部分失敗として
+    ジョブログに記録する(P3。docs/07 §1.4 の「オンデマンド」方針とプロバイダ未構成環境の両立)。
+    """
+    if not briefs:
+        return
+    if ctx.get("image_router") is None:
+        await store.record_partial_failure(
+            str(job.id),
+            "rendering",
+            {
+                "reason": "explainer_image_provider_not_configured",
+                "slots": [b.slot for b in briefs],
+            },
+        )
+        return
+    if is_regenerate:
+        await sync_explainer_figures_for_regenerate(
+            ctx, store.session, article=article, sources=sources, job=job, briefs=briefs
+        )
+    else:
+        await create_explainer_figures_v1(
+            ctx, store.session, article=article, sources=sources, job=job, briefs=briefs
+        )
+
+
+async def _generate_overview_figure_v1(
+    ctx: dict[str, Any],
+    store: JobStore,
+    *,
+    article: Article,
+    sources: ArticleSources,
+    user: User,
+    job: Job,
+) -> None:
+    """記事初回生成の rendering 段で全体概要図 v1 を生成する(§5.3。記事単体では生成しない)。
+
+    DSL 生成の数値照合エラー・プロバイダチェーン全滅は記事生成自体を失敗させず、部分失敗として
+    記録する(初回生成には「既存版」が無く §5.2 の版保持ができないため、記事は概要図無しで
+    成功させ、後から「✦ 書き直し指示」相当の再生成で作り直せるようにする — P3)。
+    """
+    try:
+        await create_overview_figure_v1(
+            ctx, store.session, article=article, sources=sources, user=user, job=job
+        )
+    except (OverviewFigureGenerationError, ProviderChainExhausted) as exc:
+        await store.record_partial_failure(
+            str(job.id),
+            "rendering",
+            {"reason": "overview_figure_generation_failed", "detail": str(exc)},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -383,9 +488,25 @@ async def _run_generate(ctx: dict[str, Any], store: JobStore, job: Job) -> None:
     await _save_snapshot(
         ctx, article, rows, preset=preset, include_math=include_math, instruction=None
     )
-    await session.commit()
 
-    # 図の生成(§4.5 step8: 全体概要図・解説図)は M2-05/M2-06 の担当(deviations 参照)。
+    # 図の生成(§4.5 step8): 初回生成時のみ全体概要図 v1 を生成し、explainer_figure ブロックの
+    # 各 slot について解説図 v1 を生成する(§5.3・§6.1)。いずれもプロバイダ未構成・生成失敗は
+    # 記事生成自体を失敗させない(部分成功。P3)。
+    await _generate_overview_figure_v1(
+        ctx, store, article=article, sources=sources, user=user, job=job
+    )
+    explainer_briefs = _explainer_briefs_from_normalized(normalized.blocks)
+    await _generate_explainer_figures(
+        ctx,
+        store,
+        article=article,
+        sources=sources,
+        job=job,
+        briefs=explainer_briefs,
+        is_regenerate=False,
+    )
+
+    await session.commit()
     await store.succeed(str(job.id), {"article_id": str(article.id), "version": article.version})
 
 
@@ -462,6 +583,21 @@ async def _run_regenerate(ctx: dict[str, Any], store: JobStore, job: Job) -> Non
         include_math=include_math,
         instruction=instruction or None,
     )
+
+    # 図の生成(§4.5 step8): 再生成時は概要図を作り直さない(独自の「✦ 書き直し指示」導線を
+    # 持つため — §5.3 の決定)。解説図は version-aware に同期する(image_brief_en から組み立てた
+    # プロンプトが現行版と同一の slot は再利用し、変わった slot・新規 slot のみ新版を生成)。
+    explainer_briefs = _explainer_briefs_from_normalized(normalized.blocks)
+    await _generate_explainer_figures(
+        ctx,
+        store,
+        article=article,
+        sources=sources,
+        job=job,
+        briefs=explainer_briefs,
+        is_regenerate=True,
+    )
+
     await session.commit()
     await store.succeed(str(job.id), {"article_id": str(article.id), "version": article.version})
 
