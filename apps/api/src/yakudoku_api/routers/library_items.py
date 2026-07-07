@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import Sequence
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Response
@@ -41,6 +42,8 @@ from yakudoku_api.schemas.common import (
 )
 from yakudoku_api.schemas.dashboard import QueueOrderRequest, QueueOrderResponse
 from yakudoku_api.schemas.library import (
+    BulkOperationBody,
+    BulkOperationResponse,
     CollectionFacet,
     DuplicateResolutionBody,
     DuplicateResolutionResponse,
@@ -48,6 +51,11 @@ from yakudoku_api.schemas.library import (
     LibraryItemPatch,
     QualityFacet,
     QuickFacet,
+    SavedFilterBody,
+    SavedFilterConditions,
+    SavedFilterOut,
+    SavedFiltersListResponse,
+    SavedFilterSort,
     TagCount,
     TagsResponse,
     YearFacet,
@@ -110,11 +118,11 @@ def _conditions(
     user_id: str,
     *,
     quick: str,
-    statuses: list[str] | None,
-    tags: list[str] | None,
+    statuses: Sequence[str] | None,
+    tags: Sequence[str] | None,
     collection_id: str | None,
     quality: str | None,
-    years: list[int] | None,
+    years: Sequence[int] | None,
     q: str | None,
     include_quick: bool,
 ) -> list[ColumnElement[bool]]:
@@ -124,7 +132,7 @@ def _conditions(
     if statuses:
         conds.append(LibraryItem.status.in_(statuses))
     if tags:
-        conds.append(LibraryItem.tags.overlap(tags))
+        conds.append(LibraryItem.tags.overlap(list(tags)))
     if collection_id:
         conds.append(
             select(CollectionEntry.id)
@@ -687,6 +695,99 @@ async def delete_item(item_id: str, user: CurrentUser, db: DbDep) -> Response:
 
 
 # ============================================================================
+# 一括操作(§5.6・plans/09-screens/1e §4.8・§5.5)
+# ============================================================================
+@router.post(
+    "/api/library-items/bulk",
+    response_model=BulkOperationResponse,
+    operation_id="libraryItems_bulk",
+)
+async def bulk_update(
+    body: BulkOperationBody, user: CurrentUser, db: DbDep
+) -> BulkOperationResponse:
+    unique_ids = list(dict.fromkeys(body.ids))
+    if any(not _valid_uuid(i) for i in unique_ids):
+        raise ProblemException("not_found")
+    rows = (
+        (await db.execute(select(LibraryItem).where(LibraryItem.id.in_(unique_ids))))
+        .scalars()
+        .all()
+    )
+    by_id = {str(r.id): r for r in rows}
+    # 不存在・他ユーザー所有の ID が 1 件でもあれば全体を 404 で失敗させる(部分適用しない。§5.6)。
+    if len(by_id) != len(unique_ids) or any(
+        str(item.user_id) != str(user.id) for item in by_id.values()
+    ):
+        raise ProblemException("not_found")
+    items = [by_id[i] for i in unique_ids]
+
+    updated = 0
+    if body.op == "set_status":
+        if body.status is None:
+            raise ProblemException("validation_error", detail="status が必要です")
+        now = dt.datetime.now(dt.UTC)
+        for item in items:
+            item.status = body.status
+            if body.status == "done" and item.finished_at is None:
+                item.finished_at = now
+            updated += 1
+    elif body.op == "add_tags":
+        if not body.tags:
+            raise ProblemException("validation_error", detail="tags が必要です")
+        for item in items:
+            existing = list(item.tags or [])
+            item.tags = existing + [t for t in body.tags if t not in existing]
+            updated += 1
+    elif body.op == "add_to_collection":
+        if not body.collection_id:
+            raise ProblemException("validation_error", detail="collection_id が必要です")
+        collection = (
+            await db.get(Collection, body.collection_id)
+            if _valid_uuid(body.collection_id)
+            else None
+        )
+        if collection is None or str(collection.user_id) != str(user.id):
+            raise ProblemException("not_found", detail="コレクションが見つかりません")
+        already = set(
+            (
+                await db.execute(
+                    select(CollectionEntry.library_item_id).where(
+                        CollectionEntry.collection_id == collection.id,
+                        CollectionEntry.library_item_id.in_(unique_ids),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        already = {str(i) for i in already}
+        max_position = (
+            await db.execute(
+                select(func.max(CollectionEntry.position)).where(
+                    CollectionEntry.collection_id == collection.id
+                )
+            )
+        ).scalar_one()
+        next_pos = (max_position + 1) if max_position is not None else 0
+        for item in items:
+            if str(item.id) in already:  # 既にコレクションにある項目はスキップ(§5.6)
+                continue
+            db.add(
+                CollectionEntry(
+                    id=str(uuid.uuid4()),
+                    collection_id=str(collection.id),
+                    library_item_id=str(item.id),
+                    position=next_pos,
+                )
+            )
+            next_pos += 1
+            updated += 1
+
+    await db.commit()
+    return BulkOperationResponse(updated=updated)
+
+
+# ============================================================================
 # 提案タグの却下(§5.10)
 # ============================================================================
 @router.delete(
@@ -844,3 +945,140 @@ async def reading_session_heartbeat(
 ) -> ReadingHeartbeatResponse:
     item = await _get_owned(db, user.id, item_id)
     return await record_heartbeat(db, r, user=user, item=item, body=body)
+
+
+# ============================================================================
+# 保存フィルタ(§5.14・plans/11 §8.3)
+# ============================================================================
+async def _count_for_conditions(db: DbDep, user_id: str, conditions: SavedFilterConditions) -> int:
+    """§5.14 の ``count``: 保存済みの conditions を §5.1 の WHERE に展開した導出値(保存しない)。"""
+    conds = _conditions(
+        user_id,
+        quick=conditions.quick or "all",
+        statuses=conditions.status,
+        tags=conditions.tags,
+        collection_id=conditions.collection_id,
+        quality=conditions.quality,
+        years=conditions.years,
+        q=None,
+        include_quick=True,
+    )
+    return int(
+        (
+            await db.execute(
+                select(func.count()).select_from(_scoped(LibraryItem.id).where(*conds).subquery())
+            )
+        ).scalar_one()
+    )
+
+
+def _saved_filter_out(sf: SavedFilter, count: int) -> SavedFilterOut:
+    return SavedFilterOut(
+        id=str(sf.id),
+        name=sf.name,
+        conditions=SavedFilterConditions.model_validate(sf.conditions or {}),
+        sort=SavedFilterSort.model_validate(sf.sort or {"key": "updated_at", "order": "desc"}),
+        count=count,
+    )
+
+
+async def _get_owned_saved_filter(db: DbDep, user_id: str, filter_id: str) -> SavedFilter:
+    if not _valid_uuid(filter_id):
+        raise ProblemException("not_found")
+    sf = await db.get(SavedFilter, filter_id)
+    if sf is None or str(sf.user_id) != str(user_id):
+        raise ProblemException("not_found")
+    return sf
+
+
+async def _assert_name_available(
+    db: DbDep, user_id: str, name: str, *, exclude_id: str | None = None
+) -> None:
+    stmt = select(SavedFilter.id).where(SavedFilter.user_id == user_id, SavedFilter.name == name)
+    if exclude_id is not None:
+        stmt = stmt.where(SavedFilter.id != exclude_id)
+    if (await db.execute(stmt)).first() is not None:
+        raise ProblemException("duplicate", detail="同名の保存フィルタが既にあります")
+
+
+@router.get(
+    "/api/saved-filters",
+    response_model=SavedFiltersListResponse,
+    operation_id="savedFilters_list",
+)
+async def list_saved_filters(user: CurrentUser, db: DbDep) -> SavedFiltersListResponse:
+    rows = (
+        (
+            await db.execute(
+                select(SavedFilter)
+                .where(SavedFilter.user_id == user.id)
+                .order_by(SavedFilter.position.asc(), SavedFilter.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    items: list[SavedFilterOut] = []
+    for sf in rows:
+        conditions = SavedFilterConditions.model_validate(sf.conditions or {})
+        count = await _count_for_conditions(db, user.id, conditions)
+        items.append(_saved_filter_out(sf, count))
+    return SavedFiltersListResponse(items=items)
+
+
+@router.post(
+    "/api/saved-filters",
+    response_model=SavedFilterOut,
+    status_code=201,
+    operation_id="savedFilters_create",
+)
+async def create_saved_filter(
+    body: SavedFilterBody, user: CurrentUser, db: DbDep
+) -> SavedFilterOut:
+    await _assert_name_available(db, user.id, body.name)
+    max_position = (
+        await db.execute(
+            select(func.max(SavedFilter.position)).where(SavedFilter.user_id == user.id)
+        )
+    ).scalar_one()
+    sf = SavedFilter(
+        id=str(uuid.uuid4()),
+        user_id=user.id,
+        name=body.name,
+        conditions=body.conditions.model_dump(exclude_none=True),
+        sort=body.sort.model_dump(),
+        position=(max_position + 1) if max_position is not None else 0,
+    )
+    db.add(sf)
+    await db.commit()
+    count = await _count_for_conditions(db, user.id, body.conditions)
+    return _saved_filter_out(sf, count)
+
+
+@router.patch(
+    "/api/saved-filters/{filter_id}",
+    response_model=SavedFilterOut,
+    operation_id="savedFilters_update",
+)
+async def update_saved_filter(
+    filter_id: str, body: SavedFilterBody, user: CurrentUser, db: DbDep
+) -> SavedFilterOut:
+    sf = await _get_owned_saved_filter(db, user.id, filter_id)
+    if body.name != sf.name:
+        await _assert_name_available(db, user.id, body.name, exclude_id=str(sf.id))
+    sf.name = body.name
+    sf.conditions = body.conditions.model_dump(exclude_none=True)
+    sf.sort = body.sort.model_dump()
+    await db.commit()
+    count = await _count_for_conditions(db, user.id, body.conditions)
+    return _saved_filter_out(sf, count)
+
+
+@router.delete(
+    "/api/saved-filters/{filter_id}", status_code=204, operation_id="savedFilters_delete"
+)
+async def delete_saved_filter(filter_id: str, user: CurrentUser, db: DbDep) -> Response:
+    sf = await _get_owned_saved_filter(db, user.id, filter_id)
+    await db.delete(sf)
+    await db.commit()
+    return Response(status_code=204)

@@ -567,6 +567,43 @@ export type BodyIngestPdf = {
 };
 
 /**
+ * BulkOperationBody
+ * POST /api/library-items/bulk(一括操作バー。plans/03 §5.6)。
+ */
+export type BulkOperationBody = {
+    /**
+     * Ids
+     */
+    ids: Array<string>;
+    /**
+     * Op
+     */
+    op: 'set_status' | 'add_tags' | 'add_to_collection';
+    /**
+     * Status
+     */
+    status?: ('planned' | 'up_next' | 'reading' | 'done' | 'reread' | 'on_hold') | null;
+    /**
+     * Tags
+     */
+    tags?: Array<string> | null;
+    /**
+     * Collection Id
+     */
+    collection_id?: string | null;
+};
+
+/**
+ * BulkOperationResponse
+ */
+export type BulkOperationResponse = {
+    /**
+     * Updated
+     */
+    updated: number;
+};
+
+/**
  * ByokActive
  */
 export type ByokActive = {
@@ -3097,6 +3134,94 @@ export type RevisionListResponse = {
      * Items
      */
     items: Array<RevisionListItem>;
+};
+
+/**
+ * SavedFilterBody
+ * POST/PATCH /api/saved-filters の共通リクエスト(§5.14。両者とも全項目送信)。
+ */
+export type SavedFilterBody = {
+    /**
+     * Name
+     */
+    name: string;
+    conditions: SavedFilterConditions;
+    sort: SavedFilterSort;
+};
+
+/**
+ * SavedFilterConditions
+ * §5.14・plans/11 §8.3 の ``SavedFilterConditions``(API クエリ語彙と 1:1)。
+ */
+export type SavedFilterConditions = {
+    /**
+     * Quick
+     */
+    quick?: ('all' | 'unread' | 'in_progress' | 'done' | 'recheck') | null;
+    /**
+     * Status
+     */
+    status?: Array<'planned' | 'up_next' | 'reading' | 'done' | 'reread' | 'on_hold'> | null;
+    /**
+     * Tags
+     */
+    tags?: Array<string> | null;
+    /**
+     * Collection Id
+     */
+    collection_id?: string | null;
+    /**
+     * Quality
+     */
+    quality?: ('A' | 'B') | null;
+    /**
+     * Years
+     */
+    years?: Array<number> | null;
+};
+
+/**
+ * SavedFilterOut
+ */
+export type SavedFilterOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Name
+     */
+    name: string;
+    conditions: SavedFilterConditions;
+    sort: SavedFilterSort;
+    /**
+     * Count
+     */
+    count: number;
+};
+
+/**
+ * SavedFilterSort
+ */
+export type SavedFilterSort = {
+    /**
+     * Key
+     */
+    key: 'updated_at' | 'added_at' | 'title' | 'deadline' | 'reading_time' | 'comprehension' | 'priority';
+    /**
+     * Order
+     */
+    order: 'asc' | 'desc';
+};
+
+/**
+ * SavedFiltersListResponse
+ */
+export type SavedFiltersListResponse = {
+    /**
+     * Items
+     */
+    items: Array<SavedFilterOut>;
 };
 
 /**
@@ -5893,6 +6018,31 @@ export type LibraryItemsUpdateResponses = {
 
 export type LibraryItemsUpdateResponse = LibraryItemsUpdateResponses[keyof LibraryItemsUpdateResponses];
 
+export type LibraryItemsBulkData = {
+    body: BulkOperationBody;
+    path?: never;
+    query?: never;
+    url: '/api/library-items/bulk';
+};
+
+export type LibraryItemsBulkErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type LibraryItemsBulkError = LibraryItemsBulkErrors[keyof LibraryItemsBulkErrors];
+
+export type LibraryItemsBulkResponses = {
+    /**
+     * Successful Response
+     */
+    200: BulkOperationResponse;
+};
+
+export type LibraryItemsBulkResponse = LibraryItemsBulkResponses[keyof LibraryItemsBulkResponses];
+
 export type LibraryItemsRejectTagSuggestionData = {
     body?: never;
     path: {
@@ -6011,6 +6161,107 @@ export type LibraryItemsReadingSessionHeartbeatResponses = {
 };
 
 export type LibraryItemsReadingSessionHeartbeatResponse = LibraryItemsReadingSessionHeartbeatResponses[keyof LibraryItemsReadingSessionHeartbeatResponses];
+
+export type SavedFiltersListData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/saved-filters';
+};
+
+export type SavedFiltersListResponses = {
+    /**
+     * Successful Response
+     */
+    200: SavedFiltersListResponse;
+};
+
+export type SavedFiltersListResponse2 = SavedFiltersListResponses[keyof SavedFiltersListResponses];
+
+export type SavedFiltersCreateData = {
+    body: SavedFilterBody;
+    path?: never;
+    query?: never;
+    url: '/api/saved-filters';
+};
+
+export type SavedFiltersCreateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type SavedFiltersCreateError = SavedFiltersCreateErrors[keyof SavedFiltersCreateErrors];
+
+export type SavedFiltersCreateResponses = {
+    /**
+     * Successful Response
+     */
+    201: SavedFilterOut;
+};
+
+export type SavedFiltersCreateResponse = SavedFiltersCreateResponses[keyof SavedFiltersCreateResponses];
+
+export type SavedFiltersDeleteData = {
+    body?: never;
+    path: {
+        /**
+         * Filter Id
+         */
+        filter_id: string;
+    };
+    query?: never;
+    url: '/api/saved-filters/{filter_id}';
+};
+
+export type SavedFiltersDeleteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type SavedFiltersDeleteError = SavedFiltersDeleteErrors[keyof SavedFiltersDeleteErrors];
+
+export type SavedFiltersDeleteResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type SavedFiltersDeleteResponse = SavedFiltersDeleteResponses[keyof SavedFiltersDeleteResponses];
+
+export type SavedFiltersUpdateData = {
+    body: SavedFilterBody;
+    path: {
+        /**
+         * Filter Id
+         */
+        filter_id: string;
+    };
+    query?: never;
+    url: '/api/saved-filters/{filter_id}';
+};
+
+export type SavedFiltersUpdateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type SavedFiltersUpdateError = SavedFiltersUpdateErrors[keyof SavedFiltersUpdateErrors];
+
+export type SavedFiltersUpdateResponses = {
+    /**
+     * Successful Response
+     */
+    200: SavedFilterOut;
+};
+
+export type SavedFiltersUpdateResponse = SavedFiltersUpdateResponses[keyof SavedFiltersUpdateResponses];
 
 export type SettingsGetData = {
     body?: never;

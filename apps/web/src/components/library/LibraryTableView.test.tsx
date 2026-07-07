@@ -2,7 +2,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { libraryItemsUpdate, type LibraryItemSummary } from "@yakudoku/api-client";
+import {
+  libraryItemsBulk,
+  libraryItemsUpdate,
+  type LibraryItemSummary,
+} from "@yakudoku/api-client";
 import { LibraryTableView } from "@/components/library/LibraryTableView";
 import { useFinishReadingStore } from "@/components/library/finishReadingStore";
 
@@ -11,6 +15,9 @@ vi.mock("@yakudoku/api-client", async (importOriginal) => {
   return {
     ...actual,
     libraryItemsUpdate: vi.fn(),
+    libraryItemsBulk: vi.fn(),
+    collectionsList: vi.fn(),
+    tagsList: vi.fn(),
   };
 });
 
@@ -196,5 +203,84 @@ describe("LibraryTableView interactive StatusPill (1e §4.7 / M1 統合ポリッ
       }),
     );
     expect(useFinishReadingStore.getState().item).toBeNull();
+  });
+});
+
+// M2-14: 複数選択→BulkActionBar(1e §4.8・§5.5、plans/03 §5.6)
+describe("LibraryTableView bulk actions (M2-14)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  test("selecting rows shows the bulk action bar with the correct count", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    const user = userEvent.setup();
+    renderWithClient(
+      <LibraryTableView
+        items={[
+          makeItem({ id: "li_1" }),
+          makeItem({
+            id: "li_2",
+            paper: { ...makeItem().paper, title: "Consistency Models" },
+          }),
+        ]}
+        sort={{ key: "updated_at", dir: "desc" }}
+        onSortChange={() => {}}
+        onOpenRow={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("toolbar", { name: "一括操作" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: "Rectified Flow を選択" }));
+    expect(screen.getByText("1 件を選択中")).toBeInTheDocument();
+  });
+
+  test("bulk status change calls libraryItemsBulk with the selected ids and invalidates the list", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    const user = userEvent.setup();
+    vi.mocked(libraryItemsBulk).mockResolvedValue({ data: { updated: 1 } } as never);
+
+    renderWithClient(
+      <LibraryTableView
+        items={[makeItem({ id: "li_1" })]}
+        sort={{ key: "updated_at", dir: "desc" }}
+        onSortChange={() => {}}
+        onOpenRow={() => {}}
+      />,
+    );
+    await user.click(screen.getByRole("checkbox", { name: "Rectified Flow を選択" }));
+    await user.click(screen.getByRole("button", { name: /ステータス変更/ }));
+    await user.click(screen.getByRole("menuitem", { name: /読んだ/ }));
+
+    await waitFor(() =>
+      expect(libraryItemsBulk).toHaveBeenCalledWith({
+        body: { ids: ["li_1"], op: "set_status", status: "done" },
+      }),
+    );
+    // 成功後も選択は維持される(§5.5 の決定)。
+    expect(screen.getByText("1 件を選択中")).toBeInTheDocument();
+  });
+
+  test("a failed bulk operation keeps the selection", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    const user = userEvent.setup();
+    vi.mocked(libraryItemsBulk).mockResolvedValue({
+      error: { title: "見つかりません", code: "not_found" },
+    } as never);
+
+    renderWithClient(
+      <LibraryTableView
+        items={[makeItem({ id: "li_1" })]}
+        sort={{ key: "updated_at", dir: "desc" }}
+        onSortChange={() => {}}
+        onOpenRow={() => {}}
+      />,
+    );
+    await user.click(screen.getByRole("checkbox", { name: "Rectified Flow を選択" }));
+    await user.click(screen.getByRole("button", { name: /ステータス変更/ }));
+    await user.click(screen.getByRole("menuitem", { name: /読んだ/ }));
+
+    await waitFor(() => expect(libraryItemsBulk).toHaveBeenCalled());
+    expect(screen.getByText("1 件を選択中")).toBeInTheDocument();
   });
 });

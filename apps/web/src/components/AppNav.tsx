@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { vocabList } from "@yakudoku/api-client";
 import { SidebarNav, type SidebarNavItem } from "@/components/ui/SidebarNav";
 import { vocabCountsQueryKey } from "@/components/vocab/queryKeys";
+import { useSavedFilterSection } from "@/components/library/SavedFilterList";
 
 export interface AppNavProps {
   /**
@@ -30,6 +31,9 @@ export function AppNav({ onNavigate }: AppNavProps = {}) {
     staleTime: 60_000,
   });
 
+  // 保存フィルタ節(1e §4.4・plans/03 §5.14)。件数付き・0 件時は非表示(useSavedFilterSection)。
+  const savedFilterSection = useSavedFilterSection();
+
   const main: SidebarNavItem[] = [
     { id: "home", label: "ホーム", href: "/dashboard" },
     { id: "library", label: "ライブラリ", href: "/library" },
@@ -41,7 +45,11 @@ export function AppNav({ onNavigate }: AppNavProps = {}) {
 
   return (
     <div onClick={onNavigate}>
-      <SidebarNav main={main} sections={[]} footer={<span>設定 · エクスポート</span>} />
+      <SidebarNav
+        main={main}
+        sections={savedFilterSection ? [savedFilterSection] : []}
+        footer={<span>設定 · エクスポート</span>}
+      />
     </div>
   );
 }

@@ -10,12 +10,17 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from yakudoku_api.schemas.common import (
     LibraryItemSummary,
     PaperBib,
 )
+
+_STATUS_LITERAL = Literal["planned", "up_next", "reading", "done", "reread", "on_hold"]
+_SORT_KEY_LITERAL = Literal[
+    "updated_at", "added_at", "title", "deadline", "reading_time", "comprehension", "priority"
+]
 
 
 class TagCount(BaseModel):
@@ -92,6 +97,64 @@ class LibraryItemPatch(BaseModel):
         if v is not None and not (1 <= v <= 5):
             raise ValueError("理解度は 1-5")
         return v
+
+
+class BulkOperationBody(BaseModel):
+    """POST /api/library-items/bulk(一括操作バー。plans/03 §5.6)。"""
+
+    ids: list[str] = Field(min_length=1, max_length=100)
+    op: Literal["set_status", "add_tags", "add_to_collection"]
+    status: _STATUS_LITERAL | None = None  # op=set_status
+    tags: list[str] | None = None  # op=add_tags(既存タグに追加)
+    collection_id: str | None = None  # op=add_to_collection(末尾に追加)
+
+
+class BulkOperationResponse(BaseModel):
+    updated: int
+
+
+class SavedFilterConditions(BaseModel):
+    """§5.14・plans/11 §8.3 の ``SavedFilterConditions``(API クエリ語彙と 1:1)。"""
+
+    quick: Literal["all", "unread", "in_progress", "done", "recheck"] | None = None
+    status: list[_STATUS_LITERAL] | None = None
+    tags: list[str] | None = None
+    collection_id: str | None = None
+    quality: Literal["A", "B"] | None = None
+    years: list[int] | None = None
+
+
+class SavedFilterSort(BaseModel):
+    key: _SORT_KEY_LITERAL
+    order: Literal["asc", "desc"]
+
+
+class SavedFilterBody(BaseModel):
+    """POST/PATCH /api/saved-filters の共通リクエスト(§5.14。両者とも全項目送信)。"""
+
+    name: str
+    conditions: SavedFilterConditions
+    sort: SavedFilterSort
+
+    @field_validator("name")
+    @classmethod
+    def _v_name(cls, v: str) -> str:
+        trimmed = v.strip()
+        if not trimmed:
+            raise ValueError("フィルタ名を入力してください")
+        return trimmed
+
+
+class SavedFilterOut(BaseModel):
+    id: str
+    name: str
+    conditions: SavedFilterConditions
+    sort: SavedFilterSort
+    count: int  # クエリ実行時の導出値(保存しない。§5.14)
+
+
+class SavedFiltersListResponse(BaseModel):
+    items: list[SavedFilterOut]
 
 
 class DuplicateResolutionBody(BaseModel):
