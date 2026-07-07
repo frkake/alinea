@@ -1,6 +1,6 @@
 """perf.yml 用: メールリンク認証を実経路で通し、`yk_session=...` Cookie を stdout に出力する。
 
-依存は標準ライブラリのみ。dev シードユーザー(dev@yakudoku.test)でログインし、k6 に渡す Cookie を得る。
+依存は標準ライブラリのみ。dev シードユーザーでログインし、k6 に渡す Cookie を得る。
 使用: python tools/perf/get_cookie.py > cookie.txt
 環境: APP_BASE_URL(既定 http://localhost:3000)/ MAILPIT_URL(既定 http://localhost:8025)/
       SEED_EMAIL(既定 dev@yakudoku.test)。
@@ -22,24 +22,36 @@ EMAIL = os.environ.get("SEED_EMAIL", "dev@yakudoku.test")
 LINK_RE = re.compile(r"https?://\S+/api/auth/email/verify\?token=\S+")
 
 
+def _require_http(url: str) -> str:
+    """urlopen に渡す URL を http(s) に限定する(S310: file: 等のスキーム混入防止)。"""
+    if not url.startswith(("http://", "https://")):
+        raise ValueError(f"http(s) 以外の URL は開かない: {url}")
+    return url
+
+
 def _post_json(url: str, payload: dict[str, object]) -> None:
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json", "Origin": APP_BASE_URL}
+    req = urllib.request.Request(  # noqa: S310  (_require_http 済み)
+        _require_http(url),
+        data=data,
+        headers={"Content-Type": "application/json", "Origin": APP_BASE_URL},
     )
-    urllib.request.urlopen(req, timeout=10).read()
+    urllib.request.urlopen(req, timeout=10).read()  # noqa: S310  (_require_http 済み)
 
 
 def _get_json(url: str) -> object:
-    with urllib.request.urlopen(url, timeout=10) as resp:
+    with urllib.request.urlopen(_require_http(url), timeout=10) as resp:  # noqa: S310
         return json.loads(resp.read().decode("utf-8"))
 
 
 def main() -> int:
     # Mailpit をクリア。
     try:
-        urllib.request.urlopen(
-            urllib.request.Request(f"{MAILPIT_URL}/api/v1/messages", method="DELETE"), timeout=10
+        urllib.request.urlopen(  # noqa: S310  (_require_http 済み)
+            urllib.request.Request(  # noqa: S310
+                _require_http(f"{MAILPIT_URL}/api/v1/messages"), method="DELETE"
+            ),
+            timeout=10,
         ).read()
     except OSError:
         pass
@@ -72,7 +84,7 @@ def main() -> int:
 
     jar = http.cookiejar.CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-    opener.open(link, timeout=10).read()
+    opener.open(_require_http(link), timeout=10).read()
     for cookie in jar:
         if cookie.name == "yk_session":
             sys.stdout.write(f"yk_session={cookie.value}")

@@ -24,7 +24,7 @@ def _p95(summary: dict[str, object]) -> dict[str, float]:
         m = metrics.get(name)
         if isinstance(m, dict):
             for key in ("p(95)", "p95"):
-                if key in m and isinstance(m[key], (int, float)):
+                if key in m and isinstance(m[key], int | float):
                     out[name] = float(m[key])
                     break
     return out
