@@ -11,17 +11,24 @@ from __future__ import annotations
 
 import uuid
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from yakudoku_api.deps import get_settings_dep
+from yakudoku_api.services import session_service
+from yakudoku_api.services.oauth import OAuthProfile
 from yakudoku_api.services.session_service import create_session
 from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
+from yakudoku_api.settings import ApiSettings
 from yakudoku_core.db.models import (
     ByokApiKey,
     ChatMessage,
     ChatThread,
     Collection,
+    Job,
     LibraryItem,
     Notification,
     Paper,
@@ -253,3 +260,189 @@ async def test_user_deletion_cascades_personal_assets(db_session: AsyncSession) 
         select(func.count()).select_from(ChatThread).where(ChatThread.id == thread_id)
     )
     assert int(thread_count.scalar_one()) == 0
+
+
+# ---------------------------------------------------------------------------
+# OAuth: /api/auth/oauth/{provider}/start・/callback(plans/01 §6.1・plans/03 §2.1-2.2)
+# ---------------------------------------------------------------------------
+async def test_oauth_start_rejects_unsupported_provider(client: AsyncClient) -> None:
+    resp = await client.get("/api/auth/oauth/twitter/start", follow_redirects=False)
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "validation_error"
+
+
+async def test_oauth_start_redirects_to_login_when_provider_unconfigured(
+    client: AsyncClient,
+) -> None:
+    from yakudoku_api.main import app
+
+    unconfigured = ApiSettings(oauth_google_client_id="", oauth_google_client_secret="")
+    app.dependency_overrides[get_settings_dep] = lambda: unconfigured
+    try:
+        resp = await client.get("/api/auth/oauth/google/start", follow_redirects=False)
+    finally:
+        app.dependency_overrides.pop(get_settings_dep, None)
+    assert resp.status_code == 302
+    assert "error=oauth_unavailable" in resp.headers["location"]
+
+
+async def test_oauth_start_stores_state_and_redirects_to_provider(
+    client: AsyncClient, redis_client: Any
+) -> None:
+    from yakudoku_api.main import app
+
+    configured = ApiSettings(oauth_google_client_id="gid", oauth_google_client_secret="gsecret")
+    app.dependency_overrides[get_settings_dep] = lambda: configured
+    try:
+        resp = await client.get(
+            "/api/auth/oauth/google/start?next=/library", follow_redirects=False
+        )
+    finally:
+        app.dependency_overrides.pop(get_settings_dep, None)
+    assert resp.status_code == 302
+    location = resp.headers["location"]
+    assert location.startswith("https://accounts.google.com/o/oauth2/v2/auth?")
+    assert "client_id=gid" in location
+
+    state = parse_qs(urlparse(location).query)["state"][0]
+    stored = await session_service.consume_oauth_state(redis_client, state)
+    assert stored == {"next": "/library", "provider": "google"}
+
+
+async def test_oauth_callback_fails_when_code_or_state_missing(client: AsyncClient) -> None:
+    no_params = await client.get("/api/auth/oauth/google/callback", follow_redirects=False)
+    assert no_params.status_code == 302
+    assert "error=oauth_failed" in no_params.headers["location"]
+
+    unsupported = await client.get(
+        "/api/auth/oauth/twitter/callback?code=x&state=y", follow_redirects=False
+    )
+    assert unsupported.status_code == 302
+    assert "error=oauth_failed" in unsupported.headers["location"]
+
+
+async def test_oauth_callback_fails_when_state_unknown(client: AsyncClient) -> None:
+    resp = await client.get(
+        "/api/auth/oauth/google/callback?code=abc&state=does-not-exist",
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert "error=oauth_failed" in resp.headers["location"]
+
+
+async def test_oauth_callback_success_creates_user_and_sets_session(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yakudoku_api.main import app
+    from yakudoku_api.routers import auth as auth_router
+
+    email = f"oauth-{uuid.uuid4().hex}@example.com"
+
+    async def _fake_exchange(provider: Any, code: str, redirect: str) -> OAuthProfile:
+        assert code == "auth-code-1"
+        return OAuthProfile(
+            subject="g-123", email=email, display_name="Google User", avatar_url=None
+        )
+
+    monkeypatch.setattr(auth_router, "exchange_and_fetch_profile", _fake_exchange)
+
+    state = "state-" + uuid.uuid4().hex
+    await session_service.store_oauth_state(
+        redis_client, state, {"next": "/library", "provider": "google"}
+    )
+    configured = ApiSettings(oauth_google_client_id="gid", oauth_google_client_secret="gsecret")
+    app.dependency_overrides[get_settings_dep] = lambda: configured
+    try:
+        resp = await client.get(
+            f"/api/auth/oauth/google/callback?code=auth-code-1&state={state}",
+            follow_redirects=False,
+        )
+    finally:
+        app.dependency_overrides.pop(get_settings_dep, None)
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "http://localhost:3000/library"
+    assert "yk_session" in resp.headers.get("set-cookie", "")
+
+    result = await db_session.execute(select(User).where(User.email == email))
+    user = result.scalar_one()
+    try:
+        assert user.display_name == "Google User"
+    finally:
+        await purge_user(db_session, str(user.id))
+        await db_session.commit()
+
+
+async def test_oauth_callback_exchange_failure_redirects_to_login_error(
+    client: AsyncClient, redis_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from yakudoku_api.main import app
+    from yakudoku_api.routers import auth as auth_router
+
+    async def _boom(provider: Any, code: str, redirect: str) -> OAuthProfile:
+        raise ValueError("token exchange failed")
+
+    monkeypatch.setattr(auth_router, "exchange_and_fetch_profile", _boom)
+
+    state = "state-" + uuid.uuid4().hex
+    await session_service.store_oauth_state(
+        redis_client, state, {"next": "/dashboard", "provider": "google"}
+    )
+    configured = ApiSettings(oauth_google_client_id="gid", oauth_google_client_secret="gsecret")
+    app.dependency_overrides[get_settings_dep] = lambda: configured
+    try:
+        resp = await client.get(
+            f"/api/auth/oauth/google/callback?code=bad&state={state}", follow_redirects=False
+        )
+    finally:
+        app.dependency_overrides.pop(get_settings_dep, None)
+
+    assert resp.status_code == 302
+    assert "error=oauth_failed" in resp.headers["location"]
+
+
+# ---------------------------------------------------------------------------
+# アカウント削除: DELETE /api/auth/account
+# ---------------------------------------------------------------------------
+async def test_delete_account_requires_confirm_phrase(
+    client: AsyncClient, db_session: AsyncSession, redis_client: Any, unique_email: str
+) -> None:
+    user = await upsert_user_by_email(db_session, unique_email, provider="email")
+    session_token = await create_session(redis_client, user.id)
+    client.cookies.set("yk_session", session_token)
+    try:
+        resp = await client.request("DELETE", "/api/auth/account", json={"confirm": "yes please"})
+        assert resp.status_code == 422
+        assert resp.json()["code"] == "validation_error"
+    finally:
+        await purge_user(db_session, str(user.id))
+        await db_session.commit()
+
+
+async def test_delete_account_enqueues_job_and_destroys_all_sessions(
+    client: AsyncClient, db_session: AsyncSession, redis_client: Any, unique_email: str
+) -> None:
+    user = await upsert_user_by_email(db_session, unique_email, provider="email")
+    session_token = await create_session(redis_client, user.id)
+    client.cookies.set("yk_session", session_token)
+
+    resp = await client.request("DELETE", "/api/auth/account", json={"confirm": "delete"})
+    assert resp.status_code == 202
+    job_id = resp.json()["job_id"]
+    assert job_id
+
+    job = await db_session.get(Job, job_id)
+    assert job is not None
+    assert job.kind == "account_delete"
+    assert str(job.user_id) == str(user.id)
+
+    # 全セッション即時失効 + クッキー削除(データ本体の削除はジョブが行う。ここでは未実行)。
+    client.cookies.set("yk_session", session_token)
+    after = await client.get("/api/auth/me")
+    assert after.status_code == 401
+
+    await purge_user(db_session, str(user.id))
+    await db_session.commit()
