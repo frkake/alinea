@@ -5,11 +5,12 @@ requires-python = "==3.12.*"
 description = "訳読 / YAKUDOKU — 論文読解ワークベンチ (uv workspace root)"
 
 [tool.uv.workspace]
-members = ["apps/api", "apps/worker", "packages/py-core", "packages/llm"]
+members = ["apps/api", "apps/worker", "packages/py-core", "packages/llm", "packages/figures"]
 
 [tool.uv.sources]
 yakudoku-core = { workspace = true }
 yakudoku-llm = { workspace = true }
+yakudoku-figures = { workspace = true }
 
 [dependency-groups]
 dev = [

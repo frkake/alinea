@@ -6,6 +6,7 @@ requires-python = "==3.12.*"
 members = [
     "yakudoku-api",
     "yakudoku-core",
+    "yakudoku-figures",
     "yakudoku-llm",
     "yakudoku-worker",
     "yakudoku-workspace",
@@ -1557,6 +1558,7 @@ dependencies = [
     { name = "structlog" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "yakudoku-core" },
+    { name = "yakudoku-figures" },
     { name = "yakudoku-llm" },
 ]
 
@@ -1578,6 +1580,7 @@ requires-dist = [
     { name = "structlog", specifier = ">=24.0.0" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.35.0" },
     { name = "yakudoku-core", editable = "packages/py-core" },
+    { name = "yakudoku-figures", editable = "packages/figures" },
     { name = "yakudoku-llm", editable = "packages/llm" },
 ]
 
@@ -1619,6 +1622,17 @@ requires-dist = [
     { name = "xxhash", specifier = ">=3.4.0" },
     { name = "yakudoku-llm", editable = "packages/llm" },
 ]
+
+[[package]]
+name = "yakudoku-figures"
+version = "0.1.0"
+source = { editable = "packages/figures" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = "==2.11.7" }]
 
 [[package]]
 name = "yakudoku-llm"
@@ -1669,6 +1683,7 @@ dependencies = [
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "structlog" },
     { name = "yakudoku-core" },
+    { name = "yakudoku-figures" },
     { name = "yakudoku-llm" },
 ]
 
@@ -1683,6 +1698,7 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.41" },
     { name = "structlog", specifier = ">=24.0.0" },
     { name = "yakudoku-core", editable = "packages/py-core" },
+    { name = "yakudoku-figures", editable = "packages/figures" },
     { name = "yakudoku-llm", editable = "packages/llm" },
 ]
 
