@@ -513,6 +513,40 @@ async def test_translate_section_status_transitions(db_session: AsyncSession) ->
     assert all(r.text_ja and r.state == "machine" for r in rows)
 
 
+async def test_translate_section_with_job_store_progress(db_session: AsyncSession) -> None:
+    """回帰: job_store を渡しても MissingGreenlet にならない(JobStore の expire_all 起因)。
+
+    set_progress がセッション内の他 ORM(保持中の tset)を失効させると、次の属性
+    アクセスが同期 lazy load になり MissingGreenlet で全翻訳ジョブが落ちていた。
+    """
+    from yakudoku_core.jobs.store import JobStore
+
+    content = _content(
+        [
+            _section(
+                "sec-1", "1", "Introduction", [_para("blk-a", "First."), _para("blk-b", "Second.")]
+            ),
+            _section("sec-2", "2", "Method", [_para("blk-c", "Third.")]),
+        ]
+    )
+    _paper, _rev, tset = await _make_set(db_session, content=content)
+    store = JobStore(db_session)
+    jid = await store.enqueue(
+        kind="translation",
+        payload={"set_id": tset.id, "section_id": "sec-1", "reason": "initial"},
+        idempotency_key=f"tr:{tset.id}:sec-1:regression",
+    )
+    assert await store.claim(jid) is not None
+
+    result = await translate_section(
+        db_session, tset.id, "sec-1", _router(), job_id=jid, job_store=store
+    )
+    assert result.translated == 2
+
+    job = await store.get(jid)
+    assert job is not None and job.progress > 0
+
+
 async def test_translate_section_idempotent_skip(db_session: AsyncSession) -> None:
     content = _content([_section("sec-1", "1", "Introduction", [_para("blk-a", "Body text.")])])
     _paper, rev, tset = await _make_set(db_session, content=content)

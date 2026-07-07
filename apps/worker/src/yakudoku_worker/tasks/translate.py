@@ -13,7 +13,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from yakudoku_core.db.models import Job
+from yakudoku_core.db.models import DocumentRevision, Job, TranslationSet
+from yakudoku_core.document.blocks import DocumentContent
+from yakudoku_core.ingest.progress import finalize_ingest_if_body_complete
 from yakudoku_core.jobs.store import JobStore
 from yakudoku_core.translation.pipeline import translate_section
 
@@ -56,3 +58,22 @@ async def run_translation_job(ctx: dict[str, Any], store: JobStore, job: Job) ->
             "progress_pct": result.progress_pct,
         },
     )
+
+    # arq 経路の完了確定(plans/05 §11.3): 初回全文翻訳の最後のジョブが親 ingest
+    # ジョブと翻訳セットを complete にする(advisory lock で競合安全)。
+    ingest_job_id = payload.get("ingest_job_id")
+    if reason == "initial" and ingest_job_id:
+        set_id = str(payload["set_id"])
+        tset = await store.session.get(TranslationSet, set_id)
+        if tset is not None:
+            revision = await store.session.get(DocumentRevision, tset.revision_id)
+            if revision is not None:
+                await finalize_ingest_if_body_complete(
+                    store.session,
+                    set_id=set_id,
+                    ingest_job_id=str(ingest_job_id),
+                    content=DocumentContent.model_validate(revision.content),
+                    style=tset.style,
+                    source_version=str(payload.get("source_version") or revision.source_version),
+                    appendix_untranslated=bool(payload.get("appendix_untranslated", False)),
+                )

@@ -96,8 +96,10 @@ class JobStore:
         return str(row) if row is not None else None
 
     async def get(self, job_id: str) -> Job | None:
-        self.session.expire_all()
-        return await self.session.get(Job, job_id)
+        # populate_existing で当該 Job 行のみ最新化する。expire_all はセッション内の
+        # 他 ORM(呼び出し元が保持する translation_sets 等)まで失効させ、次の属性
+        # アクセスが同期 lazy load → MissingGreenlet になるため使わない。
+        return await self.session.get(Job, job_id, populate_existing=True)
 
     async def claim(self, job_id: str) -> Job | None:
         """`status='queued'` のときのみ `running` へ遷移し attempt を +1。0 行なら None。"""
@@ -112,8 +114,7 @@ class JobStore:
         await self.session.commit()
         if claimed is None:
             return None
-        self.session.expire_all()
-        return await self.session.get(Job, job_id)
+        return await self.session.get(Job, job_id, populate_existing=True)
 
     async def checkpoint(
         self,
@@ -189,8 +190,7 @@ class JobStore:
         return True
 
     async def _require(self, job_id: str) -> Job:
-        self.session.expire_all()
-        job = await self.session.get(Job, job_id)
+        job = await self.session.get(Job, job_id, populate_existing=True)
         if job is None:
             raise LookupError(f"job not found: {job_id}")
         return job

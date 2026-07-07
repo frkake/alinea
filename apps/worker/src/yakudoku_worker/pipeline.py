@@ -759,7 +759,12 @@ class IngestRun:
             )
             return
 
-        enqueued = await self._enqueue_body_jobs(body_section_ids, section_block_map)
+        appendix_untranslated = bool(scope.appendix_section_ids) and not (
+            settings.auto_translate_appendix
+        )
+        enqueued = await self._enqueue_body_jobs(
+            body_section_ids, section_block_map, appendix_untranslated=appendix_untranslated
+        )
 
         if self.deps.arq_pool is not None:
             for jid in enqueued:
@@ -773,7 +778,11 @@ class IngestRun:
         await self._finalize(settings, scope.appendix_section_ids)
 
     async def _enqueue_body_jobs(
-        self, body_section_ids: list[str], section_block_map: dict[str, list[str]]
+        self,
+        body_section_ids: list[str],
+        section_block_map: dict[str, list[str]],
+        *,
+        appendix_untranslated: bool,
     ) -> list[str]:
         assert self.set_id is not None
         enqueued: list[str] = []
@@ -785,6 +794,11 @@ class IngestRun:
                     "section_id": sid,
                     "block_ids": section_block_map.get(sid),
                     "reason": "initial",
+                    # arq 経路の完了確定(§11.3)用文脈。最後の翻訳ジョブが
+                    # finalize_ingest_if_body_complete を呼んで親を complete にする。
+                    "ingest_job_id": self.job_id,
+                    "source_version": self.source_version,
+                    "appendix_untranslated": appendix_untranslated,
                 },
                 idempotency_key=f"tr:{self.set_id}:{sid}:initial",
                 priority="bulk",
@@ -804,9 +818,6 @@ class IngestRun:
             payload = dict(claimed.payload or {})
             section_id = str(payload["section_id"])
             block_ids = payload.get("block_ids")
-            # job_store は渡さない: translate_section が set_progress(expire_all)後に保持中の
-            # ORM(tset)へアクセスし MissingGreenlet になる既知の不具合を避ける(deviations 参照)。
-            # ingest 進捗は段階境界で設定し、完了時に finalize が 100 にする。
             result = await translate_section(
                 self.session,
                 self.set_id,
@@ -817,7 +828,7 @@ class IngestRun:
                 user_id=self.user_id,
                 library_item_id=self.library_item_id,
                 job_id=jid,
-                job_store=None,
+                job_store=self.store,
                 publish=self.deps.publish,
             )
             await self.store.succeed(jid, {"section_id": result.section_id})
