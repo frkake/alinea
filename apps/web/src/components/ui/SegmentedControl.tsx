@@ -5,7 +5,11 @@ import { cn } from "@/lib/cn";
 
 /** セグメンテッドコントロール(plans/08 §5.1)。 */
 export interface SegmentedControlProps<T extends string> {
-  options: ReadonlyArray<{ value: T; label: string }>;
+  /**
+   * `disabled`/`title` は plans/08 §5.1 の基本形には無い追加(2a §5.3: PDF アセット無し論文で
+   * 「PDF」セグメントを disabled にする用途)。省略時は既存呼び出しと完全互換。
+   */
+  options: ReadonlyArray<{ value: T; label: string; disabled?: boolean; title?: string }>;
   value: T;
   onChange: (value: T) => void;
   size?: "sm" | "md" | "lg";
@@ -65,6 +69,7 @@ export function SegmentedControl<T extends string>({
     >
       {options.map((opt, index) => {
         const selected = opt.value === value;
+        const disabled = opt.disabled ?? false;
         const style: CSSProperties = {
           display: "inline-flex",
           alignItems: "center",
@@ -74,7 +79,8 @@ export function SegmentedControl<T extends string>({
           fontSize: dims.fontSize,
           borderRadius: 5,
           border: "none",
-          cursor: "pointer",
+          cursor: disabled ? "not-allowed" : "pointer",
+          opacity: disabled ? 0.5 : 1,
           background: selected ? "var(--pr-bg-seg-selected)" : "transparent",
           color: selected ? "var(--pr-text)" : "var(--pr-text-sub)",
           fontWeight: selected ? 600 : 400,
@@ -90,11 +96,13 @@ export function SegmentedControl<T extends string>({
             type="button"
             role="radio"
             aria-checked={selected}
+            aria-disabled={disabled}
+            title={opt.title}
             tabIndex={selected ? 0 : -1}
             className={selected ? "yk-seg-selected" : undefined}
             style={style}
             onClick={() => {
-              onChange(opt.value);
+              if (!disabled) onChange(opt.value);
             }}
             onKeyDown={(e) => {
               onKeyDown(e, index);

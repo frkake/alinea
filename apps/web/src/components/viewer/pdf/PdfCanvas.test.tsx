@@ -1,0 +1,166 @@
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { beforeAll, describe, expect, test, vi } from "vitest";
+import { PdfCanvas, spreadPages, type PdfCanvasProps } from "./PdfCanvas";
+import { buildPdfSyncMap } from "./sync-map";
+import type { PdfPageLike, PdfRenderTask } from "./use-pdf-document";
+import type { DocumentResponse } from "@/components/viewer/document-types";
+import type { PdfViewportLike } from "./geometry";
+
+// jsdom は 2D context を実装しない。本テストでは render() 自体をモックするため
+// getContext の戻り値は使わない(null チェックを通過させるためのダミー)。
+beforeAll(() => {
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+    {} as unknown as CanvasRenderingContext2D,
+  );
+});
+
+/** pdf.js PageViewport(rotation=0)を模したフェイク(scale=1, viewBox=[0,0,W,H])。 */
+function fakeViewport(width: number, height: number, scale: number): PdfViewportLike {
+  return {
+    viewBox: [0, 0, width, height],
+    width: width * scale,
+    height: height * scale,
+    convertToViewportPoint(x, y) {
+      return [scale * x, scale * (height - y)];
+    },
+    convertToPdfPoint(cx, cy) {
+      return [cx / scale, height - cy / scale];
+    },
+  };
+}
+
+function fakePage(width: number, height: number): PdfPageLike {
+  return {
+    getViewport({ scale }: { scale: number }) {
+      return fakeViewport(width, height, scale);
+    },
+    render(): PdfRenderTask {
+      return { promise: Promise.resolve(), cancel: vi.fn() };
+    },
+  };
+}
+
+const doc: DocumentResponse = {
+  revision_id: "rev-1",
+  quality_level: "B",
+  sections: [
+    {
+      id: "sec-2-2",
+      heading: { number: "2.2", title: "Reflow: Straightening the Flow" },
+      blocks: [{ id: "blk-2-2-p1", type: "paragraph", page: 5, bbox: [50, 100, 550, 300] }],
+    },
+  ],
+};
+
+function baseProps(overrides: Partial<PdfCanvasProps> = {}): PdfCanvasProps {
+  return {
+    displayPages: [5],
+    scale: 1,
+    getPage: () => Promise.resolve(fakePage(612, 792)),
+    syncMap: buildPdfSyncMap(doc),
+    selectedBlockId: null,
+    onSelectBlock: vi.fn(),
+    onOpenInTranslation: vi.fn(),
+    loading: false,
+    error: false,
+    onRetry: vi.fn(),
+    ...overrides,
+  };
+}
+
+// VT-VIEW-2a: PDF キャンバス — bbox 選択→チップ、ローディング/エラー面。
+describe("PdfCanvas (2a §4.2.4)", () => {
+  test("shows the loading placeholder text while loading", () => {
+    render(<PdfCanvas {...baseProps({ loading: true })} />);
+    expect(screen.getByText("PDF を読み込んでいます…")).toBeInTheDocument();
+  });
+
+  test("shows an error EmptyState with a retry action", () => {
+    const onRetry = vi.fn();
+    render(<PdfCanvas {...baseProps({ error: true, onRetry })} />);
+    expect(screen.getByText("PDF を読み込めませんでした")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("再試行"));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  test("clicking inside a synced bbox reports the hit via onSelectBlock", async () => {
+    const onSelectBlock = vi.fn();
+    const { container } = render(<PdfCanvas {...baseProps({ onSelectBlock })} />);
+    const pageEl = await waitFor(() => {
+      const el = container.querySelector('[data-pdf-page="5"]');
+      if (!el) throw new Error("page layer not rendered yet");
+      return el;
+    });
+    vi.spyOn(pageEl, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 612,
+      bottom: 792,
+      width: 612,
+      height: 792,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    // scale=1 では css px と上原点 pt が一致する(下原点↔上原点の 2 回反転が相殺する。
+    // geometry.test.ts で検証済み)。ブロック bbox [50,100,550,300] の内側の css 座標。
+    fireEvent.click(pageEl, { clientX: 100, clientY: 150 });
+    await waitFor(() => expect(onSelectBlock).toHaveBeenCalled());
+    expect(onSelectBlock).toHaveBeenCalledWith(
+      expect.objectContaining({ blockId: "blk-2-2-p1", display: "§2.2 Reflow ¶1" }),
+    );
+  });
+
+  test("clicking outside any bbox reports null (deselect)", async () => {
+    const onSelectBlock = vi.fn();
+    const { container } = render(<PdfCanvas {...baseProps({ onSelectBlock })} />);
+    const pageEl = await waitFor(() => {
+      const el = container.querySelector('[data-pdf-page="5"]');
+      if (!el) throw new Error("page layer not rendered yet");
+      return el;
+    });
+    vi.spyOn(pageEl, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 612,
+      bottom: 792,
+      width: 612,
+      height: 792,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    fireEvent.click(pageEl, { clientX: 5, clientY: 5 });
+    await waitFor(() => expect(onSelectBlock).toHaveBeenCalledWith(null));
+  });
+
+  test("selecting a block shows the highlight + sync chip, and clicking the chip opens translation", async () => {
+    const onOpenInTranslation = vi.fn();
+    render(
+      <PdfCanvas {...baseProps({ selectedBlockId: "blk-2-2-p1", onOpenInTranslation })} />,
+    );
+    const chip = await screen.findByText("≒ §2.2 Reflow ¶1 — 訳文で見る →");
+    expect(screen.getByTestId("pdf-bbox-highlight")).toBeInTheDocument();
+    fireEvent.click(chip);
+    expect(onOpenInTranslation).toHaveBeenCalledWith("blk-2-2-p1");
+  });
+});
+
+describe("spreadPages (2a §4.2.4 見開き決定)", () => {
+  test("non-spread mode always shows a single page", () => {
+    expect(spreadPages(5, 24, false)).toEqual([5]);
+  });
+
+  test("page 1 is single, positioned right (empty left slot)", () => {
+    expect(spreadPages(1, 24, true)).toEqual([null, 1]);
+  });
+
+  test("even/odd pairing normalizes to the left (even) page", () => {
+    expect(spreadPages(5, 24, true)).toEqual([4, 5]);
+    expect(spreadPages(4, 24, true)).toEqual([4, 5]);
+  });
+
+  test("a trailing single page (even total) sits alone on the left", () => {
+    expect(spreadPages(24, 24, true)).toEqual([24, null]);
+  });
+});

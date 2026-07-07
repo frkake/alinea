@@ -1,18 +1,22 @@
 "use client";
 
 import { useEffect, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { libraryItemsUpdate, translationsSectionTranslate, type ViewerInit } from "@yakudoku/api-client";
 import type { ReadingStatus } from "@yakudoku/tokens";
 import { useToast } from "@/components/ui/Toast";
 import { useViewerStore } from "@/stores/viewer-store";
+import { usePdfAvailability } from "@/hooks/use-pdf-availability";
 import { ViewerHeader } from "@/components/viewer/ViewerHeader";
 import { TocTree } from "@/components/viewer/TocTree";
 import { SidePanel } from "@/components/viewer/SidePanel";
 import { InfoPanel } from "@/components/viewer/InfoPanel";
 import { FiguresPanel } from "@/components/viewer/FiguresPanel";
 import { ChatPanel } from "@/components/chat/ChatPanel";
+import { PdfSidebar } from "@/components/viewer/pdf/PdfSidebar";
+import { PdfPane } from "@/components/viewer/pdf/PdfPane";
+import { PdfDocumentProvider } from "@/components/viewer/pdf/use-pdf-document";
 import { useReadingPosition } from "@/hooks/use-reading-position";
 import { useViewerKeymap } from "@/hooks/use-viewer-keymap";
 import { useSSE } from "@/lib/sse";
@@ -47,6 +51,7 @@ export function ViewerShell({
   trackReadingTime = true,
 }: ViewerShellProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const qc = useQueryClient();
   const toast = useToast();
 
@@ -58,6 +63,7 @@ export function ViewerShell({
   const activeSectionId = useViewerStore((s) => s.activeSectionId);
 
   const revisionId = viewer.revision.id;
+  const paperId = viewer.library_item.paper.id;
 
   useEffect(() => {
     initViewer(itemId, revisionId);
@@ -65,6 +71,19 @@ export function ViewerShell({
 
   useReadingPosition({ itemId, revisionId, mode });
   useViewerKeymap({ mode, onModeChange, onFocusSearch: () => openSearch() });
+
+  // PDF アセット無し論文(2a §5.3): ヘッダの「PDF」セグメントを disabled にし、
+  // URL 直打ちで mode=pdf に来た場合は訳文へフォールバックする(黙って壊さない。P3)。
+  const pdfAvailable = usePdfAvailability(paperId);
+  useEffect(() => {
+    if (mode === "pdf" && pdfAvailable === false) {
+      onModeChange("translation");
+    }
+  }, [mode, pdfAvailable, onModeChange]);
+
+  const onOpenInTranslation = (blockId: string) => {
+    router.replace(`/papers/${itemId}?mode=translation&block=${blockId}`, { scroll: false });
+  };
 
   // 部分読書: SSE で翻訳完了/失敗を受けたら該当クエリを invalidate し本文を差し替える
   // (viewer-shell §2.3。translation.unit_completed → units + viewer 進捗)。
@@ -140,23 +159,48 @@ export function ViewerShell({
         onModeChange={onModeChange}
         onStatusChange={onStatusChange}
         onBack={onBack}
+        pdfDisabled={pdfAvailable === false}
       />
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-        {leftPane ?? (
-          <TocTree
-            toc={viewer.toc}
-            progressPct={progressPct}
-            todayReadingMinutes={viewer.today_reading_minutes}
-            trackReadingTime={trackReadingTime}
-            open={tocOpen}
-            onToggle={setTocOpen}
-            activeSectionId={activeSectionId}
-            onSectionClick={(sectionId) => requestScroll({ kind: "section", sectionId })}
-            onTranslateAppendix={onTranslateAppendix}
-            onFocusSearch={() => openSearch()}
-          />
+        {mode === "pdf" ? (
+          <PdfDocumentProvider paperId={paperId}>
+            <PdfSidebar
+              toc={viewer.toc}
+              activeSectionId={activeSectionId}
+              onSectionClick={(sectionId) => requestScroll({ kind: "section", sectionId })}
+              onTranslateAppendix={onTranslateAppendix}
+              pageCountFallback={viewer.revision.page_count}
+              pdfDownloadHref={`/api/papers/${paperId}/pdf`}
+            />
+            <PdfPane
+              itemId={itemId}
+              revisionId={revisionId}
+              initialPage={initialPdfPage(searchParams)}
+              lastPositionBlockId={
+                viewer.last_position?.mode === "pdf" ? viewer.last_position.block_id : null
+              }
+              onOpenInTranslation={onOpenInTranslation}
+            />
+          </PdfDocumentProvider>
+        ) : (
+          <>
+            {leftPane ?? (
+              <TocTree
+                toc={viewer.toc}
+                progressPct={progressPct}
+                todayReadingMinutes={viewer.today_reading_minutes}
+                trackReadingTime={trackReadingTime}
+                open={tocOpen}
+                onToggle={setTocOpen}
+                activeSectionId={activeSectionId}
+                onSectionClick={(sectionId) => requestScroll({ kind: "section", sectionId })}
+                onTranslateAppendix={onTranslateAppendix}
+                onFocusSearch={() => openSearch()}
+              />
+            )}
+            {children}
+          </>
         )}
-        {children}
         <SidePanel
           milestone="M0"
           counts={{}}
@@ -179,4 +223,11 @@ export function ViewerShell({
       </div>
     </div>
   );
+}
+
+/** `?page=` の初期値解決(2a §5.10 優先順②④。①③は PdfPane 側で document 到着後に解決)。 */
+function initialPdfPage(searchParams: ReturnType<typeof useSearchParams>): number {
+  const raw = searchParams.get("page");
+  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n >= 1 ? n : 1;
 }

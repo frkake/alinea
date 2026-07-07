@@ -94,3 +94,12 @@ html[data-theme="dark"] .yk-seg-selected {
 .yk-equation:focus-within .yk-equation-actions {
   opacity: 1;
 }
+
+/* PDF モードのキャンバス背景(2a §4 決定: plans/08 --pr-bg-canvas とは実測が異なる
+   ため component 側の例外色。ダークは --pr-bg-canvas に切替)。 */
+.yk-pdf-canvas-bg {
+  background: #dddad1;
+}
+html[data-theme="dark"] .yk-pdf-canvas-bg {
+  background: var(--pr-bg-canvas);
+}

@@ -16,7 +16,7 @@ function resetStore() {
   });
 }
 
-// VT-VIEW-01: シェル — 表示モード切替(3 モードのみ)・サイドパネル 3 タブ
+// VT-VIEW-01: シェル — 表示モード切替(M1 は 4 モード: 訳文/対訳/原文/PDF)・サイドパネル 3 タブ
 describe("ViewerHeader modes (VT-VIEW-01)", () => {
   beforeEach(resetStore);
 
@@ -30,12 +30,12 @@ describe("ViewerHeader modes (VT-VIEW-01)", () => {
     onBack: vi.fn(),
   };
 
-  test("M0 shows only 訳文/対訳/原文, hides PDF/記事", () => {
+  test("M1 shows 訳文/対訳/原文/PDF, hides 記事(M2-07 まで未実装)", () => {
     render(<ViewerHeader {...baseProps} />);
     expect(screen.getByText("訳文")).toBeInTheDocument();
     expect(screen.getByText("対訳")).toBeInTheDocument();
     expect(screen.getByText("原文")).toBeInTheDocument();
-    expect(screen.queryByText("PDF")).toBeNull();
+    expect(screen.getByText("PDF")).toBeInTheDocument();
     expect(screen.queryByText("記事")).toBeNull();
   });
 
@@ -44,6 +44,22 @@ describe("ViewerHeader modes (VT-VIEW-01)", () => {
     render(<ViewerHeader {...baseProps} onModeChange={onModeChange} />);
     fireEvent.click(screen.getByText("対訳"));
     expect(onModeChange).toHaveBeenCalledWith("parallel");
+  });
+
+  test("clicking PDF calls onModeChange('pdf')", () => {
+    const onModeChange = vi.fn();
+    render(<ViewerHeader {...baseProps} onModeChange={onModeChange} />);
+    fireEvent.click(screen.getByText("PDF"));
+    expect(onModeChange).toHaveBeenCalledWith("pdf");
+  });
+
+  test("pdfDisabled=true disables the PDF segment with a tooltip and ignores clicks", () => {
+    const onModeChange = vi.fn();
+    render(<ViewerHeader {...baseProps} onModeChange={onModeChange} pdfDisabled />);
+    const pdfSegment = screen.getByText("PDF");
+    expect(pdfSegment).toHaveAttribute("title", "この論文には PDF がありません");
+    fireEvent.click(pdfSegment);
+    expect(onModeChange).not.toHaveBeenCalled();
   });
 });
 

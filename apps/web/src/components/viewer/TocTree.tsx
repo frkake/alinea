@@ -206,7 +206,11 @@ function TocPane({
   );
 }
 
-function TocRowGroup({
+/**
+ * 目次 1 節+子節分の行グループ。PDF モード左サイドバー(2a §4.2.2・viewer-shell §5.5)が
+ * 「目次」タブの内部リストとして再利用する(export)。
+ */
+export function TocRowGroup({
   node,
   activeSectionId,
   onSectionClick,

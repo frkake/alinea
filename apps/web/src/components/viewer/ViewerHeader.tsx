@@ -10,11 +10,15 @@ import { Popover } from "@/components/ui/Popover";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import type { ViewerMode } from "@/components/viewer/ViewerShell";
 
-/** M0 の表示モードは 訳文 / 対訳 / 原文 の 3 つのみ(plans/13 §1.5・未実装 UI は非表示)。 */
-export const M0_MODE_OPTIONS = [
+/**
+ * M1 の表示モードは 訳文 / 対訳 / 原文 / PDF の 4 つ(plans/13 §1.5・M1-20)。
+ * 「記事」は M2-07 まで未実装のため非表示(グレーアウトしない。plans/13 の決定)。
+ */
+export const M1_MODE_OPTIONS = [
   { value: "translation", label: "訳文" },
   { value: "parallel", label: "対訳" },
   { value: "source", label: "原文" },
+  { value: "pdf", label: "PDF" },
 ] as const satisfies ReadonlyArray<{ value: ViewerMode; label: string }>;
 
 const STYLE_LABELS: Record<TranslationStyle, string> = {
@@ -30,15 +34,21 @@ export interface ViewerHeaderProps {
   onModeChange: (mode: ViewerMode) => void;
   onStatusChange: (status: ReadingStatus) => void;
   onBack: () => void;
+  /**
+   * PDF アセット無し論文(2a §5.3)。true の間「PDF」セグメントを disabled にし、
+   * tooltip「この論文には PDF がありません」を出す(非表示にはしない)。
+   */
+  pdfDisabled?: boolean;
 }
 
-/** ビューアヘッダ(viewer-shell §4)。M0 は 3 モード表示。 */
+/** ビューアヘッダ(viewer-shell §4)。M1 は 訳文/対訳/原文/PDF の 4 モード表示。 */
 export function ViewerHeader({
   title,
   qualityLevel,
   status,
   mode,
   onModeChange,
+  pdfDisabled = false,
   onStatusChange,
   onBack,
 }: ViewerHeaderProps) {
@@ -124,7 +134,11 @@ export function ViewerHeader({
       <div style={{ flex: 1 }} />
 
       <SegmentedControl
-        options={M0_MODE_OPTIONS}
+        options={M1_MODE_OPTIONS.map((opt) =>
+          opt.value === "pdf" && pdfDisabled
+            ? { ...opt, disabled: true, title: "この論文には PDF がありません" }
+            : opt,
+        )}
         value={mode}
         onChange={(v) => onModeChange(v as ViewerMode)}
         size="md"

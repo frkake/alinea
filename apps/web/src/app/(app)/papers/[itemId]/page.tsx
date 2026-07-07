@@ -14,18 +14,19 @@ import { useViewerChatStore } from "@/stores/viewer-chat-store";
 import type { SidePanelTabId } from "@/components/ui/SidePanelTabs";
 import type { DocBlock } from "@/components/viewer/document-types";
 
-/** M0 で表示・遷移可能な 3 モード(plans/13 §1.5)。 */
-const M0_MODES: readonly ViewerMode[] = ["translation", "parallel", "source"];
+/** M1 で表示・遷移可能な 4 モード(plans/13 §1.5・M1-20 で PDF を追加)。 */
+const M1_MODES: readonly ViewerMode[] = ["translation", "parallel", "source", "pdf"];
 
 function normalizeMode(raw: string | null, fallback: ViewerMode): ViewerMode {
-  if (raw && (M0_MODES as readonly string[]).includes(raw)) return raw as ViewerMode;
+  if (raw && (M1_MODES as readonly string[]).includes(raw)) return raw as ViewerMode;
   return fallback;
 }
 
 /**
  * ビューアルート `/papers/{itemId}`(viewer-shell §3)。
  * クエリ `?mode=` を正規化し、補助クエリ `?block=`/`?section=`/`?panel=` を 1 回消費して
- * URL から除去する。M0 は 訳文 / 対訳 / 原文 の 3 モード。
+ * URL から除去する。M1 は 訳文 / 対訳 / 原文 / PDF の 4 モード(`?page=` は PDF 固有。
+ * PdfPane 側が読み書きする — 2a §1.1)。
  */
 export default function ViewerPage() {
   const params = useParams<{ itemId: string }>();
@@ -149,6 +150,10 @@ export default function ViewerPage() {
         onCitationClick={onCitationClick}
       />
     );
+  } else if (mode === "pdf") {
+    // PDF モードの本文(PdfPane)は ViewerShell が自前で描画する(mode==='pdf' 分岐。
+    // 2a §3.1「ViewerShell.tsx(mode=pdf で PdfPane 描画)」)。children は使われない。
+    paneContent = null;
   } else {
     paneContent = (
       <SourcePane

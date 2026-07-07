@@ -52,6 +52,10 @@ export interface DocBlock {
   caption?: Inline[];
   items?: Inline[][];
   ordered?: boolean | null;
+  /** PDF ページ位置(1 起点)。品質 B は常時、品質 A は同期成功時のみ(plans/05 §4.6・2a §5.4)。 */
+  page?: number | null;
+  /** [x0,y0,x1,y1] pt。PyMuPDF 既定の上原点・下方向 y 増加(2a pdf/geometry.ts が変換)。 */
+  bbox?: [number, number, number, number] | null;
 }
 
 export interface DocSectionHeading {
