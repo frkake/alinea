@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { annotationsList } from "@yakudoku/api-client";
 import { notesList } from "@yakudoku/api-client";
 import { SidePanel } from "@/components/viewer/SidePanel";
@@ -94,5 +94,46 @@ describe("SidePanel default milestone stays M0 (backward compatibility)", () => 
     renderWithClient(<SidePanel />);
     expect(screen.queryByRole("tab", { name: "メモ" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "注釈" })).toBeNull();
+  });
+});
+
+// M2-13: サイドパネルに リソース タブを追加(plans/13 §4 M2-13。docs/12・plans/09-screens/5a)。
+describe("SidePanel tabs milestone=M2", () => {
+  beforeEach(() => {
+    resetStore();
+    vi.clearAllMocks();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ items: [], suggestion: null, count: 0 }) })),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test("M2 shows all 6 tabs including リソース", () => {
+    renderWithClient(<SidePanel milestone="M2" />);
+    expect(screen.getByRole("tab", { name: "チャット" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "メモ" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "注釈" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "図表" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "リソース" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "情報" })).toBeInTheDocument();
+  });
+
+  test("switching to リソース mounts ResourcesPanel directly and fetches the list", async () => {
+    useViewerStore.setState({ activeTab: "resources" });
+    renderWithClient(<SidePanel milestone="M2" />);
+    await screen.findByText("リソースはまだありません");
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/library-items/li_test/resources"),
+      expect.anything(),
+    );
+  });
+
+  test("M1 still hides リソース (M2 タブ追加は既存タブに影響しない)", () => {
+    renderWithClient(<SidePanel milestone="M1" />);
+    expect(screen.queryByRole("tab", { name: "リソース" })).toBeNull();
   });
 });

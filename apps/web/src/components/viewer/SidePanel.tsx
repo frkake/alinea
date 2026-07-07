@@ -6,6 +6,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { useViewerStore } from "@/stores/viewer-store";
 import { AnnotationListPanel } from "@/components/viewer/AnnotationListPanel";
 import { NotesPanel } from "@/components/viewer/NotesPanel";
+import { ResourcesPanel } from "@/components/viewer/ResourcesPanel";
 
 /** M0 のサイドパネルは チャット / 図表 / 情報 の 3 タブのみ(plans/13 §1.5・未実装 UI は非表示)。 */
 const M0_TABS: readonly SidePanelTabId[] = ["chat", "figures", "info"];
@@ -15,14 +16,24 @@ const M0_TABS: readonly SidePanelTabId[] = ["chat", "figures", "info"];
  */
 const M1_TABS: readonly SidePanelTabId[] = ["chat", "notes", "annotations", "figures", "info"];
 
+/** M2 で リソース タブを追加(plans/13 §4 M2-13。docs/12・plans/09-screens/5a)。 */
+const M2_TABS: readonly SidePanelTabId[] = [
+  "chat",
+  "notes",
+  "annotations",
+  "figures",
+  "resources",
+  "info",
+];
+
 export interface SidePanelProps {
-  milestone?: "M0" | "M1";
+  milestone?: "M0" | "M1" | "M2";
   /** 件数バッジ(注釈・リソースのみ。M0 タブには出さない)。 */
   counts?: Partial<Record<SidePanelTabId, number>>;
   /**
    * タブ本体。各画面ファイル担当(1a chat / 1c figures / 2a info)。未指定はプレースホルダ。
-   * notes / annotations は本コンポーネントが直接描画する(viewer-shell §6.5: props なし契約)ため、
-   * この callback は対象外(呼ばれない)。
+   * notes / annotations / resources は本コンポーネントが直接描画する(viewer-shell §6.5:
+   * props なし契約)ため、この callback は対象外(呼ばれない)。
    */
   renderTab?: (tab: SidePanelTabId) => ReactNode;
 }
@@ -31,7 +42,7 @@ export interface SidePanelProps {
  * サイドパネル枠(viewer-shell §6)。排他タブ・幅・開閉を所有。
  * タブ本体(ChatTab/FiguresTab/InfoTab)は各画面ファイル担当のため、
  * 未供給時はプレースホルダを描画する(M0 シェルの責務は枠まで)。
- * notes/annotations タブは本レーン所有の自己完結コンポーネント(props なし)を直接マウントする。
+ * notes/annotations/resources タブは本レーン所有の自己完結コンポーネント(props なし)を直接マウントする。
  */
 export function SidePanel({ milestone = "M0", counts = {}, renderTab }: SidePanelProps) {
   const panelOpen = useViewerStore((s) => s.panelOpen);
@@ -40,7 +51,7 @@ export function SidePanel({ milestone = "M0", counts = {}, renderTab }: SidePane
 
   if (!panelOpen) return null;
 
-  const tabs = milestone === "M1" ? M1_TABS : M0_TABS;
+  const tabs = milestone === "M2" ? M2_TABS : milestone === "M1" ? M1_TABS : M0_TABS;
   const active = tabs.includes(storeTab) ? storeTab : "chat";
   // 注釈タブのみ 320px(viewer-shell §6.2)。他タブは 340px。
   const width = active === "annotations" ? 320 : 340;
@@ -73,6 +84,8 @@ export function SidePanel({ milestone = "M0", counts = {}, renderTab }: SidePane
           <AnnotationListPanel />
         ) : active === "notes" ? (
           <NotesPanel />
+        ) : active === "resources" ? (
+          <ResourcesPanel />
         ) : renderTab ? (
           renderTab(active)
         ) : (
