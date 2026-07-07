@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Computed,
     Date,
     DateTime,
     ForeignKey,
@@ -352,7 +353,9 @@ class Annotation(Base):
     color: Mapped[str | None] = mapped_column(Text)
     body: Mapped[str | None] = mapped_column(Text)
     anchor: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    quote: Mapped[str | None] = mapped_column(Text)
+    # GENERATED ALWAYS AS (anchor->>'quote') STORED(0001 §4.7)。Computed マーカーが
+    # 無いと ORM INSERT が quote=NULL を送り GeneratedAlwaysError で必ず失敗する。
+    quote: Mapped[str | None] = mapped_column(Text, Computed("(anchor ->> 'quote')"))
     orphaned: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     created_at: Mapped[dt.datetime] = _now()
     updated_at: Mapped[dt.datetime] = _now()
