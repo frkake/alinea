@@ -15,8 +15,7 @@ import json
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
-# PyMuPDF の `fitz` 互換シムには py.typed が無く mypy が missing-stub を報告する。
-import fitz  # type: ignore[import-untyped]
+import fitz
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient

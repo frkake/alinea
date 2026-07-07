@@ -78,6 +78,126 @@ export type AnchorRef = {
 };
 
 /**
+ * Annotation
+ * plans/03 §8.1 Annotation。
+ */
+export type Annotation = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Kind
+     */
+    kind: 'highlight' | 'bookmark';
+    /**
+     * Color
+     */
+    color?: ('important' | 'question' | 'idea' | 'term') | null;
+    anchor: AnchorRef;
+    /**
+     * Comment
+     */
+    comment?: string | null;
+    /**
+     * Placed
+     */
+    placed: boolean;
+    /**
+     * Created At
+     */
+    created_at: string;
+    /**
+     * Updated At
+     */
+    updated_at: string;
+};
+
+/**
+ * AnnotationCounts
+ * plans/03 §8.1 counts(フィルタに関わらず論文全体の総数)。
+ */
+export type AnnotationCounts = {
+    /**
+     * All
+     */
+    all: number;
+    /**
+     * Important
+     */
+    important: number;
+    /**
+     * Question
+     */
+    question: number;
+    /**
+     * Idea
+     */
+    idea: number;
+    /**
+     * Term
+     */
+    term: number;
+    /**
+     * With Comment
+     */
+    with_comment: number;
+    /**
+     * Unplaced
+     */
+    unplaced: number;
+};
+
+/**
+ * AnnotationCreate
+ * POST /api/library-items/{id}/annotations(plans/03 §8.2)。
+ */
+export type AnnotationCreate = {
+    /**
+     * Kind
+     */
+    kind: 'highlight' | 'bookmark';
+    /**
+     * Color
+     */
+    color?: ('important' | 'question' | 'idea' | 'term') | null;
+    anchor: Anchor;
+    /**
+     * Comment
+     */
+    comment?: string | null;
+};
+
+/**
+ * AnnotationListResponse
+ */
+export type AnnotationListResponse = {
+    /**
+     * Items
+     */
+    items: Array<Annotation>;
+    counts: AnnotationCounts;
+};
+
+/**
+ * AnnotationPatch
+ * PATCH /api/annotations/{annotation_id}(plans/03 §8.3)。
+ *
+ * ``model_fields_set`` で「未指定」と「明示 null」を区別する。comment に null/空文字を
+ * 与えると「コメント」を解除して純ハイライトに戻す(§5.5・§5.6)。
+ */
+export type AnnotationPatch = {
+    /**
+     * Color
+     */
+    color?: ('important' | 'question' | 'idea' | 'term') | null;
+    /**
+     * Comment
+     */
+    comment?: string | null;
+};
+
+/**
  * ApiKeyItem
  */
 export type ApiKeyItem = {
@@ -192,6 +312,20 @@ export type BlockTranslation = {
      * State
      */
     state: string;
+};
+
+/**
+ * Body_ingest_pdf
+ */
+export type BodyIngestPdf = {
+    /**
+     * File
+     */
+    file: Blob | File;
+    /**
+     * Meta
+     */
+    meta: string;
 };
 
 /**
@@ -327,6 +461,96 @@ export type CursorPageLibraryItemSummary = {
      * Total
      */
     total?: number | null;
+};
+
+/**
+ * DashboardResponse
+ * §5.12 ``GET /api/dashboard`` の 200 応答。
+ */
+export type DashboardResponse = {
+    /**
+     * Continue Reading
+     */
+    continue_reading: Array<LibraryItemSummary>;
+    /**
+     * Up Next Queue
+     */
+    up_next_queue: Array<LibraryItemSummary>;
+    deadlines: DeadlinesSection;
+    recent: RecentSection;
+    stats: StatsSection;
+};
+
+/**
+ * DeadlineCollectionEntry
+ * §5.12 ``deadlines.collections`` の要素(M2-09 まで生成されない)。
+ */
+export type DeadlineCollectionEntry = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Deadline
+     */
+    deadline: string;
+    /**
+     * Days Left
+     */
+    days_left: number;
+    /**
+     * Done Count
+     */
+    done_count: number;
+    /**
+     * Total Count
+     */
+    total_count: number;
+};
+
+/**
+ * DeadlineItemEntry
+ * §5.12 ``deadlines.items`` の要素(M2-09 まで生成されない)。
+ */
+export type DeadlineItemEntry = {
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Deadline
+     */
+    deadline: string;
+    /**
+     * Assignee Self
+     */
+    assignee_self: boolean;
+    /**
+     * Status
+     */
+    status: string;
+};
+
+/**
+ * DeadlinesSection
+ */
+export type DeadlinesSection = {
+    /**
+     * Collections
+     */
+    collections: Array<DeadlineCollectionEntry>;
+    /**
+     * Items
+     */
+    items: Array<DeadlineItemEntry>;
 };
 
 /**
@@ -490,6 +714,129 @@ export type FiguresResponse = {
 };
 
 /**
+ * GlossaryDryRunResponse
+ * PATCH dry_run=true(plans/03 §7.9)。
+ */
+export type GlossaryDryRunResponse = {
+    /**
+     * Affected Block Count
+     */
+    affected_block_count: number;
+};
+
+/**
+ * GlossaryPatchResponse
+ * PATCH dry_run=false(plans/03 §7.9)。
+ */
+export type GlossaryPatchResponse = {
+    term: GlossaryTermItem;
+    /**
+     * Affected Block Count
+     */
+    affected_block_count: number;
+    /**
+     * Job Id
+     */
+    job_id: string | null;
+};
+
+/**
+ * GlossaryPromoteResponse
+ */
+export type GlossaryPromoteResponse = {
+    term: GlossaryTermItem;
+};
+
+/**
+ * GlossaryTermCreateRequest
+ */
+export type GlossaryTermCreateRequest = {
+    /**
+     * Scope
+     */
+    scope: 'global' | 'user' | 'paper';
+    /**
+     * Library Item Id
+     */
+    library_item_id?: string | null;
+    /**
+     * Source Term
+     */
+    source_term: string;
+    /**
+     * Target Term
+     */
+    target_term: string;
+    /**
+     * Policy
+     */
+    policy: 'translate' | 'keep_original' | 'both';
+};
+
+/**
+ * GlossaryTermItem
+ * plans/03 §7.9 GlossaryTerm。
+ */
+export type GlossaryTermItem = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Scope
+     */
+    scope: 'global' | 'user' | 'paper';
+    /**
+     * Library Item Id
+     */
+    library_item_id: string | null;
+    /**
+     * Source Term
+     */
+    source_term: string;
+    /**
+     * Target Term
+     */
+    target_term: string;
+    /**
+     * Pos Label
+     */
+    pos_label: string | null;
+    /**
+     * Policy
+     */
+    policy: 'translate' | 'keep_original' | 'both';
+    /**
+     * Auto Extracted
+     */
+    auto_extracted: boolean;
+};
+
+/**
+ * GlossaryTermPatchRequest
+ */
+export type GlossaryTermPatchRequest = {
+    /**
+     * Target Term
+     */
+    target_term?: string | null;
+    /**
+     * Policy
+     */
+    policy?: ('translate' | 'keep_original' | 'both') | null;
+};
+
+/**
+ * GlossaryTermsListResponse
+ */
+export type GlossaryTermsListResponse = {
+    /**
+     * Items
+     */
+    items: Array<GlossaryTermItem>;
+};
+
+/**
  * HTTPValidationError
  */
 export type HttpValidationError = {
@@ -497,6 +844,43 @@ export type HttpValidationError = {
      * Detail
      */
     detail?: Array<ValidationError>;
+};
+
+/**
+ * InPaperSearchItem
+ * plans/03 §6.7 論文内検索の 1 件。
+ */
+export type InPaperSearchItem = {
+    /**
+     * Block Id
+     */
+    block_id: string;
+    /**
+     * Section Id
+     */
+    section_id: string;
+    /**
+     * Display
+     */
+    display: string;
+    /**
+     * Matched In
+     */
+    matched_in: Array<'source' | 'translation'>;
+    /**
+     * Snippet
+     */
+    snippet: string;
+};
+
+/**
+ * InPaperSearchResponse
+ */
+export type InPaperSearchResponse = {
+    /**
+     * Items
+     */
+    items: Array<InPaperSearchItem>;
 };
 
 /**
@@ -1024,6 +1408,166 @@ export type NewerRevision = {
 };
 
 /**
+ * Note
+ * plans/03 §9 Note(逐語)。
+ */
+export type Note = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Content Md
+     */
+    content_md: string;
+    source?: NoteSource | null;
+    /**
+     * Anchors
+     */
+    anchors?: Array<AnchorRef>;
+    /**
+     * Created At
+     */
+    created_at: string;
+    /**
+     * Updated At
+     */
+    updated_at: string;
+};
+
+/**
+ * NoteCreate
+ * POST /api/library-items/{id}/notes(plans/03 §9)。
+ */
+export type NoteCreate = {
+    /**
+     * Content Md
+     */
+    content_md: string;
+    /**
+     * Source Message Id
+     */
+    source_message_id?: string | null;
+    /**
+     * Anchors
+     */
+    anchors?: Array<Anchor> | null;
+};
+
+/**
+ * NoteListResponse
+ * GET レスポンス(更新降順・ページングなし。§9)。
+ */
+export type NoteListResponse = {
+    /**
+     * Items
+     */
+    items: Array<Note>;
+};
+
+/**
+ * NotePatch
+ * PATCH /api/notes/{note_id}(plans/03 §9)。
+ */
+export type NotePatch = {
+    /**
+     * Content Md
+     */
+    content_md: string;
+};
+
+/**
+ * NoteSource
+ * チャット昇格の出自(plans/03 §9)。
+ */
+export type NoteSource = {
+    /**
+     * Chat Message Id
+     */
+    chat_message_id: string;
+};
+
+/**
+ * NotificationActionBody
+ * POST /api/notifications/{id}/action(plans/03 §16.4)。提案の 2 択。
+ */
+export type NotificationActionBody = {
+    /**
+     * Action
+     */
+    action: 'apply' | 'dismiss';
+};
+
+/**
+ * NotificationActionResponse
+ */
+export type NotificationActionResponse = {
+    notification: NotificationOut;
+    /**
+     * Library Item
+     */
+    library_item?: unknown | null;
+};
+
+/**
+ * NotificationListResponse
+ */
+export type NotificationListResponse = {
+    /**
+     * Items
+     */
+    items: Array<NotificationOut>;
+    /**
+     * Next Cursor
+     */
+    next_cursor?: string | null;
+    /**
+     * Unread
+     */
+    unread: number;
+};
+
+/**
+ * NotificationOut
+ * plans/03 §16.1 Notification。
+ */
+export type NotificationOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Kind
+     */
+    kind: 'translation_complete' | 'status_suggestion' | 'deadline_reminder';
+    /**
+     * Read
+     */
+    read: boolean;
+    /**
+     * Created At
+     */
+    created_at: string;
+    /**
+     * Payload
+     */
+    payload: {
+        [key: string]: unknown;
+    };
+};
+
+/**
+ * NotificationPatch
+ * PATCH /api/notifications/{id}(plans/03 §16.2)。既読化のみ。
+ */
+export type NotificationPatch = {
+    /**
+     * Read
+     */
+    read: true;
+};
+
+/**
  * PaperBib
  * plans/03 §1.7 PaperBib。
  */
@@ -1252,6 +1796,24 @@ export type ProblemError = {
 };
 
 /**
+ * ProposalAcceptResponse
+ */
+export type ProposalAcceptResponse = {
+    /**
+     * Unit Id
+     */
+    unit_id: string;
+    /**
+     * Text Ja
+     */
+    text_ja: string;
+    /**
+     * State
+     */
+    state: string;
+};
+
+/**
  * QualityFacet
  */
 export type QualityFacet = {
@@ -1263,6 +1825,28 @@ export type QualityFacet = {
      * B
      */
     B: number;
+};
+
+/**
+ * QueueOrderRequest
+ * §5.7 ``PUT /api/library-items/queue-order`` のリクエスト本文。
+ */
+export type QueueOrderRequest = {
+    /**
+     * Library Item Ids
+     */
+    library_item_ids: Array<string>;
+};
+
+/**
+ * QueueOrderResponse
+ * §5.7 の 200 応答。
+ */
+export type QueueOrderResponse = {
+    /**
+     * Ok
+     */
+    ok?: boolean;
 };
 
 /**
@@ -1326,6 +1910,31 @@ export type QuotaUsage = {
     images: QuotaCounter;
     article_generations: QuotaCounter;
     vocab_generations: QuotaCounter;
+};
+
+/**
+ * ReadAllResponse
+ */
+export type ReadAllResponse = {
+    /**
+     * Updated
+     */
+    updated: number;
+};
+
+/**
+ * RecentSection
+ * §5.12 ``recent``。今週追加、最大 6 件(docs/06 §6.4)。
+ */
+export type RecentSection = {
+    /**
+     * Week Count
+     */
+    week_count: number;
+    /**
+     * Items
+     */
+    items: Array<LibraryItemSummary>;
 };
 
 /**
@@ -1500,6 +2109,310 @@ export type RevisionListResponse = {
 };
 
 /**
+ * SearchFacetPaper
+ */
+export type SearchFacetPaper = {
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Count
+     */
+    count: number;
+};
+
+/**
+ * SearchFacetSource
+ */
+export type SearchFacetSource = {
+    /**
+     * All
+     */
+    all: number;
+    /**
+     * Body
+     */
+    body: number;
+    /**
+     * Notes
+     */
+    notes: number;
+    /**
+     * Chat
+     */
+    chat: number;
+    /**
+     * Article
+     */
+    article: number;
+};
+
+/**
+ * SearchFacets
+ */
+export type SearchFacets = {
+    source: SearchFacetSource;
+    /**
+     * Papers
+     */
+    papers: Array<SearchFacetPaper>;
+};
+
+/**
+ * SearchGroup
+ * 論文単位グループ化(plans/03 §15.1 + plans/11 R-2)。
+ */
+export type SearchGroup = {
+    library_item: LibraryItemSummary;
+    /**
+     * Hit Count
+     */
+    hit_count: number;
+    article?: SearchGroupArticle | null;
+    /**
+     * Hits
+     */
+    hits: Array<SearchHit>;
+};
+
+/**
+ * SearchGroupArticle
+ * 記事ヒットを含む場合のみ(plans/11 R-2)。
+ */
+export type SearchGroupArticle = {
+    /**
+     * Article Id
+     */
+    article_id: string;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Generated At
+     */
+    generated_at: string;
+};
+
+/**
+ * SearchHit
+ * plans/03 §15.1 SearchHit。
+ */
+export type SearchHit = {
+    /**
+     * Source
+     */
+    source: 'body' | 'note' | 'annotation' | 'chat' | 'article';
+    /**
+     * Matched In
+     */
+    matched_in?: Array<'source' | 'translation'> | null;
+    /**
+     * Display
+     */
+    display: string;
+    /**
+     * Snippet
+     */
+    snippet: string;
+    /**
+     * Snippet Lang
+     */
+    snippet_lang: 'en' | 'ja';
+    /**
+     * Target
+     */
+    target: ({
+        kind: 'viewer';
+    } & SearchHitTargetViewer) | ({
+        kind: 'note';
+    } & SearchHitTargetNote) | ({
+        kind: 'chat';
+    } & SearchHitTargetChat) | ({
+        kind: 'article';
+    } & SearchHitTargetArticle);
+};
+
+/**
+ * SearchHitTargetArticle
+ * 「記事モードで開く →」(article 源。M2-15 で実装。型のみ先行定義)。
+ */
+export type SearchHitTargetArticle = {
+    /**
+     * Kind
+     */
+    kind?: 'article';
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+    /**
+     * Article Block Id
+     */
+    article_block_id: string;
+};
+
+/**
+ * SearchHitTargetChat
+ * 「スレッドを開く →」。
+ */
+export type SearchHitTargetChat = {
+    /**
+     * Kind
+     */
+    kind?: 'chat';
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+    /**
+     * Thread Id
+     */
+    thread_id: string;
+    /**
+     * Message Id
+     */
+    message_id: string;
+};
+
+/**
+ * SearchHitTargetNote
+ * 「メモを開く →」。
+ */
+export type SearchHitTargetNote = {
+    /**
+     * Kind
+     */
+    kind?: 'note';
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+    /**
+     * Note Id
+     */
+    note_id: string;
+};
+
+/**
+ * SearchHitTargetViewer
+ * 「該当位置へ →」(plans/11 §7)。書誌ヒットは ``anchor: null``(論文の先頭を開く)。
+ */
+export type SearchHitTargetViewer = {
+    /**
+     * Kind
+     */
+    kind?: 'viewer';
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+    anchor?: AnchorRef | null;
+};
+
+/**
+ * SearchHitWithPaper
+ * plans/03 §15.2 ``SearchHit_with_paper``(プレビューの各 item)。
+ */
+export type SearchHitWithPaper = {
+    /**
+     * Source
+     */
+    source: 'body' | 'note' | 'annotation' | 'chat' | 'article';
+    /**
+     * Matched In
+     */
+    matched_in?: Array<'source' | 'translation'> | null;
+    /**
+     * Display
+     */
+    display: string;
+    /**
+     * Snippet
+     */
+    snippet: string;
+    /**
+     * Snippet Lang
+     */
+    snippet_lang: 'en' | 'ja';
+    /**
+     * Target
+     */
+    target: ({
+        kind: 'viewer';
+    } & SearchHitTargetViewer) | ({
+        kind: 'note';
+    } & SearchHitTargetNote) | ({
+        kind: 'chat';
+    } & SearchHitTargetChat) | ({
+        kind: 'article';
+    } & SearchHitTargetArticle);
+    library_item: SearchPreviewPaper;
+};
+
+/**
+ * SearchPreviewPaper
+ */
+export type SearchPreviewPaper = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Title
+     */
+    title: string;
+};
+
+/**
+ * SearchPreviewResponse
+ * ``GET /api/search/preview`` レスポンス(plans/03 §15.2)。上位3件+total。
+ */
+export type SearchPreviewResponse = {
+    /**
+     * Total
+     */
+    total: number;
+    /**
+     * Items
+     */
+    items: Array<SearchHitWithPaper>;
+};
+
+/**
+ * SearchResponse
+ * ``GET /api/search`` レスポンス(plans/03 §15.1)。
+ */
+export type SearchResponse = {
+    /**
+     * Query
+     */
+    query: string;
+    /**
+     * Total
+     */
+    total: number;
+    /**
+     * Paper Count
+     */
+    paper_count: number;
+    facets: SearchFacets;
+    /**
+     * Groups
+     */
+    groups: Array<SearchGroup>;
+    /**
+     * Next Cursor
+     */
+    next_cursor?: string | null;
+};
+
+/**
  * SectionTranslateRequest
  */
 export type SectionTranslateRequest = {
@@ -1535,6 +2448,40 @@ export type SendMessageRequest = {
      * Quick Action
      */
     quick_action?: ('summary_3line' | 'beginner_explain' | 'contributions_limits' | 'experiment_setup' | 'implementation_points' | 'detailed_summary' | 'explain_equation' | 'explain_figure' | 'expert_summary' | 'related_work_position') | null;
+};
+
+/**
+ * StatsSection
+ * §5.12 ``stats``。直近 12 週(古→新)の読書時間棒グラフ+今週の読了本数(docs/06 §6.5)。
+ */
+export type StatsSection = {
+    week: StatsWeek;
+    /**
+     * Weekly Hours
+     */
+    weekly_hours: Array<number>;
+};
+
+/**
+ * StatsWeek
+ */
+export type StatsWeek = {
+    /**
+     * Finished Count
+     */
+    finished_count: number;
+    /**
+     * Reading Hours
+     */
+    reading_hours: number;
+};
+
+/**
+ * SummarizeToNoteResponse
+ * POST .../summarize-to-note レスポンス(plans/03 §10.5)。
+ */
+export type SummarizeToNoteResponse = {
+    note: Note;
 };
 
 /**
@@ -1706,6 +2653,38 @@ export type TranslationsListResponse = {
      * Items
      */
     items: Array<TranslationSetItem>;
+};
+
+/**
+ * UnitEditRequest
+ */
+export type UnitEditRequest = {
+    /**
+     * Text Ja
+     */
+    text_ja: string;
+};
+
+/**
+ * UnitEditResponse
+ */
+export type UnitEditResponse = {
+    /**
+     * Unit Id
+     */
+    unit_id: string;
+    /**
+     * State
+     */
+    state: string;
+    /**
+     * Text Ja
+     */
+    text_ja: string;
+    /**
+     * Set Id
+     */
+    set_id: string;
 };
 
 /**
@@ -2248,6 +3227,37 @@ export type IngestArxivResponses = {
 
 export type IngestArxivResponse2 = IngestArxivResponses[keyof IngestArxivResponses];
 
+export type IngestPdfData = {
+    body: BodyIngestPdf;
+    headers?: {
+        /**
+         * Idempotency-Key
+         */
+        'Idempotency-Key'?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/ingest/pdf';
+};
+
+export type IngestPdfErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type IngestPdfError = IngestPdfErrors[keyof IngestPdfErrors];
+
+export type IngestPdfResponses = {
+    /**
+     * Successful Response
+     */
+    202: IngestArxivResponse;
+};
+
+export type IngestPdfResponse = IngestPdfResponses[keyof IngestPdfResponses];
+
 export type IngestRecentData = {
     body?: never;
     path?: never;
@@ -2748,6 +3758,96 @@ export type TranslationsRetranslateResponses = {
 };
 
 export type TranslationsRetranslateResponse = TranslationsRetranslateResponses[keyof TranslationsRetranslateResponses];
+
+export type TranslationsEditUnitData = {
+    body: UnitEditRequest;
+    path: {
+        /**
+         * Unit Id
+         */
+        unit_id: string;
+    };
+    query?: never;
+    url: '/api/translation-units/{unit_id}';
+};
+
+export type TranslationsEditUnitErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type TranslationsEditUnitError = TranslationsEditUnitErrors[keyof TranslationsEditUnitErrors];
+
+export type TranslationsEditUnitResponses = {
+    /**
+     * Successful Response
+     */
+    200: UnitEditResponse;
+};
+
+export type TranslationsEditUnitResponse = TranslationsEditUnitResponses[keyof TranslationsEditUnitResponses];
+
+export type TranslationsAcceptProposalData = {
+    body?: never;
+    path: {
+        /**
+         * Unit Id
+         */
+        unit_id: string;
+    };
+    query?: never;
+    url: '/api/translation-units/{unit_id}/proposal/accept';
+};
+
+export type TranslationsAcceptProposalErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type TranslationsAcceptProposalError = TranslationsAcceptProposalErrors[keyof TranslationsAcceptProposalErrors];
+
+export type TranslationsAcceptProposalResponses = {
+    /**
+     * Successful Response
+     */
+    200: ProposalAcceptResponse;
+};
+
+export type TranslationsAcceptProposalResponse = TranslationsAcceptProposalResponses[keyof TranslationsAcceptProposalResponses];
+
+export type TranslationsDiscardProposalData = {
+    body?: never;
+    path: {
+        /**
+         * Unit Id
+         */
+        unit_id: string;
+    };
+    query?: never;
+    url: '/api/translation-units/{unit_id}/proposal';
+};
+
+export type TranslationsDiscardProposalErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type TranslationsDiscardProposalError = TranslationsDiscardProposalErrors[keyof TranslationsDiscardProposalErrors];
+
+export type TranslationsDiscardProposalResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type TranslationsDiscardProposalResponse = TranslationsDiscardProposalResponses[keyof TranslationsDiscardProposalResponses];
 
 export type LibraryItemsSavePositionData = {
     body: PositionRequest;
@@ -3306,6 +4406,31 @@ export type LibraryItemsResolveDuplicateResponses = {
 
 export type LibraryItemsResolveDuplicateResponse = LibraryItemsResolveDuplicateResponses[keyof LibraryItemsResolveDuplicateResponses];
 
+export type LibraryItemsSetQueueOrderData = {
+    body: QueueOrderRequest;
+    path?: never;
+    query?: never;
+    url: '/api/library-items/queue-order';
+};
+
+export type LibraryItemsSetQueueOrderErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type LibraryItemsSetQueueOrderError = LibraryItemsSetQueueOrderErrors[keyof LibraryItemsSetQueueOrderErrors];
+
+export type LibraryItemsSetQueueOrderResponses = {
+    /**
+     * Successful Response
+     */
+    200: QueueOrderResponse;
+};
+
+export type LibraryItemsSetQueueOrderResponse = LibraryItemsSetQueueOrderResponses[keyof LibraryItemsSetQueueOrderResponses];
+
 export type SettingsGetData = {
     body?: never;
     path?: never;
@@ -3449,6 +4574,693 @@ export type SettingsGetQuotaResponses = {
 };
 
 export type SettingsGetQuotaResponse = SettingsGetQuotaResponses[keyof SettingsGetQuotaResponses];
+
+export type AnnotationsListData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: {
+        /**
+         * Color
+         */
+        color?: Array<string> | null;
+        /**
+         * Has Comment
+         */
+        has_comment?: boolean | null;
+        /**
+         * Placed
+         */
+        placed?: boolean | null;
+        /**
+         * Kind
+         */
+        kind?: string | null;
+    };
+    url: '/api/library-items/{item_id}/annotations';
+};
+
+export type AnnotationsListErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type AnnotationsListError = AnnotationsListErrors[keyof AnnotationsListErrors];
+
+export type AnnotationsListResponses = {
+    /**
+     * Successful Response
+     */
+    200: AnnotationListResponse;
+};
+
+export type AnnotationsListResponse = AnnotationsListResponses[keyof AnnotationsListResponses];
+
+export type AnnotationsCreateData = {
+    body: AnnotationCreate;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/annotations';
+};
+
+export type AnnotationsCreateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type AnnotationsCreateError = AnnotationsCreateErrors[keyof AnnotationsCreateErrors];
+
+export type AnnotationsCreateResponses = {
+    /**
+     * Successful Response
+     */
+    201: Annotation;
+};
+
+export type AnnotationsCreateResponse = AnnotationsCreateResponses[keyof AnnotationsCreateResponses];
+
+export type AnnotationsDeleteData = {
+    body?: never;
+    path: {
+        /**
+         * Annotation Id
+         */
+        annotation_id: string;
+    };
+    query?: never;
+    url: '/api/annotations/{annotation_id}';
+};
+
+export type AnnotationsDeleteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type AnnotationsDeleteError = AnnotationsDeleteErrors[keyof AnnotationsDeleteErrors];
+
+export type AnnotationsDeleteResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type AnnotationsDeleteResponse = AnnotationsDeleteResponses[keyof AnnotationsDeleteResponses];
+
+export type AnnotationsUpdateData = {
+    body: AnnotationPatch;
+    path: {
+        /**
+         * Annotation Id
+         */
+        annotation_id: string;
+    };
+    query?: never;
+    url: '/api/annotations/{annotation_id}';
+};
+
+export type AnnotationsUpdateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type AnnotationsUpdateError = AnnotationsUpdateErrors[keyof AnnotationsUpdateErrors];
+
+export type AnnotationsUpdateResponses = {
+    /**
+     * Successful Response
+     */
+    200: Annotation;
+};
+
+export type AnnotationsUpdateResponse = AnnotationsUpdateResponses[keyof AnnotationsUpdateResponses];
+
+export type NotesListData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/notes';
+};
+
+export type NotesListErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type NotesListError = NotesListErrors[keyof NotesListErrors];
+
+export type NotesListResponses = {
+    /**
+     * Successful Response
+     */
+    200: NoteListResponse;
+};
+
+export type NotesListResponse = NotesListResponses[keyof NotesListResponses];
+
+export type NotesCreateData = {
+    body: NoteCreate;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/notes';
+};
+
+export type NotesCreateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type NotesCreateError = NotesCreateErrors[keyof NotesCreateErrors];
+
+export type NotesCreateResponses = {
+    /**
+     * Successful Response
+     */
+    201: Note;
+};
+
+export type NotesCreateResponse = NotesCreateResponses[keyof NotesCreateResponses];
+
+export type NotesDeleteData = {
+    body?: never;
+    path: {
+        /**
+         * Note Id
+         */
+        note_id: string;
+    };
+    query?: never;
+    url: '/api/notes/{note_id}';
+};
+
+export type NotesDeleteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type NotesDeleteError = NotesDeleteErrors[keyof NotesDeleteErrors];
+
+export type NotesDeleteResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type NotesDeleteResponse = NotesDeleteResponses[keyof NotesDeleteResponses];
+
+export type NotesUpdateData = {
+    body: NotePatch;
+    path: {
+        /**
+         * Note Id
+         */
+        note_id: string;
+    };
+    query?: never;
+    url: '/api/notes/{note_id}';
+};
+
+export type NotesUpdateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type NotesUpdateError = NotesUpdateErrors[keyof NotesUpdateErrors];
+
+export type NotesUpdateResponses = {
+    /**
+     * Successful Response
+     */
+    200: Note;
+};
+
+export type NotesUpdateResponse = NotesUpdateResponses[keyof NotesUpdateResponses];
+
+export type NotesSummarizeToNoteData = {
+    body?: never;
+    path: {
+        /**
+         * Thread Id
+         */
+        thread_id: string;
+    };
+    query?: never;
+    url: '/api/chat/threads/{thread_id}/summarize-to-note';
+};
+
+export type NotesSummarizeToNoteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type NotesSummarizeToNoteError = NotesSummarizeToNoteErrors[keyof NotesSummarizeToNoteErrors];
+
+export type NotesSummarizeToNoteResponses = {
+    /**
+     * Successful Response
+     */
+    201: SummarizeToNoteResponse;
+};
+
+export type NotesSummarizeToNoteResponse = NotesSummarizeToNoteResponses[keyof NotesSummarizeToNoteResponses];
+
+export type NotificationsListData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Cursor
+         */
+        cursor?: string | null;
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/api/notifications';
+};
+
+export type NotificationsListErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type NotificationsListError = NotificationsListErrors[keyof NotificationsListErrors];
+
+export type NotificationsListResponses = {
+    /**
+     * Successful Response
+     */
+    200: NotificationListResponse;
+};
+
+export type NotificationsListResponse = NotificationsListResponses[keyof NotificationsListResponses];
+
+export type NotificationsUpdateData = {
+    body: NotificationPatch;
+    path: {
+        /**
+         * Notification Id
+         */
+        notification_id: string;
+    };
+    query?: never;
+    url: '/api/notifications/{notification_id}';
+};
+
+export type NotificationsUpdateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type NotificationsUpdateError = NotificationsUpdateErrors[keyof NotificationsUpdateErrors];
+
+export type NotificationsUpdateResponses = {
+    /**
+     * Successful Response
+     */
+    200: NotificationOut;
+};
+
+export type NotificationsUpdateResponse = NotificationsUpdateResponses[keyof NotificationsUpdateResponses];
+
+export type NotificationsReadAllData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/notifications/read-all';
+};
+
+export type NotificationsReadAllResponses = {
+    /**
+     * Successful Response
+     */
+    200: ReadAllResponse;
+};
+
+export type NotificationsReadAllResponse = NotificationsReadAllResponses[keyof NotificationsReadAllResponses];
+
+export type NotificationsActionData = {
+    body: NotificationActionBody;
+    path: {
+        /**
+         * Notification Id
+         */
+        notification_id: string;
+    };
+    query?: never;
+    url: '/api/notifications/{notification_id}/action';
+};
+
+export type NotificationsActionErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type NotificationsActionError = NotificationsActionErrors[keyof NotificationsActionErrors];
+
+export type NotificationsActionResponses = {
+    /**
+     * Successful Response
+     */
+    200: NotificationActionResponse;
+};
+
+export type NotificationsActionResponse = NotificationsActionResponses[keyof NotificationsActionResponses];
+
+export type SearchAllData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * Q
+         */
+        q: string;
+        /**
+         * Source
+         */
+        source?: 'all' | 'body' | 'notes' | 'chat' | 'article';
+        /**
+         * Library Item Id
+         */
+        library_item_id?: string | null;
+        /**
+         * Sort
+         */
+        sort?: 'relevance' | 'recency';
+        /**
+         * Cursor
+         */
+        cursor?: string | null;
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/api/search';
+};
+
+export type SearchAllErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type SearchAllError = SearchAllErrors[keyof SearchAllErrors];
+
+export type SearchAllResponses = {
+    /**
+     * Successful Response
+     */
+    200: SearchResponse;
+};
+
+export type SearchAllResponse = SearchAllResponses[keyof SearchAllResponses];
+
+export type SearchPreviewData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * Q
+         */
+        q: string;
+    };
+    url: '/api/search/preview';
+};
+
+export type SearchPreviewErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type SearchPreviewError = SearchPreviewErrors[keyof SearchPreviewErrors];
+
+export type SearchPreviewResponses = {
+    /**
+     * Successful Response
+     */
+    200: SearchPreviewResponse;
+};
+
+export type SearchPreviewResponse2 = SearchPreviewResponses[keyof SearchPreviewResponses];
+
+export type SearchInPaperData = {
+    body?: never;
+    path: {
+        /**
+         * Revision Id
+         */
+        revision_id: string;
+    };
+    query: {
+        /**
+         * Q
+         */
+        q: string;
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/api/revisions/{revision_id}/search';
+};
+
+export type SearchInPaperErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type SearchInPaperError = SearchInPaperErrors[keyof SearchInPaperErrors];
+
+export type SearchInPaperResponses = {
+    /**
+     * Successful Response
+     */
+    200: InPaperSearchResponse;
+};
+
+export type SearchInPaperResponse = SearchInPaperResponses[keyof SearchInPaperResponses];
+
+export type DashboardGetData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/dashboard';
+};
+
+export type DashboardGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: DashboardResponse;
+};
+
+export type DashboardGetResponse = DashboardGetResponses[keyof DashboardGetResponses];
+
+export type GlossaryListTermsData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * Scope
+         */
+        scope: 'user' | 'paper';
+        /**
+         * Library Item Id
+         */
+        library_item_id?: string | null;
+    };
+    url: '/api/glossary/terms';
+};
+
+export type GlossaryListTermsErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GlossaryListTermsError = GlossaryListTermsErrors[keyof GlossaryListTermsErrors];
+
+export type GlossaryListTermsResponses = {
+    /**
+     * Successful Response
+     */
+    200: GlossaryTermsListResponse;
+};
+
+export type GlossaryListTermsResponse = GlossaryListTermsResponses[keyof GlossaryListTermsResponses];
+
+export type GlossaryCreateTermData = {
+    body: GlossaryTermCreateRequest;
+    path?: never;
+    query?: never;
+    url: '/api/glossary/terms';
+};
+
+export type GlossaryCreateTermErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GlossaryCreateTermError = GlossaryCreateTermErrors[keyof GlossaryCreateTermErrors];
+
+export type GlossaryCreateTermResponses = {
+    /**
+     * Successful Response
+     */
+    201: GlossaryTermItem;
+};
+
+export type GlossaryCreateTermResponse = GlossaryCreateTermResponses[keyof GlossaryCreateTermResponses];
+
+export type GlossaryDeleteTermData = {
+    body?: never;
+    path: {
+        /**
+         * Term Id
+         */
+        term_id: string;
+    };
+    query?: never;
+    url: '/api/glossary/terms/{term_id}';
+};
+
+export type GlossaryDeleteTermErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GlossaryDeleteTermError = GlossaryDeleteTermErrors[keyof GlossaryDeleteTermErrors];
+
+export type GlossaryDeleteTermResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type GlossaryDeleteTermResponse = GlossaryDeleteTermResponses[keyof GlossaryDeleteTermResponses];
+
+export type GlossaryPatchTermData = {
+    body: GlossaryTermPatchRequest;
+    path: {
+        /**
+         * Term Id
+         */
+        term_id: string;
+    };
+    query?: {
+        /**
+         * Dry Run
+         */
+        dry_run?: boolean;
+    };
+    url: '/api/glossary/terms/{term_id}';
+};
+
+export type GlossaryPatchTermErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GlossaryPatchTermError = GlossaryPatchTermErrors[keyof GlossaryPatchTermErrors];
+
+export type GlossaryPatchTermResponses = {
+    /**
+     * Response Glossary Patch Term
+     * Successful Response
+     */
+    200: GlossaryDryRunResponse | GlossaryPatchResponse;
+};
+
+export type GlossaryPatchTermResponse = GlossaryPatchTermResponses[keyof GlossaryPatchTermResponses];
+
+export type GlossaryPromoteTermData = {
+    body?: never;
+    path: {
+        /**
+         * Term Id
+         */
+        term_id: string;
+    };
+    query?: never;
+    url: '/api/glossary/terms/{term_id}/promote';
+};
+
+export type GlossaryPromoteTermErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GlossaryPromoteTermError = GlossaryPromoteTermErrors[keyof GlossaryPromoteTermErrors];
+
+export type GlossaryPromoteTermResponses = {
+    /**
+     * Successful Response
+     */
+    201: GlossaryPromoteResponse;
+};
+
+export type GlossaryPromoteTermResponse = GlossaryPromoteTermResponses[keyof GlossaryPromoteTermResponses];
 
 export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
