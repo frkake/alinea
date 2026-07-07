@@ -30,7 +30,7 @@ from yakudoku_core.db.models import (
 )
 from yakudoku_core.document.blocks import DocumentContent
 
-from yakudoku_api.deps import CurrentUser, CurrentUserOrExt, DbDep
+from yakudoku_api.deps import CurrentUser, CurrentUserOrExt, DbDep, RedisDep
 from yakudoku_api.errors import ProblemException
 from yakudoku_api.schemas.common import (
     CursorPage,
@@ -52,6 +52,11 @@ from yakudoku_api.schemas.library import (
     TagsResponse,
     YearFacet,
     build_paper_bib,
+)
+from yakudoku_api.services.reading_sessions import (
+    ReadingHeartbeatBody,
+    ReadingHeartbeatResponse,
+    record_heartbeat,
 )
 
 router = APIRouter(tags=["library-items"])
@@ -824,3 +829,18 @@ async def set_queue_order(
         item.queue_order = idx
     await db.commit()
     return QueueOrderResponse(ok=True)
+
+
+# ============================================================================
+# 読書時間計測(M1-05。§5.9・plans/07 §8)
+# ============================================================================
+@router.post(
+    "/api/library-items/{item_id}/reading-sessions",
+    response_model=ReadingHeartbeatResponse,
+    operation_id="libraryItems_readingSessionHeartbeat",
+)
+async def reading_session_heartbeat(
+    item_id: str, body: ReadingHeartbeatBody, user: CurrentUser, db: DbDep, r: RedisDep
+) -> ReadingHeartbeatResponse:
+    item = await _get_owned(db, user.id, item_id)
+    return await record_heartbeat(db, r, user=user, item=item, body=body)
