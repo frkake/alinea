@@ -114,3 +114,16 @@ html[data-theme="dark"] .yk-seg-selected {
 html[data-theme="dark"] .yk-pdf-canvas-bg {
   background: var(--pr-bg-canvas);
 }
+
+/* 共有ページ(4c)の CTA・外部リンクホバー・フォーカスリング(§5.7 決定: デザイン未描画。
+   新色は発明せず既存トークンのみで表現する)。 */
+.yk-share-cta:hover {
+  background: color-mix(in srgb, var(--pr-acc) 16%, transparent);
+}
+.yk-share-arxiv:hover {
+  text-decoration: underline;
+}
+.yk-share-scope a:focus-visible {
+  outline: 2px solid var(--pr-acc);
+  outline-offset: 2px;
+}

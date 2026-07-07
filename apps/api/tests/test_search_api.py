@@ -1,7 +1,9 @@
-"""M1-12: 横断検索 API(PY-SRCH-01〜05。plans/03 §15・§6.7、plans/11 §3〜§7)。
+"""M1-12/M2-15: 横断検索 API(PY-SRCH-01〜05。plans/03 §15・§6.7、plans/11 §3〜§7)。
 
-検索コーパスは plans/12-testing.md §11.1 の S1〜S6(article=S7 は M2-15 で対象外)を
-モデルにするが、以下の 2 点を実データで検証したうえで調整している(deviations 参照):
+検索コーパスは plans/12-testing.md §11.1 の S1〜S7 をモデルにするが、S7(記事)は
+`article_ctx` フィクスチャで `search_ctx` に追記する(M1 分の既存アサーションを壊さないため
+基本 `search_ctx` には含めない — 下記「article 部」節)。以下の 2 点は実データで検証したうえで
+調整している(deviations 参照):
 
 - S2(「EMA teacher」の埋め込み文)は plans/12 の素朴な "ため EMA teacher を" 形だと
   実際の MeCab(IPADIC)が "EMA" を e/m/a の文字単位に誤分割し、クエリ「EMA teacher」が
@@ -30,7 +32,13 @@ from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from yakudoku_api.services.session_service import create_session
 from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
-from yakudoku_core.db.models import Annotation, DocumentRevision, LibraryItem, Paper
+from yakudoku_core.db.models import (
+    Annotation,
+    ArticleBlock,
+    DocumentRevision,
+    LibraryItem,
+    Paper,
+)
 from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
 from yakudoku_core.document.inlines import Inline
 from yakudoku_core.search.rebuild import rebuild_block_search_index
@@ -308,6 +316,113 @@ async def test_note_and_chat_sources_group_and_facets(
     assert chat_hit["target"]["kind"] == "chat"
     assert chat_hit["target"]["thread_id"] == search_ctx.thread_id
     assert "Q:" in chat_hit["snippet"] or "A:" in chat_hit["snippet"]
+
+
+# ---------------------------------------------------------------------------
+# PY-SRCH-02 (article 部。M2-15): 記事ヒット・グループヘッダ・facets・source フィルタ
+# (plans/12 §11.1 S7・§11.2「まっすぐ」)
+# ---------------------------------------------------------------------------
+S7_HEADING = "なぜ直線なのか"
+S7_BODY = "整流フローを一言でいえば『まっすぐ流す』ことです。"
+
+
+@pytest_asyncio.fixture
+async def article_ctx(
+    db_session: AsyncSession, search_ctx: SimpleNamespace, factories: Any
+) -> SimpleNamespace:
+    item = await db_session.get(LibraryItem, search_ctx.item_id)
+    assert item is not None
+    article = await factories.make_article(db_session, library_item=item, with_blocks=False)
+    db_session.add_all(
+        [
+            ArticleBlock(
+                article_id=str(article.id),
+                position=0,
+                type="heading",
+                content={"heading": {"level": 2, "text": S7_HEADING}},
+                text_plain=S7_HEADING,
+                origin="ai",
+            ),
+            ArticleBlock(
+                article_id=str(article.id),
+                position=1,
+                type="paragraph",
+                content={"markdown": S7_BODY},
+                text_plain=S7_BODY,
+                origin="ai",
+            ),
+        ]
+    )
+    await db_session.commit()
+    return SimpleNamespace(
+        article_id=str(article.id), title=article.title, generated_at=article.generated_at
+    )
+
+
+async def test_article_source_hit_display_and_group_header(
+    client: AsyncClient, article_ctx: SimpleNamespace
+) -> None:
+    resp = await client.get("/api/search", params={"q": "まっすぐ"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["facets"]["source"]["article"] == 1
+    assert body["facets"]["source"]["body"] == 0
+    group = body["groups"][0]
+    assert group["hit_count"] == 1
+    assert group["article"] == {
+        "article_id": article_ctx.article_id,
+        "title": article_ctx.title,
+        "generated_at": article_ctx.generated_at.isoformat(),
+    }
+    hit = group["hits"][0]
+    assert hit["source"] == "article"
+    assert hit["matched_in"] is None
+    assert hit["display"] == f"「{S7_HEADING}」セクション"
+    assert hit["target"] == {
+        "kind": "article",
+        "library_item_id": group["library_item"]["id"],
+        "article_block_id": hit["target"]["article_block_id"],
+    }
+
+
+async def test_article_source_filter_narrows_to_article_only(
+    client: AsyncClient, article_ctx: SimpleNamespace
+) -> None:
+    resp = await client.get("/api/search", params={"q": "まっすぐ", "source": "article"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert [h["source"] for h in body["groups"][0]["hits"]] == ["article"]
+
+    resp2 = await client.get("/api/search", params={"q": "まっすぐ", "source": "body"})
+    body2 = resp2.json()
+    assert body2["groups"] == []
+    # facets は絞り込み前の全ヒット集合(plans/11 §6.1)。
+    assert body2["facets"]["source"]["article"] == 1
+
+
+async def test_ja_query_combines_translation_and_article_hits(
+    client: AsyncClient, article_ctx: SimpleNamespace
+) -> None:
+    # plans/12 §11.2: 「整流フロー」→ S1(訳文)+ S7(記事)。同一論文グループに 2 ヒット。
+    resp = await client.get("/api/search", params={"q": "整流フロー"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 2
+    group = body["groups"][0]
+    sources = sorted(h["source"] for h in group["hits"])
+    assert sources == ["article", "body"]
+    assert group["article"] is not None
+
+
+async def test_group_without_article_hit_has_null_article_field(
+    client: AsyncClient, article_ctx: SimpleNamespace
+) -> None:
+    # 記事コーパスに含まれない語(reflow)は article ヒットを生まないので article は null。
+    resp = await client.get("/api/search", params={"q": "reflow"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["groups"][0]["article"] is None
 
 
 async def test_source_filter_narrows_groups_but_not_facets(

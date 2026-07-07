@@ -39,6 +39,15 @@ interface ViewerStoreState {
 
   // 翻訳スタイル(viewer-shell §4.4)
   style: TranslationStyle;
+  /**
+   * 直訳(literal)のオンデマンド生成状態(plans/06 §10.2・1b §4.2-7)。
+   * "unknown"=未確認、"generating"=生成中(job_id あり。優先セクション分の完了を待つ)、
+   * "ready"=表示中セクション分は生成済み(セット全体の完了は §7.1 の progress_pct で別途確認)。
+   * リビジョンが変わるたび(initViewer)に "unknown" へ戻る。
+   */
+  literalStatus: "unknown" | "generating" | "ready";
+  literalJobId: string | null;
+  literalSetId: string | null;
 
   // 読書位置・モード間位置引き継ぎ(viewer-shell §3.4 / §8)
   currentBlockId: string | null;
@@ -74,6 +83,11 @@ interface ViewerStoreState {
   setTocOpen(open: boolean): void;
   setPanel(open: boolean, tab?: SidePanelTabId): void;
   setStyle(style: TranslationStyle): void;
+  setLiteralGeneration(state: {
+    status: "unknown" | "generating" | "ready";
+    jobId?: string | null;
+    setId?: string | null;
+  }): void;
   setCurrentBlock(blockId: string, sectionId: string): void;
   requestScroll(target: PendingScrollTarget): void;
   consumeScroll(): void;
@@ -150,6 +164,9 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
   panelOpen: true,
   activeTab: "chat",
   style: "natural",
+  literalStatus: "unknown",
+  literalJobId: null,
+  literalSetId: null,
   currentBlockId: null,
   pendingScrollTarget: null,
   searchOpen: false,
@@ -183,6 +200,10 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
       style: styleRaw === "literal" ? "literal" : styleRaw === "natural" ? "natural" : get().style,
       panelOpen,
       activeTab,
+      // リビジョンが変わるので直訳生成状態は未確認に戻す(plans/06 §10.2)。
+      literalStatus: "unknown",
+      literalJobId: null,
+      literalSetId: null,
     });
   },
 
@@ -205,6 +226,14 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
     const { itemId } = get();
     if (itemId) writeLocal(`yk-viewer-style:${itemId}`, style);
     set({ style });
+  },
+
+  setLiteralGeneration({ status, jobId, setId }) {
+    set((s) => ({
+      literalStatus: status,
+      literalJobId: jobId === undefined ? s.literalJobId : jobId,
+      literalSetId: setId === undefined ? s.literalSetId : setId,
+    }));
   },
 
   setCurrentBlock(blockId, sectionId) {

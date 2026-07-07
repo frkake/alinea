@@ -6,9 +6,16 @@ export interface DeadlineBadgeProps {
   date: string | null;
   variant?: "chip" | "text";
   withLabel?: boolean;
+  /** chip 変種の文字サイズ(既定 9.5px)。4c は親の 11px を継承するため 11 を渡す(plans/09-screens/4c §3)。 */
+  fontSize?: 9.5 | 11;
 }
 
-export function DeadlineBadge({ date, variant = "chip", withLabel = false }: DeadlineBadgeProps) {
+export function DeadlineBadge({
+  date,
+  variant = "chip",
+  withLabel = false,
+  fontSize = 9.5,
+}: DeadlineBadgeProps) {
   if (variant === "text") {
     if (date === null) {
       return <span style={{ fontSize: 11, color: "var(--pr-text-muted)" }}>—</span>;
@@ -32,7 +39,7 @@ export function DeadlineBadge({ date, variant = "chip", withLabel = false }: Dea
     borderRadius: 3,
     background: "var(--pr-warn-bg)",
     color: "var(--pr-warn)",
-    fontSize: 9.5,
+    fontSize,
     fontWeight: 600,
   };
   return <span style={style}>{withLabel ? `締切 ${date}` : date}</span>;

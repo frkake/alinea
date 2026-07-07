@@ -1,10 +1,11 @@
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, test, vi } from "vitest";
 import { ExportSettings } from "@/components/settings/ExportSettings";
 import { triggerDownload } from "@/components/settings/download";
+import { ToastViewport } from "@/components/ui/Toast";
 
 vi.mock("@/components/settings/download", () => ({ triggerDownload: vi.fn() }));
 
@@ -15,7 +16,12 @@ vi.mock("@yakudoku/api-client", () => ({
 
 function renderWithClient(ui: ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={client}>
+      {ui}
+      <ToastViewport />
+    </QueryClientProvider>,
+  );
 }
 
 function item(overrides: Partial<{ id: string; title: string; authors_short: string; year: number | null }> = {}) {
@@ -45,25 +51,21 @@ function item(overrides: Partial<{ id: string; title: string; authors_short: str
   };
 }
 
-describe("ExportSettings (4f §4.6, M1-17 scope: Markdown + BibTeX)", () => {
+describe("ExportSettings (4f §4.6, M2-15: Markdown + BibTeX/CSV + JSON 一括)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     libraryItemsList.mockResolvedValue({ data: { items: [item()] } });
   });
 
-  test("renders exactly the Markdown + BibTeX cards (CSV/JSON hidden until M2-15)", () => {
-    renderWithClient(<ExportSettings />);
-    expect(screen.getByText("論文単位 Markdown")).toBeInTheDocument();
-    expect(screen.getByText("BibTeX")).toBeInTheDocument();
-    expect(screen.queryByText("CSV")).not.toBeInTheDocument();
-    expect(screen.queryByText("JSON 一括")).not.toBeInTheDocument();
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
-  test("BibTeX export triggers a direct download of /api/export/bibtex", async () => {
-    const user = userEvent.setup();
+  test("renders all 3 cards (Markdown / BibTeX・CSV / JSON 一括)", () => {
     renderWithClient(<ExportSettings />);
-    await user.click(screen.getByRole("button", { name: "BibTeX をエクスポート" }));
-    expect(triggerDownload).toHaveBeenCalledWith("/api/export/bibtex");
+    expect(screen.getByText("論文単位 Markdown")).toBeInTheDocument();
+    expect(screen.getByText("BibTeX / CSV")).toBeInTheDocument();
+    expect(screen.getByText("JSON 一括")).toBeInTheDocument();
   });
 
   test("Markdown export opens the paper picker, searches, and downloads on row click", async () => {
@@ -97,5 +99,77 @@ describe("ExportSettings (4f §4.6, M1-17 scope: Markdown + BibTeX)", () => {
     renderWithClient(<ExportSettings />);
     await user.click(screen.getByRole("button", { name: "論文単位 Markdown をエクスポート" }));
     expect(await screen.findByText("該当する論文がありません")).toBeInTheDocument();
+  });
+
+  test("BibTeX / CSV opens a popover with both format options", async () => {
+    const user = userEvent.setup();
+    renderWithClient(<ExportSettings />);
+
+    await user.click(screen.getByRole("button", { name: "BibTeX / CSV をエクスポート" }));
+    await user.click(screen.getByRole("menuitem", { name: "BibTeX (.bib)" }));
+    expect(triggerDownload).toHaveBeenCalledWith("/api/export/bibtex");
+
+    await user.click(screen.getByRole("button", { name: "BibTeX / CSV をエクスポート" }));
+    await user.click(screen.getByRole("menuitem", { name: "CSV (.csv)" }));
+    expect(triggerDownload).toHaveBeenCalledWith("/api/export/csv");
+  });
+
+  test("JSON 一括: 202 → 準備中… → ポーリング → download_url でダウンロード+表示復帰", async () => {
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "/api/export/full") {
+          return { ok: true, json: async () => ({ job_id: "job_1" }) };
+        }
+        call += 1;
+        const download_url = call >= 2 ? "https://minio.test/exports/job_1.zip" : null;
+        return {
+          ok: true,
+          json: async () => ({ job: { status: "running" }, download_url }),
+        };
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithClient(<ExportSettings />);
+
+    await user.click(screen.getByRole("button", { name: "JSON 一括 をエクスポート" }));
+    expect(await screen.findByText("準備中…")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.waitFor(() => expect(call).toBeGreaterThanOrEqual(1));
+    });
+
+    await waitFor(
+      () =>
+        expect(triggerDownload).toHaveBeenCalledWith("https://minio.test/exports/job_1.zip"),
+      { timeout: 5000 },
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "JSON 一括 をエクスポート" })).toBeInTheDocument(),
+    );
+  });
+
+  test("JSON 一括: 失敗時は Toast+表示復帰", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "/api/export/full") {
+          return { ok: true, json: async () => ({ job_id: "job_2" }) };
+        }
+        return {
+          ok: true,
+          json: async () => ({ job: { status: "failed" }, download_url: null }),
+        };
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithClient(<ExportSettings />);
+
+    await user.click(screen.getByRole("button", { name: "JSON 一括 をエクスポート" }));
+    await screen.findByText("エクスポートの準備に失敗しました。もう一度お試しください");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "JSON 一括 をエクスポート" })).toBeInTheDocument(),
+    );
   });
 });

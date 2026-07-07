@@ -1,7 +1,8 @@
-"""search — 横断検索・論文内検索(M1-12。plans/11 §3〜§7、plans/03 §15・§6.7)。
+"""search — 横断検索・論文内検索(M1-12/M2-15。plans/11 §3〜§7、plans/03 §15・§6.7)。
 
-- ``GET /api/search``: 全結果画面(4e)。source=body/note/annotation/chat の 4 源(article は
-  M2-15)+ 書誌(papers.title/abstract/abstract_ja。API 上は source="body" に合流)。
+- ``GET /api/search``: 全結果画面(4e)。source=body/note/annotation/chat/article の 5 源
+  + 書誌(papers.title/abstract/abstract_ja。API 上は source="body" に合流)。article は
+  M2-15 で追加(plans/11 §3.2 (g))。
 - ``GET /api/search/preview``: 1e ドロップダウン(上位 3 件+total、ファセット計算なし)。
 - ``GET /api/revisions/{revision_id}/search``: 論文内検索(本文のみ、position 昇順)。
 
@@ -22,6 +23,8 @@ from sqlalchemy import select, text
 from sqlalchemy.sql.elements import TextClause
 from yakudoku_core.db.models import (
     Annotation,
+    Article,
+    ArticleBlock,
     ChatMessage,
     ChatThread,
     DocumentRevision,
@@ -56,7 +59,9 @@ from yakudoku_api.schemas.search import (
     SearchFacets,
     SearchFacetSource,
     SearchGroup,
+    SearchGroupArticle,
     SearchHit,
+    SearchHitTargetArticle,
     SearchHitTargetChat,
     SearchHitTargetNote,
     SearchHitTargetViewer,
@@ -221,6 +226,15 @@ _HITS_SQL: TextClause = text(
       ) x
       GROUP BY library_item_id, thread_id, pair_key
     ),
+    hit_article AS (
+      SELECT ar.library_item_id, ab.article_id, ab.id AS article_block_id,
+             pgroonga_score(ab.tableoid, ab.ctid)::float AS score,
+             ab.updated_at AS hit_at
+      FROM article_blocks ab
+      JOIN articles       ar ON ar.id = ab.article_id
+      JOIN library_items  li ON li.id = ar.library_item_id AND li.user_id = CAST(:user_id AS uuid)
+      WHERE ab.text_plain &@~ (SELECT pq FROM params)
+    ),
     hit_biblio AS (
       SELECT mi.library_item_id,
              pgroonga_score(p.tableoid, p.ctid)::float AS score,
@@ -252,6 +266,10 @@ _HITS_SQL: TextClause = text(
     SELECT library_item_id, 'chat', score, hit_at,
            jsonb_build_object('thread_id', thread_id, 'message_id', message_id)
     FROM hit_chat
+    UNION ALL
+    SELECT library_item_id, 'article', score, hit_at,
+           jsonb_build_object('article_id', article_id, 'article_block_id', article_block_id)
+    FROM hit_article
     UNION ALL
     SELECT library_item_id, 'biblio', score, hit_at,
            jsonb_build_object('title_matched', title_matched, 'abstract_matched', abstract_matched,
@@ -315,6 +333,18 @@ async def _paper_titles_for(db: DbDep, library_item_ids: list[str]) -> dict[str,
         )
     ).all()
     return {str(lid): title for lid, title in rows}
+
+
+async def _articles_for(db: DbDep, library_item_ids: list[str]) -> dict[str, Article]:
+    """記事ヒットを含むグループのヘッダ用(plans/11 §4・§6.1)。1 論文 1 記事(一意制約)。"""
+    if not library_item_ids:
+        return {}
+    rows = (
+        (await db.execute(select(Article).where(Article.library_item_id.in_(library_item_ids))))
+        .scalars()
+        .all()
+    )
+    return {str(a.library_item_id): a for a in rows}
 
 
 async def _compute_facets(db: DbDep, all_hits: list[_HitRow]) -> SearchFacets:
@@ -455,6 +485,7 @@ class _SearchRenderer:
         self._chat_thread_cache: dict[str, ChatThread] = {}
         self._thread_msgs_cache: dict[str, list[ChatMessage]] = {}
         self._paper_cache: dict[str, Paper] = {}
+        self._article_blocks_cache: dict[str, list[ArticleBlock]] = {}
 
     async def render(self, hit: _HitRow) -> SearchHit:
         if hit.kind == "body":
@@ -467,6 +498,8 @@ class _SearchRenderer:
             return await self._render_annotation(hit)
         if hit.kind == "chat":
             return await self._render_chat(hit)
+        if hit.kind == "article":
+            return await self._render_article(hit)
         raise ProblemException("internal_error", detail=f"unexpected hit kind: {hit.kind}")
 
     # -- リビジョン索引(block_search_index を revision 単位で一括ロード) -----------------
@@ -775,6 +808,54 @@ class _SearchRenderer:
             ),
         )
 
+    # -- 記事(M2-15。plans/11 §3.2 (g)・§4) -------------------------------------------
+    async def _article_blocks(self, article_id: str) -> list[ArticleBlock]:
+        if article_id in self._article_blocks_cache:
+            return self._article_blocks_cache[article_id]
+        rows = (
+            (
+                await self.db.execute(
+                    select(ArticleBlock)
+                    .where(ArticleBlock.article_id == article_id)
+                    .order_by(ArticleBlock.position)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        blocks = list(rows)
+        self._article_blocks_cache[article_id] = blocks
+        return blocks
+
+    async def _render_article(self, hit: _HitRow) -> SearchHit:
+        ref = hit.ref
+        article_id = str(ref["article_id"])
+        article_block_id = str(ref["article_block_id"])
+        blocks = await self._article_blocks(article_id)
+        heading_text: str | None = None
+        target_block: ArticleBlock | None = None
+        for blk in blocks:
+            if blk.type == "heading" and isinstance(blk.content, dict):
+                heading = blk.content.get("heading")
+                if isinstance(heading, dict) and heading.get("text"):
+                    heading_text = str(heading["text"])
+            if str(blk.id) == article_block_id:
+                target_block = blk
+                break
+        display = f"「{heading_text}」セクション" if heading_text else "記事冒頭"
+        snippet_source = target_block.text_plain if target_block is not None else ""
+        snippet = await _pg_snippet(self.db, snippet_source, self.query)
+        return SearchHit(
+            source="article",
+            matched_in=None,
+            display=display,
+            snippet=snippet,
+            snippet_lang="ja",
+            target=SearchHitTargetArticle(
+                library_item_id=hit.library_item_id, article_block_id=article_block_id
+            ),
+        )
+
 
 # ============================================================================
 # LibraryItemSummary 一括構築(グループヘッダ用。plans/11 §3.5)
@@ -882,6 +963,10 @@ async def search_all(
     next_cursor = _encode_group_cursor(sort, page[-1]) if has_more and page else None
 
     summaries = await _library_item_summaries(db, [g.library_item_id for g in page])
+    article_group_ids = [
+        g.library_item_id for g in page if any(h.kind == "article" for h in g.hits)
+    ]
+    articles = await _articles_for(db, article_group_ids)
     renderer = _SearchRenderer(db, str(user.id), style, query)
     result_groups: list[SearchGroup] = []
     for g in page:
@@ -890,8 +975,14 @@ async def search_all(
         summary = summaries.get(g.library_item_id)
         if summary is None:
             continue
+        article: SearchGroupArticle | None = None
+        art = articles.get(g.library_item_id)
+        if art is not None:
+            article = SearchGroupArticle(
+                article_id=str(art.id), title=art.title, generated_at=art.generated_at.isoformat()
+            )
         result_groups.append(
-            SearchGroup(library_item=summary, hit_count=g.hit_count, article=None, hits=rendered)
+            SearchGroup(library_item=summary, hit_count=g.hit_count, article=article, hits=rendered)
         )
 
     return SearchResponse(

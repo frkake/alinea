@@ -1,11 +1,13 @@
 "use client";
 
-import { useRef, useState, type CSSProperties } from "react";
+import { useCallback, useRef, useState, type CSSProperties } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ReadingStatus } from "@yakudoku/tokens";
 import { QualityBadge } from "@/components/ui/QualityBadge";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Popover } from "@/components/ui/Popover";
+import { useToast } from "@/components/ui/Toast";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import type { ViewerMode } from "@/components/viewer/ViewerShell";
 import { InPaperSearch } from "@/components/viewer/InPaperSearch";
@@ -60,8 +62,70 @@ export function ViewerHeader({
 }: ViewerHeaderProps) {
   const style = useViewerStore((s) => s.style);
   const setStyle = useViewerStore((s) => s.setStyle);
+  const literalStatus = useViewerStore((s) => s.literalStatus);
+  const setLiteralGeneration = useViewerStore((s) => s.setLiteralGeneration);
+  const revisionId = useViewerStore((s) => s.revisionId);
+  const activeSectionId = useViewerStore((s) => s.activeSectionId);
   const panelOpen = useViewerStore((s) => s.panelOpen);
   const setPanel = useViewerStore((s) => s.setPanel);
+  const queryClient = useQueryClient();
+  const toast = useToast();
+
+  // 直訳(literal)のオンデマンド生成(plans/06 §10.2・1b §4.2-7)。「直訳」選択時に
+  // TranslationSet が未生成/未完了なら POST し、表示中セクション分の完了を SSE で待つ。
+  const ensureLiteralGenerated = useCallback(() => {
+    if (!revisionId || literalStatus !== "unknown") return;
+    let closed = false;
+    let source: EventSource | null = null;
+
+    const finish = (status: "ready" | "unknown") => {
+      closed = true;
+      source?.close();
+      setLiteralGeneration({ status, jobId: null });
+    };
+
+    (async () => {
+      try {
+        const res = await fetch(`/api/revisions/${revisionId}/translations`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            style: "literal",
+            ...(activeSectionId ? { priority_section_id: activeSectionId } : {}),
+          }),
+        });
+        if (!res.ok) throw new Error(`literal generation failed: ${res.status}`);
+        const body = (await res.json()) as { set_id: string; job_id: string | null };
+        if (closed) return;
+
+        if (!body.job_id) {
+          // 既に complete(plans/06 §10.2 手順1)。即時表示。
+          setLiteralGeneration({ status: "ready", jobId: null, setId: body.set_id });
+          return;
+        }
+
+        setLiteralGeneration({ status: "generating", jobId: body.job_id, setId: body.set_id });
+        if (typeof EventSource === "undefined") {
+          finish("ready");
+          return;
+        }
+        source = new EventSource(`/api/jobs/${body.job_id}/events`, { withCredentials: true });
+        source.addEventListener("done", () => {
+          void queryClient.invalidateQueries({ queryKey: ["units", revisionId, "literal"] });
+          finish("ready");
+        });
+        source.addEventListener("error", () => {
+          finish("unknown");
+        });
+      } catch {
+        if (!closed) {
+          setLiteralGeneration({ status: "unknown", jobId: null });
+          toast({ kind: "error", message: "直訳の生成を開始できませんでした" });
+        }
+      }
+    })();
+  }, [revisionId, activeSectionId, literalStatus, setLiteralGeneration, queryClient, toast]);
 
   const styleAnchor = useRef<HTMLButtonElement>(null);
   const overflowAnchor = useRef<HTMLButtonElement>(null);
@@ -244,6 +308,7 @@ export function ViewerHeader({
         onClick={() => setStyleOpen((v) => !v)}
       >
         スタイル: {STYLE_LABELS[style]}
+        {style === "literal" && literalStatus === "generating" ? "(生成中…)" : ""}
         <span style={{ color: "var(--pr-text-muted)", fontSize: 9 }}>▾</span>
       </button>
       <Popover
@@ -262,6 +327,8 @@ export function ViewerHeader({
             onClick={() => {
               setStyle(s);
               setStyleOpen(false);
+              // 「直訳」選択で TranslationSet 未生成なら生成開始(1b §4.2-7・plans/06 §10.2)。
+              if (s === "literal") ensureLiteralGenerated();
             }}
             style={{
               display: "block",

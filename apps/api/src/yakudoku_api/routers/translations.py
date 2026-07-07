@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Response, status
 from pydantic import BaseModel
 from sqlalchemy import or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from yakudoku_core.db.models import (
     DocumentRevision,
@@ -236,6 +237,111 @@ async def list_units(
             )
         )
     return UnitsResponse(set_id=str(tset.id), items=items)
+
+
+# --- §7.3 直訳のオンデマンド生成開始(plans/06 §10.2) ------------------------------
+
+
+class LiteralTranslationRequest(BaseModel):
+    style: Literal["literal"]
+    priority_section_id: str | None = None
+
+
+class LiteralTranslationResponse(BaseModel):
+    set_id: str
+    job_id: str | None
+
+
+async def _create_literal_set(
+    db: AsyncSession, revision: DocumentRevision, paper: Paper, user: User
+) -> TranslationSet:
+    """style='literal' の TranslationSet を確保する(plans/06 §10.2 手順2・§9.2 の scope 決定)。
+
+    public 論文は shared(全ユーザー共通)、private は personal。用語スナップショットは
+    §8.1 の 3 層マージ(shared 構築時は global のみ)。一意インデックス
+    (``uq_translation_sets_shared`` / ``uq_translation_sets_personal``)への競合は
+    既存行を再取得して返す(worker 側 ``_ensure_translation_set`` と同方針)。
+    """
+    revision_id = str(revision.id)
+    library_item_id = await _user_library_item_id(db, user, str(paper.id))
+    shared = paper.visibility == "public"
+    snapshot, _ghash = await glossary_core.build_snapshot(
+        db, user_id=str(user.id), library_item_id=library_item_id, shared=shared
+    )
+    tset = TranslationSet(
+        revision_id=revision_id,
+        style="literal",
+        scope="shared" if shared else "personal",
+        user_id=None if shared else str(user.id),
+        glossary_snapshot=snapshot,
+        status="pending",
+    )
+    db.add(tset)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        existing = await _effective_set_id(db, revision_id, "literal", str(user.id))
+        if existing is None:
+            raise
+        return existing
+    return tset
+
+
+@router.post(
+    "/api/revisions/{revision_id}/translations",
+    response_model=LiteralTranslationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="translations_start_literal",
+)
+async def start_literal_translation(
+    revision_id: str,
+    body: LiteralTranslationRequest,
+    user: CurrentUser,
+    db: DbDep,
+    response: Response,
+) -> LiteralTranslationResponse:
+    revision, paper = await resolve_accessible_revision(db, revision_id, user)
+
+    tset = await _effective_set_id(db, revision_id, "literal", str(user.id))
+    if tset is not None and tset.status == "complete":
+        # 2 回目以降の切替は即時(plans/06 §10.2 手順1)。
+        response.status_code = status.HTTP_200_OK
+        return LiteralTranslationResponse(set_id=str(tset.id), job_id=None)
+    if tset is None:
+        tset = await _create_literal_set(db, revision, paper, user)
+
+    content = _as_content(revision)
+    scope = compute_translation_scope(content)
+    library_item_id = await _user_library_item_id(db, user, str(paper.id))
+
+    store = JobStore(db)
+    job_ids: dict[str, str] = {}
+    for sec in scope.sections:
+        section_id = str(sec["section_id"])
+        block_ids = list(sec["block_ids"])
+        # 表示中セクション優先(yk:interactive 相当)。残りはセクション順(yk:bulk 相当。§10.2 手順3)。
+        priority = _ON_DEMAND_PRIORITY if section_id == body.priority_section_id else 0
+        job_ids[section_id] = await store.enqueue(
+            kind="translation",
+            priority=priority,
+            user_id=str(user.id),
+            paper_id=str(paper.id),
+            library_item_id=library_item_id,
+            idempotency_key=f"xlate:{tset.id}:{section_id}",
+            payload={
+                "set_id": str(tset.id),
+                "section_id": section_id,
+                "block_ids": block_ids,
+                "reason": "literal",
+                "table_block_id": None,
+            },
+        )
+
+    representative = (
+        job_ids.get(body.priority_section_id) if body.priority_section_id else None
+    ) or next(iter(job_ids.values()), None)
+    return LiteralTranslationResponse(set_id=str(tset.id), job_id=representative)
 
 
 # --- §7.4 開いたセクションを優先翻訳 -----------------------------------------------
