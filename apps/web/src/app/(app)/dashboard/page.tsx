@@ -9,6 +9,7 @@ import { ContinueReading } from "@/components/library/ContinueReading";
 import { UpNextQueue } from "@/components/library/UpNextQueue";
 import { RecentlyAdded } from "@/components/library/RecentlyAdded";
 import { StatsPanel } from "@/components/library/StatsPanel";
+import { DashboardDeadlines } from "@/components/library/DashboardDeadlines";
 import { useIsMobile } from "@/hooks/useMediaQuery";
 
 /** `GET /api/dashboard` のキー。RecentlyAdded.tsx の再試行後の invalidate と値で一致させる。 */
@@ -17,7 +18,7 @@ const DASHBOARD_QUERY_KEY = ["dashboard"] as const;
 /**
  * ダッシュボード(ホーム)画面(plans/09-screens/1d-dashboard.md)。
  * ルート `/dashboard`(M1-10 でログイン後既定画面に切替。plans/13 §1.5)。
- * 締切セクションは M2-09(コレクション機能)まで非表示 — API の `deadlines` は常に空。
+ * 締切セクションは M2-09 で有効化(API の `deadlines` が実データ化された。DashboardDeadlines.tsx)。
  */
 export default function DashboardPage() {
   const router = useRouter();
@@ -118,7 +119,14 @@ export default function DashboardPage() {
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 18, minWidth: 0 }}>
-          {/* 締切セクション(§4.7 左)は M2-09(コレクション機能)まで非表示。deadlines は常に空。 */}
+          <DashboardDeadlines
+            collections={data.deadlines.collections}
+            items={data.deadlines.items}
+            onOpenCollection={(id) => {
+              router.push(`/collections/${id}`);
+            }}
+            onOpenItem={openReader}
+          />
           <StatsPanel
             finishedCount={data.stats.week.finished_count}
             readingHours={data.stats.week.reading_hours}

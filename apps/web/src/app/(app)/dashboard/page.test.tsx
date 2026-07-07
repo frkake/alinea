@@ -46,6 +46,7 @@ function makeData() {
         updated_at: "2026-07-02T00:00:00Z",
       },
     ],
+    deadlines: { collections: [], items: [] },
     recent: { week_count: 0, items: [] },
     stats: { week: { finished_count: 0, reading_hours: 0 }, weekly_hours: [] },
   };

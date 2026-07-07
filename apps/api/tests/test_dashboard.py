@@ -376,6 +376,69 @@ async def test_queue_order_rejects_duplicate_id_422(
     assert resp.status_code == 422, resp.text
 
 
+# ---------------------------------------------------------------------------
+# deadlines(§5.12「締切が近い」・M2-09 実データ化。services/deadlines.py 側の単体網羅は
+# test_collections.py PY-COL-01 と重複させず、本ファイルでは dashboard.py への統合のみ検証する)
+# ---------------------------------------------------------------------------
+async def test_dashboard_deadlines_reflects_collection_and_unstarted_item(
+    auth: tuple[AsyncClient, str], db_session: AsyncSession, factories: Any
+) -> None:
+    from yakudoku_api.services.deadlines import today_jst
+
+    client, uid = auth
+    user = await db_session.get(User, uid)
+    assert user is not None
+
+    unstarted = await factories.make_library_item(db_session, user=user, status="planned")
+    done_item = await factories.make_library_item(db_session, user=user, status="done")
+    deadline = today_jst() + dt.timedelta(days=3)
+    coll = await factories.make_collection(
+        db_session,
+        user=user,
+        name="輪読会 2026-07",
+        deadline=deadline,
+        entries_of=[unstarted, done_item],
+    )
+    await db_session.commit()
+
+    resp = await client.get("/api/dashboard")
+    assert resp.status_code == 200, resp.text
+    deadlines = resp.json()["deadlines"]
+
+    assert len(deadlines["collections"]) == 1
+    coll_out = deadlines["collections"][0]
+    assert coll_out["id"] == str(coll.id)
+    assert coll_out["name"] == "輪読会 2026-07"
+    assert coll_out["days_left"] == 3
+    assert coll_out["total_count"] == 2
+    assert coll_out["done_count"] == 1
+
+    assert len(deadlines["items"]) == 1
+    item_out = deadlines["items"][0]
+    assert item_out["library_item_id"] == str(unstarted.id)
+    assert item_out["status"] == "planned"
+    assert item_out["deadline"] == deadline.isoformat()
+    # done_item は status=done のため items から除外される(未着手のみが対象。services/deadlines.py)。
+
+
+async def test_dashboard_deadlines_excludes_overdue_collections(
+    auth: tuple[AsyncClient, str], db_session: AsyncSession, factories: Any
+) -> None:
+    from yakudoku_api.services.deadlines import today_jst
+
+    client, uid = auth
+    user = await db_session.get(User, uid)
+    assert user is not None
+
+    overdue_deadline = today_jst() - dt.timedelta(days=1)
+    await factories.make_collection(db_session, user=user, deadline=overdue_deadline)
+    await db_session.commit()
+
+    resp = await client.get("/api/dashboard")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["deadlines"] == {"collections": [], "items": []}
+
+
 async def test_queue_order_rejects_other_users_id_422(
     auth: tuple[AsyncClient, str], db_session: AsyncSession, factories: Any
 ) -> None:

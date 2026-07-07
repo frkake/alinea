@@ -7,7 +7,9 @@
   自動更新される ``updated_at`` を代用する)、最大 3 件。
 - ``up_next_queue``: ``status=up_next``、``queue_order`` 昇順(未設定は末尾。§5.7)、
   同順位は ``added_at`` 昇順。
-- ``deadlines``: M2-09(コレクション/締切機能)まで空配列でレスポンス形のみ。
+- ``deadlines``: ``services/deadlines.dashboard_deadlines``(M2-09)に委譲。締切設定済みの
+  コレクション(最大 2・締切昇順)と、締切コレクションに属す未読了エントリ(最大 3。
+  plans/09-screens/1d §4.7 の抽出規則。超過分は含めない)。
 - ``recent``: 今週(月曜 00:00 UTC 起点)追加、最大 6 件+取り込みパイプライン進捗。
 - ``stats``: 直近 12 週(古→新)の読書時間棒グラフ+今週の読了本数。
 
@@ -29,12 +31,12 @@ from yakudoku_api.routers.library_items import _quality_of, _reading_maps, _summ
 from yakudoku_api.schemas.common import LibraryItemSummary, PipelineState
 from yakudoku_api.schemas.dashboard import (
     DashboardResponse,
-    DeadlinesSection,
     RecentSection,
     StatsSection,
     StatsWeek,
 )
 from yakudoku_api.schemas.ingest import build_pipeline_state
+from yakudoku_api.services.deadlines import dashboard_deadlines, today_jst
 
 router = APIRouter(tags=["dashboard"])
 
@@ -177,7 +179,7 @@ async def get_dashboard(user: CurrentUser, db: DbDep) -> DashboardResponse:
     return DashboardResponse(
         continue_reading=await _continue_reading(db, user.id),
         up_next_queue=await _up_next_queue(db, user.id),
-        deadlines=DeadlinesSection(collections=[], items=[]),
+        deadlines=await dashboard_deadlines(db, user.id, today_jst(now)),
         recent=await _recent(db, user.id, week_start),
         stats=await _stats(db, user.id, week_start),
     )
