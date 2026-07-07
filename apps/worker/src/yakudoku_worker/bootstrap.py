@@ -36,9 +36,9 @@ from yakudoku_core.db.models import LibraryItem
 from yakudoku_core.db.session import get_sessionmaker
 from yakudoku_core.settings import CoreSettings, get_settings
 from yakudoku_core.storage.s3 import S3Storage
-from yakudoku_llm.providers import build_provider
-from yakudoku_llm.router import ChainEntry, LLMRouter
-from yakudoku_llm.testing.fake_provider import FakeLLMProvider
+from yakudoku_llm.providers import build_image_provider, build_provider
+from yakudoku_llm.router import ChainEntry, ImageRouter, LLMRouter
+from yakudoku_llm.testing.fake_provider import FakeImageProvider, FakeLLMProvider
 
 from yakudoku_worker.settings import redis_settings
 
@@ -140,6 +140,38 @@ def build_fake_router() -> LLMRouter:
     return LLMRouter(chain)
 
 
+def build_fake_image_router() -> ImageRouter:
+    """YAKUDOKU_FAKE_LLM=1 用の決定的画像ルータ(E2E/開発)。"""
+    return ImageRouter([("fake", "fake-image-model", FakeImageProvider())])
+
+
+async def build_image_router(
+    session: AsyncSession,
+    *,
+    task: str = "explainer_image",
+    operator_keys: dict[str, str] | None = None,
+    provider_factory: Callable[[str, str], Any] = build_image_provider,
+) -> ImageRouter | None:
+    """運営キーが設定された画像プロバイダだけで ``ImageRouter`` を構築する(plans/07 §6)。
+
+    どのプロバイダにも運営キーが無ければ ``None``(解説図・ラスターモードは P3 準拠で
+    可視的に失敗する)。
+    """
+    keys = operator_keys if operator_keys is not None else operator_keys_from_env()
+    if not keys:
+        return None
+    entries = await _resolve_chain(session, task)
+    chain: list[tuple[str, str, Any]] = []
+    for model_id, provider in entries:
+        api_key = keys.get(provider)
+        if not api_key:
+            continue
+        chain.append((provider, model_id, provider_factory(provider, api_key)))
+    if not chain:
+        return None
+    return ImageRouter(chain)
+
+
 async def build_router(
     session: AsyncSession,
     *,
@@ -236,13 +268,16 @@ async def on_startup(ctx: dict[str, Any]) -> None:
     fake_llm = _env_truthy("YAKUDOKU_FAKE_LLM")
     if fake_llm:
         router: LLMRouter | None = build_fake_router()
+        image_router: ImageRouter | None = build_fake_image_router()
     else:
         async with maker() as session:
             router = await build_router(session)
+            image_router = await build_image_router(session)
 
     ctx["settings"] = settings
     ctx["sessionmaker"] = maker
     ctx["router"] = router
+    ctx["image_router"] = image_router
     ctx["redis"] = redis_client
     ctx["arq_pool"] = arq_pool
     ctx["s3"] = S3Storage(settings)

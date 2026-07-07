@@ -19,6 +19,18 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  async headers() {
+    return [
+      {
+        // 共有ページ(4c)は検索エンジン非掲載+60 秒 CDN キャッシュ(plans/09-screens/4c §1・§6.2)。
+        source: "/c/:token",
+        headers: [
+          { key: "X-Robots-Tag", value: "noindex" },
+          { key: "Cache-Control", value: "public, s-maxage=60, stale-while-revalidate=300" },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

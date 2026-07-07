@@ -37,6 +37,9 @@ def match_rule(method: str, path: str) -> RateRule:
         return RateRule(name="auth_email_request", limit=5, window=600, scope="ip_email")
     if method == "GET" and path.startswith("/api/auth/oauth/") and path.endswith("/start"):
         return RateRule(name="oauth_start", limit=20, window=600, scope="ip")
+    if method == "GET" and path.startswith("/api/share/"):
+        # 共有ページ(匿名)は 120 回/分/IP(plans/03 §1.8・plans/01 §9.4)。
+        return RateRule(name="share_page", limit=120, window=60, scope="ip")
     return DEFAULT_RULE
 
 

@@ -5,7 +5,9 @@
 """
 
 from yakudoku_worker.main import HANDLERS
+from yakudoku_worker.tasks.export_user_data import run_export_full_job
 from yakudoku_worker.tasks.fetch_resource_meta import run_fetch_resource_meta_job
+from yakudoku_worker.tasks.generate_explainer_figure import run_figure_job
 from yakudoku_worker.tasks.generate_vocab_ai import run_generate_vocab_ai
 from yakudoku_worker.tasks.ingest import ingest_paper
 from yakudoku_worker.tasks.translate import run_translation_job
@@ -18,10 +20,16 @@ HANDLERS["ingest"] = ingest_paper
 HANDLERS["vocab"] = run_generate_vocab_ai
 # kind='resource_meta'(リソースメタ再取得。plans/03 §12・M2-13)。
 HANDLERS["resource_meta"] = run_fetch_resource_meta_job
+# kind='figure'(payload.figure_kind で overview/explainer を振り分け。plans/07 §5・§6)。
+HANDLERS["figure"] = run_figure_job
+# kind='export'(JSON 一括エクスポート。plans/03 §18・M2-15)。
+HANDLERS["export"] = run_export_full_job
 
 __all__ = [
     "ingest_paper",
+    "run_export_full_job",
     "run_fetch_resource_meta_job",
+    "run_figure_job",
     "run_generate_vocab_ai",
     "run_translation_job",
 ]

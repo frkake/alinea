@@ -27,6 +27,7 @@ from yakudoku_api.routers import (
     collections,
     dashboard,
     export,
+    figures,
     glossaries,
     health,
     ingest,
@@ -38,6 +39,7 @@ from yakudoku_api.routers import (
     papers,
     resources,
     search,
+    share,
     translations,
     viewer,
     vocab,
@@ -87,6 +89,8 @@ def create_app() -> FastAPI:
     app.include_router(glossaries.router)
     app.include_router(export.router)
     app.include_router(articles.router)
+    app.include_router(figures.router)
+    app.include_router(share.router)
     app.include_router(collections.router)
     app.include_router(vocab.router)
     app.include_router(resources.router)

@@ -44,6 +44,8 @@ ANONYMOUS_PATHS: set[tuple[str, str]] = {
     ("get", "/api/auth/oauth/{provider}/callback"),
     ("post", "/api/auth/email/request"),
     ("get", "/api/auth/email/verify"),
+    # 共有ページ(4c)は匿名アクセスが仕様(plans/03 §14。トークン自体が資格情報)。
+    ("get", "/api/share/collections/{token}"),
 }
 
 _DUMMY_UUID = "00000000-0000-0000-0000-000000000000"
