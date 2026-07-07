@@ -93,6 +93,23 @@ class IngestArxivResponse(BaseModel):
     duplicate: bool = False
 
 
+# --- POST /api/ingest/pdf(§3.3) ----------------------------------------------------
+
+
+class IngestPdfMeta(BaseModel):
+    """§3.3 の `meta`(multipart の JSON 文字列フィールド)。
+
+    応答型は §3.2 と同型のため :class:`IngestArxivResponse` を再利用する(重複定義しない)。
+    """
+
+    source_url: str | None = None
+    title_guess: str | None = None
+    status: str | None = None
+    tags: list[str] | None = None
+    collection_id: str | None = None
+    quick_note: str | None = None
+
+
 # --- GET /api/ingest/recent(§3.4) --------------------------------------------------
 
 

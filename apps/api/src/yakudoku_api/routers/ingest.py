@@ -2,6 +2,7 @@
 
 - ``GET  /api/ingest/check``  取り込み前の状態判定(新規 / 既存 / 非対応)+ LaTeX 有無。
 - ``POST /api/ingest/arxiv``  取り込み開始(202 + Idempotency-Key・重複は 409 duplicate)。
+- ``POST /api/ingest/pdf``    拡張からの PDF 直接送信(202・private・50MB/415/テキストレイヤ無し)。
 - ``GET  /api/ingest/recent`` 直近の取り込み(拡張フッタ)。
 
 外部 arXiv 呼び出しは :class:`ArxivGateway`(DI)経由。ジョブは PostgreSQL ``jobs`` が真実で、
@@ -11,12 +12,16 @@ arq へは起床通知(``run_job``)を best-effort で投げる(plans/01 §4)。
 
 from __future__ import annotations
 
+import datetime as dt
+import hashlib
+import json
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Form, Header, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from yakudoku_core.arxiv.fetch import FetchError, probe_latex_available
@@ -32,8 +37,11 @@ from yakudoku_core.db.models import (
     Paper,
     SourceAsset,
 )
+from yakudoku_core.ingest import joblog
 from yakudoku_core.ingest.dedupe import detect_duplicate
 from yakudoku_core.jobs.store import JobStore
+from yakudoku_core.parsing.pdf_parser import PdfParseError, check_text_layer
+from yakudoku_core.storage.s3 import S3Storage, StorageKeys
 
 from yakudoku_api.deps import CurrentUserOrExt, DbDep, SettingsDep
 from yakudoku_api.errors import PROBLEM_CONTENT_TYPE, ProblemError, ProblemException, build_problem
@@ -44,6 +52,7 @@ from yakudoku_api.schemas.ingest import (
     IngestCheckResponse,
     IngestCheckSaved,
     IngestLastPosition,
+    IngestPdfMeta,
     IngestPipelineState,
     IngestRecentItem,
     IngestRecentResponse,
@@ -496,6 +505,260 @@ async def _duplicate_response(db: DbDep, existing: LibraryItem) -> JSONResponse:
         "last_position": last_position.model_dump() if last_position is not None else None,
     }
     return JSONResponse(status_code=409, content=content, media_type=PROBLEM_CONTENT_TYPE)
+
+
+# --- POST /api/ingest/pdf(§3.3) ------------------------------------------------------
+
+_MAX_PDF_BYTES = 50 * 1024 * 1024  # 50MB(plans/03 §3.3・plans/05 §9.1-1)
+_PDF_MAGIC = b"%PDF-"
+_READ_CHUNK_BYTES = 1024 * 1024
+
+
+def get_pdf_storage() -> S3Storage:
+    return S3Storage()
+
+
+PdfStorageDep = Annotated[S3Storage, Depends(get_pdf_storage)]
+
+
+def _parse_pdf_meta(raw: str) -> IngestPdfMeta:
+    try:
+        payload = json.loads(raw)
+    except (ValueError, TypeError) as exc:
+        raise ProblemException(
+            "validation_error",
+            detail="meta は JSON 文字列である必要があります",
+            errors=[ProblemError(field="meta", message=str(exc))],
+        ) from exc
+    try:
+        return IngestPdfMeta.model_validate(payload)
+    except ValidationError as exc:
+        raise ProblemException(
+            "validation_error", errors=[ProblemError(field="meta", message=str(exc))]
+        ) from exc
+
+
+async def _read_limited_upload(file: UploadFile, limit: int) -> bytes:
+    """ストリーム読取中の累積サイズ検査(§9.1-1。超過は 413)。"""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise ProblemException("payload_too_large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _title_from_filename(filename: str | None) -> str:
+    """§9.1-4: title_guess が無ければファイル名(拡張子除去)、それも空なら既定文言。"""
+    if not filename:
+        return "無題の PDF"
+    base = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if base.lower().endswith(".pdf"):
+        base = base[: -len(".pdf")]
+    base = base.strip()
+    return base or "無題の PDF"
+
+
+async def _pdf_duplicate_for_user(db: DbDep, sha256: str, user_id: str) -> LibraryItem | None:
+    """同一ユーザー・同一 SHA-256 の既存 Paper に紐づく LibraryItem を返す(§7.1 ③)。"""
+    paper_id = (
+        await db.execute(
+            select(Paper.id).where(Paper.pdf_sha256 == sha256, Paper.owner_user_id == user_id)
+        )
+    ).scalar_one_or_none()
+    if paper_id is None:
+        return None
+    return (
+        (
+            await db.execute(
+                select(LibraryItem).where(
+                    LibraryItem.paper_id == paper_id, LibraryItem.user_id == user_id
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+
+@router.post(
+    "/api/ingest/pdf",
+    response_model=IngestArxivResponse,
+    status_code=202,
+    operation_id="ingest_pdf",
+)
+async def ingest_pdf(
+    user: CurrentUserOrExt,
+    db: DbDep,
+    wakeup: JobWakeupDep,
+    storage: PdfStorageDep,
+    request: Request,
+    file: UploadFile,
+    meta: Annotated[str, Form()],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> IngestArxivResponse | JSONResponse:
+    # 冪等: 同一キーの既存ジョブがあれば初回レスポンスを再生する(§3.3)。
+    if idempotency_key:
+        prior = (
+            (await db.execute(select(Job).where(Job.idempotency_key == idempotency_key).limit(1)))
+            .scalars()
+            .first()
+        )
+        if prior is not None:
+            return IngestArxivResponse(
+                paper_id=str(prior.paper_id),
+                library_item_id=str(prior.library_item_id),
+                job_id=str(prior.id),
+            )
+
+    # Content-Length 事前拒否(§9.1-1)。ストリーム読取中の累積検査は後段で二重に行う。
+    content_length = request.headers.get("content-length")
+    if content_length is not None and content_length.isdigit():
+        if int(content_length) > _MAX_PDF_BYTES:
+            raise ProblemException("payload_too_large")
+
+    meta_obj = _parse_pdf_meta(meta)
+    status_value = meta_obj.status or "planned"
+    if status_value not in _VALID_STATUSES:
+        raise ProblemException(
+            "validation_error",
+            errors=[ProblemError(field="meta.status", message="不正なステータスです")],
+        )
+
+    data = await _read_limited_upload(file, _MAX_PDF_BYTES)
+    if not data.startswith(_PDF_MAGIC):
+        raise ProblemException("unsupported_media_type", detail="PDF ファイルではありません")
+
+    sha256 = hashlib.sha256(data).hexdigest()
+    existing_item = await _pdf_duplicate_for_user(db, sha256, str(user.id))
+    if existing_item is not None:
+        return await _duplicate_response(db, existing_item)
+
+    title = meta_obj.title_guess or _title_from_filename(file.filename)
+    paper = Paper(
+        title=title,
+        visibility="private",
+        owner_user_id=str(user.id),
+        pdf_sha256=sha256,
+        license="unknown",
+    )
+    db.add(paper)
+    try:
+        await db.flush()
+    except IntegrityError:
+        # 競合: 同一ユーザー・同一 SHA-256(uq_papers_owner_pdf_sha256)→ duplicate。
+        await db.rollback()
+        again = await _pdf_duplicate_for_user(db, sha256, str(user.id))
+        if again is not None:
+            return await _duplicate_response(db, again)
+        raise
+    paper_id = str(paper.id)
+
+    storage_key = StorageKeys.original_pdf(paper_id, "v1")
+    await storage.put(storage.sources_bucket, storage_key, data, content_type="application/pdf")
+    db.add(
+        SourceAsset(
+            paper_id=paper_id,
+            kind="extension_capture",
+            source_url=meta_obj.source_url,
+            source_version="v1",
+            storage_key=storage_key,
+            content_type="application/pdf",
+            byte_size=len(data),
+            sha256=sha256,
+        )
+    )
+
+    item = LibraryItem(
+        user_id=str(user.id),
+        paper_id=paper_id,
+        status=status_value,
+        tags=list(meta_obj.tags or []),
+        one_line_note=meta_obj.quick_note or "",
+    )
+    db.add(item)
+    await db.flush()
+    library_item_id = str(item.id)
+
+    if meta_obj.collection_id:
+        await _add_to_collection(db, str(user.id), meta_obj.collection_id, library_item_id)
+
+    await db.commit()
+
+    # テキストレイヤ判定(plans/05 §6.1・§9.2)。無ければジョブ側で即 failed(202 は維持)。
+    user_id = str(user.id)
+    try:
+        check_text_layer(data)
+        job_id = await _enqueue_pdf_ingest(
+            db, wakeup, idempotency_key, user_id, paper_id, library_item_id
+        )
+    except PdfParseError as exc:
+        job_id = await _fail_pdf_ingest(
+            db, idempotency_key, user_id, paper_id, library_item_id, exc
+        )
+
+    return IngestArxivResponse(paper_id=paper_id, library_item_id=library_item_id, job_id=job_id)
+
+
+async def _enqueue_pdf_ingest(
+    db: DbDep,
+    wakeup: JobWakeup,
+    idempotency_key: str | None,
+    user_id: str,
+    paper_id: str,
+    library_item_id: str,
+) -> str:
+    store = JobStore(db)
+    job_id = await store.enqueue(
+        kind="ingest",
+        payload={"mode": "initial", "source": "pdf_upload", "library_item_id": library_item_id},
+        idempotency_key=idempotency_key,
+        priority="bulk",
+        user_id=user_id,
+        paper_id=paper_id,
+        library_item_id=library_item_id,
+    )
+    await wakeup(job_id)
+    return job_id
+
+
+async def _fail_pdf_ingest(
+    db: DbDep,
+    idempotency_key: str | None,
+    user_id: str,
+    paper_id: str,
+    library_item_id: str,
+    exc: PdfParseError,
+) -> str:
+    """テキストレイヤ無し PDF は受け口の同期チェックで即 failed にする(§6.1・§9.2)。
+
+    apps/worker の PDF パイプライン結線は本タスクの所有範囲外のため、軽量な
+    ``check_text_layer`` のみを受け口で同期実行する(deviations 参照)。
+    """
+    job = Job(
+        kind="ingest",
+        stage="parsing",
+        status="failed",
+        progress=0,
+        payload={"mode": "initial", "source": "pdf_upload", "library_item_id": library_item_id},
+        idempotency_key=idempotency_key,
+        user_id=user_id,
+        paper_id=paper_id,
+        library_item_id=library_item_id,
+        error=json.dumps(
+            {"stage": "parsing", "code": exc.kind, "message": exc.message}, ensure_ascii=False
+        ),
+        log=[joblog.log_entry("parsing", "error", exc.message, detail={"code": exc.kind})],
+        finished_at=dt.datetime.now(dt.UTC),
+    )
+    db.add(job)
+    await db.commit()
+    return str(job.id)
 
 
 # --- GET /api/ingest/recent ---------------------------------------------------------
