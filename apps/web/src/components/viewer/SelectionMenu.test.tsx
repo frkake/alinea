@@ -67,3 +67,39 @@ describe("SelectionMenu milestone=M0 (backward compatibility)", () => {
     expect(screen.queryByText("コメント")).toBeNull();
   });
 });
+
+// M2-12: 「語彙に追加」(plans/09-screens/1b §5.5)。呼び出し側の実 API 連携は本タスクの
+// 所有外(SelectionController 相当。TranslationPane 等)だが、UI の活性/非活性・クリック
+// 発火は SelectionMenu 自身が担う。
+describe("SelectionMenu milestone=M2 (語彙に追加)", () => {
+  test("shows 語彙に追加 alongside the M1 items", () => {
+    render(<SelectionMenu milestone="M2" side="source" />);
+    const menu = screen.getByRole("menu", { name: "選択メニュー" });
+    expect(within(menu).getByText("語彙に追加")).toBeInTheDocument();
+    expect(within(menu).getByText("コメント")).toBeInTheDocument();
+    expect(within(menu).getByText("AIに質問")).toBeInTheDocument();
+    expect(within(menu).getByText("コピー")).toBeInTheDocument();
+  });
+
+  test("clicking 語彙に追加 calls onAddVocab when side='source'", () => {
+    const onAddVocab = vi.fn();
+    render(<SelectionMenu milestone="M2" side="source" onAddVocab={onAddVocab} />);
+    fireEvent.click(screen.getByText("語彙に追加"));
+    expect(onAddVocab).toHaveBeenCalledTimes(1);
+  });
+
+  test("語彙に追加 is disabled with a hint title when side='translation'", () => {
+    const onAddVocab = vi.fn();
+    render(<SelectionMenu milestone="M2" side="translation" onAddVocab={onAddVocab} />);
+    const button = screen.getByText("語彙に追加").closest("button");
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", "原文(英語)の選択でのみ使えます");
+    fireEvent.click(screen.getByText("語彙に追加"));
+    expect(onAddVocab).not.toHaveBeenCalled();
+  });
+
+  test("milestone=M1 still hides 語彙に追加 (unwired panes stay on M1 until updated)", () => {
+    render(<SelectionMenu milestone="M1" side="source" />);
+    expect(screen.queryByText("語彙に追加")).toBeNull();
+  });
+});

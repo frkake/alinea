@@ -16,11 +16,16 @@ const HIGHLIGHT_COLORS: ReadonlyArray<{ color: HighlightColor; hex: string; labe
 
 export interface SelectionMenuProps {
   /**
-   * M0 は ✦AIに質問 / コピー の 2 項目のみ。M1 で 4 色ハイライト・コメントを追加
-   * (plans/13 §1.5 の段階公開規則。語彙に追加は M2 まで非表示)。既定は後方互換のため "M0"。
+   * M0 は ✦AIに質問 / コピー の 2 項目のみ。M1 で 4 色ハイライト・コメントを追加。M2 で
+   * 「語彙に追加」を追加(plans/13 §1.5 の段階公開規則。M2-12)。既定は後方互換のため "M0"。
+   * 呼び出し側(1b `TranslationPane` 等)が `milestone="M2"` へ更新し `onAddVocab` を渡すまで、
+   * 本項目は表示されない(deviations 参照)。
    */
-  milestone?: "M0" | "M1";
-  /** 選択元。M1+ の「語彙に追加」活性判定に使う(M0/M1 では未実装のため非表示)。 */
+  milestone?: "M0" | "M1" | "M2";
+  /**
+   * 選択元。「語彙に追加」の活性判定に使う — `side='source'` のみ活性、`'translation'` は
+   * 非活性(1b §5.5 決定)。
+   */
   side?: "source" | "translation";
   /** 選択矩形からの配置(ビューポート座標)。未指定時は相対配置(テスト・Storybook 用)。 */
   position?: { top: number; left: number };
@@ -30,6 +35,12 @@ export interface SelectionMenuProps {
   onHighlight?: (color: HighlightColor) => void;
   /** コメント入力ポップの「保存」(1b §5.5。空文字はコメント無しハイライトとして作成)。 */
   onComment?: (color: HighlightColor, comment: string) => void;
+  /**
+   * 「語彙に追加」クリック(milestone="M2" かつ `side==='source'` の時のみ有効。1b §5.5)。
+   * 実際の `POST /api/vocab` 呼び出し・文脈センテンス抽出・409 トーストは呼び出し側の責務
+   * (plans/09-screens/1b `SelectionController` の所有範囲。M2-12 の所有外)。
+   */
+  onAddVocab?: () => void;
 }
 
 const menuStyle: CSSProperties = {
@@ -64,11 +75,13 @@ const actionStyle: CSSProperties = {
  */
 export function SelectionMenu({
   milestone = "M0",
+  side,
   position,
   onAskAI,
   onCopy,
   onHighlight,
   onComment,
+  onAddVocab,
 }: SelectionMenuProps) {
   const [copyOpen, setCopyOpen] = useState(false);
   const [commentOpen, setCommentOpen] = useState(false);
@@ -85,7 +98,7 @@ export function SelectionMenu({
       data-milestone={milestone}
       style={{ ...menuStyle, ...positioned }}
     >
-      {milestone === "M1" ? (
+      {milestone === "M1" || milestone === "M2" ? (
         <>
           {HIGHLIGHT_COLORS.map(({ color, hex, label }) => (
             <button
@@ -227,6 +240,22 @@ export function SelectionMenu({
         <AiMark />
         AIに質問
       </button>
+      {milestone === "M2" ? (
+        <button
+          type="button"
+          role="menuitem"
+          disabled={side !== "source"}
+          title={side !== "source" ? "原文(英語)の選択でのみ使えます" : undefined}
+          onClick={() => onAddVocab?.()}
+          style={{
+            ...actionStyle,
+            opacity: side !== "source" ? 0.45 : 1,
+            cursor: side !== "source" ? "default" : "pointer",
+          }}
+        >
+          語彙に追加
+        </button>
+      ) : null}
       <div style={{ position: "relative" }}>
         <button
           type="button"
