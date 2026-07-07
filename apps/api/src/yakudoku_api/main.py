@@ -13,15 +13,22 @@ from yakudoku_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
 from yakudoku_api.ratelimit import RateLimitMiddleware
 from yakudoku_api.redis_client import get_redis
 from yakudoku_api.routers import (
+    annotations,
     assets,
     auth,
     chat,
+    dashboard,
+    export,
+    glossaries,
     health,
     ingest,
     jobs,
     library_items,
     llm_settings,
+    notes,
+    notifications,
     papers,
+    search,
     translations,
     viewer,
 )
@@ -62,6 +69,13 @@ def create_app() -> FastAPI:
     app.include_router(library_items.router)
     app.include_router(settings_router.router)
     app.include_router(llm_settings.router)
+    app.include_router(annotations.router)
+    app.include_router(notes.router)
+    app.include_router(notifications.router)
+    app.include_router(search.router)
+    app.include_router(dashboard.router)
+    app.include_router(glossaries.router)
+    app.include_router(export.router)
 
     return app
 

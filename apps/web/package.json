@@ -26,7 +26,8 @@
     "react-dom": "19.1.0",
     "zustand": "5.0.6",
     "@yakudoku/api-client": "workspace:*",
-    "katex": "0.16.22"
+    "katex": "0.16.22",
+    "pdfjs-dist": "4.10.38"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.1.11",
