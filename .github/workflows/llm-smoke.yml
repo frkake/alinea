@@ -1,0 +1,68 @@
+name: llm-smoke
+# 実プロバイダ疎通・品質スモーク(plans/12 §8.3・§13.2)。マージゲート外。
+# 実キーは GitHub Environments の secrets(main のみ)。手動トリガ可。RUN_LLM_SMOKE=1 のときのみ収集。
+on:
+  schedule:
+    - cron: "0 18 * * *" # UTC 18:00 = JST 03:00
+  workflow_dispatch:
+
+concurrency:
+  group: llm-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DATABASE_URL: postgresql+asyncpg://yakudoku:yakudoku@localhost:5432/yakudoku
+  REDIS_URL: redis://localhost:6379/0
+  RUN_LLM_SMOKE: "1"
+
+jobs:
+  smoke:
+    name: 実 API スモーク(SM-01〜04)
+    runs-on: ubuntu-24.04
+    # main ブランチのみ・実キーを持つ Environment を要求する(fork PR へは絶対に渡さない)。
+    if: github.ref == 'refs/heads/main'
+    environment: llm-smoke
+    services:
+      db:
+        image: groonga/pgroonga:4.0.1-alpine-16
+        env:
+          POSTGRES_USER: yakudoku
+          POSTGRES_PASSWORD: yakudoku
+          POSTGRES_DB: yakudoku
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U yakudoku" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+    env:
+      # 実運営キー(Environment secrets)。未設定プロバイダはチェーンから除外される。
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.7.20"
+      - run: uv python install
+      - run: uv sync --all-packages --frozen
+      - run: psql "postgresql://yakudoku:yakudoku@localhost:5432/yakudoku" -c "CREATE EXTENSION IF NOT EXISTS pgroonga; CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+      - run: uv run alembic upgrade head
+        working-directory: apps/api
+      # SM-01/02(+03/04): 実キーでの疎通・翻訳/チャット/画像品質サンプル(plans/12 §8.3)。
+      - name: SM-01〜04 実 API スモーク
+        run: |
+          set -o pipefail
+          uv run pytest -m smoke -ra | tee pytest-smoke.log
+      # 失敗は Issue 自動起票(§8.3)。
+      - name: 失敗を Issue 化
+        if: failure()
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: "llm-smoke 失敗 (${{ github.run_id }})"
+          content-filepath: ./pytest-smoke.log
+          labels: llm-smoke, automated

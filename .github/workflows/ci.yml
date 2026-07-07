@@ -66,7 +66,19 @@ jobs:
       - run: psql "postgresql://yakudoku:yakudoku@localhost:5432/yakudoku" -c "CREATE EXTENSION IF NOT EXISTS pgroonga; CREATE EXTENSION IF NOT EXISTS pgcrypto;"
       - run: uv run alembic upgrade head
         working-directory: apps/api
-      - run: uv run pytest --cov=yakudoku_core --cov=yakudoku_llm --cov=yakudoku_api --cov=yakudoku_worker
+      # トレーサビリティ: M0 対象テスト ID(PY/HP/VT)が実テストに実在するか + docs↔§6 件数突合
+      - run: uv run python tools/traceability/check.py
+      # pytest + カバレッジ(総合 80%)。実プロバイダ SDK アダプタは CI が実 LLM に
+      # 接続しない(plans/12 §16)ため到達不能。tools/coverage/coveragerc で omit する。
+      - run: >-
+          uv run pytest
+          --cov-config=tools/coverage/coveragerc
+          --cov=yakudoku_core --cov=yakudoku_llm --cov=yakudoku_api --cov=yakudoku_worker
+          --cov-report=term-missing --cov-fail-under=80
+      # 重点モジュール placeholder.py は行カバレッジ 100% を要求(plans/12 §2.1)
+      - run: >-
+          uv run coverage report
+          --include='*/yakudoku_core/translation/placeholder.py' --fail-under=100
 
   openapi-drift:
     name: OpenAPI クライアントのドリフト検出

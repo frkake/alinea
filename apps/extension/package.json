@@ -11,7 +11,9 @@
     "zip:edge": "wxt zip -b edge",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "e2e": "playwright test",
+    "e2e:report": "playwright show-report"
   },
   "dependencies": {
     "@yakudoku/api-client": "workspace:*",
@@ -28,6 +30,7 @@
     "jsdom": "26.1.0",
     "typescript": "5.8.3",
     "vitest": "3.2.4",
-    "wxt": "0.20.7"
+    "wxt": "0.20.7",
+    "@playwright/test": "1.53.2"
   }
 }

@@ -4,3 +4,7 @@
 stats.html
 stats-*.json
 *.zip
+
+# Playwright
+/playwright-report/
+/test-results/

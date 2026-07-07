@@ -10,7 +10,12 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "e2e": "playwright test",
+    "e2e:pw": "playwright test --project=e2e",
+    "e2e:vr": "playwright test --project=visual",
+    "e2e:update": "playwright test --project=visual --update-snapshots",
+    "e2e:report": "playwright show-report"
   },
   "dependencies": {
     "@tanstack/react-query": "5.81.5",
@@ -36,6 +41,7 @@
     "tailwindcss": "4.1.11",
     "typescript": "5.8.3",
     "vitest": "3.2.4",
-    "@types/katex": "0.16.7"
+    "@types/katex": "0.16.7",
+    "@playwright/test": "1.53.2"
   }
 }

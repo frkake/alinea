@@ -1,0 +1,111 @@
+name: perf
+# パフォーマンス計測(plans/12 §12・§13.2)。マージゲート外の夜間ワークフロー。
+# 合成負荷は k6(PF-02/06/07)+ curl 計測(PF-01/03/05)。LLM 実時間に支配される目標は
+# 三層目(llm-smoke.yml の RUN_LLM_SMOKE=1 -k perf)で計測する(§12.1)。
+on:
+  schedule:
+    - cron: "0 17 * * *" # UTC 17:00 = JST 02:00
+  workflow_dispatch:
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NO_PROXY: localhost,127.0.0.1
+  YAKUDOKU_FAKE_LLM: "1"
+  YAKUDOKU_ARXIV_BASE_URL: http://localhost:8090/arxiv
+  APP_BASE_URL: http://localhost:3000
+  MAILPIT_URL: http://localhost:8025
+  # チャット/要約以外のモック向けベース URL(§8.4)。
+  OPENAI_API_KEY: test-stub
+  ANTHROPIC_API_KEY: test-stub
+  GEMINI_API_KEY: test-stub
+  DEEPSEEK_API_KEY: test-stub
+  XAI_API_KEY: test-stub
+  YAKUDOKU_OPENAI_BASE_URL: http://localhost:8090/openai/v1
+  YAKUDOKU_ANTHROPIC_BASE_URL: http://localhost:8090/anthropic
+  YAKUDOKU_GOOGLE_BASE_URL: http://localhost:8090/google
+  YAKUDOKU_DEEPSEEK_BASE_URL: http://localhost:8090/deepseek
+  YAKUDOKU_XAI_BASE_URL: http://localhost:8090/xai/v1
+  YAKUDOKU_KEY_ENCRYPTION_SECRET: FeSAew6Uy-pkWOhrdXpCqC5Dmpqg5fJVWo0DKJiGze8=
+
+jobs:
+  perf:
+    name: 合成負荷(k6 + curl)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.7.20"
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: k6 セットアップ
+        run: |
+          curl -fsSL https://github.com/grafana/k6/releases/download/v0.57.0/k6-v0.57.0-linux-amd64.tar.gz \
+            | tar xz --strip-components=1 -C /usr/local/bin k6-v0.57.0-linux-amd64/k6
+          k6 version
+      - run: docker compose up -d --wait db redis minio minio-init mailpit
+      - run: uv sync --all-packages --frozen
+      - run: pnpm install --frozen-lockfile
+      - run: uv run alembic upgrade head
+        working-directory: apps/api
+      # PF 用に 300 件へ水増ししたシード(§12.1)。
+      - run: uv run python -m yakudoku_api.seed --sample rectified-flow --reset --scale 300
+
+      - name: バックエンド起動(mock + api + worker + web)
+        run: |
+          nohup uv run python -m yakudoku_llm.testing.mock_server --port 8090 >/tmp/mock.log 2>&1 &
+          nohup uv run uvicorn yakudoku_api.main:app --port 8000 >/tmp/api.log 2>&1 &
+          nohup uv run arq yakudoku_worker.main.BulkWorker >/tmp/bulk.log 2>&1 &
+          nohup uv run arq yakudoku_worker.main.InteractiveWorker >/tmp/interactive.log 2>&1 &
+          nohup pnpm --filter @yakudoku/web dev --port 3000 >/tmp/web.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://localhost:8000/api/healthz && break; sleep 1; done
+          for i in $(seq 1 60); do curl -sf http://localhost:3000/login >/dev/null && break; sleep 1; done
+
+      - name: セッション Cookie 取得(dev)
+        id: cookie
+        run: echo "value=$(uv run python tools/perf/get_cookie.py)" >> "$GITHUB_OUTPUT"
+
+      # PF-01: /metrics 露出チェック(未実装なら informational・非致命。plans/01 §9.4 は P2)。
+      - name: PF-01 メトリクス露出(informational)
+        run: |
+          if curl -sf http://localhost:8000/metrics >/tmp/metrics.txt; then
+            echo "metrics endpoint present"; head -20 /tmp/metrics.txt
+          else
+            echo "::warning::/metrics 未実装(P2 テレメトリ・plans/01 §9.4)。実装後に必須化する。"
+          fi
+
+      # PF-03: 保存→カード表示(recent に出るまで)の実測(curl・モック LLM)。
+      - name: PF-03 保存→カード表示
+        run: |
+          COOKIE='${{ steps.cookie.outputs.value }}'
+          URL="https://arxiv.org/abs/2401.$RANDOM$RANDOM"
+          start=$(date +%s%3N)
+          resp=$(curl -sf -X POST http://localhost:3000/api/ingest/arxiv \
+            -H 'Content-Type: application/json' -H 'Origin: http://localhost:3000' \
+            -H "Cookie: $COOKIE" -H "Idempotency-Key: perf-$RANDOM" \
+            -d "{\"url\":\"$URL\",\"status\":\"planned\",\"tags\":[],\"quick_note\":null,\"collection_id\":null}")
+          echo "$resp"
+          for i in $(seq 1 60); do
+            if curl -sf -H "Cookie: $COOKIE" "http://localhost:3000/api/ingest/recent?limit=5" | grep -q "$(echo "$URL" | sed 's#.*/abs/##')"; then
+              break
+            fi; sleep 0.5
+          done
+          end=$(date +%s%3N); echo "save->recent ms: $((end-start))"
+
+      # PF-07: 拡張 check 応答(Redis キャッシュヒット) p50<500ms。
+      - name: PF-07 ingest/check(k6)
+        run: k6 run -e BASE_URL=http://localhost:8000 -e COOKIE='${{ steps.cookie.outputs.value }}' tools/perf/k6/ingest_check.js
+
+      # PF-02: ライブラリ/ダッシュボード表示(300 件) p50<1s / p95<3s。
+      - name: PF-02 library(k6)
+        run: k6 run -e BASE_URL=http://localhost:8000 -e COOKIE='${{ steps.cookie.outputs.value }}' tools/perf/k6/library.js
+
+      - name: ログ収集
+        if: always()
+        run: tail -n +1 /tmp/*.log || true
