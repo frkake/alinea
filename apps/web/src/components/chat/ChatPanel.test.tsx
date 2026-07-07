@@ -102,6 +102,15 @@ describe("ChatMessage actions (VT-VIEW-12)", () => {
     expect(onCopy).toHaveBeenCalledWith(msg);
   });
 
+  // docs/05 §8: 「↑ メモに保存」でチャット回答をメモへ昇格。
+  test("↑ メモに保存 calls onSaveToNote with the message id", () => {
+    const onSaveToNote = vi.fn();
+    const msg = assistantMessage();
+    render(<ChatMessage message={msg} onSaveToNote={onSaveToNote} />);
+    fireEvent.click(screen.getByText("↑ メモに保存"));
+    expect(onSaveToNote).toHaveBeenCalledWith("msg-a1");
+  });
+
   test("error message shows retry link and calls onRetry", () => {
     const onRetry = vi.fn();
     render(

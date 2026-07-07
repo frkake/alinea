@@ -5,6 +5,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   chatListMessages,
   chatListThreads,
+  notesCreate,
+  notesSummarizeToNote,
   type AnchorRef,
   type AsideBlock,
   type ChatMessage as ChatMessageData,
@@ -13,6 +15,7 @@ import {
 } from "@yakudoku/api-client";
 import { useToast } from "@/components/ui/Toast";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Popover } from "@/components/ui/Popover";
 import { useViewerStore } from "@/stores/viewer-store";
 import { useViewerChatStore } from "@/stores/viewer-chat-store";
 import { ChatMessage } from "@/components/chat/ChatMessage";
@@ -98,7 +101,10 @@ export function ChatPanel({ itemId }: ChatPanelProps) {
   const [localUser, setLocalUser] = useState<ChatMessageData | null>(null);
   const [localAssistant, setLocalAssistant] = useState<ChatMessageData | null>(null);
   const [streaming, setStreaming] = useState(false);
+  const [threadMenuOpen, setThreadMenuOpen] = useState(false);
+  const [summarizing, setSummarizing] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const threadMenuAnchor = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   const threadsQuery = useQuery({
@@ -269,6 +275,42 @@ export function ChatPanel({ itemId }: ChatPanelProps) {
     [regenerate],
   );
 
+  // 「↑ メモに保存」(docs/05 §8)。根拠アンカーは source_message_id 指定でサーバーが複写する。
+  const saveToNote = useCallback(
+    (message: ChatMessageData) => {
+      void notesCreate({
+        path: { item_id: itemId },
+        body: { content_md: messageToMarkdown(message), source_message_id: message.id },
+      }).then(
+        () => {
+          void qc.invalidateQueries({ queryKey: ["notes", itemId] });
+          toast({ kind: "success", message: "✓ メモに保存しました" });
+        },
+        () => toast({ kind: "error", message: "メモに保存できませんでした" }),
+      );
+    },
+    [itemId, qc, toast],
+  );
+
+  // 「まとめてメモ化」(docs/05 §8。同期実行 — plans/03 §10.5)。
+  const summarizeToNote = useCallback(() => {
+    if (!activeThreadId || summarizing) return;
+    setThreadMenuOpen(false);
+    setSummarizing(true);
+    void notesSummarizeToNote({ path: { thread_id: activeThreadId } }).then(
+      () => {
+        setSummarizing(false);
+        void qc.invalidateQueries({ queryKey: ["notes", itemId] });
+        toast({ kind: "success", message: "✓ メモに保存しました" });
+        setPanel(true, "notes");
+      },
+      () => {
+        setSummarizing(false);
+        toast({ kind: "error", message: "まとめてメモ化に失敗しました" });
+      },
+    );
+  }, [activeThreadId, summarizing, itemId, qc, toast, setPanel]);
+
   const activeThread = (threadsQuery.data?.items ?? []).find((t) => t.id === activeThreadId);
   const displayMessages = [...history];
   if (localUser) displayMessages.push(localUser);
@@ -310,6 +352,56 @@ export function ChatPanel({ itemId }: ChatPanelProps) {
         </span>
         <span style={{ flex: 1 }} />
         <span style={chipStyle}>コンテキスト: この論文</span>
+        <button
+          ref={threadMenuAnchor}
+          type="button"
+          aria-label="スレッドメニュー"
+          aria-haspopup="menu"
+          aria-expanded={threadMenuOpen}
+          onClick={() => setThreadMenuOpen((v) => !v)}
+          style={{
+            border: "none",
+            background: "transparent",
+            cursor: "pointer",
+            color: "var(--pr-text-sub)",
+            fontSize: 13,
+            letterSpacing: 1,
+            padding: "0 2px",
+          }}
+        >
+          ⋯
+        </button>
+        <Popover
+          open={threadMenuOpen}
+          onClose={() => setThreadMenuOpen(false)}
+          anchorRef={threadMenuAnchor}
+          width={180}
+          placement="bottom-end"
+          caret={false}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            disabled={summarizing || !activeThreadId}
+            onClick={summarizeToNote}
+            style={{
+              display: "block",
+              width: "100%",
+              textAlign: "left",
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              fontSize: 11.5,
+              padding: "0 12px",
+              height: 30,
+              color: "var(--pr-text-mid)",
+              opacity: summarizing ? 0.5 : 1,
+            }}
+          >
+            {summarizing ? "まとめてメモ化 中…" : "まとめてメモ化"}
+          </button>
+        </Popover>
       </div>
 
       {/* メッセージ領域(ChatMessageList) */}
@@ -343,6 +435,7 @@ export function ChatPanel({ itemId }: ChatPanelProps) {
               onCopy={copy}
               onEvidenceJump={onEvidenceJump}
               onRetry={retry}
+              onSaveToNote={() => saveToNote(m)}
             />
           ))
         )}

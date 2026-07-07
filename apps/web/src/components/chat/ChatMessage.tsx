@@ -18,6 +18,8 @@ export interface ChatMessageProps {
   onEvidenceJump?: (anchor: AnchorRef) => void;
   /** `error` イベント/接続断で残る失敗回答の再試行(1a §5.3・P3)。 */
   onRetry?: (messageId: string) => void;
+  /** 「↑ メモに保存」(docs/05 §8。根拠アンカーはサーバーが複写)。 */
+  onSaveToNote?: (messageId: string) => void;
 }
 
 const actionLink = (accent = false): CSSProperties => ({
@@ -39,6 +41,7 @@ export function ChatMessage({
   onCopy,
   onEvidenceJump,
   onRetry,
+  onSaveToNote,
 }: ChatMessageProps) {
   if (message.role === "user") return <UserMessage message={message} />;
 
@@ -99,6 +102,9 @@ export function ChatMessage({
           </button>
           <button type="button" style={actionLink()} onClick={() => onCopy?.(message)}>
             コピー
+          </button>
+          <button type="button" style={actionLink()} onClick={() => onSaveToNote?.(message.id)}>
+            ↑ メモに保存
           </button>
         </div>
       ) : null}

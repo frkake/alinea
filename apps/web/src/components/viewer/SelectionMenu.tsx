@@ -2,18 +2,34 @@
 
 import { useState, type CSSProperties } from "react";
 import { AiMark } from "@/components/ui/AIBadge";
+import type { HighlightColor } from "@/components/ui/HighlightMark";
 
 export type CopyFormat = "citation" | "plain";
 
+/** 4 色ドット(plans/09-screens/1b §4.5-6・docs/04 §9)。順序固定。 */
+const HIGHLIGHT_COLORS: ReadonlyArray<{ color: HighlightColor; hex: string; label: string }> = [
+  { color: "important", hex: "#C49432", label: "重要" },
+  { color: "question", hex: "#5884AA", label: "疑問" },
+  { color: "idea", hex: "#659471", label: "アイデア" },
+  { color: "term", hex: "#82827E", label: "用語" },
+];
+
 export interface SelectionMenuProps {
-  /** M0 は ✦AIに質問 / コピー の 2 項目のみ(plans/13 §1.5・未実装 UI は非表示)。 */
-  milestone?: "M0";
-  /** 選択元。M1+ の「語彙に追加」活性判定に使う(M0 では非表示)。 */
+  /**
+   * M0 は ✦AIに質問 / コピー の 2 項目のみ。M1 で 4 色ハイライト・コメントを追加
+   * (plans/13 §1.5 の段階公開規則。語彙に追加は M2 まで非表示)。既定は後方互換のため "M0"。
+   */
+  milestone?: "M0" | "M1";
+  /** 選択元。M1+ の「語彙に追加」活性判定に使う(M0/M1 では未実装のため非表示)。 */
   side?: "source" | "translation";
   /** 選択矩形からの配置(ビューポート座標)。未指定時は相対配置(テスト・Storybook 用)。 */
   position?: { top: number; left: number };
   onAskAI?: () => void;
   onCopy?: (format: CopyFormat) => void;
+  /** 色ドットクリック(1b §5.5)。 */
+  onHighlight?: (color: HighlightColor) => void;
+  /** コメント入力ポップの「保存」(1b §5.5。空文字はコメント無しハイライトとして作成)。 */
+  onComment?: (color: HighlightColor, comment: string) => void;
 }
 
 const menuStyle: CSSProperties = {
@@ -51,8 +67,13 @@ export function SelectionMenu({
   position,
   onAskAI,
   onCopy,
+  onHighlight,
+  onComment,
 }: SelectionMenuProps) {
   const [copyOpen, setCopyOpen] = useState(false);
+  const [commentOpen, setCommentOpen] = useState(false);
+  const [commentColor, setCommentColor] = useState<HighlightColor>("important");
+  const [commentText, setCommentText] = useState("");
   const positioned: CSSProperties = position
     ? { position: "fixed", top: position.top, left: position.left }
     : { position: "relative" };
@@ -64,6 +85,144 @@ export function SelectionMenu({
       data-milestone={milestone}
       style={{ ...menuStyle, ...positioned }}
     >
+      {milestone === "M1" ? (
+        <>
+          {HIGHLIGHT_COLORS.map(({ color, hex, label }) => (
+            <button
+              key={color}
+              type="button"
+              role="menuitem"
+              aria-label={`${label}でハイライト`}
+              title={label}
+              onClick={() => onHighlight?.(color)}
+              style={{
+                width: 15,
+                height: 15,
+                borderRadius: "50%",
+                background: hex,
+                border: "none",
+                margin: "0 2px",
+                cursor: "pointer",
+                padding: 0,
+              }}
+            />
+          ))}
+          <div
+            style={{
+              width: 1,
+              height: 14,
+              background: "var(--pr-elev-divider)",
+              margin: "0 5px",
+            }}
+          />
+          <div style={{ position: "relative" }}>
+            <button
+              type="button"
+              role="menuitem"
+              aria-haspopup="dialog"
+              aria-expanded={commentOpen}
+              style={actionStyle}
+              onClick={() => {
+                setCommentOpen((v) => !v);
+              }}
+            >
+              コメント
+            </button>
+            {commentOpen ? (
+              <div
+                role="dialog"
+                aria-label="コメントを入力"
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    // 入力ポップのみ閉じ、選択メニューへ戻る(内容は破棄。1b §5.5)。
+                    e.stopPropagation();
+                    setCommentOpen(false);
+                    setCommentText("");
+                  }
+                }}
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 4px)",
+                  left: 0,
+                  width: 280,
+                  background: "var(--pr-bg-card)",
+                  border: "1px solid var(--pr-border-pop)",
+                  borderRadius: 8,
+                  boxShadow: "var(--pr-shadow-pop)",
+                  padding: 10,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 8,
+                  zIndex: 1,
+                }}
+              >
+                <textarea
+                  aria-label="コメント本文"
+                  rows={3}
+                  value={commentText}
+                  onChange={(e) => setCommentText(e.target.value)}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    fontFamily: "var(--pr-font-ui)",
+                    fontSize: 12,
+                    border: "1px solid var(--pr-border-control)",
+                    borderRadius: 6,
+                    padding: 6,
+                    resize: "none",
+                  }}
+                />
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {HIGHLIGHT_COLORS.map(({ color, hex, label }) => (
+                    <button
+                      key={color}
+                      type="button"
+                      aria-label={`${label}を選択`}
+                      aria-pressed={commentColor === color}
+                      onClick={() => setCommentColor(color)}
+                      style={{
+                        width: 15,
+                        height: 15,
+                        borderRadius: "50%",
+                        background: hex,
+                        border:
+                          commentColor === color
+                            ? "2px solid var(--pr-text)"
+                            : "1px solid transparent",
+                        cursor: "pointer",
+                        padding: 0,
+                      }}
+                    />
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onComment?.(commentColor, commentText.trim());
+                      setCommentOpen(false);
+                      setCommentText("");
+                    }}
+                    style={{
+                      marginLeft: "auto",
+                      height: 24,
+                      padding: "0 10px",
+                      border: "none",
+                      borderRadius: 6,
+                      background: "var(--pr-acc)",
+                      color: "#FFFFFF",
+                      fontSize: 11.5,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    保存
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </>
+      ) : null}
       <button type="button" role="menuitem" style={actionStyle} onClick={onAskAI}>
         <AiMark />
         AIに質問
