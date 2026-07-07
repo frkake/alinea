@@ -1,0 +1,24 @@
+{
+  "arxiv_id": "2209.03003",
+  "doi": null,
+  "title": "Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow",
+  "authors": [
+    { "name": "Xingchang Liu", "affiliation": "University of Texas at Austin" },
+    { "name": "Chengyue Gong", "affiliation": "University of Texas at Austin" },
+    { "name": "Qiang Liu", "affiliation": "University of Texas at Austin" }
+  ],
+  "abstract": "We present rectified flow, a surprisingly simple approach to learning (neural) ordinary differential equation (ODE) models to transport between two empirically observed distributions pi_0 and pi_1, hence providing a unified solution to generative modeling and domain transfer, among various other tasks involving distribution transport. The idea of rectified flow is to learn the ODE to follow the straight paths connecting the points drawn from pi_0 and pi_1 as much as possible. This is achieved by solving a straightforward nonlinear least squares optimization problem. A distinct advantage of rectified flow is a special reflow procedure that recursively straightens the trajectory, enabling fast simulation and one-step generation.",
+  "abstract_ja": "整流フロー(rectified flow)は、経験的に観測された 2 つの分布 pi_0 と pi_1 の間を輸送する(ニューラル)常微分方程式(ODE)モデルを学習する、驚くほど単純な手法である。これにより生成モデリングとドメイン転送をはじめとする分布輸送の各種タスクに統一的な解を与える。整流フローの要点は、pi_0 と pi_1 から抽出した点を結ぶ直線経路にできるだけ従う ODE を、単純な非線形最小二乗最適化を解いて学習することにある。特有の利点として、軌道を再帰的に直線化する reflow 手続きにより、高速なシミュレーションと 1 ステップ生成が可能になる。",
+  "summary_lines": [
+    "サンプルを直線で結ぶ最小二乗回帰だけで、生成もドメイン転送も同じ枠組みで学習できる。",
+    "reflow を繰り返すと軌道が直線化し、ODE を 1 ステップのオイラー法で解けるようになる。",
+    "蒸留(distillation)により、品質をほぼ保ったまま 1 ステップ生成器が得られる。"
+  ],
+  "published_on": "2022-09-07",
+  "venue": "ICLR 2023",
+  "arxiv_categories": ["cs.LG", "stat.ML"],
+  "license": "cc-by-4.0",
+  "latest_version": "v3",
+  "official_repo_url": "https://github.com/gnobitab/RectifiedFlow",
+  "extracted_terms": ["rectified flow", "reflow", "distillation", "ODE", "transport map"]
+}

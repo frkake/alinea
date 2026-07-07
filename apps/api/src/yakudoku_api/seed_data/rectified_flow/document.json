@@ -1,0 +1,810 @@
+{
+  "quality_level": "A",
+  "sections": [
+    {
+      "id": "sec-0",
+      "heading": {
+        "number": "",
+        "title": "Abstract"
+      },
+      "blocks": [
+        {
+          "id": "blk-0-p1-5d87",
+          "type": "paragraph",
+          "inlines": [
+            {
+              "t": "text",
+              "v": "We present "
+            },
+            {
+              "t": "emphasis",
+              "v": "rectified flow"
+            },
+            {
+              "t": "text",
+              "v": ", a surprisingly simple approach to learning transport maps between two distributions "
+            },
+            {
+              "t": "math_inline",
+              "v": "\\pi_0"
+            },
+            {
+              "t": "text",
+              "v": " and "
+            },
+            {
+              "t": "math_inline",
+              "v": "\\pi_1"
+            },
+            {
+              "t": "text",
+              "v": ", by connecting samples with straight paths and following the ordinary differential equation "
+            },
+            {
+              "t": "ref",
+              "v": "式(1)",
+              "ref": "eq-1",
+              "kind": "equation"
+            },
+            {
+              "t": "text",
+              "v": ". The method unifies generative modeling and domain transfer, and its recursive "
+            },
+            {
+              "t": "emphasis",
+              "v": "reflow"
+            },
+            {
+              "t": "text",
+              "v": " procedure straightens the paths so that a single Euler step suffices "
+            },
+            {
+              "t": "citation",
+              "v": "",
+              "ref": "liu2022flow"
+            },
+            {
+              "t": "text",
+              "v": "."
+            }
+          ],
+          "caption": [],
+          "items": []
+        }
+      ],
+      "sections": []
+    },
+    {
+      "id": "sec-1",
+      "heading": {
+        "number": "1",
+        "title": "Introduction"
+      },
+      "blocks": [
+        {
+          "id": "blk-1-p1-c4d1",
+          "type": "paragraph",
+          "inlines": [
+            {
+              "t": "text",
+              "v": "Generative modeling and domain transfer both require transporting one distribution to another. Continuous-time methods such as diffusion models "
+            },
+            {
+              "t": "citation",
+              "v": "",
+              "ref": "ho2020denoising"
+            },
+            {
+              "t": "text",
+              "v": " and score-based SDEs "
+            },
+            {
+              "t": "citation",
+              "v": "",
+              "ref": "song2021scorebased"
+            },
+            {
+              "t": "text",
+              "v": " achieve strong results but rely on curved trajectories that are expensive to simulate"
+            },
+            {
+              "t": "footnote_ref",
+              "v": "",
+              "ref": "fn-1"
+            },
+            {
+              "t": "text",
+              "v": ". We instead learn "
+            },
+            {
+              "t": "emphasis",
+              "v": "straight"
+            },
+            {
+              "t": "text",
+              "v": " trajectories; see "
+            },
+            {
+              "t": "ref",
+              "v": "図1",
+              "ref": "fig-1",
+              "kind": "figure"
+            },
+            {
+              "t": "text",
+              "v": "."
+            }
+          ],
+          "caption": [],
+          "items": []
+        },
+        {
+          "id": "blk-1-fig1-fe1c",
+          "type": "figure",
+          "inlines": [],
+          "number": "1",
+          "label": "fig-1",
+          "asset_key": "figures/fig-1.png",
+          "caption": [
+            {
+              "t": "text",
+              "v": "Straightening effect of "
+            },
+            {
+              "t": "emphasis",
+              "v": "reflow"
+            },
+            {
+              "t": "text",
+              "v": ": trajectories learned by rectified flow become nearly straight after one reflow step, enabling one-step generation."
+            }
+          ],
+          "items": []
+        },
+        {
+          "id": "blk-1-p2-0b4e",
+          "type": "paragraph",
+          "inlines": [
+            {
+              "t": "text",
+              "v": "Our reference implementation is available at "
+            },
+            {
+              "t": "url",
+              "v": "github.com/gnobitab/RectifiedFlow",
+              "href": "https://github.com/gnobitab/RectifiedFlow"
+            },
+            {
+              "t": "text",
+              "v": ". The core training loop reduces to a single call to "
+            },
+            {
+              "t": "code_inline",
+              "v": "F.mse_loss(v_theta(z_t, t), x1 - x0)"
+            },
+            {
+              "t": "text",
+              "v": ", i.e. a least-squares regression onto the constant velocity direction."
+            }
+          ],
+          "caption": [],
+          "items": []
+        },
+        {
+          "id": "blk-1-li1-5089",
+          "type": "list",
+          "inlines": [],
+          "caption": [],
+          "ordered": true,
+          "items": [
+            [
+              {
+                "t": "text",
+                "v": "A unified least-squares objective for generation and transfer."
+              }
+            ],
+            [
+              {
+                "t": "text",
+                "v": "A "
+              },
+              {
+                "t": "emphasis",
+                "v": "reflow"
+              },
+              {
+                "t": "text",
+                "v": " operator that straightens flows and reduces transport cost."
+              }
+            ],
+            [
+              {
+                "t": "text",
+                "v": "A "
+              },
+              {
+                "t": "emphasis",
+                "v": "distillation"
+              },
+              {
+                "t": "text",
+                "v": " scheme yielding high-quality one-step generators."
+              }
+            ]
+          ]
+        },
+        {
+          "id": "blk-1-fn1-5b23",
+          "type": "footnote",
+          "inlines": [
+            {
+              "t": "text",
+              "v": "Simulating a curved ODE typically requires tens to hundreds of network evaluations, which dominates sampling cost."
+            }
+          ],
+          "caption": [],
+          "items": []
+        }
+      ],
+      "sections": []
+    },
+    {
+      "id": "sec-2",
+      "heading": {
+        "number": "2",
+        "title": "Method"
+      },
+      "blocks": [
+        {
+          "id": "blk-2-p1-65ad",
+          "type": "paragraph",
+          "inlines": [
+            {
+              "t": "text",
+              "v": "We first define rectified flow, then present the "
+            },
+            {
+              "t": "emphasis",
+              "v": "reflow"
+            },
+            {
+              "t": "text",
+              "v": " and "
+            },
+            {
+              "t": "emphasis",
+              "v": "distillation"
+            },
+            {
+              "t": "text",
+              "v": " procedures that make sampling fast."
+            }
+          ],
+          "caption": [],
+          "items": []
+        },
+        {
+          "id": "blk-2-h1-f18b",
+          "type": "heading",
+          "inlines": [],
+          "level": 3,
+          "number": "2.0",
+          "title": "Notation",
+          "caption": [],
+          "items": []
+        }
+      ],
+      "sections": [
+        {
+          "id": "sec-2-1",
+          "heading": {
+            "number": "2.1",
+            "title": "Rectified Flow"
+          },
+          "blocks": [
+            {
+              "id": "blk-2-1-p1-9eca",
+              "type": "paragraph",
+              "inlines": [
+                {
+                  "t": "text",
+                  "v": "Given empirical draws "
+                },
+                {
+                  "t": "math_inline",
+                  "v": "X_0 \\sim \\pi_0"
+                },
+                {
+                  "t": "text",
+                  "v": " and "
+                },
+                {
+                  "t": "math_inline",
+                  "v": "X_1 \\sim \\pi_1"
+                },
+                {
+                  "t": "text",
+                  "v": ", the linear interpolation "
+                },
+                {
+                  "t": "ref",
+                  "v": "式(1)",
+                  "ref": "eq-1",
+                  "kind": "equation"
+                },
+                {
+                  "t": "text",
+                  "v": " defines a time-indexed path whose velocity is constant."
+                }
+              ],
+              "caption": [],
+              "items": []
+            },
+            {
+              "id": "blk-2-1-eq1-ff46",
+              "type": "equation",
+              "inlines": [],
+              "number": "1",
+              "label": "eq-1",
+              "caption": [],
+              "latex": "X_t = t\\,X_1 + (1-t)\\,X_0,\\quad t \\in [0,1]",
+              "items": []
+            },
+            {
+              "id": "blk-2-1-eq2-2dfc",
+              "type": "equation",
+              "inlines": [],
+              "number": "2",
+              "label": "eq-2",
+              "caption": [],
+              "latex": "\\min_{\\theta}\\ \\int_0^1 \\mathbb{E}\\big[\\, \\lVert (X_1 - X_0) - v_\\theta(X_t, t) \\rVert^2 \\,\\big]\\, dt",
+              "items": []
+            },
+            {
+              "id": "blk-2-1-p2-42e6",
+              "type": "paragraph",
+              "inlines": [
+                {
+                  "t": "text",
+                  "v": "Solving the ODE "
+                },
+                {
+                  "t": "math_inline",
+                  "v": "dZ_t = v_\\theta(Z_t, t)\\, dt"
+                },
+                {
+                  "t": "text",
+                  "v": " from "
+                },
+                {
+                  "t": "math_inline",
+                  "v": "Z_0 \\sim \\pi_0"
+                },
+                {
+                  "t": "text",
+                  "v": " transports mass toward the target. The learned velocity is the conditional expectation of the straight-line direction."
+                }
+              ],
+              "caption": [],
+              "items": []
+            },
+            {
+              "id": "blk-2-1-thm1-2ee5",
+              "type": "theorem",
+              "inlines": [
+                {
+                  "t": "text",
+                  "v": "The rectified flow induced by any coupling preserves the marginal distributions and never increases the expected transport cost, for every convex cost "
+                },
+                {
+                  "t": "math_inline",
+                  "v": "c(\\cdot)"
+                },
+                {
+                  "t": "text",
+                  "v": "."
+                }
+              ],
+              "caption": [],
+              "items": []
+            },
+            {
+              "id": "blk-2-1-eq3-9d5a",
+              "type": "equation",
+              "inlines": [],
+              "number": "3",
+              "label": "eq-3",
+              "caption": [],
+              "latex": "\\mathbb{E}\\big[c(Z_1 - Z_0)\\big] \\le \\mathbb{E}\\big[c(X_1 - X_0)\\big]",
+              "items": []
+            },
+            {
+              "id": "blk-2-1-q1-551d",
+              "type": "quote",
+              "inlines": [
+                {
+                  "t": "text",
+                  "v": "Straight paths are the only paths that can be simulated exactly with a single Euler step."
+                }
+              ],
+              "caption": [],
+              "items": []
+            }
+          ],
+          "sections": []
+        },
+        {
+          "id": "sec-2-2",
+          "heading": {
+            "number": "2.2",
+            "title": "Reflow and Distillation"
+          },
+          "blocks": [
+            {
+              "id": "blk-2-2-p1-e102",
+              "type": "paragraph",
+              "inlines": [
+                {
+                  "t": "text",
+                  "v": "The "
+                },
+                {
+                  "t": "emphasis",
+                  "v": "reflow"
+                },
+                {
+                  "t": "text",
+                  "v": " operator re-couples the endpoints produced by a trained flow and re-fits the velocity, yielding straighter trajectories. Repeated reflow followed by "
+                },
+                {
+                  "t": "emphasis",
+                  "v": "distillation"
+                },
+                {
+                  "t": "text",
+                  "v": " produces a one-step model; see "
+                },
+                {
+                  "t": "ref",
+                  "v": "式(4)",
+                  "ref": "eq-4",
+                  "kind": "equation"
+                },
+                {
+                  "t": "text",
+                  "v": "."
+                }
+              ],
+              "caption": [],
+              "items": []
+            },
+            {
+              "id": "blk-2-2-alg1-5154",
+              "type": "algorithm",
+              "inlines": [
+                {
+                  "t": "text",
+                  "v": "Algorithm 1 Reflow: (1) sample Z0; (2) integrate v_theta to get Z1; (3) recouple (Z0, Z1); (4) minimize the objective in Eq. (2); (5) repeat K times."
+                }
+              ],
+              "caption": [],
+              "items": []
+            },
+            {
+              "id": "blk-2-2-eq4-3591",
+              "type": "equation",
+              "inlines": [],
+              "number": "4",
+              "label": "eq-4",
+              "caption": [],
+              "latex": "v^{k+1} = \\arg\\min_v \\int_0^1 \\mathbb{E}\\big[\\lVert (Z_1^{k} - Z_0^{k}) - v(Z_t^{k}, t)\\rVert^2\\big]\\, dt",
+              "items": []
+            },
+            {
+              "id": "blk-2-2-code1-a84a",
+              "type": "code",
+              "inlines": [],
+              "caption": [],
+              "language": "python",
+              "code": "def reflow_step(v_theta, x0, x1, t):\n    z_t = t * x1 + (1 - t) * x0\n    target = x1 - x0\n    return F.mse_loss(v_theta(z_t, t), target)\n",
+              "items": []
+            },
+            {
+              "id": "blk-2-2-tbl1-9653",
+              "type": "table",
+              "inlines": [],
+              "number": "1",
+              "label": "tbl-1",
+              "caption": [
+                {
+                  "t": "text",
+                  "v": "FID on CIFAR-10 versus number of function evaluations (NFE); "
+                },
+                {
+                  "t": "emphasis",
+                  "v": "distillation"
+                },
+                {
+                  "t": "text",
+                  "v": " enables one-step sampling."
+                }
+              ],
+              "items": [],
+              "cells": [
+                [
+                  "Method",
+                  "NFE",
+                  "FID"
+                ],
+                [
+                  "Rectified Flow",
+                  "127",
+                  "2.58"
+                ],
+                [
+                  "+ reflow",
+                  "1",
+                  "4.85"
+                ],
+                [
+                  "+ distillation",
+                  "1",
+                  "4.31"
+                ]
+              ]
+            }
+          ],
+          "sections": []
+        }
+      ]
+    },
+    {
+      "id": "sec-3",
+      "heading": {
+        "number": "3",
+        "title": "Experiments"
+      },
+      "blocks": [
+        {
+          "id": "blk-3-p1-01e0",
+          "type": "paragraph",
+          "inlines": [
+            {
+              "t": "text",
+              "v": "We evaluate rectified flow on unconditional image generation and image-to-image transfer. Following common practice we track an "
+            },
+            {
+              "t": "emphasis",
+              "v": "EMA teacher"
+            },
+            {
+              "t": "text",
+              "v": " of the weights to stabilize "
+            },
+            {
+              "t": "emphasis",
+              "v": "distillation"
+            },
+            {
+              "t": "text",
+              "v": ", and report FID against "
+            },
+            {
+              "t": "citation",
+              "v": "",
+              "ref": "song2021scorebased"
+            },
+            {
+              "t": "text",
+              "v": " in "
+            },
+            {
+              "t": "ref",
+              "v": "表2",
+              "ref": "tbl-2",
+              "kind": "table"
+            },
+            {
+              "t": "text",
+              "v": "."
+            }
+          ],
+          "caption": [],
+          "items": []
+        },
+        {
+          "id": "blk-3-fig2-aaee",
+          "type": "figure",
+          "inlines": [],
+          "number": "2",
+          "label": "fig-2",
+          "asset_key": "figures/fig-2.png",
+          "caption": [
+            {
+              "t": "text",
+              "v": "Samples generated in a single Euler step after two reflow rounds and "
+            },
+            {
+              "t": "emphasis",
+              "v": "distillation"
+            },
+            {
+              "t": "text",
+              "v": "."
+            }
+          ],
+          "items": []
+        },
+        {
+          "id": "blk-3-tbl2-2f67",
+          "type": "table",
+          "inlines": [],
+          "number": "2",
+          "label": "tbl-2",
+          "caption": [
+            {
+              "t": "text",
+              "v": "Comparison against diffusion baselines on CIFAR-10 and CelebA-HQ."
+            }
+          ],
+          "items": [],
+          "cells": [
+            [
+              "Dataset",
+              "Baseline FID",
+              "Ours (1-step) FID"
+            ],
+            [
+              "CIFAR-10",
+              "3.17",
+              "4.31"
+            ],
+            [
+              "CelebA-HQ",
+              "7.60",
+              "8.02"
+            ]
+          ]
+        },
+        {
+          "id": "blk-3-p2-55a9",
+          "type": "paragraph",
+          "inlines": [
+            {
+              "t": "text",
+              "v": "The one-step generator retains most of the quality of the full ODE solver while cutting sampling cost by two orders of magnitude, confirming the straightening hypothesis of "
+            },
+            {
+              "t": "ref",
+              "v": "§2.1",
+              "ref": "sec-2-1",
+              "kind": "section"
+            },
+            {
+              "t": "text",
+              "v": "."
+            }
+          ],
+          "caption": [],
+          "items": []
+        }
+      ],
+      "sections": []
+    },
+    {
+      "id": "sec-4",
+      "heading": {
+        "number": "4",
+        "title": "Conclusion"
+      },
+      "blocks": [
+        {
+          "id": "blk-4-p1-b79d",
+          "type": "paragraph",
+          "inlines": [
+            {
+              "t": "text",
+              "v": "Rectified flow offers a simple, unified, and efficient route to generative modeling and transport. Its straight trajectories make one-step generation practical without sacrificing sample quality."
+            }
+          ],
+          "caption": [],
+          "items": []
+        }
+      ],
+      "sections": []
+    },
+    {
+      "id": "sec-5",
+      "heading": {
+        "number": "",
+        "title": "References"
+      },
+      "blocks": [
+        {
+          "id": "blk-5-ref1-03b9",
+          "type": "reference_entry",
+          "inlines": [],
+          "caption": [],
+          "items": [],
+          "raw": "Liu, X., Gong, C., & Liu, Q. (2023). Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow. ICLR.",
+          "structured": {
+            "authors": [
+              "Xingchang Liu",
+              "Chengyue Gong",
+              "Qiang Liu"
+            ],
+            "year": 2023,
+            "title": "Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow",
+            "url": "https://arxiv.org/abs/2209.03003"
+          }
+        },
+        {
+          "id": "blk-5-ref2-29f0",
+          "type": "reference_entry",
+          "inlines": [],
+          "caption": [],
+          "items": [],
+          "raw": "Ho, J., Jain, A., & Abbeel, P. (2020). Denoising Diffusion Probabilistic Models. NeurIPS.",
+          "structured": {
+            "authors": [
+              "Jonathan Ho",
+              "Ajay Jain",
+              "Pieter Abbeel"
+            ],
+            "year": 2020,
+            "title": "Denoising Diffusion Probabilistic Models"
+          }
+        },
+        {
+          "id": "blk-5-ref3-3edb",
+          "type": "reference_entry",
+          "inlines": [],
+          "caption": [],
+          "items": [],
+          "raw": "Song, Y., et al. (2021). Score-Based Generative Modeling through Stochastic Differential Equations. ICLR.",
+          "structured": {
+            "authors": [
+              "Yang Song",
+              "et al."
+            ],
+            "year": 2021,
+            "title": "Score-Based Generative Modeling through SDEs"
+          }
+        },
+        {
+          "id": "blk-5-ref4-27d7",
+          "type": "reference_entry",
+          "inlines": [],
+          "caption": [],
+          "items": [],
+          "raw": "Lipman, Y., et al. (2023). Flow Matching for Generative Modeling. ICLR.",
+          "structured": {
+            "authors": [
+              "Yaron Lipman",
+              "et al."
+            ],
+            "year": 2023,
+            "title": "Flow Matching for Generative Modeling"
+          }
+        },
+        {
+          "id": "blk-5-ref5-40ca",
+          "type": "reference_entry",
+          "inlines": [],
+          "caption": [],
+          "items": [],
+          "raw": "Salimans, T., & Ho, J. (2022). Progressive Distillation for Fast Sampling of Diffusion Models. ICLR.",
+          "structured": {
+            "authors": [
+              "Tim Salimans",
+              "Jonathan Ho"
+            ],
+            "year": 2022,
+            "title": "Progressive Distillation for Fast Sampling"
+          }
+        }
+      ],
+      "sections": []
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "annotations": [
+    { "kind": "highlight", "color": "yellow", "anchor": { "block_id": "blk-0-p1-5d87", "side": "source", "start": 0, "end": 14 }, "quote": "rectified flow", "orphaned": false },
+    { "kind": "highlight", "color": "yellow", "anchor": { "block_id": "blk-1-p1-c4d1", "side": "source", "start": 0, "end": 18 }, "quote": "Generative modeling", "orphaned": false },
+    { "kind": "highlight", "color": "green", "anchor": { "block_id": "blk-2-1-p1-9eca", "side": "translation", "start": 0, "end": 8 }, "quote": "経験的サンプル", "orphaned": false },
+    { "kind": "highlight", "color": "green", "anchor": { "block_id": "blk-2-1-q1-551d", "side": "source", "start": 0, "end": 13 }, "quote": "Straight paths", "orphaned": false },
+    { "kind": "highlight", "color": "blue", "anchor": { "block_id": "blk-2-2-p1-e102", "side": "source", "start": 4, "end": 10 }, "quote": "reflow", "orphaned": false },
+    { "kind": "highlight", "color": "blue", "anchor": { "block_id": "blk-3-p1-01e0", "side": "source", "start": 0, "end": 15 }, "quote": "EMA teacher", "orphaned": false },
+    { "kind": "highlight", "color": "pink", "anchor": { "block_id": "blk-4-p1-b79d", "side": "translation", "start": 0, "end": 6 }, "quote": "整流フロー", "orphaned": false },
+    { "kind": "highlight", "color": "pink", "anchor": { "block_id": "blk-3-p2-55a9", "side": "translation", "start": 0, "end": 12 }, "quote": "1 ステップ生成器", "orphaned": false },
+    { "kind": "comment", "color": "yellow", "body": "ここが最小二乗回帰に帰着する箇所。重要。", "anchor": { "block_id": "blk-2-1-eq2-2dfc", "side": "source" }, "quote": "min objective", "orphaned": false },
+    { "kind": "comment", "color": "blue", "body": "reflow の反復回数 K は実験で 1〜2 回。", "anchor": { "block_id": "blk-2-2-alg1-5154", "side": "source" }, "quote": "repeat K times", "orphaned": false },
+    { "kind": "bookmark", "anchor": { "block_id": "blk-2-1-p1-9eca", "side": "source" }, "quote": null, "orphaned": false },
+    { "kind": "highlight", "color": "yellow", "anchor": { "block_id": "blk-9-removed-0000", "side": "source", "start": 0, "end": 10 }, "quote": "orphaned span", "orphaned": true }
+  ]
+}

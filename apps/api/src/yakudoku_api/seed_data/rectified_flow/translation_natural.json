@@ -1,0 +1,533 @@
+{
+  "blk-0-p1-5d87": {
+    "content_ja": [
+      {
+        "t": "emphasis",
+        "children": [
+          {
+            "t": "text",
+            "v": "整流フロー"
+          }
+        ]
+      },
+      {
+        "t": "text",
+        "v": "は、2 つの分布 "
+      },
+      {
+        "t": "math_inline",
+        "v": "\\pi_0"
+      },
+      {
+        "t": "text",
+        "v": " と "
+      },
+      {
+        "t": "math_inline",
+        "v": "\\pi_1"
+      },
+      {
+        "t": "text",
+        "v": "の間の輸送写像を学習する、驚くほど単純な手法である。サンプルを直線経路で結び、常微分方程式 "
+      },
+      {
+        "t": "ref",
+        "kind": "equation",
+        "ref": "eq-1",
+        "v": "式(1)"
+      },
+      {
+        "t": "text",
+        "v": "に従う。本手法は生成モデリングとドメイン転送を統一し、再帰的な "
+      },
+      {
+        "t": "emphasis",
+        "children": [
+          {
+            "t": "text",
+            "v": "reflow"
+          }
+        ]
+      },
+      {
+        "t": "text",
+        "v": " によって経路を直線化することで、単一のオイラーステップで生成が可能になる "
+      },
+      {
+        "t": "citation",
+        "ref": "liu2022flow"
+      },
+      {
+        "t": "text",
+        "v": "。"
+      }
+    ],
+    "text_ja": "整流フローは、2 つの分布 \\pi_0 と \\pi_1の間の輸送写像を学習する、驚くほど単純な手法である。サンプルを直線経路で結び、常微分方程式 式(1)に従う。本手法は生成モデリングとドメイン転送を統一し、再帰的な reflow によって経路を直線化することで、単一のオイラーステップで生成が可能になる [liu2022flow]。",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-1-p1-c4d1": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "生成モデリングとドメイン転送はいずれも、ある分布を別の分布へ輸送することを要する。拡散モデル "
+      },
+      {
+        "t": "citation",
+        "ref": "ho2020denoising"
+      },
+      {
+        "t": "text",
+        "v": "やスコアベース SDE "
+      },
+      {
+        "t": "citation",
+        "ref": "song2021scorebased"
+      },
+      {
+        "t": "text",
+        "v": "などの連続時間手法は強力だが、シミュレーションの高価な曲がった軌道に依存する"
+      },
+      {
+        "t": "footnote_ref",
+        "ref": "fn-1"
+      },
+      {
+        "t": "text",
+        "v": "。本研究では代わりに"
+      },
+      {
+        "t": "emphasis",
+        "children": [
+          {
+            "t": "text",
+            "v": "直線"
+          }
+        ]
+      },
+      {
+        "t": "text",
+        "v": "軌道を学習する。"
+      },
+      {
+        "t": "ref",
+        "kind": "figure",
+        "ref": "fig-1",
+        "v": "図1"
+      },
+      {
+        "t": "text",
+        "v": "を参照。"
+      }
+    ],
+    "text_ja": "生成モデリングとドメイン転送はいずれも、ある分布を別の分布へ輸送することを要する。拡散モデル [ho2020denoising]やスコアベース SDE [song2021scorebased]などの連続時間手法は強力だが、シミュレーションの高価な曲がった軌道に依存する。本研究では代わりに直線軌道を学習する。図1を参照。",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-1-fig1-fe1c": {
+    "content_ja": [],
+    "text_ja": "",
+    "state": "machine",
+    "quality_flags": [
+      "placeholder_mismatch"
+    ]
+  },
+  "blk-1-p2-0b4e": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "参照実装は "
+      },
+      {
+        "t": "url",
+        "v": "github.com/gnobitab/RectifiedFlow",
+        "href": "https://github.com/gnobitab/RectifiedFlow"
+      },
+      {
+        "t": "text",
+        "v": "で公開している。中核の学習ループは "
+      },
+      {
+        "t": "code_inline",
+        "v": "F.mse_loss(v_theta(z_t, t), x1 - x0)"
+      },
+      {
+        "t": "text",
+        "v": "の 1 回の呼び出し、すなわち定速方向への最小二乗回帰に帰着する。"
+      }
+    ],
+    "text_ja": "参照実装は github.com/gnobitab/RectifiedFlowで公開している。中核の学習ループは F.mse_loss(v_theta(z_t, t), x1 - x0)の 1 回の呼び出し、すなわち定速方向への最小二乗回帰に帰着する。",
+    "state": "machine",
+    "quality_flags": [
+      "length_outlier"
+    ]
+  },
+  "blk-1-li1-5089": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "生成と転送を統一する最小二乗目的関数。\n- フローを直線化し輸送コストを削減する "
+      },
+      {
+        "t": "emphasis",
+        "children": [
+          {
+            "t": "text",
+            "v": "reflow"
+          }
+        ]
+      },
+      {
+        "t": "text",
+        "v": " 作用素。\n- 高品質な 1 ステップ生成器を与える "
+      },
+      {
+        "t": "emphasis",
+        "children": [
+          {
+            "t": "text",
+            "v": "distillation"
+          }
+        ]
+      },
+      {
+        "t": "text",
+        "v": " 手法。"
+      }
+    ],
+    "text_ja": "生成と転送を統一する最小二乗目的関数。\n- フローを直線化し輸送コストを削減する reflow 作用素。\n- 高品質な 1 ステップ生成器を与える distillation 手法。",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-1-fn1-5b23": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "曲がった ODE のシミュレーションは通常、数十から数百回のネットワーク評価を要し、これがサンプリングコストの大半を占める。"
+      }
+    ],
+    "text_ja": "曲がった ODE のシミュレーションは通常、数十から数百回のネットワーク評価を要し、これがサンプリングコストの大半を占める。",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-2-p1-65ad": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "まず整流フローを定義し、続いてサンプリングを高速化する "
+      },
+      {
+        "t": "emphasis",
+        "children": [
+          {
+            "t": "text",
+            "v": "reflow"
+          }
+        ]
+      },
+      {
+        "t": "text",
+        "v": " と "
+      },
+      {
+        "t": "emphasis",
+        "children": [
+          {
+            "t": "text",
+            "v": "distillation"
+          }
+        ]
+      },
+      {
+        "t": "text",
+        "v": " の手続きを提示する。"
+      }
+    ],
+    "text_ja": "まず整流フローを定義し、続いてサンプリングを高速化する reflow と distillation の手続きを提示する。",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-2-h1-f18b": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "2.0 記法"
+      }
+    ],
+    "text_ja": "2.0 記法",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-2-1-p1-9eca": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "経験的サンプル "
+      },
+      {
+        "t": "math_inline",
+        "v": "X_0 \\sim \\pi_0"
+      },
+      {
+        "t": "text",
+        "v": " と "
+      },
+      {
+        "t": "math_inline",
+        "v": "X_1 \\sim \\pi_1"
+      },
+      {
+        "t": "text",
+        "v": "が与えられたとき、線形補間 "
+      },
+      {
+        "t": "ref",
+        "kind": "equation",
+        "ref": "eq-1",
+        "v": "式(1)"
+      },
+      {
+        "t": "text",
+        "v": "は速度が一定となる時刻付き経路を定義する。"
+      }
+    ],
+    "text_ja": "経験的サンプル X_0 \\sim \\pi_0 と X_1 \\sim \\pi_1が与えられたとき、線形補間 式(1)は速度が一定となる時刻付き経路を定義する。",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-2-1-p2-42e6": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "ODE "
+      },
+      {
+        "t": "math_inline",
+        "v": "dZ_t = v_\\theta(Z_t, t)\\, dt"
+      },
+      {
+        "t": "text",
+        "v": " を "
+      },
+      {
+        "t": "math_inline",
+        "v": "Z_0 \\sim \\pi_0"
+      },
+      {
+        "t": "text",
+        "v": "から解くと、質量が目標へ輸送される。学習された速度は直線方向の条件付き期待値である。"
+      }
+    ],
+    "text_ja": "ODE dZ_t = v_\\theta(Z_t, t)\\, dt を Z_0 \\sim \\pi_0から解くと、質量が目標へ輸送される。学習された速度は直線方向の条件付き期待値である。",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-2-1-thm1-2ee5": {
+    "content_ja": [],
+    "text_ja": "",
+    "state": "machine",
+    "quality_flags": [
+      "provider_refusal"
+    ]
+  },
+  "blk-2-1-q1-551d": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "直線経路は、単一のオイラーステップで厳密にシミュレートできる唯一の経路である。"
+      }
+    ],
+    "text_ja": "直線経路は、単一のオイラーステップで厳密にシミュレートできる唯一の経路である。",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-2-2-p1-e102": {
+    "content_ja": [
+      {
+        "t": "emphasis",
+        "children": [
+          {
+            "t": "text",
+            "v": "reflow"
+          }
+        ]
+      },
+      {
+        "t": "text",
+        "v": " 作用素は、学習済みフローが生成した端点を再結合して速度を再フィットし、より直線的な軌道を得る。reflow を繰り返し、続いて "
+      },
+      {
+        "t": "emphasis",
+        "children": [
+          {
+            "t": "text",
+            "v": "distillation"
+          }
+        ]
+      },
+      {
+        "t": "text",
+        "v": " を行うと 1 ステップモデルが得られる。"
+      },
+      {
+        "t": "ref",
+        "kind": "equation",
+        "ref": "eq-4",
+        "v": "式(4)"
+      },
+      {
+        "t": "text",
+        "v": "を参照。"
+      }
+    ],
+    "text_ja": "reflow 作用素は、学習済みフローが生成した端点を再結合して速度を再フィットし、より直線的な軌道を得る。reflow を繰り返し、続いて distillation を行うと 1 ステップモデルが得られる。式(4)を参照。",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-2-2-tbl1-9653": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "関数評価回数(NFE)に対する CIFAR-10 上の FID。"
+      },
+      {
+        "t": "emphasis",
+        "children": [
+          {
+            "t": "text",
+            "v": "distillation"
+          }
+        ]
+      },
+      {
+        "t": "text",
+        "v": "により 1 ステップサンプリングが可能になる。"
+      }
+    ],
+    "text_ja": "関数評価回数(NFE)に対する CIFAR-10 上の FID。distillationにより 1 ステップサンプリングが可能になる。",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-3-p1-01e0": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "整流フローを無条件画像生成と画像間転送で評価する。一般的な慣行に従い、重みの "
+      },
+      {
+        "t": "emphasis",
+        "children": [
+          {
+            "t": "text",
+            "v": "EMA teacher"
+          }
+        ]
+      },
+      {
+        "t": "text",
+        "v": " を追跡して "
+      },
+      {
+        "t": "emphasis",
+        "children": [
+          {
+            "t": "text",
+            "v": "distillation"
+          }
+        ]
+      },
+      {
+        "t": "text",
+        "v": " を安定化させ、"
+      },
+      {
+        "t": "citation",
+        "ref": "song2021scorebased"
+      },
+      {
+        "t": "text",
+        "v": "に対する FID を "
+      },
+      {
+        "t": "ref",
+        "kind": "table",
+        "ref": "tbl-2",
+        "v": "表2"
+      },
+      {
+        "t": "text",
+        "v": "に報告する。"
+      }
+    ],
+    "text_ja": "整流フローを無条件画像生成と画像間転送で評価する。一般的な慣行に従い、重みの EMA teacher を追跡して distillation を安定化させ、[song2021scorebased]に対する FID を 表2に報告する。",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-3-fig2-aaee": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "2 回の reflow と "
+      },
+      {
+        "t": "emphasis",
+        "children": [
+          {
+            "t": "text",
+            "v": "distillation"
+          }
+        ]
+      },
+      {
+        "t": "text",
+        "v": " の後、単一のオイラーステップで生成したサンプル。"
+      }
+    ],
+    "text_ja": "2 回の reflow と distillation の後、単一のオイラーステップで生成したサンプル。",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-3-tbl2-2f67": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "CIFAR-10 と CelebA-HQ における拡散ベースラインとの比較。"
+      }
+    ],
+    "text_ja": "CIFAR-10 と CelebA-HQ における拡散ベースラインとの比較。",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-3-p2-55a9": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "1 ステップ生成器は完全な ODE ソルバの品質の大半を保持しつつ、サンプリングコストを 2 桁削減しており、"
+      },
+      {
+        "t": "ref",
+        "kind": "section",
+        "ref": "sec-2-1",
+        "v": "§2.1"
+      },
+      {
+        "t": "text",
+        "v": "の直線化仮説を裏付ける。"
+      }
+    ],
+    "text_ja": "1 ステップ生成器は完全な ODE ソルバの品質の大半を保持しつつ、サンプリングコストを 2 桁削減しており、§2.1の直線化仮説を裏付ける。",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-4-p1-b79d": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "整流フローは、生成モデリングと輸送に対する単純・統一的・効率的な道筋を提供する。直線軌道により、サンプル品質を犠牲にすることなく 1 ステップ生成が実用的になる。"
+      }
+    ],
+    "text_ja": "整流フローは、生成モデリングと輸送に対する単純・統一的・効率的な道筋を提供する。直線軌道により、サンプル品質を犠牲にすることなく 1 ステップ生成が実用的になる。",
+    "state": "machine",
+    "quality_flags": []
+  }
+}

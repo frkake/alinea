@@ -1,0 +1,88 @@
+{
+  "blk-1-p1-c4d1": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "生成モデリングとドメイン転送は、両方とも、ある分布を別の分布へ輸送することを必要とする。拡散モデル "
+      },
+      {
+        "t": "citation",
+        "ref": "ho2020denoising"
+      },
+      {
+        "t": "text",
+        "v": " とスコアベース SDE "
+      },
+      {
+        "t": "citation",
+        "ref": "song2021scorebased"
+      },
+      {
+        "t": "text",
+        "v": " のような連続時間手法は、強い結果を達成するが、シミュレートするのに高価な曲がった軌道に依存する"
+      },
+      {
+        "t": "footnote_ref",
+        "ref": "fn-1"
+      },
+      {
+        "t": "text",
+        "v": "。我々は、代わりに、"
+      },
+      {
+        "t": "emphasis",
+        "children": [
+          {
+            "t": "text",
+            "v": "直線の"
+          }
+        ]
+      },
+      {
+        "t": "text",
+        "v": "軌道を学習する。"
+      },
+      {
+        "t": "ref",
+        "kind": "figure",
+        "ref": "fig-1",
+        "v": "図1"
+      },
+      {
+        "t": "text",
+        "v": " を見よ。"
+      }
+    ],
+    "text_ja": "生成モデリングとドメイン転送は、両方とも、ある分布を別の分布へ輸送することを必要とする。拡散モデル [ho2020denoising] とスコアベース SDE [song2021scorebased] のような連続時間手法は、強い結果を達成するが、シミュレートするのに高価な曲がった軌道に依存する。我々は、代わりに、直線の軌道を学習する。図1 を見よ。",
+    "state": "machine",
+    "quality_flags": []
+  },
+  "blk-1-p2-0b4e": {
+    "content_ja": [
+      {
+        "t": "text",
+        "v": "我々の参照実装は "
+      },
+      {
+        "t": "url",
+        "v": "github.com/gnobitab/RectifiedFlow",
+        "href": "https://github.com/gnobitab/RectifiedFlow"
+      },
+      {
+        "t": "text",
+        "v": " で利用可能である。中核の訓練ループは、"
+      },
+      {
+        "t": "code_inline",
+        "v": "F.mse_loss(v_theta(z_t, t), x1 - x0)"
+      },
+      {
+        "t": "text",
+        "v": " への単一の呼び出し、すなわち定速方向の上への最小二乗回帰へ、帰着する。"
+      }
+    ],
+    "text_ja": "我々の参照実装は github.com/gnobitab/RectifiedFlow で利用可能である。中核の訓練ループは、F.mse_loss(v_theta(z_t, t), x1 - x0) への単一の呼び出し、すなわち定速方向の上への最小二乗回帰へ、帰着する。",
+    "state": "machine",
+    "quality_flags": []
+  }
+}

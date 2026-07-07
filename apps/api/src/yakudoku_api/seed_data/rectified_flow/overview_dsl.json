@@ -1,0 +1,42 @@
+{
+  "versions": [
+    {
+      "version": 1,
+      "is_current": false,
+      "render_mode": "svg",
+      "dsl": {
+        "layout": "left_right",
+        "nodes": [
+          { "id": "pi0", "label": "π₀(始点分布)", "shape": "ellipse" },
+          { "id": "pi1", "label": "π₁(目標分布)", "shape": "ellipse" },
+          { "id": "flow", "label": "整流フロー v_θ", "shape": "box" }
+        ],
+        "edges": [
+          { "from": "pi0", "to": "flow", "label": "ODE" },
+          { "from": "flow", "to": "pi1", "label": "輸送" }
+        ]
+      }
+    },
+    {
+      "version": 2,
+      "is_current": true,
+      "render_mode": "svg",
+      "dsl": {
+        "layout": "left_right",
+        "nodes": [
+          { "id": "pi0", "label": "π₀(始点分布)", "shape": "ellipse" },
+          { "id": "flow", "label": "整流フロー v_θ", "shape": "box" },
+          { "id": "reflow", "label": "reflow(直線化)", "shape": "box" },
+          { "id": "distill", "label": "蒸留 → 1 ステップ", "shape": "box" },
+          { "id": "pi1", "label": "π₁(目標分布)", "shape": "ellipse" }
+        ],
+        "edges": [
+          { "from": "pi0", "to": "flow", "label": "線形補間 式(1)" },
+          { "from": "flow", "to": "reflow", "label": "再結合" },
+          { "from": "reflow", "to": "distill", "label": "1 ステップ化" },
+          { "from": "distill", "to": "pi1", "label": "生成" }
+        ]
+      }
+    }
+  ]
+}

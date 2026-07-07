@@ -1,0 +1,82 @@
+{
+  "resources": [
+    {
+      "kind": "github",
+      "status": "active",
+      "official": true,
+      "url": "https://github.com/gnobitab/RectifiedFlow",
+      "url_normalized": "github.com/gnobitab/rectifiedflow",
+      "title": "gnobitab/RectifiedFlow — official implementation",
+      "source_domain": "github.com",
+      "meta": { "repo": "gnobitab/RectifiedFlow", "language": "Python", "stars": 1200, "pushed_at": "2023-11-04" },
+      "fetch_status": "ok",
+      "note_md": "公式実装。CIFAR-10 の再現スクリプトあり。",
+      "note_anchors": []
+    },
+    {
+      "kind": "youtube",
+      "status": "active",
+      "official": false,
+      "url": "https://www.youtube.com/watch?v=rectifiedflow",
+      "url_normalized": "youtube.com/watch?v=rectifiedflow",
+      "title": "Rectified Flow の解説動画",
+      "source_domain": "youtube.com",
+      "meta": { "duration_seconds": 754 },
+      "fetch_status": "ok",
+      "note_md": "",
+      "note_anchors": []
+    },
+    {
+      "kind": "slides",
+      "status": "active",
+      "official": false,
+      "url": "https://iclr.cc/virtual/2023/poster/rectified-flow",
+      "url_normalized": "iclr.cc/virtual/2023/poster/rectified-flow",
+      "title": "ICLR 2023 ポスター",
+      "source_domain": "iclr.cc",
+      "meta": { "domain": "iclr.cc", "format": "PDF", "pages": 24 },
+      "fetch_status": "ok",
+      "note_md": "",
+      "note_anchors": []
+    },
+    {
+      "kind": "article",
+      "status": "active",
+      "official": false,
+      "url": "https://zenn.dev/example/articles/rectified-flow",
+      "url_normalized": "zenn.dev/example/articles/rectified-flow",
+      "title": "整流フロー入門(Zenn)",
+      "source_domain": "zenn.dev",
+      "meta": { "domain": "zenn.dev", "reading_minutes": 15 },
+      "fetch_status": "ok",
+      "note_md": "",
+      "note_anchors": []
+    },
+    {
+      "kind": "github",
+      "status": "suggested",
+      "official": false,
+      "url": "https://github.com/example/flow-matching",
+      "url_normalized": "github.com/example/flow-matching",
+      "title": "関連: Flow Matching 実装(提案)",
+      "source_domain": "github.com",
+      "meta": { "repo": "example/flow-matching", "language": "Python", "stars": 300, "pushed_at": "2023-06-01" },
+      "fetch_status": "ok",
+      "note_md": "",
+      "note_anchors": []
+    },
+    {
+      "kind": "article",
+      "status": "dismissed",
+      "official": false,
+      "url": "https://example.com/unrelated",
+      "url_normalized": "example.com/unrelated",
+      "title": "無関係候補(却下済み)",
+      "source_domain": "example.com",
+      "meta": { "domain": "example.com", "reading_minutes": 3 },
+      "fetch_status": "ok",
+      "note_md": "",
+      "note_anchors": []
+    }
+  ]
+}

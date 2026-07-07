@@ -1,0 +1,26 @@
+{
+  "scope": "global",
+  "name": "分野別定訳(生成モデル / 最適輸送)",
+  "terms": [
+    { "source_term": "rectified flow", "target_term": "整流フロー", "pos_label": "n.", "policy": "both" },
+    { "source_term": "reflow", "target_term": "reflow", "pos_label": "n.", "policy": "keep_original" },
+    { "source_term": "distillation", "target_term": "蒸留", "pos_label": "n.", "policy": "both" },
+    { "source_term": "EMA teacher", "target_term": "EMA teacher", "pos_label": "n.", "policy": "keep_original" },
+    { "source_term": "transport map", "target_term": "輸送写像", "pos_label": "n.", "policy": "translate" },
+    { "source_term": "coupling", "target_term": "カップリング", "pos_label": "n.", "policy": "both" },
+    { "source_term": "velocity field", "target_term": "速度場", "pos_label": "n.", "policy": "translate" },
+    { "source_term": "ordinary differential equation", "target_term": "常微分方程式", "pos_label": "n.", "policy": "translate" },
+    { "source_term": "ODE", "target_term": "ODE", "pos_label": "n.", "policy": "keep_original" },
+    { "source_term": "generative modeling", "target_term": "生成モデリング", "pos_label": "n.", "policy": "translate" },
+    { "source_term": "domain transfer", "target_term": "ドメイン転送", "pos_label": "n.", "policy": "translate" },
+    { "source_term": "diffusion model", "target_term": "拡散モデル", "pos_label": "n.", "policy": "translate" },
+    { "source_term": "score-based", "target_term": "スコアベース", "pos_label": "adj.", "policy": "translate" },
+    { "source_term": "marginal distribution", "target_term": "周辺分布", "pos_label": "n.", "policy": "translate" },
+    { "source_term": "least squares", "target_term": "最小二乗", "pos_label": "n.", "policy": "translate" },
+    { "source_term": "Euler step", "target_term": "オイラーステップ", "pos_label": "n.", "policy": "translate" },
+    { "source_term": "trajectory", "target_term": "軌道", "pos_label": "n.", "policy": "translate" },
+    { "source_term": "one-step generation", "target_term": "1 ステップ生成", "pos_label": "n.", "policy": "translate" },
+    { "source_term": "sampling cost", "target_term": "サンプリングコスト", "pos_label": "n.", "policy": "translate" },
+    { "source_term": "function evaluation", "target_term": "関数評価", "pos_label": "n.", "policy": "translate" }
+  ]
+}

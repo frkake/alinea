@@ -1,0 +1,35 @@
+{
+  "title": "整流フローをやさしく",
+  "preset": "beginner",
+  "include_math": false,
+  "version": 1,
+  "blocks": [
+    { "type": "heading", "content": { "text": "整流フローとは" }, "origin": "ai", "evidence_anchors": [] },
+    {
+      "type": "paragraph",
+      "content": { "md": "整流フローは、2 つのデータ分布をまっすぐな経路で結び、その方向を学習する手法です ⟦ev:1⟧。曲がった経路をたどる拡散モデルと違い、少ないステップで生成できます。" },
+      "origin": "ai",
+      "evidence_anchors": [{ "block_id": "blk-0-p1-5d87", "side": "source", "display": "要旨" }]
+    },
+    {
+      "type": "quote_source",
+      "content": { "text_en": "learning the ODE to follow the straight paths connecting the points", "text_ja": "点を結ぶ直線経路に従う ODE を学習する" },
+      "origin": "paper",
+      "evidence_anchors": [{ "block_id": "blk-2-1-p1-9eca", "side": "source", "display": "§2.1 ¶1" }]
+    },
+    {
+      "type": "figure_embed",
+      "content": { "caption_ja": "reflow により軌道がまっすぐになる様子", "asset_key": "figures/fig-1.png" },
+      "origin": "paper",
+      "evidence_anchors": [{ "block_id": "blk-1-fig1-fe1c", "side": "source", "display": "図1" }]
+    },
+    { "type": "explainer_figure", "content": { "slot": 0, "caption_ja": "直線経路と 1 ステップ生成の直感", "image_storage_key": "renders/explainer/seed/v1.png" }, "origin": "ai", "evidence_anchors": [] },
+    {
+      "type": "discussion",
+      "content": { "items": [{ "md": "実装では重みの EMA teacher を追跡すると蒸留が安定します。" }, { "md": "reflow は 1〜2 回で十分なことが多いです。" }] },
+      "origin": "ai",
+      "evidence_anchors": [{ "block_id": "blk-3-p1-01e0", "side": "translation", "display": "§3 ¶1" }]
+    },
+    { "type": "attribution", "content": { "text": "本記事は arXiv:2209.03003(整流フロー)を基に自動生成しました。図は原論文のライセンスに従います。" }, "origin": "ai", "evidence_anchors": [] }
+  ]
+}

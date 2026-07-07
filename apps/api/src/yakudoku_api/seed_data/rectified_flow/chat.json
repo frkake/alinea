@@ -1,0 +1,80 @@
+{
+  "thread": { "title": "メイン", "is_main": true },
+  "messages": [
+    {
+      "role": "user",
+      "content": { "segments": [{ "type": "text", "md": "整流フローの学習目的を式で説明して。" }] },
+      "context_anchors": [
+        { "block_id": "blk-2-1-eq1-ff46", "side": "source", "display": "式(1) · §2.1" }
+      ],
+      "evidence_anchors": [],
+      "status": "complete"
+    },
+    {
+      "role": "assistant",
+      "content": {
+        "segments": [
+          {
+            "type": "text",
+            "md": "整流フローの学習目的は、結局 ⟦A:0⟧ の最小二乗回帰に帰着します。すなわち補間 X_t の点で、直線方向 X_1 − X_0 を速度場 v_θ に回帰させます。"
+          },
+          {
+            "type": "outside_knowledge",
+            "md": "実装では時刻 t を [0,1] から一様サンプリングするのが一般的です(論文本文には明示されていません)。"
+          }
+        ]
+      },
+      "context_anchors": [],
+      "evidence_anchors": [
+        { "block_id": "blk-2-1-eq2-2dfc", "side": "source", "display": "式(2) · §2.1" }
+      ],
+      "status": "complete",
+      "provider": "anthropic",
+      "model": "seed-fixture"
+    },
+    {
+      "role": "user",
+      "content": { "segments": [{ "type": "text", "md": "蒸留を安定させるコツはありますか?" }] },
+      "context_anchors": [],
+      "evidence_anchors": [],
+      "status": "complete"
+    },
+    {
+      "role": "assistant",
+      "content": {
+        "segments": [
+          {
+            "type": "text",
+            "md": "はい。重みの EMA teacher を追跡し、その出力に対して 1 ステップ生成器を蒸留すると安定します ⟦A:0⟧。§3 の実験でもこの手順が使われています。"
+          }
+        ]
+      },
+      "context_anchors": [],
+      "evidence_anchors": [
+        { "block_id": "blk-3-p1-01e0", "side": "translation", "display": "§3 ¶1" }
+      ],
+      "status": "complete",
+      "provider": "anthropic",
+      "model": "seed-fixture"
+    },
+    {
+      "role": "user",
+      "content": { "segments": [{ "type": "text", "md": "図2は何を示していますか?" }] },
+      "context_anchors": [
+        { "block_id": "blk-3-fig2-aaee", "side": "source", "display": "図2 · §3" }
+      ],
+      "evidence_anchors": [],
+      "status": "complete"
+    },
+    {
+      "role": "assistant",
+      "content": { "segments": [] },
+      "context_anchors": [],
+      "evidence_anchors": [],
+      "status": "error",
+      "error": "生成に失敗しました(モデルタイムアウト)。再試行できます。",
+      "provider": "anthropic",
+      "model": "seed-fixture"
+    }
+  ]
+}

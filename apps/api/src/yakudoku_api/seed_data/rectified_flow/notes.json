@@ -1,0 +1,16 @@
+{
+  "notes": [
+    {
+      "title": "整流フローの学習目的(チャットから昇格)",
+      "body_md": "整流フローの学習目的は、結局 **式(2)** の最小二乗回帰に帰着する。補間 X_t 上で直線方向 X_1 − X_0 を速度場へ回帰させる。",
+      "anchors": [{ "block_id": "blk-2-1-eq2-2dfc", "side": "source", "display": "式(2) · §2.1" }],
+      "from_chat": true
+    },
+    {
+      "title": "蒸留の安定化メモ",
+      "body_md": "蒸留を安定させるには重みの **EMA teacher** を追跡するとよい(§3 の実験でも使用)。1 ステップ生成器の品質がぶれにくくなる。",
+      "anchors": [{ "block_id": "blk-3-p1-01e0", "side": "translation", "display": "§3 ¶1" }],
+      "from_chat": false
+    }
+  ]
+}
