@@ -428,6 +428,96 @@ async def arxiv_eprint(request: Request) -> Response:
     return Response(blob, media_type="application/gzip")
 
 
+# LaTeXML(arXiv 公式 HTML)相当の決定的ドキュメント。ingest パイプラインの
+# fetching→parsing 実経路(E2E)を成立させる(パーサは ltx_* クラス体系を読む)。
+_LATEXML_HTML = """<!DOCTYPE html>
+<html>
+<head><title>Mock Paper for __ARXIV_ID__</title></head>
+<body>
+<article class="ltx_document">
+  <h1 class="ltx_title ltx_title_document">Mock Paper for __ARXIV_ID__</h1>
+  <div class="ltx_authors"><span class="ltx_personname">Mock Author</span></div>
+  <div class="ltx_abstract"><h6 class="ltx_title ltx_title_abstract">Abstract</h6>
+    <p class="ltx_p">A deterministic mock abstract for __ARXIV_ID__.</p></div>
+  <section class="ltx_section" id="S1">
+    <h2 class="ltx_title ltx_title_section"><span class="ltx_tag ltx_tag_section">1 </span>
+      Introduction</h2>
+    <div class="ltx_para" id="S1.p1"><p class="ltx_p">Deterministic mock introduction
+      with inline math <math display="inline" alttext="x_{0}"><semantics>
+      <annotation encoding="application/x-tex">x_{0}</annotation></semantics></math>.</p></div>
+    <table class="ltx_equation ltx_eqn_table" id="S1.E1">
+      <tr class="ltx_equation ltx_eqn_row">
+        <td class="ltx_eqn_cell ltx_align_center"><math display="block" alttext="y=f(x)">
+          <semantics><annotation encoding="application/x-tex">y=f(x)</annotation>
+          </semantics></math></td>
+        <td class="ltx_eqn_cell ltx_eqn_eqno"><span class="ltx_tag ltx_tag_equation">(1)</span></td>
+      </tr>
+    </table>
+  </section>
+  <section class="ltx_section" id="S2">
+    <h2 class="ltx_title ltx_title_section"><span class="ltx_tag ltx_tag_section">2 </span>
+      Method</h2>
+    <div class="ltx_para" id="S2.p1"><p class="ltx_p">The mock method paragraph.</p></div>
+    <figure class="ltx_figure" id="S2.F1">
+      <img class="ltx_graphics" src="x1.png" alt="mock figure"/>
+      <figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">Figure 1: </span>
+        Mock figure caption.</figcaption>
+    </figure>
+  </section>
+  <section class="ltx_bibliography" id="bib">
+    <h2 class="ltx_title ltx_title_bibliography">References</h2>
+    <ul class="ltx_biblist">
+      <li class="ltx_bibitem" id="bib.bib1"><span class="ltx_tag ltx_tag_bibitem">[1]</span>
+        Mock Reference. Deterministic citations, 2026.</li>
+    </ul>
+  </section>
+</article>
+</body></html>
+"""
+
+_OAI_GETRECORD = """<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
+  <GetRecord>
+    <record>
+      <metadata>
+        <arXiv xmlns="http://arxiv.org/OAI/arXiv/">
+          <id>{arxiv_id}</id>
+          <license>http://creativecommons.org/licenses/by/4.0/</license>
+        </arXiv>
+      </metadata>
+    </record>
+  </GetRecord>
+</OAI-PMH>
+"""
+
+# 決定的な最小 PDF(1 ページ・空)。
+_MINIMAL_PDF = (
+    b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n"
+    b"xref\n0 4\n0000000000 65535 f \ntrailer<</Size 4/Root 1 0 R>>\n%%EOF\n"
+)
+
+
+async def arxiv_html(request: Request) -> Response:
+    arxiv_id = request.path_params.get("arxiv_id", "")
+    return PlainTextResponse(
+        _LATEXML_HTML.replace("__ARXIV_ID__", arxiv_id), media_type="text/html; charset=utf-8"
+    )
+
+
+async def arxiv_oai(request: Request) -> Response:
+    identifier = request.query_params.get("identifier", "")
+    arxiv_id = identifier.rsplit(":", 1)[-1] if identifier else ""
+    return PlainTextResponse(
+        _OAI_GETRECORD.format(arxiv_id=arxiv_id), media_type="text/xml; charset=utf-8"
+    )
+
+
+async def arxiv_pdf(request: Request) -> Response:
+    return Response(_MINIMAL_PDF, media_type="application/pdf")
+
+
 # --- oEmbed(GitHub / YouTube 相当) -------------------------------------------
 
 
@@ -492,6 +582,9 @@ def build_app() -> Starlette:
         Route("/arxiv/abs/{arxiv_id:path}", arxiv_abs, methods=["GET"]),
         Route("/arxiv/api/query", arxiv_query, methods=["GET"]),
         Route("/arxiv/e-print/{arxiv_id:path}", arxiv_eprint, methods=["GET"]),
+        Route("/arxiv/html/{arxiv_id:path}", arxiv_html, methods=["GET"]),
+        Route("/arxiv/oai2", arxiv_oai, methods=["GET"]),
+        Route("/arxiv/pdf/{arxiv_id:path}", arxiv_pdf, methods=["GET"]),
         Route("/youtube/oembed", youtube_oembed, methods=["GET"]),
         Route("/github/oembed", github_oembed, methods=["GET"]),
     ]

@@ -68,6 +68,14 @@ _DEFAULT_STRUCTURED: dict[str, dict[str, Any]] = {
         "evidence": [{"index": 1, "block_id": "blk-0001"}],
         "outside_knowledge": "一般に拡散モデルは多ステップを要する(論文外の知識)。",
     },
+    "summary_3line_v1": {
+        "summary_lines": [
+            "課題: 決定的モック要約の 1 行目(課題)。",
+            "手法: 決定的モック要約の 2 行目(手法)。",
+            "結果: 決定的モック要約の 3 行目(結果)。",
+        ],
+        "suggested_tags": ["mock", "e2e"],
+    },
 }
 
 
@@ -76,6 +84,35 @@ def _last_user_text(req: LLMRequest) -> str:
         if msg.role == "user":
             return "".join(p.text or "" for p in msg.parts if p.type == "text")
     return ""
+
+
+# 翻訳バッチの user メッセージ内「[block_id] (type) text」行(継続行は直前に連結)。
+_TARGET_LINE = re.compile(r"^\[([^\]\s]+)\] \([a-z_]+\) (.*)$")
+
+
+def _synth_translation_batch(req: LLMRequest) -> dict[str, Any]:
+    """translation_batch_v1 の決定的エコー訳を合成する。
+
+    user メッセージの「翻訳対象ブロック」行からブロック id と保護済みテキストを抽出し、
+    プレースホルダトークンをそのまま保って「訳:」接頭辞のエコーを返す(検証 protocol の
+    「全トークンちょうど 1 回」を構造的に満たす)。E2E・YAKUDOKU_FAKE_LLM=1 用。
+    """
+    translations: list[dict[str, str]] = []
+    in_targets = False
+    for line in _last_user_text(req).splitlines():
+        if line.startswith("# 翻訳対象ブロック"):
+            in_targets = True
+            continue
+        if in_targets and line.startswith("# "):
+            break
+        if not in_targets:
+            continue
+        m = _TARGET_LINE.match(line)
+        if m:
+            translations.append({"id": m.group(1), "ja": f"訳: {m.group(2)}"})
+        elif translations and line.strip():
+            translations[-1]["ja"] += "\n" + line
+    return {"translations": translations}
 
 
 def _tokens(chars: int) -> int:
@@ -164,6 +201,8 @@ class FakeLLMProvider:
             )
         spec = req.json_schema
         data = self._structured.get(spec.name) or _DEFAULT_STRUCTURED.get(spec.name)
+        if data is None and spec.name == "translation_batch_v1":
+            data = _synth_translation_batch(req)
         if data is None:
             raise ProviderError(
                 ErrorKind.SCHEMA_VALIDATION,
