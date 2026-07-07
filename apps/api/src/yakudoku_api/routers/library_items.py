@@ -39,6 +39,7 @@ from yakudoku_api.schemas.common import (
     decode_cursor,
     encode_cursor,
 )
+from yakudoku_api.schemas.dashboard import QueueOrderRequest, QueueOrderResponse
 from yakudoku_api.schemas.library import (
     CollectionFacet,
     DuplicateResolutionBody,
@@ -781,3 +782,45 @@ async def _accessible_paper(db: DbDep, user_id: str, paper_id: str) -> Paper:
     if owns is not None:
         return paper
     raise ProblemException("not_found")
+
+
+# ============================================================================
+# すぐ読むキューの並び替え(§5.7)
+# ============================================================================
+@router.put(
+    "/api/library-items/queue-order",
+    response_model=QueueOrderResponse,
+    operation_id="libraryItems_setQueueOrder",
+)
+async def set_queue_order(
+    body: QueueOrderRequest, user: CurrentUser, db: DbDep
+) -> QueueOrderResponse:
+    ids = body.library_item_ids
+    if len(ids) != len(set(ids)):
+        raise ProblemException("validation_error", detail="library_item_ids に重複があります")
+
+    current_ids = (
+        (
+            await db.execute(
+                select(LibraryItem.id).where(
+                    LibraryItem.user_id == user.id, LibraryItem.status == "up_next"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    current_set = {str(cid) for cid in current_ids}
+    if set(ids) != current_set:
+        # up_next でない ID が混在/不足(他ユーザー・不存在・重複含む)は 422(§5.7)。
+        raise ProblemException(
+            "validation_error",
+            detail="status=up_next の全 ID を過不足なく指定してください",
+        )
+
+    for idx, item_id in enumerate(ids):
+        item = await db.get(LibraryItem, item_id)
+        assert item is not None  # 直前の集合一致チェックで存在保証済み
+        item.queue_order = idx
+    await db.commit()
+    return QueueOrderResponse(ok=True)
