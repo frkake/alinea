@@ -38,3 +38,4 @@ apps/web/e2e/.auth/
 # misc
 .DS_Store
 *.log
+*.tsbuildinfo
