@@ -28,6 +28,29 @@ class ApiSettings(CoreSettings):
     oauth_github_client_id: str = ""
     oauth_github_client_secret: str = ""
 
+    # LLM 運営キー(plans/04 §11.1-2・§16。未設定プロバイダはチェーンから除外)。
+    # env 変数名は plans/04 §16 の逐語(google は google-genai 既定に合わせ GEMINI_API_KEY)。
+    openai_api_key: str = ""
+    anthropic_api_key: str = ""
+    gemini_api_key: str = ""
+    deepseek_api_key: str = ""
+    xai_api_key: str = ""
+
+    # ルート解決の Redis キャッシュ TTL(秒。plans/04 §15・§16。既定 60)。
+    yakudoku_llm_route_cache_ttl_s: int = 60
+
+    @property
+    def operator_api_keys(self) -> dict[str, str]:
+        """provider 名 → 設定済み運営キー(空文字は除外。plans/04 §11.1-2)。"""
+        raw = {
+            "openai": self.openai_api_key,
+            "anthropic": self.anthropic_api_key,
+            "google": self.gemini_api_key,
+            "deepseek": self.deepseek_api_key,
+            "xai": self.xai_api_key,
+        }
+        return {provider: key for provider, key in raw.items() if key}
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
