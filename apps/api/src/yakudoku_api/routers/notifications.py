@@ -8,9 +8,14 @@
   (ステータス更新+初回 ``done`` の ``finished_at`` 自動記録)をこのルータ内で行う
   (``library_items`` ルータは他タスクが並行編集中のため、更新系はそちら側の関数を直接
   呼ばず本ルータ内に複製し、読み出し専用の ``_summary_for`` のみ再利用する)。
-  ``promote_revision`` バリアント(B→A 昇格)の ``apply`` は §6.8 adopt-revision と
-  同一の内部処理とされているが、adopt-revision・reanchor は M1-22 の所有物のため未接続
-  (followup)。本タスクでは resolved の消化のみ行う。
+  ``promote_revision`` バリアント(B→A 昇格)の ``apply`` は plans/05 §12.3 の入口
+  (「通知→『変更する』→ ``POST /api/papers/{paper_id}/reingest``」)と同一の内部処理を行う:
+  ``mode='reingest'`` の ingest ジョブを ``adopt_on_complete=true`` で enqueue する。
+  reingest 完了時に worker(``pipeline.py``。M1-22/M1-07 followup)が adopt-revision と
+  同一の処理(``papers.latest_revision_id`` 切替+``reanchor_paper``)を自動実行する
+  (通常の reingest では立てないフラグのため自動適用にはならない。P6)。arxiv_id 未設定・
+  稼働中 ingest が既にある場合は best-effort でスキップし、通知の resolved 消化自体は
+  失敗させない。
 """
 
 from __future__ import annotations
@@ -21,10 +26,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 from sqlalchemy import and_, or_, select, update
-from yakudoku_core.db.models import LibraryItem, Notification
+from sqlalchemy.exc import IntegrityError
+from yakudoku_core.db.models import LibraryItem, Notification, Paper
+from yakudoku_core.jobs.store import JobStore
 
 from yakudoku_api.deps import CurrentUser, DbDep
 from yakudoku_api.errors import ProblemException
+from yakudoku_api.routers.ingest import JobWakeupDep, _active_ingest_job
 from yakudoku_api.routers.library_items import _summary_for
 from yakudoku_api.schemas.common import LibraryItemSummary, decode_cursor, encode_cursor
 from yakudoku_api.schemas.notifications import (
@@ -89,6 +97,52 @@ async def _apply_suggested_status(
         item.finished_at = dt.datetime.now(dt.UTC)
     await db.flush()
     return await _summary_for(db, item)
+
+
+async def _enqueue_promotion_reingest(
+    db: DbDep, wakeup: JobWakeupDep, user_id: str, item_id: str
+) -> str | None:
+    """B→A 昇格提案の apply: plans/05 §12.3 の入口(``POST /api/papers/{paper_id}/reingest``)と
+    同一の ingest ジョブを ``adopt_on_complete=true`` で enqueue する。
+
+    reingest 完了時、worker(pipeline.py)が structuring 段の最終処理として adopt-revision
+    と同一の内部処理(``papers.latest_revision_id`` 切替+``reanchor_paper``)を自動実行する
+    (通常の再取り込みボタンでは ``adopt_on_complete`` を立てないため自動適用にはならない。P6)。
+    論文が見つからない・arxiv_id 未設定・既に稼働中の ingest がある場合は best-effort で
+    None を返す(通知の resolved 消化自体は失敗させない)。
+    """
+    item = await _owned_item(db, user_id, item_id)
+    if item is None:
+        return None
+    paper = await db.get(Paper, item.paper_id)
+    if paper is None or not paper.arxiv_id:
+        return None
+    if await _active_ingest_job(db, str(paper.id)) is not None:
+        return None
+
+    store = JobStore(db)
+    try:
+        job_id = await store.enqueue(
+            kind="ingest",
+            payload={
+                "mode": "reingest",
+                "source": "arxiv",
+                "arxiv_id": paper.arxiv_id,
+                "url": None,
+                "library_item_id": item_id,
+                "adopt_on_complete": True,
+            },
+            priority="bulk",
+            user_id=user_id,
+            paper_id=str(paper.id),
+            library_item_id=item_id,
+        )
+    except IntegrityError:
+        # uq_jobs_ingest_active: 競合で稼働中 ingest が挿入済み → best-effort でスキップ。
+        await db.rollback()
+        return None
+    await wakeup(job_id)
+    return job_id
 
 
 # ============================================================================
@@ -182,7 +236,11 @@ async def read_all(user: CurrentUser, db: DbDep) -> ReadAllResponse:
     operation_id="notifications_action",
 )
 async def notification_action(
-    notification_id: str, body: NotificationActionBody, user: CurrentUser, db: DbDep
+    notification_id: str,
+    body: NotificationActionBody,
+    user: CurrentUser,
+    db: DbDep,
+    wakeup: JobWakeupDep,
 ) -> NotificationActionResponse:
     note = await _get_owned_notification(db, user.id, notification_id)
 
@@ -197,6 +255,7 @@ async def notification_action(
 
     library_item_id = str(payload.get("library_item_id", ""))
     summary: LibraryItemSummary | None = None
+    job_id: str | None = None
 
     if body.action == "dismiss":
         payload["resolved"] = "dismissed"
@@ -204,8 +263,11 @@ async def notification_action(
     else:
         payload["resolved"] = "applied"
         if payload.get("action") == "promote_revision":
-            # §6.8 adopt-revision と同一の内部処理(M1-22 の所有物。reanchor 込みで未接続)。
-            # ここでは提案の resolved 消化のみ行う(followup: M1-22 で adopt-revision に接続)。
+            # plans/05 §12.3 の入口と同一の ingest ジョブを adopt_on_complete=true で
+            # enqueue する(§6.8 adopt-revision と同一の内部処理は worker 側で完了時に実行。
+            # M1-22/M1-07 followup)。自動適用ではない(P6): このジョブは本 apply クリックが
+            # 唯一の発生源。
+            job_id = await _enqueue_promotion_reingest(db, wakeup, user.id, library_item_id)
             summary = await _safe_summary(db, user.id, library_item_id)
         else:
             suggested_status = payload.get("suggested_status")
@@ -221,4 +283,6 @@ async def notification_action(
     await db.commit()
     await db.refresh(note)
 
-    return NotificationActionResponse(notification=notification_to_out(note), library_item=summary)
+    return NotificationActionResponse(
+        notification=notification_to_out(note), library_item=summary, job_id=job_id
+    )

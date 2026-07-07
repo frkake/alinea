@@ -60,7 +60,9 @@ function suggestionCopy(payload: Record<string, unknown>): { question: string; l
     return { question: "を 3 分以上読んでいます。", label: STATUS_LABELS[status] };
   }
   // reason === "promotion_b_to_a"(B→A 昇格提案): 4a 計画に逐語文言が無いため
-  // 暫定文言で描画する(deviations 参照。適用処理自体は M1-22 の adopt-revision 接続待ち)。
+  // 暫定文言で描画する(deviations 参照)。適用処理(mode=reingest の ingest ジョブを
+  // adopt_on_complete=true で enqueue → worker 完了時に adopt-revision 相当を自動実行)は
+  // notifications_action(apply)に接続済み(M1-22/M1-07 followup 解消)。
   return { question: "の高品質版(品質 A)が利用可能です。", label: "適用" };
 }
 

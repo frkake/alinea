@@ -14,6 +14,8 @@ DB は実 PostgreSQL。認証はセッション直発行 + cookie(test_library_a
 
 from __future__ import annotations
 
+import random
+import time
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -29,6 +31,12 @@ from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
 from yakudoku_core.db.models import User
 
 
+def _arxiv_id() -> str:
+    """一意な arXiv ID(実 DB の uq_papers_arxiv_id と衝突しない。worker テストと同方針)。"""
+    n = (int(time.time() * 1000) + random.randint(0, 9999)) % 100000
+    return f"{random.randint(1001, 2912)}.{n:05d}"
+
+
 def _build_app() -> FastAPI:
     """本タスク所有ルータ(notifications)のみをマウントしたアプリ。
 
@@ -42,7 +50,11 @@ def _build_app() -> FastAPI:
     from yakudoku_api.ratelimit import RateLimitMiddleware
     from yakudoku_api.redis_client import get_redis
     from yakudoku_api.routers import notifications
+    from yakudoku_api.routers.ingest import get_job_wakeup
     from yakudoku_api.settings import get_api_settings
+
+    async def _noop_wakeup(_job_id: str) -> None:
+        return None
 
     s = get_api_settings()
     app = FastAPI()
@@ -51,6 +63,9 @@ def _build_app() -> FastAPI:
     app.add_middleware(RateLimitMiddleware, redis_factory=get_redis)
     app.add_middleware(RequestIdMiddleware)
     app.include_router(notifications.router)
+    # promote_revision の apply が JobWakeupDep(実 arq プール接続)を経由するため、
+    # test_ingest_api.py と同方針で no-op に差し替える(実 Redis/arq への enqueue はしない)。
+    app.dependency_overrides[get_job_wakeup] = lambda: _noop_wakeup
     return app
 
 
@@ -484,9 +499,9 @@ async def test_action_422_for_non_status_suggestion_kind(
 async def test_action_apply_promotion_variant_marks_resolved_without_crash(
     auth: tuple[AsyncClient, User], db_session: AsyncSession, redis_client: Any, factories: Any
 ) -> None:
-    """B→A 昇格提案の apply。adopt-revision 本体接続は M1-22(followup)。"""
+    """B→A 昇格提案の apply。paper.arxiv_id 未設定(既定)なら enqueue は best-effort でスキップ。"""
     ac, user = auth
-    item = await factories.make_library_item(db_session, user=user)
+    item = await factories.make_library_item(db_session, user=user)  # paper.arxiv_id は既定 None
     await db_session.commit()
 
     note = await fire_status_suggestion(
@@ -505,3 +520,129 @@ async def test_action_apply_promotion_variant_marks_resolved_without_crash(
     body = res.json()
     assert body["notification"]["payload"]["resolved"] == "applied"
     assert body["notification"]["payload"]["action"] == "promote_revision"
+    assert body["job_id"] is None  # arxiv_id 未設定 → enqueue しない(クラッシュもしない)
+
+
+async def test_action_apply_promotion_variant_enqueues_reingest_job(
+    auth: tuple[AsyncClient, User], db_session: AsyncSession, redis_client: Any, factories: Any
+) -> None:
+    """B→A 昇格提案の apply: adopt_on_complete=true の ingest ジョブが enqueue される
+    (plans/05 §12.3 の入口と同一。§16.4「adopt-revision と同一の内部処理」)。
+    """
+    ac, user = auth
+    paper = await factories.make_paper(db_session, arxiv_id=_arxiv_id(), visibility="public")
+    item = await factories.make_library_item(db_session, user=user, paper=paper)
+    await db_session.commit()
+
+    note = await fire_status_suggestion(
+        db_session,
+        redis_client,
+        user_id=str(user.id),
+        library_item_id=str(item.id),
+        paper_title="Paper",
+        reason="promotion_b_to_a",
+        revision_id=str(uuid.uuid4()),
+    )
+    assert note is not None
+
+    res = await ac.post(f"/api/notifications/{note.id}/action", json={"action": "apply"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["notification"]["payload"]["resolved"] == "applied"
+    assert body["job_id"] is not None
+
+    from yakudoku_core.db.models import Job
+
+    job = await db_session.get(Job, body["job_id"])
+    assert job is not None
+    assert job.kind == "ingest"
+    assert job.paper_id == str(paper.id)
+    assert job.library_item_id == str(item.id)
+    assert job.payload["mode"] == "reingest"
+    assert job.payload["source"] == "arxiv"
+    assert job.payload["arxiv_id"] == paper.arxiv_id
+    assert job.payload["adopt_on_complete"] is True
+
+
+async def test_action_apply_promotion_variant_skips_enqueue_when_ingest_already_active(
+    auth: tuple[AsyncClient, User], db_session: AsyncSession, redis_client: Any, factories: Any
+) -> None:
+    """既に稼働中の ingest ジョブがあれば二重 enqueue しない(best-effort でスキップ)。"""
+    ac, user = auth
+    paper = await factories.make_paper(db_session, arxiv_id=_arxiv_id(), visibility="public")
+    item = await factories.make_library_item(db_session, user=user, paper=paper)
+    await db_session.commit()
+
+    from yakudoku_core.jobs.store import JobStore
+
+    store = JobStore(db_session)
+    active_job_id = await store.enqueue(
+        kind="ingest",
+        payload={"mode": "reingest", "source": "arxiv", "arxiv_id": paper.arxiv_id},
+        user_id=str(user.id),
+        paper_id=str(paper.id),
+        library_item_id=str(item.id),
+    )
+
+    note = await fire_status_suggestion(
+        db_session,
+        redis_client,
+        user_id=str(user.id),
+        library_item_id=str(item.id),
+        paper_title="Paper",
+        reason="promotion_b_to_a",
+        revision_id=str(uuid.uuid4()),
+    )
+    assert note is not None
+
+    res = await ac.post(f"/api/notifications/{note.id}/action", json={"action": "apply"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["job_id"] is None  # 稼働中の ingest と衝突 → best-effort でスキップ
+
+    from sqlalchemy import select
+    from yakudoku_core.db.models import Job
+
+    rows = (
+        (await db_session.execute(select(Job.id).where(Job.paper_id == str(paper.id))))
+        .scalars()
+        .all()
+    )
+    assert [str(r) for r in rows] == [active_job_id]  # 追加の ingest ジョブは作られていない
+
+
+async def test_action_dismiss_promotion_variant_does_not_enqueue_reingest(
+    auth: tuple[AsyncClient, User], db_session: AsyncSession, redis_client: Any, factories: Any
+) -> None:
+    """自動適用はしない(P6): dismiss では reingest ジョブが一切作られない。"""
+    ac, user = auth
+    paper = await factories.make_paper(db_session, arxiv_id=_arxiv_id(), visibility="public")
+    item = await factories.make_library_item(db_session, user=user, paper=paper)
+    await db_session.commit()
+
+    note = await fire_status_suggestion(
+        db_session,
+        redis_client,
+        user_id=str(user.id),
+        library_item_id=str(item.id),
+        paper_title="Paper",
+        reason="promotion_b_to_a",
+        revision_id=str(uuid.uuid4()),
+    )
+    assert note is not None
+
+    res = await ac.post(f"/api/notifications/{note.id}/action", json={"action": "dismiss"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["notification"]["payload"]["resolved"] == "dismissed"
+    assert body["job_id"] is None
+
+    from sqlalchemy import select
+    from yakudoku_core.db.models import Job
+
+    rows = (
+        (await db_session.execute(select(Job.id).where(Job.paper_id == str(paper.id))))
+        .scalars()
+        .all()
+    )
+    assert rows == []  # dismiss は通知の resolved 消化のみ(ジョブは一切作られない)

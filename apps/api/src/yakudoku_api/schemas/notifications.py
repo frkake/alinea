@@ -54,6 +54,10 @@ class NotificationActionBody(BaseModel):
 class NotificationActionResponse(BaseModel):
     notification: NotificationOut
     library_item: Any | None = None  # LibraryItemSummary | None(schemas.common の型を使用)
+    # promote_revision バリアントの apply でのみ設定される(plans/05 §12.3 の
+    # POST /api/papers/{paper_id}/reingest と同一の ingest ジョブの id)。他の action/kind では
+    # 常に None(plans/03 §16.4 の契約に対する additive な拡張。既存クライアントは無視できる)。
+    job_id: str | None = None
 
 
 def notification_to_out(note: Notification) -> NotificationOut:
