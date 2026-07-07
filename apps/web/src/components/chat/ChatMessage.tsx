@@ -20,6 +20,11 @@ export interface ChatMessageProps {
   onRetry?: (messageId: string) => void;
   /** 「↑ メモに保存」(docs/05 §8。根拠アンカーはサーバーが複写)。 */
   onSaveToNote?: (messageId: string) => void;
+  /**
+   * モバイル縮退のボトムシート(mobile.md §4.5)から閲覧専用で再利用する場合 true。
+   * 再生成・メモ保存(作成/操作系)を非描画にする(決定)。コピー・根拠ジャンプは維持。
+   */
+  readOnly?: boolean;
 }
 
 const actionLink = (accent = false): CSSProperties => ({
@@ -42,6 +47,7 @@ export function ChatMessage({
   onEvidenceJump,
   onRetry,
   onSaveToNote,
+  readOnly = false,
 }: ChatMessageProps) {
   if (message.role === "user") return <UserMessage message={message} />;
 
@@ -63,10 +69,14 @@ export function ChatMessage({
       {isError ? (
         <div style={{ fontSize: 12.6, lineHeight: 1.7, color: "var(--pr-warn)" }}>
           {message.error?.title ?? "回答の生成に失敗しました"}
-          {" · "}
-          <button type="button" style={actionLink(true)} onClick={() => onRetry?.(message.id)}>
-            再試行
-          </button>
+          {readOnly ? null : (
+            <>
+              {" · "}
+              <button type="button" style={actionLink(true)} onClick={() => onRetry?.(message.id)}>
+                再試行
+              </button>
+            </>
+          )}
         </div>
       ) : streaming && !hasContent ? (
         <div
@@ -97,15 +107,19 @@ export function ChatMessage({
 
       {!streaming && !isError ? (
         <div style={{ display: "flex", gap: 12, paddingTop: 2 }}>
-          <button type="button" style={actionLink()} onClick={() => onRegenerate?.(message.id)}>
-            再生成
-          </button>
+          {readOnly ? null : (
+            <button type="button" style={actionLink()} onClick={() => onRegenerate?.(message.id)}>
+              再生成
+            </button>
+          )}
           <button type="button" style={actionLink()} onClick={() => onCopy?.(message)}>
             コピー
           </button>
-          <button type="button" style={actionLink()} onClick={() => onSaveToNote?.(message.id)}>
-            ↑ メモに保存
-          </button>
+          {readOnly ? null : (
+            <button type="button" style={actionLink()} onClick={() => onSaveToNote?.(message.id)}>
+              ↑ メモに保存
+            </button>
+          )}
         </div>
       ) : null}
     </div>

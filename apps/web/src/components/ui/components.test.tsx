@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 import { AIBadge, AiMark } from "@/components/ui/AIBadge";
@@ -224,5 +224,61 @@ describe("LibraryTable", () => {
 
     await user.click(screen.getByRole("checkbox", { name: "Rectified Flow を選択" }));
     expect(onToggleSelect).toHaveBeenCalledWith("a");
+  });
+
+  test("without onStatusChange, the status cell stays a static non-interactive StatusPill", () => {
+    render(
+      <LibraryTable
+        rows={rows}
+        selectedIds={new Set()}
+        onToggleSelect={vi.fn()}
+        onToggleSelectAll={() => {}}
+        sort={{ key: "title", dir: "asc" }}
+        onSortChange={() => {}}
+        onOpenRow={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /のステータスを変更/ })).toBeNull();
+  });
+
+  // M1 統合ポリッシュ: 1e §4.7 の StatusPill(dot-label)を interactive にする。
+  test("with onStatusChange, clicking the status cell opens a menu and reports the picked status", async () => {
+    const user = userEvent.setup();
+    const onStatusChange = vi.fn();
+    render(
+      <LibraryTable
+        rows={rows}
+        selectedIds={new Set()}
+        onToggleSelect={vi.fn()}
+        onToggleSelectAll={() => {}}
+        sort={{ key: "title", dir: "asc" }}
+        onSortChange={() => {}}
+        onOpenRow={vi.fn()}
+        onStatusChange={onStatusChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Rectified Flow のステータスを変更" }));
+    const menu = screen.getByRole("menu");
+    await user.click(within(menu).getByRole("menuitemradio", { name: /読んだ/ }));
+    expect(onStatusChange).toHaveBeenCalledWith("a", "done");
+  });
+
+  test("clicking the status cell does not open the row (stopPropagation)", async () => {
+    const user = userEvent.setup();
+    const onOpenRow = vi.fn();
+    render(
+      <LibraryTable
+        rows={rows}
+        selectedIds={new Set()}
+        onToggleSelect={vi.fn()}
+        onToggleSelectAll={() => {}}
+        sort={{ key: "title", dir: "asc" }}
+        onSortChange={() => {}}
+        onOpenRow={onOpenRow}
+        onStatusChange={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Rectified Flow のステータスを変更" }));
+    expect(onOpenRow).not.toHaveBeenCalled();
   });
 });

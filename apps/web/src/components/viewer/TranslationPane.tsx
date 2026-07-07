@@ -16,6 +16,7 @@ import {
 } from "@yakudoku/api-client";
 import { useToast } from "@/components/ui/Toast";
 import type { HighlightColor } from "@/components/ui/HighlightMark";
+import { useIsMobile } from "@/hooks/useMediaQuery";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
@@ -119,6 +120,7 @@ export function TranslationPane({
   const setSelection = useViewerStore((s) => s.setSelection);
   const setPanel = useViewerStore((s) => s.setPanel);
   const requestAnnotationFocus = useViewerStore((s) => s.requestAnnotationFocus);
+  const isMobile = useIsMobile();
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [openPopBlockId, setOpenPopBlockId] = useState<string | null>(null);
@@ -231,7 +233,8 @@ export function TranslationPane({
     [doc],
   );
 
-  const colWidth = !panelOpen ? 720 : activeTab === "annotations" ? 720 : 680;
+  // モバイル縮退(mobile.md §4.4): 1 カラム・本文幅 100%(720px 固定カラムは解除)。
+  const colWidth: number | string = isMobile ? "100%" : !panelOpen ? 720 : activeTab === "annotations" ? 720 : 680;
 
   const togglePop = useCallback((blockId: string) => {
     setOpenPopBlockId((cur) => (cur === blockId ? null : blockId));
@@ -491,6 +494,7 @@ export function TranslationPane({
         onAnnotationClick={onAnnotationClick}
         hlBlockId={hlBlockId}
         pendingHighlightQuery={pendingHighlightQuery}
+        isMobile={isMobile}
       />
     ));
   }
@@ -527,14 +531,16 @@ export function TranslationPane({
           style={{
             width: colWidth,
             maxWidth: "100%",
-            padding: "64px 0 120px",
+            padding: isMobile ? "24px 16px 120px" : "64px 0 120px",
             fontFamily: "var(--pr-jp)",
           }}
         >
           {content}
         </div>
       </div>
-      {selection ? (
+      {/* テキスト選択メニュー(mobile.md §4.4): モバイルでは注釈作成・AI質問・語彙追加が
+          対象外のため表示しない(決定)。 */}
+      {selection && !isMobile ? (
         <SelectionMenu
           milestone="M1"
           side={selection.side}
@@ -567,6 +573,8 @@ interface SectionViewProps {
   /** `hl` を一発マークする対象ブロック(plans/11 §7)。 */
   hlBlockId: string | null;
   pendingHighlightQuery: string | null;
+  /** モバイル縮退(mobile.md §4.4): 段落タップで対訳ポップを開閉する。 */
+  isMobile?: boolean;
 }
 
 function SectionView({
@@ -582,6 +590,7 @@ function SectionView({
   onAnnotationClick,
   hlBlockId,
   pendingHighlightQuery,
+  isMobile = false,
 }: SectionViewProps) {
   const meta = tocMap.get(section.id);
   const number = meta?.number ?? section.heading?.number ?? null;
@@ -619,6 +628,7 @@ function SectionView({
               highlights={highlightsByBlock.get(block.id) ?? []}
               onAnnotationClick={onAnnotationClick}
               searchHighlight={hlBlockId === block.id ? pendingHighlightQuery : null}
+              isMobile={isMobile}
             />
           );
         }
@@ -646,6 +656,7 @@ function SectionView({
           onAnnotationClick={onAnnotationClick}
           hlBlockId={hlBlockId}
           pendingHighlightQuery={pendingHighlightQuery}
+          isMobile={isMobile}
         />
       ))}
     </section>
@@ -724,7 +735,12 @@ function BlockView({
       return (
         <p
           data-block-id={block.id}
-          style={{ fontSize: 16.5, lineHeight: 2.15, color: "var(--pr-text-body)", margin: "0 0 22px" }}
+          style={{
+            fontSize: "var(--pr-content-font-size-px, 16.5px)",
+            lineHeight: 2.15,
+            color: "var(--pr-text-body)",
+            margin: "0 0 22px",
+          }}
         >
           {text != null ? text : <InlineRenderer inlines={inlines} />}
         </p>

@@ -11,6 +11,7 @@ import { BilingualPane } from "@/components/viewer/BilingualPane";
 import { SourcePane } from "@/components/viewer/SourcePane";
 import { useViewerStore } from "@/stores/viewer-store";
 import { useViewerChatStore } from "@/stores/viewer-chat-store";
+import { useIsMobile } from "@/hooks/useMediaQuery";
 import type { SidePanelTabId } from "@/components/ui/SidePanelTabs";
 import type { DocBlock } from "@/components/viewer/document-types";
 
@@ -39,7 +40,9 @@ export default function ViewerPage() {
   const requestAnnotationFocus = useViewerStore((s) => s.requestAnnotationFocus);
   const requestNoteFocus = useViewerStore((s) => s.requestNoteFocus);
   const setPendingHighlightQuery = useViewerStore((s) => s.setPendingHighlightQuery);
+  const requestChatFocus = useViewerStore((s) => s.requestChatFocus);
   const addPendingAnchor = useViewerChatStore((s) => s.addPendingAnchor);
+  const isMobile = useIsMobile();
 
   const viewerQuery = useQuery({
     queryKey: ["viewer", itemId],
@@ -86,10 +89,9 @@ export default function ViewerPage() {
     if (hl) setPendingHighlightQuery(hl);
     if (annotationId) requestAnnotationFocus(annotationId);
     if (noteId) requestNoteFocus(noteId);
-    // thread/message(チャットの深リンク。plans/11 §7 の「チャット」行)は ChatPanel が
-    // まだスレッド/メッセージ選択を URL から受け取れない(1a 担当・別レーン所有)ため、
-    // 現時点では panel=chat を開くところまでに留める。URL 契約(viewer-shell §3.1)に
-    // 従いパラメータ自体は消費(除去)する — followups 参照。
+    // thread/message(チャットの深リンク。plans/11 §7・plans/09 1e §5.3-4「チャット」行)は
+    // ChatPanel が viewer-store 経由で消費する(該当スレッド選択+メッセージへスクロール)。
+    if (threadId || messageId) requestChatFocus({ threadId, messageId });
     router.replace(`/papers/${itemId}?mode=${mode}`, { scroll: false });
     // 初期化時 1 回のみ。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -142,8 +144,13 @@ export default function ViewerPage() {
   // 引用 [n] クリック: 図表タブ(参考文献)へ切替(1a §5.2)。
   const onCitationClick = () => setPanel(true, "figures");
 
+  // モバイル縮退(mobile.md §4.1): mode を translation に固定して描画する。URL(`?mode=`)は
+  // 書き換えない(デスクトップに戻れば元モードで開けるため。ViewerShell 側も同じ判定で
+  // effectiveMode を用いる)。
+  const effectiveMode = isMobile ? "translation" : mode;
+
   let paneContent: ReactNode;
-  if (mode === "translation") {
+  if (effectiveMode === "translation") {
     paneContent = (
       <TranslationPane
         itemId={itemId}
@@ -156,7 +163,7 @@ export default function ViewerPage() {
         onAskAI={() => setPanel(true, "chat")}
       />
     );
-  } else if (mode === "parallel") {
+  } else if (effectiveMode === "parallel") {
     paneContent = (
       <BilingualPane
         itemId={itemId}
@@ -168,7 +175,7 @@ export default function ViewerPage() {
         onCitationClick={onCitationClick}
       />
     );
-  } else if (mode === "pdf") {
+  } else if (effectiveMode === "pdf") {
     // PDF モードの本文(PdfPane)は ViewerShell が自前で描画する(mode==='pdf' 分岐。
     // 2a §3.1「ViewerShell.tsx(mode=pdf で PdfPane 描画)」)。children は使われない。
     paneContent = null;

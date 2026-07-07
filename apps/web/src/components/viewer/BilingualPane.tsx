@@ -3,12 +3,14 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
+  annotationsList,
   translationsListUnits,
   viewerGetDocument,
   type LastPosition,
   type TocNode,
   type TranslationUnitItem,
 } from "@yakudoku/api-client";
+import type { HighlightColor } from "@/components/ui/HighlightMark";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import { useViewerChatStore } from "@/stores/viewer-chat-store";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
@@ -16,6 +18,7 @@ import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 import { ResumeBanner } from "@/components/viewer/ResumeBanner";
 import { SectionHeading } from "@/components/viewer/SectionHeading";
 import { TranslationColumnHeader } from "@/components/viewer/TranslationColumnHeader";
+import { renderHighlightedText, type PlacedHighlight } from "@/components/viewer/highlight-render";
 import type { DocBlock, DocSection, DocumentResponse } from "@/components/viewer/document-types";
 
 /** text_ja が null で返る翻訳失敗系フラグ(plans/06 §12)。 */
@@ -31,6 +34,12 @@ export interface BilingualPaneProps {
   onExplainEquation?: (block: DocBlock) => void;
   /** 引用 [n] クリック → 図表タブ参考文献展開(1a §5.2)。 */
   onCitationClick?: (refId: string) => void;
+}
+
+/** ブロック単位のハイライト(側別。M1 統合ポリッシュ: hl パリティ)。 */
+interface HighlightsBySide {
+  source: Map<string, PlacedHighlight[]>;
+  translation: Map<string, PlacedHighlight[]>;
 }
 
 function collectSectionIds(sections: DocSection[]): string[] {
@@ -74,6 +83,7 @@ function buildTocMap(toc: TocNode[]): Map<string, { number: string | null; title
  * document(原文構造)+ units(訳文)を取得し、段落ペアを単一 grid の行として並べる。
  */
 export function BilingualPane({
+  itemId,
   revisionId,
   style,
   toc,
@@ -84,11 +94,17 @@ export function BilingualPane({
   const setCurrentBlock = useViewerStore((s) => s.setCurrentBlock);
   const pendingScroll = useViewerStore((s) => s.pendingScrollTarget);
   const consumeScroll = useViewerStore((s) => s.consumeScroll);
+  const pendingHighlightQuery = useViewerStore((s) => s.pendingHighlightQuery);
+  const setPendingHighlightQuery = useViewerStore((s) => s.setPendingHighlightQuery);
+  const setPanel = useViewerStore((s) => s.setPanel);
+  const requestAnnotationFocus = useViewerStore((s) => s.requestAnnotationFocus);
   const chatEvidence = useViewerChatStore((s) => s.chatEvidence);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pairSync, setPairSync] = useState(true);
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  // `hl` を一発マークする対象ブロック(TranslationPane と同じ規約。plans/11 §7)。
+  const [hlBlockId, setHlBlockId] = useState<string | null>(null);
 
   const docQuery = useQuery({
     queryKey: ["document", revisionId],
@@ -97,6 +113,54 @@ export function BilingualPane({
         .data as DocumentResponse,
     staleTime: Infinity,
   });
+
+  // 注釈(ハイライト)。TranslationPane・AnnotationListPanel と同一キーでキャッシュを共有する。
+  const annotationsQuery = useQuery({
+    queryKey: ["annotations", itemId],
+    queryFn: async () =>
+      (
+        await annotationsList({
+          path: { item_id: itemId },
+          query: { kind: "highlight" },
+          throwOnError: true,
+        })
+      ).data,
+    enabled: Boolean(itemId),
+    staleTime: 0,
+  });
+
+  // 側別のブロック単位ハイライト(原文=source 列 / 訳文=translation 列。M1 統合ポリッシュ)。
+  // 文書順連番はどちらの側も含めて数える(AnnotationListPanel の番号と一致させる)。
+  const highlightsBySide = useMemo<HighlightsBySide>(() => {
+    const source = new Map<string, PlacedHighlight[]>();
+    const translation = new Map<string, PlacedHighlight[]>();
+    let seq = 0;
+    for (const a of annotationsQuery.data?.items ?? []) {
+      if (!a.placed) continue;
+      seq += 1;
+      if (a.anchor.start == null || a.anchor.end == null) continue;
+      const map = a.anchor.side === "translation" ? translation : a.anchor.side === "source" ? source : null;
+      if (!map) continue;
+      const list = map.get(a.anchor.block_id) ?? [];
+      list.push({
+        id: a.id,
+        start: a.anchor.start,
+        end: a.anchor.end,
+        color: (a.color ?? "term") as HighlightColor,
+        number: seq,
+      });
+      map.set(a.anchor.block_id, list);
+    }
+    for (const list of source.values()) list.sort((x, y) => x.start - y.start);
+    for (const list of translation.values()) list.sort((x, y) => x.start - y.start);
+    return { source, translation };
+  }, [annotationsQuery.data]);
+
+  // 本文の丸数字チップクリック → 注釈タブの該当カードへ(TranslationPane と同じ配線。1b §5.7)。
+  const onAnnotationClick = (annotationId: string) => {
+    setPanel(true, "annotations");
+    requestAnnotationFocus(annotationId);
+  };
 
   const doc = docQuery.data;
   const sectionIds = useMemo(() => collectSectionIds(doc?.sections ?? []), [doc]);
@@ -165,7 +229,15 @@ export function BilingualPane({
       window.setTimeout(() => el.classList.remove("yk-block-flash"), 2000);
     }
     consumeScroll();
-  }, [pendingScroll, doc, consumeScroll]);
+    // `hl` の一発マークは遷移先ブロックのみ(TranslationPane と同じ規約。plans/11 §7)。
+    if (pendingHighlightQuery && pendingScroll.kind === "block") {
+      setHlBlockId(pendingScroll.blockId);
+      window.setTimeout(() => {
+        setHlBlockId(null);
+        setPendingHighlightQuery(null);
+      }, 4000);
+    }
+  }, [pendingScroll, doc, consumeScroll, pendingHighlightQuery, setPendingHighlightQuery]);
 
   const showBanner = lastPosition != null && !bannerDismissed;
 
@@ -196,6 +268,10 @@ export function BilingualPane({
         chatEvidenceDisplay={chatEvidence?.display ?? null}
         onExplainEquation={onExplainEquation}
         onCitationClick={onCitationClick}
+        highlightsBySide={highlightsBySide}
+        onAnnotationClick={onAnnotationClick}
+        hlBlockId={hlBlockId}
+        pendingHighlightQuery={pendingHighlightQuery}
       />
     ));
   }
@@ -241,6 +317,12 @@ interface SectionColumnsProps {
   chatEvidenceDisplay: string | null;
   onExplainEquation?: (block: DocBlock) => void;
   onCitationClick?: (refId: string) => void;
+  /** 側別のブロック単位ハイライト(M1 統合ポリッシュ: hl パリティ)。 */
+  highlightsBySide: HighlightsBySide;
+  onAnnotationClick: (annotationId: string) => void;
+  /** `hl` を一発マークする対象ブロック(plans/11 §7)。 */
+  hlBlockId: string | null;
+  pendingHighlightQuery: string | null;
 }
 
 function SectionColumns({
@@ -251,6 +333,10 @@ function SectionColumns({
   chatEvidenceDisplay,
   onExplainEquation,
   onCitationClick,
+  highlightsBySide,
+  onAnnotationClick,
+  hlBlockId,
+  pendingHighlightQuery,
 }: SectionColumnsProps) {
   const meta = tocMap.get(section.id);
   const number = meta?.number ?? section.heading?.number ?? null;
@@ -279,6 +365,10 @@ function SectionColumns({
                 block={block}
                 unit={unitMap.get(block.id) ?? null}
                 onCitationClick={onCitationClick}
+                sourceHighlights={highlightsBySide.source.get(block.id) ?? []}
+                translationHighlights={highlightsBySide.translation.get(block.id) ?? []}
+                onAnnotationClick={onAnnotationClick}
+                searchHighlight={hlBlockId === block.id ? pendingHighlightQuery : null}
               />
             );
           }
@@ -310,6 +400,10 @@ function SectionColumns({
           chatEvidenceDisplay={chatEvidenceDisplay}
           onExplainEquation={onExplainEquation}
           onCitationClick={onCitationClick}
+          highlightsBySide={highlightsBySide}
+          onAnnotationClick={onAnnotationClick}
+          hlBlockId={hlBlockId}
+          pendingHighlightQuery={pendingHighlightQuery}
         />
       ))}
     </section>
@@ -321,10 +415,25 @@ export interface BilingualParagraphProps {
   /** null=未翻訳(原文フォールバック)。 */
   unit: TranslationUnitItem | null;
   onCitationClick?: (refId: string) => void;
+  /** 原文(左)列に配置する注釈ハイライト(1b §4.5-5 と対の side='source')。 */
+  sourceHighlights?: PlacedHighlight[];
+  /** 訳文(右)列に配置する注釈ハイライト(side='translation')。 */
+  translationHighlights?: PlacedHighlight[];
+  onAnnotationClick?: (annotationId: string) => void;
+  /** 検索ヒット遷移の `?hl=`(plans/11 §7。遷移先ブロックのみ一発マーク)。 */
+  searchHighlight?: string | null;
 }
 
 /** 段落ペア 1 行(左=原文セル / 右=訳文セル)。単一 grid の行として並ぶ(1a §4.4)。 */
-export function BilingualParagraph({ block, unit, onCitationClick }: BilingualParagraphProps) {
+export function BilingualParagraph({
+  block,
+  unit,
+  onCitationClick,
+  sourceHighlights = [],
+  translationHighlights = [],
+  onAnnotationClick,
+  searchHighlight = null,
+}: BilingualParagraphProps) {
   const inlines = block.inlines ?? [];
   const hasTranslation = unit != null && unit.text_ja != null;
   const failed = !hasTranslation && (unit?.quality_flags ?? []).some((f) => FAILURE_FLAGS.has(f));
@@ -336,24 +445,31 @@ export function BilingualParagraph({ block, unit, onCitationClick }: BilingualPa
         data-side="source"
         style={{
           fontFamily: "var(--pr-font-en)",
-          fontSize: 13.8,
+          // 設定 4f の本文サイズ。CSS 変数が未設定の間は既定値(13.8px)を維持する(§5.6)。
+          fontSize: "var(--pr-content-font-size-px, 13.8px)",
           lineHeight: 1.72,
           color: "var(--pr-text-en)",
         }}
       >
-        <InlineRenderer inlines={inlines} onCitationClick={onCitationClick} />
+        <InlineRenderer
+          inlines={inlines}
+          onCitationClick={onCitationClick}
+          highlights={sourceHighlights}
+          searchQuery={searchHighlight}
+          onAnnotationClick={onAnnotationClick}
+        />
       </div>
       <div
         data-side="translation"
         style={{
           fontFamily: "var(--pr-jp)",
-          fontSize: 14.8,
+          fontSize: "var(--pr-content-font-size-px, 14.8px)",
           lineHeight: 2.0,
           color: "var(--pr-text-body)",
         }}
       >
         {hasTranslation ? (
-          unit?.text_ja
+          renderHighlightedText(unit?.text_ja ?? "", translationHighlights, searchHighlight, onAnnotationClick)
         ) : failed ? (
           <span style={{ fontSize: 12, fontFamily: "var(--pr-font-ui)", color: "var(--pr-warn)" }}>
             この段落の翻訳に失敗しました
@@ -461,7 +577,14 @@ function OtherBlock({ block, unit }: { block: DocBlock; unit: TranslationUnitIte
   }
   const text = unit?.text_ja;
   return (
-    <p style={{ fontSize: 14.8, lineHeight: 2.0, color: "var(--pr-text-body)", margin: 0 }}>
+    <p
+      style={{
+        fontSize: "var(--pr-content-font-size-px, 14.8px)",
+        lineHeight: 2.0,
+        color: "var(--pr-text-body)",
+        margin: 0,
+      }}
+    >
       {text != null ? text : <InlineRenderer inlines={block.inlines ?? []} />}
     </p>
   );

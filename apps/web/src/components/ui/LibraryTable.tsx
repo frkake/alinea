@@ -1,12 +1,13 @@
 "use client";
 
-import type { CSSProperties, KeyboardEvent } from "react";
-import { type ReadingStatus } from "@yakudoku/tokens";
+import { useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { STATUS_COLORS, STATUS_LABELS, type ReadingStatus } from "@yakudoku/tokens";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { QualityBadge } from "@/components/ui/QualityBadge";
 import { TagChip } from "@/components/ui/TagChip";
 import { PriorityBadge } from "@/components/ui/PriorityBadge";
 import { DeadlineBadge } from "@/components/ui/DeadlineBadge";
+import { Popover } from "@/components/ui/Popover";
 
 /** ライブラリ専用テーブル(plans/08 §5.15、plans/09 1e §2.6)。10 列固定。 */
 export interface LibraryTableRow {
@@ -44,9 +45,107 @@ export interface LibraryTableProps {
   sort: { key: SortKey; dir: "asc" | "desc" };
   onSortChange: (s: { key: SortKey; dir: "asc" | "desc" }) => void;
   onOpenRow: (id: string) => void;
+  /**
+   * ステータスセルを interactive にする(1e §4.7・M1 統合ポリッシュ)。未指定時は
+   * `StatusPill(variant="dot-label")` の静的表示のみ(既存挙動を維持)。
+   */
+  onStatusChange?: (id: string, next: ReadingStatus) => void;
 }
 
 const GRID_COLUMNS = "34px 1fr 108px 44px 168px 64px 66px 76px 64px 64px";
+
+const STATUS_ORDER: readonly ReadingStatus[] = [
+  "planned",
+  "up_next",
+  "reading",
+  "done",
+  "reread",
+  "on_hold",
+];
+
+/**
+ * ステータスセル(1e §4.7)。`onStatusChange` 指定時は `StatusPill(dot-label)` の見た目を
+ * 保ったまま interactive にする(dot-label 自体は StatusPill 側の対象外バリアントのため、
+ * ここでトリガー+メニューを自前で組む。plans/08 §5.2 の pill バリアントと同じメニュー構成)。
+ */
+function StatusCell({
+  status,
+  rowId,
+  rowTitle,
+  onStatusChange,
+}: {
+  status: ReadingStatus;
+  rowId: string;
+  rowTitle: string;
+  onStatusChange?: (id: string, next: ReadingStatus) => void;
+}) {
+  const anchorRef = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+
+  if (!onStatusChange) {
+    return <StatusPill status={status} variant="dot-label" />;
+  }
+
+  return (
+    <span onClick={(e) => e.stopPropagation()}>
+      <button
+        ref={anchorRef}
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`${rowTitle} のステータスを変更`}
+        onClick={() => setOpen((v) => !v)}
+        style={{ border: "none", background: "transparent", padding: 0, cursor: "pointer", fontFamily: "inherit" }}
+      >
+        <StatusPill status={status} variant="dot-label" />
+      </button>
+      <Popover open={open} onClose={() => setOpen(false)} anchorRef={anchorRef} width={180} placement="bottom-start" caret={false}>
+        <div role="menu" style={{ padding: 4 }}>
+          {STATUS_ORDER.map((s) => (
+            <button
+              key={s}
+              type="button"
+              role="menuitemradio"
+              aria-checked={s === status}
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpen(false);
+                if (s !== status) onStatusChange(rowId, s);
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                width: "100%",
+                padding: "6px 8px",
+                border: "none",
+                borderRadius: 6,
+                background: s === status ? "var(--pr-acc-s)" : "transparent",
+                color: s === status ? "var(--pr-acc)" : "var(--pr-text-mid)",
+                fontSize: 11.5,
+                fontWeight: s === status ? 600 : 400,
+                cursor: "pointer",
+                fontFamily: "inherit",
+                textAlign: "left",
+              }}
+            >
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: STATUS_COLORS[s],
+                  flex: "none",
+                }}
+              />
+              {STATUS_LABELS[s]}
+            </button>
+          ))}
+        </div>
+      </Popover>
+    </span>
+  );
+}
 
 const HEADERS: Array<{ label: string; key?: SortKey }> = [
   { label: "論文", key: "title" },
@@ -118,6 +217,7 @@ export function LibraryTable({
   sort,
   onSortChange,
   onOpenRow,
+  onStatusChange,
 }: LibraryTableProps) {
   const allSelected = rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
   const sortGlyph = sort.dir === "asc" ? " ↑" : " ↓";
@@ -268,7 +368,12 @@ export function LibraryTable({
 
             {/* ステータス */}
             <div>
-              <StatusPill status={row.status} variant="dot-label" />
+              <StatusCell
+                status={row.status}
+                rowId={row.id}
+                rowTitle={row.title}
+                onStatusChange={onStatusChange}
+              />
             </div>
 
             {/* 品質 */}

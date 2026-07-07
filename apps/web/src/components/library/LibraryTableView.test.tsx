@@ -1,7 +1,23 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, test, vi } from "vitest";
-import type { LibraryItemSummary } from "@yakudoku/api-client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import { libraryItemsUpdate, type LibraryItemSummary } from "@yakudoku/api-client";
 import { LibraryTableView } from "@/components/library/LibraryTableView";
+import { useFinishReadingStore } from "@/components/library/finishReadingStore";
+
+vi.mock("@yakudoku/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+  return {
+    ...actual,
+    libraryItemsUpdate: vi.fn(),
+  };
+});
+
+function renderWithClient(ui: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 
 function makeItem(overrides: Partial<LibraryItemSummary> = {}): LibraryItemSummary {
   return {
@@ -37,7 +53,7 @@ function makeItem(overrides: Partial<LibraryItemSummary> = {}): LibraryItemSumma
 // VT-LIB-01 / VT-LIB-02(10 列部)
 describe("LibraryTableView", () => {
   test("renders the fixed 10 columns and dashes for unsupplied values", () => {
-    render(
+    renderWithClient(
       <LibraryTableView
         items={[makeItem()]}
         sort={{ key: "updated_at", dir: "desc" }}
@@ -70,7 +86,7 @@ describe("LibraryTableView", () => {
   });
 
   test("renders supplied values instead of dashes", () => {
-    render(
+    renderWithClient(
       <LibraryTableView
         items={[
           makeItem({
@@ -96,7 +112,7 @@ describe("LibraryTableView", () => {
     const { default: userEvent } = await import("@testing-library/user-event");
     const user = userEvent.setup();
     const onSortChange = vi.fn();
-    render(
+    renderWithClient(
       <LibraryTableView
         items={[makeItem()]}
         sort={{ key: "updated_at", dir: "desc" }}
@@ -106,5 +122,79 @@ describe("LibraryTableView", () => {
     );
     await user.click(screen.getByText("追加日"));
     expect(onSortChange).toHaveBeenCalledWith({ key: "added_at", dir: "asc" });
+  });
+});
+
+// M1 統合ポリッシュ: 1e テーブルの StatusPill を interactive にし、PATCH+ダッシュボード/
+// ライブラリ invalidate+done 遷移時に読了ダイアログを開く(LibraryCard と同じ発火規約)。
+describe("LibraryTableView interactive StatusPill (1e §4.7 / M1 統合ポリッシュ)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useFinishReadingStore.setState({ item: null });
+  });
+
+  test("changing the row status to 読んだ patches the item and opens the finish-reading dialog", async () => {
+    const updated = makeItem({ status: "done" });
+    vi.mocked(libraryItemsUpdate).mockResolvedValue({ data: updated } as never);
+
+    renderWithClient(
+      <LibraryTableView
+        items={[makeItem({ status: "reading" })]}
+        sort={{ key: "updated_at", dir: "desc" }}
+        onSortChange={() => {}}
+        onOpenRow={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Rectified Flow のステータスを変更" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /読んだ/ }));
+
+    await waitFor(() =>
+      expect(libraryItemsUpdate).toHaveBeenCalledWith({
+        path: { item_id: "li_1" },
+        body: { status: "done" },
+        throwOnError: true,
+      }),
+    );
+    await waitFor(() => expect(useFinishReadingStore.getState().item).toEqual(updated));
+  });
+
+  test("clicking the status pill does not trigger the row's onOpenRow navigation", () => {
+    const onOpenRow = vi.fn();
+    renderWithClient(
+      <LibraryTableView
+        items={[makeItem({ status: "reading" })]}
+        sort={{ key: "updated_at", dir: "desc" }}
+        onSortChange={() => {}}
+        onOpenRow={onOpenRow}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Rectified Flow のステータスを変更" }));
+    expect(onOpenRow).not.toHaveBeenCalled();
+  });
+
+  test("changing to a non-done status does not open the finish-reading dialog", async () => {
+    const updated = makeItem({ status: "on_hold" });
+    vi.mocked(libraryItemsUpdate).mockResolvedValue({ data: updated } as never);
+
+    renderWithClient(
+      <LibraryTableView
+        items={[makeItem({ status: "reading" })]}
+        sort={{ key: "updated_at", dir: "desc" }}
+        onSortChange={() => {}}
+        onOpenRow={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Rectified Flow のステータスを変更" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /保留/ }));
+
+    await waitFor(() =>
+      expect(libraryItemsUpdate).toHaveBeenCalledWith({
+        path: { item_id: "li_1" },
+        body: { status: "on_hold" },
+        throwOnError: true,
+      }),
+    );
+    expect(useFinishReadingStore.getState().item).toBeNull();
   });
 });

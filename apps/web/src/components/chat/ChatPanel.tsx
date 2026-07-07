@@ -25,6 +25,12 @@ import { streamChat } from "@/components/chat/chat-stream";
 
 export interface ChatPanelProps {
   itemId: string;
+  /**
+   * モバイル縮退のボトムシート(mobile.md §4.5)から閲覧専用で再利用する場合 true。
+   * 入力欄・スレッドメニュー(まとめてメモ化)・再生成/メモ保存を非描画にする(決定)。
+   * スレッド履歴の閲覧・根拠ジャンプ・コピーは維持。
+   */
+  readOnly?: boolean;
 }
 
 type StreamBlock = MarkdownBlock | AsideBlock;
@@ -86,11 +92,14 @@ function messageToMarkdown(message: ChatMessageData): string {
  * 読解チャットタブ(1a §4.5・docs/05)。スレッド・履歴取得+ SSE 送信/再生成を担う。
  * SSE は POST fetch ストリーム(plans/03 §10.3 の start/delta/evidence/done/error を逐次パース)。
  */
-export function ChatPanel({ itemId }: ChatPanelProps) {
+export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
   const toast = useToast();
   const qc = useQueryClient();
   const requestScroll = useViewerStore((s) => s.requestScroll);
   const setPanel = useViewerStore((s) => s.setPanel);
+  const pendingChatThreadId = useViewerStore((s) => s.pendingChatThreadId);
+  const pendingChatMessageId = useViewerStore((s) => s.pendingChatMessageId);
+  const consumeChatFocus = useViewerStore((s) => s.consumeChatFocus);
   const pendingAnchors = useViewerChatStore((s) => s.pendingAnchors);
   const removePendingAnchor = useViewerChatStore((s) => s.removePendingAnchor);
   const clearPendingAnchors = useViewerChatStore((s) => s.clearPendingAnchors);
@@ -114,13 +123,16 @@ export function ChatPanel({ itemId }: ChatPanelProps) {
     staleTime: 0,
   });
 
-  // アクティブスレッド = 明示選択 or メイン(is_main)。
+  // アクティブスレッド = 明示選択 or ディープリンク(?thread=)or メイン(is_main)。
+  // plans/09 1e §5.3-4「チャット」行: `target.kind === 'chat'` の遷移先。
   useEffect(() => {
     if (activeThreadId) return;
     const threads = threadsQuery.data?.items ?? [];
-    const main = threads.find((t) => t.is_main) ?? threads[0];
+    if (threads.length === 0) return;
+    const deepLinked = pendingChatThreadId ? threads.find((t) => t.id === pendingChatThreadId) : undefined;
+    const main = deepLinked ?? threads.find((t) => t.is_main) ?? threads[0];
     if (main) setActiveThreadId(main.id);
-  }, [threadsQuery.data, activeThreadId]);
+  }, [threadsQuery.data, activeThreadId, pendingChatThreadId]);
 
   const messagesQuery = useQuery({
     queryKey: ["chat-messages", activeThreadId],
@@ -140,6 +152,26 @@ export function ChatPanel({ itemId }: ChatPanelProps) {
     () => [...(messagesQuery.data?.items ?? [])].reverse(),
     [messagesQuery.data],
   );
+
+  // ディープリンクのメッセージへスクロール+一発消費(plans/11 §7 `?message=`)。
+  // スレッド切替が先に済んでから(activeThreadId が確定してから)実行する。
+  useEffect(() => {
+    if (!pendingChatThreadId && !pendingChatMessageId) return;
+    if (!activeThreadId || !threadsQuery.data) return;
+    if (pendingChatMessageId) {
+      if (messagesQuery.isLoading) return;
+      const el = listRef.current?.querySelector<HTMLElement>(
+        `[data-message-id="${pendingChatMessageId}"]`,
+      );
+      if (el) {
+        el.scrollIntoView({ block: "center" });
+        el.classList.add("yk-block-flash");
+        window.setTimeout(() => el.classList.remove("yk-block-flash"), 2000);
+      }
+    }
+    consumeChatFocus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingChatThreadId, pendingChatMessageId, activeThreadId, threadsQuery.data, messagesQuery.isLoading, history]);
 
   // 履歴が確定メッセージを含んだらローカルの重複を破棄(done 後の置換)。
   useEffect(() => {
@@ -352,56 +384,60 @@ export function ChatPanel({ itemId }: ChatPanelProps) {
         </span>
         <span style={{ flex: 1 }} />
         <span style={chipStyle}>コンテキスト: この論文</span>
-        <button
-          ref={threadMenuAnchor}
-          type="button"
-          aria-label="スレッドメニュー"
-          aria-haspopup="menu"
-          aria-expanded={threadMenuOpen}
-          onClick={() => setThreadMenuOpen((v) => !v)}
-          style={{
-            border: "none",
-            background: "transparent",
-            cursor: "pointer",
-            color: "var(--pr-text-sub)",
-            fontSize: 13,
-            letterSpacing: 1,
-            padding: "0 2px",
-          }}
-        >
-          ⋯
-        </button>
-        <Popover
-          open={threadMenuOpen}
-          onClose={() => setThreadMenuOpen(false)}
-          anchorRef={threadMenuAnchor}
-          width={180}
-          placement="bottom-end"
-          caret={false}
-        >
-          <button
-            type="button"
-            role="menuitem"
-            disabled={summarizing || !activeThreadId}
-            onClick={summarizeToNote}
-            style={{
-              display: "block",
-              width: "100%",
-              textAlign: "left",
-              border: "none",
-              background: "transparent",
-              cursor: "pointer",
-              fontFamily: "inherit",
-              fontSize: 11.5,
-              padding: "0 12px",
-              height: 30,
-              color: "var(--pr-text-mid)",
-              opacity: summarizing ? 0.5 : 1,
-            }}
-          >
-            {summarizing ? "まとめてメモ化 中…" : "まとめてメモ化"}
-          </button>
-        </Popover>
+        {readOnly ? null : (
+          <>
+            <button
+              ref={threadMenuAnchor}
+              type="button"
+              aria-label="スレッドメニュー"
+              aria-haspopup="menu"
+              aria-expanded={threadMenuOpen}
+              onClick={() => setThreadMenuOpen((v) => !v)}
+              style={{
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                color: "var(--pr-text-sub)",
+                fontSize: 13,
+                letterSpacing: 1,
+                padding: "0 2px",
+              }}
+            >
+              ⋯
+            </button>
+            <Popover
+              open={threadMenuOpen}
+              onClose={() => setThreadMenuOpen(false)}
+              anchorRef={threadMenuAnchor}
+              width={180}
+              placement="bottom-end"
+              caret={false}
+            >
+              <button
+                type="button"
+                role="menuitem"
+                disabled={summarizing || !activeThreadId}
+                onClick={summarizeToNote}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  fontSize: 11.5,
+                  padding: "0 12px",
+                  height: 30,
+                  color: "var(--pr-text-mid)",
+                  opacity: summarizing ? 0.5 : 1,
+                }}
+              >
+                {summarizing ? "まとめてメモ化 中…" : "まとめてメモ化"}
+              </button>
+            </Popover>
+          </>
+        )}
       </div>
 
       {/* メッセージ領域(ChatMessageList) */}
@@ -422,7 +458,11 @@ export function ChatPanel({ itemId }: ChatPanelProps) {
           <div style={{ margin: "auto 0" }}>
             <EmptyState
               title="まだ会話がありません"
-              description="下の定型チップか入力欄から、この論文について質問できます。"
+              description={
+                readOnly
+                  ? "この論文についての会話はまだありません。"
+                  : "下の定型チップか入力欄から、この論文について質問できます。"
+              }
             />
           </div>
         ) : (
@@ -431,6 +471,7 @@ export function ChatPanel({ itemId }: ChatPanelProps) {
               key={m.id}
               message={m}
               streaming={streaming && m.id === localAssistant?.id}
+              readOnly={readOnly}
               onRegenerate={regenerate}
               onCopy={copy}
               onEvidenceJump={onEvidenceJump}
@@ -441,32 +482,34 @@ export function ChatPanel({ itemId }: ChatPanelProps) {
         )}
       </div>
 
-      {/* 入力エリア(ChatInputArea) */}
-      <div
-        style={{
-          padding: "10px 12px",
-          borderTop: "1px solid var(--pr-border-soft)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 8,
-          background: "var(--pr-bg-card)",
-          flex: "none",
-        }}
-      >
-        <QuickActionChips
-          disabled={streaming}
-          onPick={(qa) => {
-            setPanel(true, "chat");
-            send("", qa);
+      {/* 入力エリア(ChatInputArea)。モバイル閲覧専用では非描画(mobile.md §1.2-3)。 */}
+      {readOnly ? null : (
+        <div
+          style={{
+            padding: "10px 12px",
+            borderTop: "1px solid var(--pr-border-soft)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            background: "var(--pr-bg-card)",
+            flex: "none",
           }}
-        />
-        <ChatComposer
-          onSend={(content) => send(content)}
-          disabled={streaming}
-          pendingAnchors={pendingAnchors}
-          onRemovePendingAnchor={removePendingAnchor}
-        />
-      </div>
+        >
+          <QuickActionChips
+            disabled={streaming}
+            onPick={(qa) => {
+              setPanel(true, "chat");
+              send("", qa);
+            }}
+          />
+          <ChatComposer
+            onSend={(content) => send(content)}
+            disabled={streaming}
+            pendingAnchors={pendingAnchors}
+            onRemovePendingAnchor={removePendingAnchor}
+          />
+        </div>
+      )}
     </div>
   );
 }

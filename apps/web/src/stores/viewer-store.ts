@@ -62,6 +62,12 @@ interface ViewerStoreState {
   pendingNoteId: string | null;
   /** `?hl=` の値。遷移先ブロック内だけをマークする一発消費クエリ。 */
   pendingHighlightQuery: string | null;
+  /**
+   * チャットのディープリンク(plans/11 §7 `?thread=`/`?message=`。plans/09 1e §5.3-4「チャット」行)。
+   * ChatPanel が該当スレッド選択+メッセージへスクロールした時点で一発消費(null に戻す)。
+   */
+  pendingChatThreadId: string | null;
+  pendingChatMessageId: string | null;
 
   // actions
   initViewer(itemId: string, revisionId: string): void;
@@ -82,6 +88,8 @@ interface ViewerStoreState {
   requestNoteFocus(noteId: string): void;
   consumeNoteFocus(): void;
   setPendingHighlightQuery(query: string | null): void;
+  requestChatFocus(target: { threadId?: string | null; messageId?: string | null }): void;
+  consumeChatFocus(): void;
 }
 
 function readLocal(key: string): string | null {
@@ -152,6 +160,8 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
   pendingAnnotationId: null,
   pendingNoteId: null,
   pendingHighlightQuery: null,
+  pendingChatThreadId: null,
+  pendingChatMessageId: null,
 
   initViewer(itemId, revisionId) {
     const tocRaw = readLocal(`yk-toc-open:${itemId}`);
@@ -251,5 +261,16 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
 
   setPendingHighlightQuery(query) {
     set({ pendingHighlightQuery: query });
+  },
+
+  requestChatFocus(target) {
+    set({
+      pendingChatThreadId: target.threadId ?? null,
+      pendingChatMessageId: target.messageId ?? null,
+    });
+  },
+
+  consumeChatFocus() {
+    set({ pendingChatThreadId: null, pendingChatMessageId: null });
   },
 }));

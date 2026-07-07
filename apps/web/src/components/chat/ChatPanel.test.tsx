@@ -1,10 +1,23 @@
-import { render, screen, fireEvent, within } from "@testing-library/react";
-import { describe, expect, test, vi } from "vitest";
-import type { AnchorRef, ChatMessage as ChatMessageData } from "@yakudoku/api-client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import { chatListMessages, chatListThreads, type AnchorRef, type ChatMessage as ChatMessageData } from "@yakudoku/api-client";
 import { ChatMessage } from "@/components/chat/ChatMessage";
+import { ChatPanel } from "@/components/chat/ChatPanel";
 import { ChatComposer, CHAT_DISCLAIMER } from "@/components/chat/ChatComposer";
 import { QuickActionChips } from "@/components/chat/QuickActionChips";
 import { EvidenceHighlight } from "@/components/chat/EvidenceHighlight";
+import { useViewerStore } from "@/stores/viewer-store";
+
+vi.mock("@yakudoku/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+  return {
+    ...actual,
+    chatListThreads: vi.fn(),
+    chatListMessages: vi.fn(),
+  };
+});
 
 function anchorRef(overrides: Partial<AnchorRef> = {}): AnchorRef {
   return {
@@ -206,5 +219,83 @@ describe("EvidenceHighlight", () => {
     const { container } = render(<EvidenceHighlight text="これは **重要** です。" evidence={[]} />);
     const bold = within(container).getByText("重要");
     expect(bold.tagName).toBe("B");
+  });
+});
+
+function renderWithClient(ui: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
+
+// M1 統合ポリッシュ: チャットのディープリンク(?thread=/?message=。plans/11 §7・plans/09 1e §5.3-4)。
+// ViewerPage が viewer-store に積んだ pendingChatThreadId/pendingChatMessageId を
+// ChatPanel が消費し、該当スレッドを選択+メッセージへスクロールする。
+describe("ChatPanel deep link (M1 統合ポリッシュ)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    Element.prototype.scrollIntoView = vi.fn();
+    useViewerStore.setState({
+      pendingChatThreadId: null,
+      pendingChatMessageId: null,
+    });
+    vi.mocked(chatListThreads).mockResolvedValue({
+      data: {
+        items: [
+          { id: "th-main", title: "メイン", is_main: true, created_at: "2026-07-01T00:00:00Z" },
+          { id: "th-sub", title: "サブスレッド", is_main: false, created_at: "2026-07-02T00:00:00Z" },
+        ],
+      },
+    } as never);
+    vi.mocked(chatListMessages).mockImplementation(async ({ path }) => {
+      const threadId = path.thread_id;
+      if (threadId === "th-sub") {
+        return {
+          data: {
+            items: [
+              {
+                id: "msg-2",
+                role: "assistant",
+                blocks: [{ type: "markdown", text: "サブスレッドの回答です。", evidence: [] }],
+                context_anchors: [],
+                quick_action: null,
+                status: "complete",
+                error: null,
+                created_at: "2026-07-02T00:00:00Z",
+              },
+              {
+                id: "msg-1",
+                role: "user",
+                blocks: [{ type: "markdown", text: "質問です。", evidence: [] }],
+                context_anchors: [],
+                quick_action: null,
+                status: "complete",
+                error: null,
+                created_at: "2026-07-02T00:00:01Z",
+              },
+            ],
+          },
+        } as never;
+      }
+      return { data: { items: [] } } as never;
+    });
+  });
+
+  test("selects the ?thread= target instead of the main thread and scrolls to ?message=, then consumes both", async () => {
+    useViewerStore.setState({ pendingChatThreadId: "th-sub", pendingChatMessageId: "msg-2" });
+    renderWithClient(<ChatPanel itemId="li_1" />);
+
+    expect(await screen.findByText("サブスレッド")).toBeInTheDocument();
+    await screen.findByText("サブスレッドの回答です。");
+
+    await waitFor(() => {
+      expect(useViewerStore.getState().pendingChatThreadId).toBeNull();
+      expect(useViewerStore.getState().pendingChatMessageId).toBeNull();
+    });
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+  });
+
+  test("falls back to the main thread when there is no deep-link target", async () => {
+    renderWithClient(<ChatPanel itemId="li_1" />);
+    expect(await screen.findByText("メイン")).toBeInTheDocument();
   });
 });

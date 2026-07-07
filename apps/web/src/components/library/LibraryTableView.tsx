@@ -1,9 +1,13 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { LibraryItemSummary } from "@yakudoku/api-client";
+import { useQueryClient } from "@tanstack/react-query";
+import { libraryItemsUpdate, type LibraryItemSummary } from "@yakudoku/api-client";
+import type { ReadingStatus } from "@yakudoku/tokens";
 import { LibraryTable } from "@/components/ui/LibraryTable";
 import { toTableRow } from "@/components/library/toTableRow";
+import { useFinishReadingStore } from "@/components/library/finishReadingStore";
+import { useToast } from "@/components/ui/Toast";
 import type { SortState } from "@/components/library/types";
 
 /**
@@ -22,6 +26,31 @@ export interface LibraryTableViewProps {
 export function LibraryTableView({ items, sort, onSortChange, onOpenRow }: LibraryTableViewProps) {
   const rows = useMemo(() => items.map(toTableRow), [items]);
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const qc = useQueryClient();
+  const toast = useToast();
+
+  // ステータスピル(テーブル行)からの変更(1g §2.3 の発火規約: done への PATCH 成功で
+  // 読了ダイアログを開く。LibraryCard と同じ配線)。
+  const onStatusChange = (id: string, next: ReadingStatus) => {
+    const prevStatus = rows.find((r) => r.id === id)?.status;
+    if (prevStatus === next) return;
+    void libraryItemsUpdate({
+      path: { item_id: id },
+      body: { status: next },
+      throwOnError: true,
+    }).then(
+      (res) => {
+        void qc.invalidateQueries({ queryKey: ["library"] });
+        void qc.invalidateQueries({ queryKey: ["dashboard"] });
+        if (prevStatus !== "done" && next === "done" && res.data) {
+          useFinishReadingStore.getState().open(res.data);
+        }
+      },
+      () => {
+        toast({ kind: "error", message: "ステータスを変更できませんでした" });
+      },
+    );
+  };
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -47,6 +76,7 @@ export function LibraryTableView({ items, sort, onSortChange, onOpenRow }: Libra
       sort={sort}
       onSortChange={onSortChange}
       onOpenRow={onOpenRow}
+      onStatusChange={onStatusChange}
     />
   );
 }

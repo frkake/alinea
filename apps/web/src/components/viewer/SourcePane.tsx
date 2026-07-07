@@ -2,12 +2,14 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { viewerGetDocument, type LastPosition, type TocNode } from "@yakudoku/api-client";
+import { annotationsList, viewerGetDocument, type LastPosition, type TocNode } from "@yakudoku/api-client";
+import type { HighlightColor } from "@/components/ui/HighlightMark";
 import { useViewerStore } from "@/stores/viewer-store";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 import { ResumeBanner } from "@/components/viewer/ResumeBanner";
 import { SectionHeading } from "@/components/viewer/SectionHeading";
+import type { PlacedHighlight } from "@/components/viewer/highlight-render";
 import type { DocBlock, DocSection, DocumentResponse } from "@/components/viewer/document-types";
 
 export interface SourcePaneProps {
@@ -48,6 +50,7 @@ function buildTocMap(toc: TocNode[]): Map<string, { number: string | null; title
  * 訳文ユニットは取得せず、document の inlines を Source Serif で描画する。
  */
 export function SourcePane({
+  itemId,
   revisionId,
   toc,
   lastPosition,
@@ -57,9 +60,15 @@ export function SourcePane({
   const setCurrentBlock = useViewerStore((s) => s.setCurrentBlock);
   const pendingScroll = useViewerStore((s) => s.pendingScrollTarget);
   const consumeScroll = useViewerStore((s) => s.consumeScroll);
+  const pendingHighlightQuery = useViewerStore((s) => s.pendingHighlightQuery);
+  const setPendingHighlightQuery = useViewerStore((s) => s.setPendingHighlightQuery);
+  const setPanel = useViewerStore((s) => s.setPanel);
+  const requestAnnotationFocus = useViewerStore((s) => s.requestAnnotationFocus);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  // `hl` を一発マークする対象ブロック(TranslationPane と同じ規約。plans/11 §7)。
+  const [hlBlockId, setHlBlockId] = useState<string | null>(null);
 
   const docQuery = useQuery({
     queryKey: ["document", revisionId],
@@ -68,6 +77,52 @@ export function SourcePane({
         .data as DocumentResponse,
     staleTime: Infinity,
   });
+
+  // 注釈(ハイライト。原文モードは side='source' のみ配置対象)。TranslationPane・
+  // AnnotationListPanel と同一キーでキャッシュを共有する。
+  const annotationsQuery = useQuery({
+    queryKey: ["annotations", itemId],
+    queryFn: async () =>
+      (
+        await annotationsList({
+          path: { item_id: itemId },
+          query: { kind: "highlight" },
+          throwOnError: true,
+        })
+      ).data,
+    enabled: Boolean(itemId),
+    staleTime: 0,
+  });
+
+  // ブロック単位の原文側ハイライト(1b §4.5-5 と対の side='source')+ 文書順の注釈番号
+  // (AnnotationListPanel の番号と一致させる。訳文側の注釈も番号を消費する)。
+  const highlightsByBlock = useMemo(() => {
+    const map = new Map<string, PlacedHighlight[]>();
+    let seq = 0;
+    for (const a of annotationsQuery.data?.items ?? []) {
+      if (!a.placed) continue;
+      seq += 1;
+      if (a.anchor.side !== "source") continue;
+      if (a.anchor.start == null || a.anchor.end == null) continue;
+      const list = map.get(a.anchor.block_id) ?? [];
+      list.push({
+        id: a.id,
+        start: a.anchor.start,
+        end: a.anchor.end,
+        color: (a.color ?? "term") as HighlightColor,
+        number: seq,
+      });
+      map.set(a.anchor.block_id, list);
+    }
+    for (const list of map.values()) list.sort((x, y) => x.start - y.start);
+    return map;
+  }, [annotationsQuery.data]);
+
+  // 本文の丸数字チップクリック → 注釈タブの該当カードへ(TranslationPane と同じ配線。1b §5.7)。
+  const onAnnotationClick = (annotationId: string) => {
+    setPanel(true, "annotations");
+    requestAnnotationFocus(annotationId);
+  };
 
   const doc = docQuery.data;
   const tocMap = useMemo(() => buildTocMap(toc), [toc]);
@@ -109,7 +164,15 @@ export function SourcePane({
       window.setTimeout(() => el.classList.remove("yk-block-flash"), 2000);
     }
     consumeScroll();
-  }, [pendingScroll, doc, consumeScroll]);
+    // `hl` の一発マークは遷移先ブロックのみ(TranslationPane と同じ規約。plans/11 §7)。
+    if (pendingHighlightQuery && pendingScroll.kind === "block") {
+      setHlBlockId(pendingScroll.blockId);
+      window.setTimeout(() => {
+        setHlBlockId(null);
+        setPendingHighlightQuery(null);
+      }, 4000);
+    }
+  }, [pendingScroll, doc, consumeScroll, pendingHighlightQuery, setPendingHighlightQuery]);
 
   const showBanner = lastPosition != null && !bannerDismissed;
 
@@ -137,6 +200,10 @@ export function SourcePane({
         tocMap={tocMap}
         onExplainEquation={onExplainEquation}
         onCitationClick={onCitationClick}
+        highlightsByBlock={highlightsByBlock}
+        onAnnotationClick={onAnnotationClick}
+        hlBlockId={hlBlockId}
+        pendingHighlightQuery={pendingHighlightQuery}
       />
     ));
   }
@@ -180,9 +247,24 @@ interface SourceSectionProps {
   tocMap: Map<string, { number: string | null; titleJa: string | null }>;
   onExplainEquation?: (block: DocBlock) => void;
   onCitationClick?: (refId: string) => void;
+  /** ブロック単位の原文側ハイライト(M1 統合ポリッシュ: hl パリティ)。 */
+  highlightsByBlock: Map<string, PlacedHighlight[]>;
+  onAnnotationClick: (annotationId: string) => void;
+  /** `hl` を一発マークする対象ブロック(plans/11 §7)。 */
+  hlBlockId: string | null;
+  pendingHighlightQuery: string | null;
 }
 
-function SourceSection({ section, tocMap, onExplainEquation, onCitationClick }: SourceSectionProps) {
+function SourceSection({
+  section,
+  tocMap,
+  onExplainEquation,
+  onCitationClick,
+  highlightsByBlock,
+  onAnnotationClick,
+  hlBlockId,
+  pendingHighlightQuery,
+}: SourceSectionProps) {
   const meta = tocMap.get(section.id);
   const number = meta?.number ?? section.heading?.number ?? null;
   const titleEn = section.heading?.title ?? "";
@@ -198,6 +280,9 @@ function SourceSection({ section, tocMap, onExplainEquation, onCitationClick }: 
           block={block}
           onExplainEquation={onExplainEquation}
           onCitationClick={onCitationClick}
+          highlights={highlightsByBlock.get(block.id) ?? []}
+          onAnnotationClick={onAnnotationClick}
+          searchHighlight={hlBlockId === block.id ? pendingHighlightQuery : null}
         />
       ))}
       {(section.sections ?? []).map((sub) => (
@@ -207,6 +292,10 @@ function SourceSection({ section, tocMap, onExplainEquation, onCitationClick }: 
           tocMap={tocMap}
           onExplainEquation={onExplainEquation}
           onCitationClick={onCitationClick}
+          highlightsByBlock={highlightsByBlock}
+          onAnnotationClick={onAnnotationClick}
+          hlBlockId={hlBlockId}
+          pendingHighlightQuery={pendingHighlightQuery}
         />
       ))}
     </section>
@@ -217,10 +306,18 @@ function SourceBlock({
   block,
   onExplainEquation,
   onCitationClick,
+  highlights = [],
+  onAnnotationClick,
+  searchHighlight = null,
 }: {
   block: DocBlock;
   onExplainEquation?: (block: DocBlock) => void;
   onCitationClick?: (refId: string) => void;
+  /** この段落に配置された原文側ハイライト(1b §4.5-5 と対の side='source')。 */
+  highlights?: PlacedHighlight[];
+  onAnnotationClick?: (annotationId: string) => void;
+  /** 検索ヒット遷移の `?hl=`(plans/11 §7。遷移先ブロックのみ一発マーク)。 */
+  searchHighlight?: string | null;
 }) {
   if (block.type === "equation") {
     return (
@@ -258,13 +355,20 @@ function SourceBlock({
     <p
       data-block-id={block.id}
       style={{
-        fontSize: 15,
+        // 設定 4f の本文サイズ。CSS 変数が未設定の間は既定値(15px)を維持する(§5.6)。
+        fontSize: "var(--pr-content-font-size-px, 15px)",
         lineHeight: 1.8,
         color: "var(--pr-text-en)",
         margin: "0 0 20px",
       }}
     >
-      <InlineRenderer inlines={block.inlines ?? []} onCitationClick={onCitationClick} />
+      <InlineRenderer
+        inlines={block.inlines ?? []}
+        onCitationClick={onCitationClick}
+        highlights={highlights}
+        searchQuery={searchHighlight}
+        onAnnotationClick={onAnnotationClick}
+      />
     </p>
   );
 }
