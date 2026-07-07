@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { Popover } from "@/components/ui/Popover";
 import { NotificationPopover } from "@/components/notifications/NotificationPopover";
+import { FinishReadingDialogHost } from "@/components/library/FinishReadingDialogHost";
 
 /** ヘッダの通知ベル(◷)+未読ドット(#C49432)+ポップオーバー(4a §3〜5)。 */
 export interface NotificationBellProps {
@@ -73,6 +74,13 @@ export function NotificationBell({ unreadCount }: NotificationBellProps) {
           }}
         />
       </Popover>
+      {/*
+       * 読了フロー(1g)ダイアログの起動口(M1-06)。ヘッダに常駐する本コンポーネントの
+       * 兄弟として置くことで、通知ポップオーバーの開閉状態に関わらずマウントされ続ける
+       * (ポップオーバーは Popover.open=false でアンマウントされるため、その内側に置くと
+       * 「変更する」クリック後にポップオーバーが閉じた際ダイアログも消えてしまう)。
+       */}
+      <FinishReadingDialogHost />
     </>
   );
 }

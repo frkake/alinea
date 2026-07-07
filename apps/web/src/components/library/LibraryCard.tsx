@@ -1,7 +1,9 @@
 "use client";
 
 import type { CSSProperties, KeyboardEvent } from "react";
-import type { LibraryItemSummary } from "@yakudoku/api-client";
+import { useQueryClient } from "@tanstack/react-query";
+import { libraryItemsUpdate, type LibraryItemSummary } from "@yakudoku/api-client";
+import type { ReadingStatus } from "@yakudoku/tokens";
 import { Card } from "@/components/ui/Card";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { ProgressBar } from "@/components/ui/ProgressBar";
@@ -9,7 +11,9 @@ import { TagChip } from "@/components/ui/TagChip";
 import { DeadlineBadge } from "@/components/ui/DeadlineBadge";
 import { PriorityBadge } from "@/components/ui/PriorityBadge";
 import { AiMark } from "@/components/ui/AIBadge";
+import { useToast } from "@/components/ui/Toast";
 import { cardBibLine, formatShortDate, toPriority, toQuality, toReadingStatus } from "@/components/library/format";
+import { useFinishReadingStore } from "@/components/library/finishReadingStore";
 
 /**
  * 論文カード(4a §4.7)。M0 スコープ:
@@ -66,6 +70,8 @@ export function LibraryCard({ item, onOpen }: LibraryCardProps) {
   const processing = pipeline != null;
   const progressPct = pipeline ? pipeline.progress_pct : item.progress_pct;
   const showProgress = processing || status === "reading";
+  const qc = useQueryClient();
+  const toast = useToast();
 
   const open = () => {
     onOpen(item.id);
@@ -75,6 +81,28 @@ export function LibraryCard({ item, onOpen }: LibraryCardProps) {
       e.preventDefault();
       open();
     }
+  };
+
+  // ステータスピル(カード内)からの変更(1g §2.3 の発火規約: done への PATCH 成功で読了ダイアログを開く)。
+  const onStatusChange = (next: ReadingStatus) => {
+    if (next === status) return;
+    const prevStatus = status;
+    void libraryItemsUpdate({
+      path: { item_id: item.id },
+      body: { status: next },
+      throwOnError: true,
+    }).then(
+      (res) => {
+        void qc.invalidateQueries({ queryKey: ["library"] });
+        void qc.invalidateQueries({ queryKey: ["dashboard"] });
+        if (prevStatus !== "done" && next === "done" && res.data) {
+          useFinishReadingStore.getState().open(res.data);
+        }
+      },
+      () => {
+        toast({ kind: "error", message: "ステータスを変更できませんでした" });
+      },
+    );
   };
 
   const clampStyle = (lines: number): CSSProperties => ({
@@ -171,7 +199,15 @@ export function LibraryCard({ item, onOpen }: LibraryCardProps) {
         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: "auto" }}>
           {showProgress ? <ProgressBar value={progressPct} color="accent" height={3} /> : null}
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <StatusPill status={status} size="sm" variant="pill" interactive={false} />
+            <span onClick={(e) => e.stopPropagation()}>
+              <StatusPill
+                status={status}
+                size="sm"
+                variant="pill"
+                interactive
+                onChange={onStatusChange}
+              />
+            </span>
             {deadline ? (
               <DeadlineBadge date={deadline} variant="chip" withLabel />
             ) : item.tags.length > 0 ? (

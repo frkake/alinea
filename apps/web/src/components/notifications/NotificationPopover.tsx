@@ -8,6 +8,7 @@ import {
   notificationsList,
   notificationsReadAll,
   notificationsUpdate,
+  type LibraryItemSummary,
   type MeResponse,
   type NotificationListResponse,
   type NotificationOut,
@@ -20,6 +21,7 @@ import {
   truncateNotificationTitle,
 } from "@/components/notifications/format";
 import { meQueryKey, notificationsQueryKey } from "@/components/notifications/queryKeys";
+import { useFinishReadingStore } from "@/components/library/finishReadingStore";
 
 /**
  * 通知ポップオーバー(4a §3〜5)。◷ ベルの Popover に描画する本体。
@@ -276,8 +278,16 @@ export function NotificationPopover({ onClose }: NotificationPopoverProps) {
           : old,
       );
       void queryClient.invalidateQueries({ queryKey: meQueryKey });
-      if (data.library_item) {
+      // NotificationActionResponse.library_item は API 契約上 Any(schemas/notifications.py。
+      // 他タスク所有ファイル)のため生成型が unknown になる。実体は LibraryItemSummary。
+      const libraryItem = data.library_item as LibraryItemSummary | null | undefined;
+      if (libraryItem) {
         void queryClient.invalidateQueries({ queryKey: ["library"] });
+        // 「変更する」→ done への PATCH が成功した時点で読了フロー(1g)を開く
+        // (1g §2.3 の発火規約と同条件。StatusPill 経由の変更と共通のストアを使う)。
+        if (libraryItem.status === "done") {
+          useFinishReadingStore.getState().open(libraryItem);
+        }
       }
     },
   });

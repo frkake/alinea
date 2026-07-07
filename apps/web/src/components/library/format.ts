@@ -80,3 +80,37 @@ export function cardBibLine(paper: PaperBib): string {
   const vy = venueOrYear(paper);
   return [authors, vy].filter(Boolean).join(" · ");
 }
+
+/** API の Importance(plans/03 §1.6)。想定外値/null は null(1g §4.7)。 */
+export function toImportance(importance: string | null | undefined): "low" | "mid" | "high" | null {
+  return importance === "low" || importance === "mid" || importance === "high" ? importance : null;
+}
+
+/** 1g §3: 理解度 1〜5 の確定ラベル(docs/06 §3)。表示形式「n/5 — ラベル」。 */
+export const COMPREHENSION_LABELS: Record<1 | 2 | 3 | 4 | 5, string> = {
+  1: "ほぼ分からなかった",
+  2: "ところどころ分かった",
+  3: "半分くらい追えた",
+  4: "だいたい追えた",
+  5: "完全に理解した",
+};
+
+/** 1g §3: 3時間12分 / 42分 / 1分未満。0 秒以下は null(メタ行から時間部分を省く)。 */
+export function formatReadingDuration(totalSeconds: number): string | null {
+  if (totalSeconds <= 0) return null;
+  if (totalSeconds < 60) return "1分未満";
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  return h > 0 ? `${h}時間${m}分` : `${m}分`;
+}
+
+/** 1g §3: finished_at(ISO 8601)→ 端末ローカルの "YYYY-MM-DD"。不正値は null。 */
+export function formatFinishedDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
