@@ -12,8 +12,14 @@ from yakudoku_api.logging import configure_logging
 from yakudoku_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
 from yakudoku_api.ratelimit import RateLimitMiddleware
 from yakudoku_api.redis_client import get_redis
+
+# `annotations` / `settings` はそれぞれ ``from __future__ import annotations`` と
+# stdlib settings 名に衝突するため別名で取り込む(mypy が __future__._Feature に
+# 解決してしまうのを防ぐ)。
 from yakudoku_api.routers import (
-    annotations,
+    annotations as annotations_router,
+)
+from yakudoku_api.routers import (
     assets,
     auth,
     chat,
@@ -69,7 +75,7 @@ def create_app() -> FastAPI:
     app.include_router(library_items.router)
     app.include_router(settings_router.router)
     app.include_router(llm_settings.router)
-    app.include_router(annotations.router)
+    app.include_router(annotations_router.router)
     app.include_router(notes.router)
     app.include_router(notifications.router)
     app.include_router(search.router)
