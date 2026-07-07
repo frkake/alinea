@@ -10,14 +10,22 @@ export interface PopupHeaderProps {
   title: string;
   badge?: HeaderBadge;
   onOpenSettings?: () => void;
+  /** 設定ビュー内(plans/10 §10.2)。指定時は「⚙」の代わりに「←」を表示する。 */
+  onBack?: () => void;
 }
 
-export function PopupHeader({ title, badge, onOpenSettings }: PopupHeaderProps) {
+export function PopupHeader({ title, badge, onOpenSettings, onBack }: PopupHeaderProps) {
   return (
     <header className="ext-header">
-      <span className="ext-logo" aria-hidden="true">
-        訳
-      </span>
+      {onBack ? (
+        <button type="button" className="ext-back" aria-label="戻る" title="戻る" onClick={onBack}>
+          ←
+        </button>
+      ) : (
+        <span className="ext-logo" aria-hidden="true">
+          訳
+        </span>
+      )}
       <span className="ext-header-title">{title}</span>
       {badge?.kind === "detect" && <span className="ext-badge ext-badge-ok">{badge.label}</span>}
       {badge?.kind === "pdf" && <span className="ext-badge ext-badge-gray">{badge.label}</span>}
@@ -29,7 +37,7 @@ export function PopupHeader({ title, badge, onOpenSettings }: PopupHeaderProps) 
           ✓
         </span>
       )}
-      {onOpenSettings && (
+      {!onBack && onOpenSettings && (
         <button
           type="button"
           className="ext-gear"

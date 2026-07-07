@@ -5,6 +5,7 @@ import { browser } from "wxt/browser";
 
 import type { IngestCheckResponse, IngestRecentItem, JobOut } from "@yakudoku/api-client";
 
+import { FailedQueueBanner, type FailedQueueEntry } from "@/components/FailedQueueBanner";
 import { PopupHeader, type HeaderBadge } from "@/components/PopupHeader";
 import {
   apiCheck,
@@ -13,28 +14,53 @@ import {
   apiMe,
   apiPatchStatus,
   apiSaveArxiv,
+  apiSendPdf,
   siteUrl,
+  type DuplicateExisting,
+  type PdfSendMeta,
 } from "@/lib/api";
 import { getActiveTab, type ActiveTab } from "@/lib/e2e-hooks";
+import { guessPdfTitle, validatePdfBlob } from "@/lib/pdf-detect";
 import { isProcessingStage } from "@/lib/pipeline";
 import { resolvePopupState } from "@/lib/popup-state";
+import {
+  enqueueFailedSave,
+  enqueueFailedUpload,
+  listFailedSaves,
+  listFailedUploads,
+  NETWORK_ERROR,
+  removeFailedSave,
+  removeFailedUpload,
+  updateFailedSaveError,
+  updateFailedUploadError,
+  type FailedSaveRecord,
+  type FailedUploadRecord,
+} from "@/lib/queue";
 import { addActiveJob, removeActiveJob } from "@/lib/storage";
 import type { Status } from "@/lib/status";
 
 import { RecentIngests, type RecentIngestRow } from "./RecentIngests";
 import { Existing } from "./states/Existing";
+import { GenericPdf } from "./states/GenericPdf";
 import { Loading } from "./states/Loading";
 import { Login } from "./states/Login";
 import { SaveForm, type SavePayload } from "./states/SaveForm";
 import { Saved } from "./states/Saved";
+import { Settings } from "./states/Settings";
 import { Unsupported } from "./states/Unsupported";
 
 const POLL_MS = 2000;
+/** 送信タイムアウト(タブ内 PDF fetch・POST /ingest/pdf の双方に適用。plans/10 §11.2)。 */
+const PDF_SEND_TIMEOUT_MS = 120_000;
 
 interface SavedView {
   jobId: string;
   libraryItemId: string;
   title: string;
+}
+
+function queueEvictionNotice(title: string | null): string {
+  return `保存上限のため「${title ?? "(タイトル不明の PDF)"}」の再試行キューを破棄しました`;
 }
 
 export function App() {
@@ -49,6 +75,42 @@ export function App() {
   const [savedView, setSavedView] = useState<SavedView | null>(null);
   const [job, setJob] = useState<JobOut | null>(null);
   const [recent, setRecent] = useState<IngestRecentItem[]>([]);
+
+  // 状態4(一般ページ PDF・plans/10 §11.2)。
+  const [pdfSending, setPdfSending] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+  const [pdfExisting, setPdfExisting] = useState<DuplicateExisting | null>(null);
+
+  // 送信失敗キュー(plans/10 §11.3・§11.4)。全ビュー共通のバナーで表示する。
+  const [queueEntries, setQueueEntries] = useState<FailedQueueEntry[]>([]);
+  const [queueNotice, setQueueNotice] = useState<string | null>(null);
+
+  // 拡張設定(⚙。plans/10 §10.2)。
+  const [showSettings, setShowSettings] = useState(false);
+
+  const refreshQueue = useCallback(async () => {
+    const [saves, uploads] = await Promise.all([listFailedSaves(), listFailedUploads()]);
+    const entries: FailedQueueEntry[] = [
+      ...saves.map((r) => ({ id: r.id, kind: "arxiv" as const, title: r.title, failedAt: r.failedAt, lastError: r.lastError })),
+      ...uploads.map((r) => ({
+        id: r.id,
+        kind: "pdf" as const,
+        title: r.titleGuess ?? "(タイトル不明の PDF)",
+        failedAt: r.failedAt,
+        lastError: r.lastError,
+      })),
+    ].sort((a, b) => a.failedAt - b.failedAt);
+    setQueueEntries(entries);
+  }, []);
+
+  useEffect(() => {
+    void refreshQueue();
+  }, [refreshQueue]);
+
+  const notifyEviction = useCallback((title: string | null) => {
+    setQueueNotice(queueEvictionNotice(title));
+    setTimeout(() => setQueueNotice(null), 5000);
+  }, []);
 
   // 初期化 / 再試行: タブ URL → me → check(3a §2.4)。
   useEffect(() => {
@@ -133,13 +195,15 @@ export function App() {
       if (!tabInfo) return;
       setSaving(true);
       setSaveError(null);
-      const outcome = await apiSaveArxiv({
+      const idempotencyKey = crypto.randomUUID();
+      const body = {
         url: tabInfo.url,
         status: payload.status,
         tags: payload.tags,
         quick_note: payload.quickNote || null,
         collection_id: null,
-      });
+      };
+      const outcome = await apiSaveArxiv(body, idempotencyKey);
       setSaving(false);
       switch (outcome.kind) {
         case "accepted":
@@ -155,17 +219,151 @@ export function App() {
           setSavedView(null);
           setReloadKey((k) => k + 1);
           break;
+        case "retryable":
+          if (outcome.status === 0) {
+            // ネットワーク断のみキュー対象(plans/10 §7.1 決定。5xx/429 はキューに入れない)。
+            const record: FailedSaveRecord = {
+              id: idempotencyKey,
+              kind: "arxiv",
+              request: body,
+              title: check?.bib?.title ?? tabInfo.title,
+              failedAt: Date.now(),
+              lastError: NETWORK_ERROR,
+            };
+            const { evicted } = await enqueueFailedSave(record);
+            await refreshQueue();
+            if (evicted) notifyEviction(evicted.title);
+            setSaveError("送信できませんでした。あとで再試行できます(失敗キューに保存しました)。");
+          } else {
+            setSaveError("送信に失敗しました。しばらくしてからもう一度お試しください。");
+          }
+          break;
         default:
-          // 再試行キューは M0-34〜36 では未実装(followups)。
           setSaveError("送信に失敗しました");
       }
     },
-    [tabInfo, check],
+    [tabInfo, check, refreshQueue, notifyEviction],
   );
 
   const handleChangeStatus = useCallback(
     (itemId: string) => (status: Status) => apiPatchStatus(itemId, status),
     [],
+  );
+
+  const pdfTitleGuess = useMemo(() => (tabInfo ? guessPdfTitle(tabInfo) : null), [tabInfo]);
+
+  const handleSendPdf = useCallback(async () => {
+    if (!tabInfo) return;
+    setPdfError(null);
+    setPdfSending(true);
+    const idempotencyKey = crypto.randomUUID();
+
+    let blob: Blob;
+    try {
+      const res = await fetch(tabInfo.url, {
+        credentials: "include",
+        signal: AbortSignal.timeout(PDF_SEND_TIMEOUT_MS),
+      });
+      blob = await res.blob();
+    } catch {
+      setPdfSending(false);
+      setPdfError("このタブの PDF を取得できませんでした。ページを開き直してもう一度お試しください。");
+      return;
+    }
+
+    const validation = await validatePdfBlob(blob);
+    if (!validation.ok) {
+      setPdfSending(false);
+      setPdfError(validation.message);
+      return;
+    }
+
+    const meta: PdfSendMeta = {
+      source_url: tabInfo.url,
+      title_guess: pdfTitleGuess,
+      status: "planned",
+      tags: [],
+      collection_id: null,
+      quick_note: null,
+    };
+    const outcome = await apiSendPdf(blob, meta, idempotencyKey);
+    setPdfSending(false);
+    switch (outcome.kind) {
+      case "accepted":
+        await addActiveJob(outcome.data.job_id);
+        setSavedView({
+          jobId: outcome.data.job_id,
+          libraryItemId: outcome.data.library_item_id,
+          title: pdfTitleGuess ?? "(タイトル不明の PDF)",
+        });
+        break;
+      case "duplicate":
+        if (outcome.existing) setPdfExisting(outcome.existing);
+        break;
+      case "retryable": {
+        const record: FailedUploadRecord = {
+          id: idempotencyKey,
+          kind: "pdf",
+          meta,
+          blob,
+          titleGuess: pdfTitleGuess,
+          failedAt: Date.now(),
+          lastError: NETWORK_ERROR,
+        };
+        const { evicted } = await enqueueFailedUpload(record);
+        await refreshQueue();
+        if (evicted) notifyEviction(evicted.titleGuess);
+        setPdfError("送信できませんでした。失敗キューに保存しました — あとで再試行できます。");
+        break;
+      }
+      case "permanent":
+        setPdfError(outcome.message);
+        break;
+    }
+  }, [tabInfo, pdfTitleGuess, refreshQueue, notifyEviction]);
+
+  const handleRetryQueueEntry = useCallback(
+    async (id: string, kind: "arxiv" | "pdf") => {
+      if (kind === "arxiv") {
+        const record = (await listFailedSaves()).find((r) => r.id === id);
+        if (!record) return;
+        const outcome = await apiSaveArxiv(record.request, record.id);
+        if (outcome.kind === "accepted") {
+          await addActiveJob(outcome.data.job_id);
+          await removeFailedSave(id);
+        } else if (outcome.kind === "duplicate") {
+          await removeFailedSave(id);
+        } else {
+          await updateFailedSaveError(id, outcome.kind === "retryable" ? NETWORK_ERROR : "送信に失敗しました");
+        }
+      } else {
+        const record = (await listFailedUploads()).find((r) => r.id === id);
+        if (!record) return;
+        const outcome = await apiSendPdf(record.blob, record.meta, record.id);
+        if (outcome.kind === "accepted") {
+          await addActiveJob(outcome.data.job_id);
+          await removeFailedUpload(id);
+        } else if (outcome.kind === "duplicate") {
+          await removeFailedUpload(id);
+        } else {
+          await updateFailedUploadError(
+            id,
+            outcome.kind === "retryable" ? NETWORK_ERROR : outcome.message,
+          );
+        }
+      }
+      await refreshQueue();
+    },
+    [refreshQueue],
+  );
+
+  const handleDiscardQueueEntry = useCallback(
+    async (id: string, kind: "arxiv" | "pdf") => {
+      if (kind === "arxiv") await removeFailedSave(id);
+      else await removeFailedUpload(id);
+      await refreshQueue();
+    },
+    [refreshQueue],
   );
 
   const recentRows: RecentIngestRow[] = useMemo(
@@ -185,13 +383,78 @@ export function App() {
       <RecentIngests items={recentRows} onOpen={(url) => openTab(siteUrl(url))} />
     ) : null;
 
-  const frame = (title: string, badge: HeaderBadge | undefined, body: ReactNode, showFooter: boolean) => (
+  // 「⚙」は docs/08 §2 の 4 状態(保存前/保存直後/既にライブラリ/一般ページ PDF)のみに置く。
+  const frame = (
+    title: string,
+    badge: HeaderBadge | undefined,
+    body: ReactNode,
+    showFooter: boolean,
+    header?: { onBack?: () => void; settings?: boolean },
+  ) => (
     <div className="ext-popup">
-      <PopupHeader title={title} badge={badge} />
+      <PopupHeader
+        title={title}
+        badge={badge}
+        onBack={header?.onBack}
+        onOpenSettings={
+          header?.onBack ? undefined : header?.settings ? () => setShowSettings(true) : undefined
+        }
+      />
+      <FailedQueueBanner
+        entries={queueEntries}
+        onRetry={(id, kind) => void handleRetryQueueEntry(id, kind)}
+        onDiscard={(id, kind) => void handleDiscardQueueEntry(id, kind)}
+        notice={queueNotice}
+      />
       {body}
       {showFooter ? footer : null}
     </div>
   );
+
+  // 設定(⚙)。全状態から開ける最上位ビュー(plans/10 §10.2)。
+  if (showSettings) {
+    return frame(
+      "設定",
+      undefined,
+      <Settings
+        version={browser.runtime.getManifest().version}
+        onOpenSiteSettings={() => openTab(siteUrl("/settings"))}
+      />,
+      false,
+      { onBack: () => setShowSettings(false) },
+    );
+  }
+
+  const renderExisting = (item: {
+    library_item_id: string;
+    status: string;
+    added_at: string;
+    progress_pct: number;
+    last_position?: { section_display: string; saved_at: string } | null;
+  }) =>
+    frame(
+      "既にライブラリにあります",
+      undefined,
+      <Existing
+        status={item.status as Status}
+        addedAt={item.added_at}
+        progressPct={item.progress_pct}
+        lastPosition={
+          item.last_position
+            ? { section_display: item.last_position.section_display, saved_at: item.last_position.saved_at }
+            : null
+        }
+        onOpen={() => openTab(siteUrl(`/papers/${item.library_item_id}`))}
+        onChangeStatus={handleChangeStatus(item.library_item_id)}
+      />,
+      true,
+      { settings: true },
+    );
+
+  // PDF 送信が 409 duplicate だった場合(3a §6.5)。savedView と同じ優先度で扱う。
+  if (pdfExisting) {
+    return renderExisting(pdfExisting);
+  }
 
   // 通信エラー(3a §5.1)。
   if (connError) {
@@ -220,6 +483,7 @@ export function App() {
         onClose={() => window.close()}
       />,
       true,
+      { settings: true },
     );
   }
 
@@ -248,39 +512,28 @@ export function App() {
           error={saveError}
         />,
         true,
+        { settings: true },
       );
     case "existing": {
       const saved = check?.saved;
       // resolvePopupState が existing を返すのは saved != null のときのみ。
       if (!saved) return frame("訳読に保存", undefined, <Loading />, false);
-      return frame(
-        "既にライブラリにあります",
-        undefined,
-        <Existing
-          status={saved.status as Status}
-          addedAt={saved.added_at}
-          progressPct={saved.progress_pct}
-          lastPosition={
-            saved.last_position
-              ? {
-                  section_display: saved.last_position.section_display,
-                  saved_at: saved.last_position.saved_at,
-                }
-              : null
-          }
-          onOpen={() => openTab(siteUrl(`/papers/${saved.library_item_id}`))}
-          onChangeStatus={handleChangeStatus(saved.library_item_id)}
-        />,
-        true,
-      );
+      return renderExisting(saved);
     }
     case "pdf":
-      // 状態4(一般ページ PDF 送信)は M0-34〜36 では未実装(followups)。
+      // 状態4: 一般ページ PDF(3a §6.5・plans/10 §11)。書誌は推定 + 明示クリックでのみ送信。
       return frame(
         "訳読に保存",
         { kind: "pdf", label: "PDF を表示中" },
-        <Unsupported message="この拡張の現バージョンでは、一般ページの PDF 送信に未対応です。arXiv の論文ページで開いてください。" />,
+        <GenericPdf
+          tabUrl={tabInfo?.url ?? ""}
+          titleGuess={pdfTitleGuess}
+          sending={pdfSending}
+          error={pdfError}
+          onSend={() => void handleSendPdf()}
+        />,
         true,
+        { settings: true },
       );
     case "unsupported":
       return frame(

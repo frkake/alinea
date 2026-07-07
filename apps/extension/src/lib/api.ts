@@ -6,6 +6,7 @@ import {
   client,
   ingestArxiv,
   ingestCheck,
+  ingestPdf,
   ingestRecent,
   jobsGet,
   libraryItemsUpdate,
@@ -106,5 +107,73 @@ export async function apiPatchStatus(itemId: string, status: Status): Promise<bo
     return Boolean(res.data);
   } catch {
     return false;
+  }
+}
+
+/** POST /api/ingest/pdf の multipart `meta` フィールド(plans/03 §3.3 IngestPdfMeta 逐語)。 */
+export interface PdfSendMeta {
+  source_url: string;
+  title_guess: string | null;
+  status: Status;
+  tags: string[];
+  collection_id: string | null;
+  quick_note: string | null;
+}
+
+/** 409 duplicate 応答の `existing`(既存 LibraryItem の要約。plans/03 §3.2 と同形)。 */
+export interface DuplicateExisting {
+  library_item_id: string;
+  status: string;
+  added_at: string;
+  progress_pct: number;
+  last_position: { section_display: string; saved_at: string } | null;
+}
+
+function readProblemMessage(error: unknown, fallback: string): string {
+  if (error && typeof error === "object") {
+    const detail = (error as { detail?: unknown }).detail;
+    if (typeof detail === "string" && detail.trim() !== "") return detail;
+    const title = (error as { title?: unknown }).title;
+    if (typeof title === "string" && title.trim() !== "") return title;
+  }
+  return fallback;
+}
+
+function readDuplicateExisting(error: unknown): DuplicateExisting | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const existing = (error as { existing?: unknown }).existing;
+  if (!existing || typeof existing !== "object") return undefined;
+  return existing as DuplicateExisting;
+}
+
+export type PdfSendOutcome =
+  | { kind: "accepted"; data: IngestArxivResponse }
+  | { kind: "duplicate"; existing?: DuplicateExisting }
+  // ネットワーク/5xx/429: §11.3 の失敗キュー対象(3a §5.1 と同方針)。
+  | { kind: "retryable"; status: number }
+  // 413/415/422 等の恒久エラー: サーバーの Problem detail をそのまま表示する。
+  | { kind: "permanent"; status: number; message: string };
+
+/**
+ * POST /api/ingest/pdf(plans/10 §11.2)。タブ内 PDF バイト列の直接送信。
+ * multipart の `meta` は JSON 文字列化して送る(生成クライアントが FormData 化する)。
+ */
+export async function apiSendPdf(
+  file: Blob,
+  meta: PdfSendMeta,
+  idempotencyKey: string = crypto.randomUUID(),
+): Promise<PdfSendOutcome> {
+  try {
+    const res = await ingestPdf({
+      body: { file, meta: JSON.stringify(meta) },
+      headers: { "Idempotency-Key": idempotencyKey },
+    });
+    const status = res.response.status;
+    if (status === 409) return { kind: "duplicate", existing: readDuplicateExisting(res.error) };
+    if (res.data) return { kind: "accepted", data: res.data };
+    if (status === 429 || status >= 500) return { kind: "retryable", status };
+    return { kind: "permanent", status, message: readProblemMessage(res.error, "送信に失敗しました") };
+  } catch {
+    return { kind: "retryable", status: 0 };
   }
 }

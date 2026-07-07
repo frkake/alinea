@@ -14,8 +14,10 @@ export default defineConfig({
     // 3a §5.9(確定 manifest)。
     name: "訳読 — 論文をライブラリへ",
     description: "arXiv 論文の URL だけを送ってライブラリへ保存します(取得・解析はサーバー)。",
-    // 権限は M0 スコープ(Task 31): 現在タブ URL 判定 + storage のみ。
-    permissions: ["activeTab", "storage"],
+    // 権限(plans/10 §3.3): 現在タブ URL 判定 + storage + arXiv ページ内ピルの動的登録(scripting)。
+    // scripting 自体はサイトアクセスを持たない(実際の arxiv.org アクセスは下の
+    // optional_host_permissions をユーザーがオプトインで許可した場合のみ)。
+    permissions: ["activeTab", "storage", "scripting"],
     // API 呼び出し(セッションクッキー共有)に必要なホスト権限。開発は localhost:3000(3a §5.9 決定)。
     host_permissions: ["http://localhost:3000/*", "https://yakudoku.app/*"],
     // ページ内「訳 保存」ピル(オプトイン・将来)。既定では要求しない。

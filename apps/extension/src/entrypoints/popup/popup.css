@@ -24,6 +24,10 @@
   --ext-warn: #a05a42; /* エラー文字(= tokens WARN_COLOR) */
   --ext-row-hover: #faf9f5; /* ドロップダウン項目ホバー */
   --ext-badge-gray-fg: #777b81; /* グレーバッジ文字 */
+  --ext-icon-muted: #8a8e94; /* 「書誌は推定」インラインバッジ文字 */
+  --ext-warnbox-bg: #fff9f0; /* 警告ボックス地(状態4・キューバナー) */
+  --ext-warnbox-border: #e4cfa6; /* 警告ボックス枠 */
+  --ext-warnbox-fg: #8a6a24; /* 警告ボックス文字 */
 }
 
 html,
@@ -124,6 +128,17 @@ body {
   font-size: 12px;
   line-height: 1;
   color: var(--ext-muted);
+}
+
+.ext-back {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  font-size: 13px;
+  color: var(--ext-label);
 }
 
 /* ── 本文共通(3a §4.4〜§4.6) ─────────────────── */
@@ -673,4 +688,221 @@ body {
 .ext-popup .ext-btn-primary:hover,
 .ext-popup .ext-btn-save:not(:disabled):hover {
   filter: brightness(1.08);
+}
+
+/* ── 状態4: 一般ページ PDF(plans/10 §11.2) ───── */
+.ext-pdf-bib {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ext-pdf-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ext-pdf-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.ext-badge-inline {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  height: 14px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--ext-chip);
+  color: var(--ext-icon-muted);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.ext-pdf-url {
+  overflow: hidden;
+  font-size: 10.5px;
+  color: var(--ext-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ext-warnbox {
+  border: 1px solid var(--ext-warnbox-border);
+  border-radius: 6px;
+  background: var(--ext-warnbox-bg);
+  padding: 8px 10px;
+  font-size: 10px;
+  color: var(--ext-warnbox-fg);
+  line-height: 1.65;
+  text-align: left;
+}
+
+.ext-btn-pdf-send {
+  width: 100%;
+  height: 32px;
+  border-radius: 7px;
+  background: var(--pr-a);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ext-btn-pdf-send:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.ext-privacy-note-tight {
+  margin-top: -4px;
+}
+
+/* ── 送信失敗キューバナー(plans/10 §11.4) ─────── */
+.ext-queue-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px 0;
+}
+
+.ext-queue-summary {
+  width: 100%;
+  font-weight: 600;
+}
+
+.ext-queue-notice {
+  width: 100%;
+}
+
+.ext-queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ext-queue-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--ext-hair);
+}
+
+.ext-queue-row-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.ext-queue-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10.5px;
+  color: var(--ext-text);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ext-queue-time {
+  flex: none;
+  font-size: 9.5px;
+  color: var(--ext-muted);
+}
+
+.ext-queue-row-actions {
+  display: flex;
+  flex: none;
+  gap: 10px;
+}
+
+.ext-queue-retry {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--pr-a);
+}
+
+.ext-queue-discard {
+  font-size: 10.5px;
+  color: var(--ext-muted);
+}
+
+.ext-queue-error {
+  flex: 0 0 100%;
+  font-size: 9.5px;
+  color: var(--ext-warnbox-fg);
+}
+
+/* ── 設定(plans/10 §10.2) ─────────────────────── */
+.ext-settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ext-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ext-toggle-track {
+  position: relative;
+  width: 30px;
+  height: 17px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--ext-field);
+  transition: background 150ms;
+}
+
+.ext-toggle[data-on="true"] .ext-toggle-track {
+  background: var(--pr-a);
+}
+
+.ext-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #ffffff;
+  transition: left 150ms;
+}
+
+.ext-toggle[data-on="true"] .ext-toggle-thumb {
+  left: 15px;
+}
+
+.ext-toggle-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ext-strong);
+}
+
+.ext-settings-desc {
+  margin: 0;
+  padding-left: 38px;
+  font-size: 9.5px;
+  color: var(--ext-muted);
+  line-height: 1.6;
+}
+
+.ext-settings-link {
+  align-self: flex-start;
+  font-size: 11px;
+  color: var(--pr-a);
+}
+
+.ext-settings-version {
+  margin-top: auto;
+  font-size: 9.5px;
+  color: var(--ext-muted);
 }
