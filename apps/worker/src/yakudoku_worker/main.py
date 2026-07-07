@@ -11,12 +11,14 @@ from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
 
 import structlog
+from arq import cron
 from yakudoku_core.db.models import Job
 from yakudoku_core.db.session import get_sessionmaker
 from yakudoku_core.ingest import joblog
 from yakudoku_core.jobs.store import JobStore
 
 from yakudoku_worker.bootstrap import on_shutdown, on_startup
+from yakudoku_worker.cron import check_quality_promotions
 from yakudoku_worker.settings import BULK_QUEUE, INTERACTIVE_QUEUE, redis_settings
 
 log = structlog.get_logger("yakudoku.worker")
@@ -77,6 +79,8 @@ class BulkWorker:
     """一括キュー(取り込み・翻訳・エクスポートなど、長時間ジョブ)。"""
 
     functions: ClassVar[list[Any]] = [run_job]
+    # check_quality_promotions: 毎日 07:30 JST(= 22:30 UTC 前日。plans/05 §12.3)。
+    cron_jobs: ClassVar[list[Any]] = [cron(check_quality_promotions, hour={22}, minute={30})]
     queue_name = BULK_QUEUE
     redis_settings = redis_settings()
     max_jobs = 4

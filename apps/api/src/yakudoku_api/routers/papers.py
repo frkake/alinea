@@ -1,8 +1,11 @@
-"""papers ルータ — 論文実体(plans/03 §4)。
+"""papers ルータ — 論文実体(plans/03 §4・§6.8)。
 
-- ``POST /api/papers/{paper_id}/reingest``    再取り込み(202・実行中は 409 conflict)。
-- ``GET  /api/papers/{paper_id}/ingest-log``  処理ログ(at 昇順・ページングなし)。
-- ``GET  /api/papers/{paper_id}/pdf``         原本 PDF(302 署名付き URL、10 分)。
+- ``POST /api/papers/{paper_id}/reingest``            再取り込み(202・実行中は 409 conflict)。
+- ``GET  /api/papers/{paper_id}/ingest-log``          処理ログ(at 昇順・ページングなし)。
+- ``GET  /api/papers/{paper_id}/pdf``                 原本 PDF(302 署名付き URL、10 分)。
+- ``POST /api/library-items/{id}/adopt-revision``     新リビジョンへの切替+リアンカー(§6.8。
+  M1-22。新しいバージョンのバナー・B→A 昇格提案の適用の両方から使う共通経路)。自動切替はしない
+  (P6)。本エンドポイントがユーザー操作の唯一の適用経路。
 
 共有の依存(``S3Storage`` / 所有チェック)を提供し、assets ルータからも import する。
 """
@@ -13,16 +16,21 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from yakudoku_core.db.models import Job, LibraryItem, Paper, SourceAsset
+from yakudoku_core.db.models import DocumentRevision, Job, LibraryItem, Paper, SourceAsset
 from yakudoku_core.ingest.joblog import project_ingest_log
+from yakudoku_core.ingest.reanchor import ReanchorStats, reanchor_paper
 from yakudoku_core.jobs.store import JobStore
 from yakudoku_core.storage.s3 import S3Storage
 
 from yakudoku_api.deps import CurrentUser, DbDep
 from yakudoku_api.errors import ProblemException
 from yakudoku_api.routers.ingest import JobWakeupDep, _active_ingest_job
+from yakudoku_api.routers.library_items import _summary_for
+from yakudoku_api.routers.viewer import resolve_owned_library_item
+from yakudoku_api.schemas.common import LibraryItemSummary
 from yakudoku_api.schemas.papers import (
     PapersIngestLogEntry,
     PapersIngestLogResponse,
@@ -186,3 +194,67 @@ async def paper_pdf(
 
     url = await storage.presign_get(storage.sources_bucket, asset.storage_key, expires_in=600)
     return RedirectResponse(url, status_code=302)
+
+
+# --- POST /api/library-items/{id}/adopt-revision(§6.8) -----------------------------
+
+
+class AdoptRevisionRequest(BaseModel):
+    revision_id: str
+
+
+class ReanchorCounts(BaseModel):
+    moved: int
+    unplaced: int
+
+
+class AdoptRevisionResponse(BaseModel):
+    library_item: LibraryItemSummary
+    reanchor: ReanchorCounts
+
+
+@router.post(
+    "/api/library-items/{item_id}/adopt-revision",
+    response_model=AdoptRevisionResponse,
+    operation_id="library_items_adopt_revision",
+)
+async def adopt_revision(
+    item_id: str, body: AdoptRevisionRequest, user: CurrentUser, db: DbDep
+) -> AdoptRevisionResponse:
+    """新リビジョンへの切替+リアンカー(§6.8)。自動切替はしない(P6)。
+
+    「新しいバージョンがあります」バナー(arXiv 新版取り込み。plans/05 §7.1)と、B→A 昇格提案
+    の適用(通知「変更する」。plans/03 §16.4「adopt-revision と同一の内部処理」)の両方が本
+    エンドポイントを唯一の適用経路として使う。``papers.latest_revision_id`` は Paper 単位
+    (全ユーザー共通)のため、リアンカーは当該 Paper の全 ``library_items`` を対象にする
+    (plans/02 §5.3)。
+    """
+    item = await resolve_owned_library_item(db, item_id, user)
+    paper = await db.get(Paper, item.paper_id)
+    if paper is None:
+        raise ProblemException("not_found")
+
+    new_revision = await db.get(DocumentRevision, body.revision_id)
+    if new_revision is None or str(new_revision.paper_id) != str(paper.id):
+        raise ProblemException(
+            "validation_error", detail="指定のリビジョンはこの論文のものではありません"
+        )
+
+    stats = ReanchorStats()
+    if str(paper.latest_revision_id or "") != str(new_revision.id):
+        old_revision_id = str(paper.latest_revision_id) if paper.latest_revision_id else None
+        paper.latest_revision_id = new_revision.id
+        await db.flush()
+        if old_revision_id is not None:
+            stats = await reanchor_paper(
+                db,
+                paper_id=str(paper.id),
+                old_revision_id=old_revision_id,
+                new_revision_id=str(new_revision.id),
+            )
+        await db.commit()
+
+    summary = await _summary_for(db, item)
+    return AdoptRevisionResponse(
+        library_item=summary, reanchor=ReanchorCounts(moved=stats.moved, unplaced=stats.unplaced)
+    )

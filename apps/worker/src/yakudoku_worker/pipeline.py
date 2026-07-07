@@ -46,12 +46,27 @@ from yakudoku_core.db.models import (
     UsageRecord,
     User,
 )
-from yakudoku_core.document.blocks import DocumentContent
+from yakudoku_core.document.blocks import Block, DocumentContent
 from yakudoku_core.document.plaintext import block_to_plain
 from yakudoku_core.ingest import joblog, progress
+from yakudoku_core.ingest.bib_estimate import estimate_bibliography
 from yakudoku_core.ingest.thumbnail import render_thumbnail, select_thumbnail_figure
 from yakudoku_core.jobs.store import JobStore
-from yakudoku_core.parsing.html_parser import PARSER_VERSION, ParsedDocument, parse_arxiv_html
+from yakudoku_core.parsing.html_parser import (
+    PARSER_VERSION as HTML_PARSER_VERSION,
+)
+from yakudoku_core.parsing.html_parser import (
+    ParsedDocument,
+    parse_arxiv_html,
+)
+from yakudoku_core.parsing.pdf_parser import (
+    PARSER_VERSION as PDF_PARSER_VERSION,
+)
+from yakudoku_core.parsing.pdf_parser import (
+    ParsedPdfDocument,
+    PdfParseError,
+    parse_pdf,
+)
 from yakudoku_core.search.rebuild import rebuild_block_search_index
 from yakudoku_core.settings import CoreSettings, get_settings
 from yakudoku_core.storage.s3 import S3Storage, StorageKeys
@@ -168,13 +183,22 @@ class IngestRun:
         self.user_id: str | None = str(job.user_id) if job.user_id else None
         self.payload = IngestJobPayload.model_validate(job.payload or {})
         self.ckpt = JobStore.get_checkpoint(job)
-        self.ref: ArxivId = normalize_arxiv_id(self.payload.arxiv_id or self.payload.url or "")
+        self.is_pdf_upload = self.payload.source == "pdf_upload"
+        # pdf_upload には arxiv_id/url が無い(plans/05 §9.1)。arXiv 系のみ ID 正規化する。
+        self.ref: ArxivId | None = (
+            None
+            if self.is_pdf_upload
+            else normalize_arxiv_id(self.payload.arxiv_id or self.payload.url or "")
+        )
+        self.parser_version: str = PDF_PARSER_VERSION if self.is_pdf_upload else HTML_PARSER_VERSION
         self.source_version: str = ""
-        self.source_format: str = "arxiv_html"
+        self.source_format: str = "pdf_upload" if self.is_pdf_upload else "arxiv_html"
         self.revision_id: str | None = None
         self.set_id: str | None = None
         self.content: DocumentContent | None = None
         self.parsed: ParsedDocument | None = None
+        self.parsed_pdf: ParsedPdfDocument | None = None
+        self._pdf_bytes: bytes | None = None
         self.style: str = "natural"
         self._settings_obj: TranslationSettings | None = None
 
@@ -257,11 +281,16 @@ class IngestRun:
             return
 
         await self.store.set_progress(self.job_id, 10, stage="fetching")
+        if self.is_pdf_upload:
+            await self._stage_fetching_pdf()
+            return
+
         prior = await self._existing_source_version()
         http = self.deps.http
         owns_http = http is None
         if http is None:
             http = make_arxiv_client(self.deps.settings)
+        assert self.ref is not None
         html_bytes = b""
         try:
             meta = await fetch_metadata(self.ref, http=http, settings=self.deps.settings)
@@ -306,6 +335,44 @@ class IngestRun:
             progress=10,
         )
 
+    async def _get_pdf_bytes(self) -> bytes:
+        """アップロード原本 PDF を S3 から取得する(未取得なら都度取得。§9.2)。"""
+        if self._pdf_bytes is not None:
+            return self._pdf_bytes
+        assert self.paper_id is not None
+        data = await self.deps.s3.get(
+            self.deps.s3.sources_bucket,
+            StorageKeys.original_pdf(self.paper_id, self.source_version or "v1"),
+        )
+        self._pdf_bytes = data
+        return data
+
+    async def _stage_fetching_pdf(self) -> None:
+        """pdf_upload: ローカル資産(拡張が送信済みの原本 PDF)の存在確認のみで完了する(§9.2)。
+
+        `POST /api/ingest/pdf` が S3 に既に PUT 済みのため、再取得(HTTP)は発生しない。
+        """
+        self.source_version = "v1"
+        self.source_format = "pdf_upload"
+        try:
+            data = await self._get_pdf_bytes()
+        except Exception as exc:
+            raise FetchError("source_not_found", f"original pdf missing: {exc}") from exc
+
+        await self._log(
+            "fetching",
+            "info",
+            joblog.fetch_timeline_message(self.source_format),
+            detail={"format": self.source_format, "bytes": len(data)},
+            timeline=True,
+        )
+        await self.store.checkpoint(
+            self.job_id,
+            "fetching",
+            {"source_version": self.source_version, "source_format": self.source_format},
+            progress=10,
+        )
+
     def _apply_metadata(self, paper: Paper, meta: ArxivMeta) -> None:
         paper.arxiv_id = meta.arxiv_id
         paper.title = meta.title or paper.title
@@ -319,6 +386,7 @@ class IngestRun:
         paper.latest_version = meta.latest_version
 
     async def _fetch_html(self, http: httpx.AsyncClient, base: str) -> bytes:
+        assert self.ref is not None
         url = f"{base}/html/{self.ref.versioned}"
         await self._throttle()
         try:
@@ -335,6 +403,7 @@ class IngestRun:
         return resp.content
 
     async def _fetch_pdf_best_effort(self, http: httpx.AsyncClient, base: str) -> None:
+        assert self.ref is not None
         url = f"{base}/pdf/{self.ref.versioned}"
         try:
             await self._throttle()
@@ -396,7 +465,7 @@ class IngestRun:
         stmt = select(DocumentRevision).where(
             DocumentRevision.paper_id == self.paper_id,
             DocumentRevision.source_version == self.source_version,
-            DocumentRevision.parser_version == PARSER_VERSION,
+            DocumentRevision.parser_version == self.parser_version,
         )
         return (await self.session.execute(stmt)).scalars().first()
 
@@ -407,9 +476,26 @@ class IngestRun:
             self.content = DocumentContent.model_validate(existing.content)
             return
 
-        # parsing: HTML(S3)→ ブロックモデル。
         await self.store.set_progress(self.job_id, 20, stage="parsing")
         assert self.paper_id is not None
+        if self.is_pdf_upload:
+            data = await self._get_pdf_bytes()
+            try:
+                self.parsed_pdf = parse_pdf(data)
+            except PdfParseError as exc:
+                raise FetchError(exc.kind, exc.message) from exc
+            except Exception as exc:
+                raise FetchError("parse_error", f"pdf parse failed: {exc}") from exc
+            await self.store.checkpoint(self.job_id, "parsing", {}, progress=20)
+
+            await self.store.set_progress(self.job_id, 35, stage="structuring")
+            await self._structure_pdf(data)
+            await self.store.checkpoint(
+                self.job_id, "structuring", {"revision_id": self.revision_id}, progress=35
+            )
+            return
+
+        # parsing: HTML(S3)→ ブロックモデル。
         raw = await self.deps.s3.get(
             self.deps.s3.sources_bucket,
             StorageKeys.arxiv_html(self.paper_id, self.source_version),
@@ -440,7 +526,7 @@ class IngestRun:
         revision = DocumentRevision(
             paper_id=self.paper_id,
             source_version=self.source_version,
-            parser_version=PARSER_VERSION,
+            parser_version=self.parser_version,
             quality_level=self.parsed.quality_level,
             source_format=self.parsed.source_format,
             content=content.model_dump(),
@@ -456,7 +542,7 @@ class IngestRun:
         figure_bytes, fig_warnings = await self._save_figures(self.revision_id)
         warnings.extend(fig_warnings)
         await rebuild_block_search_index(self.session, self.revision_id, content)
-        warnings.extend(await self._make_thumbnail(paper, figure_bytes))
+        warnings.extend(await self._make_thumbnail(paper, figure_bytes, self.parsed.figures))
         await self.session.commit()
 
         for warning in warnings:
@@ -482,6 +568,7 @@ class IngestRun:
         warnings: list[str] = []
         if self.parsed is None or self.deps.http is None or self.paper_id is None:
             return out, warnings
+        assert self.ref is not None
         base = f"{_www_base(self.deps.settings)}/html/{self.ref.versioned}/"
         for fig in self.parsed.figures:
             if not fig.asset_key:
@@ -503,10 +590,12 @@ class IngestRun:
                 warnings.append(f"図の切り出しに失敗(続行): {fig.label or fig.id} — {exc}")
         return out, warnings
 
-    async def _make_thumbnail(self, paper: Paper, figure_bytes: dict[str, bytes]) -> list[str]:
-        if self.parsed is None or self.paper_id is None:
+    async def _make_thumbnail(
+        self, paper: Paper, figure_bytes: dict[str, bytes], figures: list[Block]
+    ) -> list[str]:
+        if self.paper_id is None:
             return []
-        selected = select_thumbnail_figure(self.parsed.figures)
+        selected = select_thumbnail_figure(figures)
         if selected is None or selected.id not in figure_bytes:
             return []  # 図なし → thumbnail_key は NULL のまま(§8 ③④)
         try:
@@ -527,6 +616,113 @@ class IngestRun:
         )
         paper.thumbnail_key = StorageKeys.thumbnail(self.paper_id)
         return []
+
+    # -- structuring (pdf_upload。品質 B。plans/05 §6・§9.2) --------------
+
+    async def _structure_pdf(self, data: bytes) -> None:
+        """PDF アップロードの structuring 段: リビジョン永続化・図表資産・書誌推定・索引・サムネ。
+
+        pdf_parser が既に図表を切り出し済み(HTTP 再取得不要)。
+        """
+        assert self.parsed_pdf is not None and self.paper_id is not None
+        warnings = list(self.parsed_pdf.warnings)
+        content = self.parsed_pdf.to_document_content()
+        scope = compute_translation_scope(content)
+        stats: dict[str, Any] = dict(self.parsed_pdf.stats)
+        stats["translatable_blocks"] = len(scope.in_scope_block_ids)
+
+        revision = DocumentRevision(
+            paper_id=self.paper_id,
+            source_version=self.source_version,
+            parser_version=self.parser_version,
+            quality_level=self.parsed_pdf.quality_level,
+            source_format=self.parsed_pdf.source_format,
+            content=content.model_dump(),
+            stats=stats,
+        )
+        self.session.add(revision)
+        await self.session.flush()
+        self.revision_id = str(revision.id)
+
+        # 図・表・数式の切り出し画像は既にパーサが切り出し済み(HTTP 再取得不要)。
+        # S3 保存後に block.asset_key を確定してから再シリアライズする(§6.6.3)。
+        fig_warnings = await self._save_pdf_assets(self.revision_id)
+        warnings.extend(fig_warnings)
+        revision.content = content.model_dump()
+        self.content = content
+
+        paper = await self._get_paper()
+        paper.latest_revision_id = revision.id
+        abstract_text = _extract_pdf_abstract(content)
+        if abstract_text and not paper.abstract:
+            paper.abstract = abstract_text
+        await self._apply_bib_estimate(paper, data)
+
+        await rebuild_block_search_index(self.session, self.revision_id, content)
+        warnings.extend(
+            await self._make_thumbnail(
+                paper, self.parsed_pdf.figure_images, self.parsed_pdf.figures
+            )
+        )
+        await self.session.commit()
+
+        for warning in warnings:
+            await self._log("structuring", "warn", warning)
+        await self._log(
+            "structuring",
+            "info",
+            joblog.structuring_timeline_message(stats),
+            detail={"stats": stats},
+            timeline=True,
+        )
+
+    async def _save_pdf_assets(self, revision_id: str) -> list[str]:
+        """図・表・数式の切り出し PNG を S3 へ保存し block.asset_key を確定する(§6.6.3)。"""
+        warnings: list[str] = []
+        if self.parsed_pdf is None or self.paper_id is None:
+            return warnings
+        blocks_by_id = {b.id: b for b in self.parsed_pdf.blocks}
+        for block_id, png in self.parsed_pdf.figure_images.items():
+            block = blocks_by_id.get(block_id)
+            if block is None:
+                continue
+            try:
+                key = StorageKeys.figure(self.paper_id, revision_id, block_id, "png")
+                await self.deps.s3.put(
+                    self.deps.s3.assets_bucket, key, png, content_type="image/png"
+                )
+                block.asset_key = key
+            except Exception as exc:
+                warnings.append(f"図/表アセットの保存に失敗(続行): {block_id} — {exc}")
+        return warnings
+
+    async def _apply_bib_estimate(self, paper: Paper, data: bytes) -> None:
+        """アップロード PDF の書誌推定で papers を補完する(§9.3)。
+
+        Crossref で DOI 直一致が取れた場合のみタイトルを上書きする(拡張から渡された
+        ``title_guess`` を粗いフォントヒューリスティクスで劣化させないため)。
+        著者・DOI・出版日・掲載誌は元々空のため常に補完する。
+        """
+        try:
+            estimate = await estimate_bibliography(data)
+        except Exception as exc:
+            await self._log(
+                "structuring", "warn", "書誌推定に失敗(続行)", detail={"error": str(exc)}
+            )
+            return
+        if not estimate.bib_estimated and estimate.title:
+            paper.title = estimate.title
+        if estimate.authors:
+            paper.authors = estimate.authors
+        if estimate.doi:
+            paper.doi = estimate.doi
+        if estimate.arxiv_id and not paper.arxiv_id:
+            paper.arxiv_id = estimate.arxiv_id
+        if estimate.published_on:
+            paper.published_on = _to_date(estimate.published_on)
+        if estimate.venue:
+            paper.venue = estimate.venue
+        paper.bib_estimated = estimate.bib_estimated
 
     # -- translating_abstract --------------------------------------------
 
@@ -876,6 +1072,17 @@ class IngestRun:
             .all()
         )
         return len(used) >= limit
+
+
+def _extract_pdf_abstract(content: DocumentContent) -> str:
+    """``Abstract`` 見出しセクションの段落テキストを連結する(PDF は papers.abstract を
+    パーサから直接持たないため、要約生成の素材に使う best-effort 抽出。§6.5 の固定見出し)。
+    """
+    for sec in content.sections:
+        if sec.heading.title == "Abstract":
+            texts = [block_to_plain(b) for b in sec.blocks if b.type == "paragraph"]
+            return " ".join(t for t in texts if t).strip()
+    return ""
 
 
 def _degrade_unresolved_refs(parsed: ParsedDocument) -> int:

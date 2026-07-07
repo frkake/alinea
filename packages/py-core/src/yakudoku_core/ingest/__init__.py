@@ -34,6 +34,7 @@ from yakudoku_core.ingest.progress import (
     readable_upto,
     stage_index,
 )
+from yakudoku_core.ingest.reanchor import ReanchorStats, reanchor_paper
 from yakudoku_core.ingest.thumbnail import (
     CARD_2X_SIZE,
     CARD_SIZE,
@@ -48,6 +49,7 @@ __all__ = [
     "FUZZY_TITLE_THRESHOLD",
     "STAGE_ORDER",
     "PaperBibView",
+    "ReanchorStats",
     "append_log",
     "body_progress",
     "build_timeline",
@@ -65,6 +67,7 @@ __all__ = [
     "now_iso",
     "project_ingest_log",
     "readable_upto",
+    "reanchor_paper",
     "render_thumbnail",
     "select_thumbnail_figure",
     "stage_index",
