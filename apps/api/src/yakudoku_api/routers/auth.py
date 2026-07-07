@@ -39,10 +39,10 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 def _safe_next(value: str | None) -> str:
-    """オープンリダイレクト防止。`/` 始まり(`//` 除く)のみ許可、既定は /library。"""
+    """オープンリダイレクト防止。`/` 始まり(`//` 除く)のみ許可、既定は /dashboard(M1-10)。"""
     if value and value.startswith("/") and not value.startswith("//"):
         return value
-    return "/library"
+    return "/dashboard"
 
 
 def _set_session_cookie(response: Response, token: str, settings: ApiSettings) -> None:
@@ -72,7 +72,7 @@ async def oauth_start(
     provider: str,
     r: RedisDep,
     settings: SettingsDep,
-    next: str = Query(default="/library"),
+    next: str = Query(default="/dashboard"),
 ) -> RedirectResponse:
     if provider not in SUPPORTED_PROVIDERS:
         raise ProblemException("validation_error", detail="未対応のプロバイダです")

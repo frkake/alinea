@@ -15,11 +15,16 @@ import { extensionDist } from "./_env";
 const MAILPIT = "http://localhost:8025";
 const LINK_RE = /https?:\/\/[^\s]+\/api\/auth\/email\/verify\?token=[^\s]+/;
 
-/** 拡張をロードした persistent context を新規に起動する(共有 / 使い捨ての双方で使う)。
- * 拡張は headless では読み込めないため `--headless=new` で起動する(DISPLAY 不要)。 */
-export async function createExtensionContext(): Promise<BrowserContext> {
-  const userDataDir = mkdtempSync(join(tmpdir(), "yk-ext-"));
-  return chromium.launchPersistentContext(userDataDir, {
+/**
+ * 拡張をロードした persistent context を新規に起動する(共有 / 使い捨ての双方で使う)。
+ * 拡張は headless では読み込めないため `--headless=new` で起動する(DISPLAY 不要)。
+ * `userDataDir` を明示すると同一プロファイル(= chrome.storage.local を含む)で再起動できる
+ * (XT-10: コンテキスト再起動後もキューが残ることの検証に使う)。省略時は使い捨ての一時
+ * ディレクトリを毎回生成する(既存呼び出しはすべてこの既定動作)。
+ */
+export async function createExtensionContext(userDataDir?: string): Promise<BrowserContext> {
+  const dir = userDataDir ?? mkdtempSync(join(tmpdir(), "yk-ext-"));
+  return chromium.launchPersistentContext(dir, {
     headless: false,
     args: [
       "--headless=new",
@@ -109,7 +114,7 @@ export async function ensureLoggedIn(context: BrowserContext): Promise<void> {
   await expect(page.getByText("ログインリンクを送信しました")).toBeVisible({ timeout: 30_000 });
   const link = await extractLink(context.request, "dev@yakudoku.test");
   await page.goto(link);
-  await expect(page).toHaveURL(/\/library$/);
+  await expect(page).toHaveURL(/\/dashboard$/);
   await page.close();
   const cookie = (await context.cookies("http://localhost:3000")).find(
     (c) => c.name === "yk_session",

@@ -1,6 +1,5 @@
-// PF-06 相当(plans/12 §12.2): 横断検索 p95<3s、preview p50<300ms。
-// M0 で /api/search が未提供の場合は 404 になり閾値未達で失敗するため、
-// 検索 API 実装後に有効化する(それまでは perf.yml から除外可能)。
+// PF-06(plans/12 §12.2): 横断検索 p95<3s、preview p50<300ms(plans/03 §15.2)。
+// search API は M1-11/12 で実装済み(routers/search.py)。perf.yml から呼ばれる。
 import http from "k6/http";
 import { check } from "k6";
 

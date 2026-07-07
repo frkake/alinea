@@ -131,6 +131,11 @@ async def ingest_check(
 ) -> IngestCheckResponse:
     ref = parse_arxiv_url(url)
     if ref is None:
+        # 一般ページ PDF(状態4。3a §6.5・plans/10 §11.2・lib/popup-state.ts の kind==="pdf"
+        # 分岐が唯一の消費者)。拡張ポップアップはこの kind を見て GenericPdf 状態へ遷移する。
+        clean_url = url.split("?", 1)[0].split("#", 1)[0]
+        if clean_url.lower().endswith(".pdf"):
+            return IngestCheckResponse(kind="pdf")
         # 到達不能・非対応 URL はエラーにせず unsupported を返す(§3.1)。
         return IngestCheckResponse(kind="unsupported")
 
@@ -487,14 +492,20 @@ async def _add_to_collection(
     )
 
 
-async def _duplicate_response(db: DbDep, existing: LibraryItem) -> JSONResponse:
-    """§3.2 の 409 duplicate 本文(``existing`` 付き Problem Details)。"""
+async def _duplicate_response(
+    db: DbDep, existing: LibraryItem, *, instance: str = "/api/ingest/arxiv"
+) -> JSONResponse:
+    """§3.2 / §3.3 の 409 duplicate 本文(``existing`` 付き Problem Details)。
+
+    arxiv・pdf の両取り込みエンドポイントが共有するため、呼び出し元の実パスを ``instance``
+    で明示する(既定は後方互換で arxiv)。
+    """
     last_position = await _build_last_position(db, existing)
     problem = build_problem(
         "duplicate",
         status=409,
         title="既にライブラリにあります",
-        instance="/api/ingest/arxiv",
+        instance=instance,
     )
     content: dict[str, Any] = problem.model_dump(mode="json")
     content["existing"] = {
@@ -637,7 +648,7 @@ async def ingest_pdf(
     sha256 = hashlib.sha256(data).hexdigest()
     existing_item = await _pdf_duplicate_for_user(db, sha256, str(user.id))
     if existing_item is not None:
-        return await _duplicate_response(db, existing_item)
+        return await _duplicate_response(db, existing_item, instance="/api/ingest/pdf")
 
     title = meta_obj.title_guess or _title_from_filename(file.filename)
     paper = Paper(
@@ -655,7 +666,7 @@ async def ingest_pdf(
         await db.rollback()
         again = await _pdf_duplicate_for_user(db, sha256, str(user.id))
         if again is not None:
-            return await _duplicate_response(db, again)
+            return await _duplicate_response(db, again, instance="/api/ingest/pdf")
         raise
     paper_id = str(paper.id)
 

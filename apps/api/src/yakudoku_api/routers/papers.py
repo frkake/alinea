@@ -39,8 +39,9 @@ from yakudoku_api.schemas.papers import (
 
 router = APIRouter(tags=["papers"])
 
-# 原本 PDF とみなす source_assets.kind(§4.4)。
-_PDF_KINDS = ("pdf", "arxiv_pdf", "pdf_upload")
+# 原本 PDF とみなす source_assets.kind(§4.4)。"extension_capture" は POST /api/ingest/pdf
+# (拡張/一般 PDF 直接送信。M1-18)が書き込む実際の kind(ck_source_assets_kind の許容値)。
+_PDF_KINDS = ("pdf", "arxiv_pdf", "pdf_upload", "extension_capture")
 
 
 def get_storage() -> S3Storage:

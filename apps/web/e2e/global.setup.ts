@@ -49,9 +49,9 @@ async function loginViaEmail(
   await expect(page.getByText("ログインリンクを送信しました")).toBeVisible({ timeout: 30_000 });
 
   const link = await extractLoginLink(request, address);
-  await page.goto(link); // 302 -> /library(セッション Cookie が張られる)
-  await expect(page).toHaveURL(/\/library$/);
-  await expect(page.getByRole("heading", { name: "ライブラリ" })).toBeVisible();
+  await page.goto(link); // 302 -> / -> /dashboard(M1-10。セッション Cookie が張られる)
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page.getByRole("heading", { name: "すぐ読むキュー", level: 2 })).toBeVisible();
 }
 
 setup("authenticate dev user", async ({ page, request }) => {

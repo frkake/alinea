@@ -106,6 +106,46 @@ jobs:
       - name: PF-02 library(k6)
         run: k6 run -e BASE_URL=http://localhost:8000 -e COOKIE='${{ steps.cookie.outputs.value }}' tools/perf/k6/library.js
 
+      - name: 対象アイテム解決(§14 シード。PF-04 用)
+        id: rf_item
+        run: echo "value=$(uv run python tools/perf/get_rf_item.py '${{ steps.cookie.outputs.value }}')" >> "$GITHUB_OUTPUT"
+
+      # PF-04: ビューア初期表示(翻訳済み) p50<2s / p95<5s。
+      - name: PF-04 viewer(k6)
+        run: |
+          eval "${{ steps.rf_item.outputs.value }}"
+          k6 run -e BASE_URL=http://localhost:8000 -e COOKIE='${{ steps.cookie.outputs.value }}' \
+            -e ITEM_ID="$ITEM_ID" -e REVISION_ID="$REVISION_ID" tools/perf/k6/viewer.js
+
+      # PF-06: 横断検索・全文検索 p95<3s、preview p50<300ms(§11 コーパス×300 論文分の索引)。
+      - name: PF-06 search(k6)
+        run: k6 run -e BASE_URL=http://localhost:8000 -e COOKIE='${{ steps.cookie.outputs.value }}' tools/perf/k6/search.js
+
+      # PF-08: 用語変更→再翻訳反映が 1 分以内(docs/03 §12)。§14 document.json は
+      # 「distillation」の出現をちょうど 12 ブロックに固定する(user-scope の新規語で検証。
+      # global を直接編集できないため。glossaries.py の scope 制約参照)。
+      - name: PF-08 用語変更→再翻訳反映(curl)
+        run: |
+          COOKIE='${{ steps.cookie.outputs.value }}'
+          eval "${{ steps.rf_item.outputs.value }}"
+          NEW_TERM="蒸留PF08_$RANDOM"
+          start=$(date +%s%3N)
+          curl -sf -X POST http://localhost:3000/api/glossary/terms \
+            -H 'Content-Type: application/json' -H 'Origin: http://localhost:3000' -H "Cookie: $COOKIE" \
+            -d "{\"scope\":\"user\",\"source_term\":\"distillation\",\"target_term\":\"$NEW_TERM\",\"policy\":\"both\"}"
+          for i in $(seq 1 60); do
+            if curl -sf -H "Cookie: $COOKIE" "http://localhost:3000/api/revisions/$REVISION_ID/document" \
+              | grep -q "$NEW_TERM"; then
+              break
+            fi
+            sleep 1
+          done
+          end=$(date +%s%3N)
+          echo "glossary change -> retranslated ms: $((end-start))"
+          if [ $((end-start)) -gt 60000 ]; then
+            echo "::warning::PF-08 目標(60s)を超過しました(docs/03 §12)"
+          fi
+
       - name: ログ収集
         if: always()
         run: tail -n +1 /tmp/*.log || true

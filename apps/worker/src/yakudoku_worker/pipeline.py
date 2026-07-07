@@ -965,8 +965,12 @@ class IngestRun:
         if self.deps.arq_pool is not None:
             for jid in enqueued:
                 await self.deps.arq_pool.enqueue_job("run_job", jid, _queue_name="yk:bulk")
-            if not enqueued:  # 本文ジョブ 0 件 → その場で確定(§2.1)。
-                await self._finalize(settings, scope.appendix_section_ids)
+            # 本文ジョブ 0 件(§2.1)、または全件が冪等キー経由で既存の完了済みジョブを指す
+            # (reingest 等で translation_set を再利用した場合。§11.3)ときはその場で確定する。
+            # finalize_ingest_if_body_complete は残件数(queued/running/waiting_quota)を
+            # 自前で数えるため、genuinely 新規かつ未完了のジョブがある通常経路では no-op になる
+            # (remaining > 0 → status='partial' のみ設定して抜ける)ので常時呼んで安全。
+            await self._finalize(settings, scope.appendix_section_ids)
             return
 
         # arq プール無し(テスト/単純デプロイ): 本文ジョブをその場で駆動して完了確定。

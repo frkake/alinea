@@ -24,4 +24,7 @@ export default function () {
   check(list, { "library-items 200": (r) => r.status === 200 });
   const facets = http.get(`${BASE_URL}/api/library-items/facets`, params);
   check(facets, { "facets 200": (r) => r.status === 200 });
+  // plans/12 §12.2: 対象操作は「ライブラリ・ダッシュボード表示」の両方(docs/09 §1)。
+  const dashboard = http.get(`${BASE_URL}/api/dashboard`, params);
+  check(dashboard, { "dashboard 200": (r) => r.status === 200 });
 }

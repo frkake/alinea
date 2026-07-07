@@ -1,3 +1,7 @@
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createExtensionContext,
   ensureLoggedIn,
@@ -6,6 +10,8 @@ import {
   popupUrl,
   test,
 } from "./fixtures";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
  * 拡張 E2E(plans/12 §5.2)。ビルド済み拡張をロードした persistent context で popup.html を
@@ -115,5 +121,143 @@ test.describe.serial("拡張 E2E", () => {
     await sw.evaluate(async () => {
       await chrome.storage.local.set({ yk_active_jobs: [] });
     });
+  });
+
+  test("XT-06 状態4(一般PDF): 明示クリックのみで送信・書誌は推定", async ({
+    extContext,
+    extensionId,
+  }) => {
+    await ensureLoggedIn(extContext);
+    const pdfPath = join(__dirname, "..", "..", "web", "e2e", "fixtures", "sample.pdf");
+    const nonce = `\n% xt06-${Date.now()}-${Math.random().toString(36).slice(2, 8)}\n`;
+    const pdfBytes = Buffer.concat([readFileSync(pdfPath), Buffer.from(nonce)]);
+    const pdfUrl = "https://repo.example.edu/theses/e2e-generic-thesis.pdf";
+
+    let fetchCount = 0;
+    await extContext.route(pdfUrl, async (route) => {
+      fetchCount += 1;
+      await route.fulfill({ status: 200, contentType: "application/pdf", body: pdfBytes });
+    });
+    let ingestCount = 0;
+    await extContext.route("**/api/ingest/pdf", async (route) => {
+      ingestCount += 1;
+      await route.continue();
+    });
+
+    const page = await extContext.newPage();
+    await page.goto(popupUrl(extensionId, pdfUrl, "E2E Generic Thesis"));
+
+    // 状態4: 書誌は推定表示 + 警告 + 明示送信ボタンのみ。private 保存の注記。
+    await expect(page.getByText("書誌は推定")).toBeVisible();
+    await expect(page.getByText(/このページはサーバーから取得できない可能性/)).toBeVisible();
+    await expect(page.getByText("private 論文として保存され、共有されません")).toBeVisible();
+    const sendButton = page.getByRole("button", { name: "このタブの PDF を送信" });
+    await expect(sendButton).toBeVisible();
+
+    // 自動送信なし(ポップアップ表示だけでは PDF 取得も ingest も走らない)。
+    expect(fetchCount).toBe(0);
+    expect(ingestCount).toBe(0);
+
+    await sendButton.click();
+    await expect(page.locator(".ext-header-title")).toHaveText("保存しました", { timeout: 20_000 });
+    expect(fetchCount).toBe(1);
+    expect(ingestCount).toBe(1);
+    await page.close();
+  });
+
+  test("XT-08 「訳 保存」ピル: 既定オフ(コンテントスクリプト非注入)", async ({
+    extContext,
+    extensionId,
+  }) => {
+    // 決定(followups 参照): 設定オンへの切替は chrome.permissions.request の実ユーザー
+    // ジェスチャーを要求し(検証済み: Playwright のクリック/SW 経由呼び出しはいずれも
+    // "must be called during a user gesture" で拒否/非許可となる)、この分岐は Playwright
+    // では自動化できない。本テストは既定オフ(=abs ページに .yk-pill が一切注入されない)
+    // という不変条件のみを検証する。設定オン以降の注入・保存・非 arXiv 非注入の確認は
+    // test.fixme(下記)。
+    await ensureLoggedIn(extContext);
+    const fixtureHtml = readFileSync(
+      join(__dirname, "fixtures", "arxiv-abs-2209.03003.html"),
+      "utf-8",
+    );
+    await extContext.route("https://arxiv.org/abs/2209.03003", async (route) => {
+      await route.fulfill({ status: 200, contentType: "text/html", body: fixtureHtml });
+    });
+    const page = await extContext.newPage();
+    await page.goto("https://arxiv.org/abs/2209.03003");
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await page.waitForTimeout(500); // content script は runtime 登録がなければ何もしないため即時確認で十分。
+    expect(await page.locator(".yk-pill").count()).toBe(0);
+    await page.close();
+
+    // 拡張のポップアップ設定にも同じ既定値が反映されている。
+    const settingsPage = await extContext.newPage();
+    await settingsPage.goto(popupUrl(extensionId, SEED_ARXIV));
+    await settingsPage.getByRole("button", { name: "設定" }).click();
+    await expect(settingsPage.getByRole("switch")).toHaveAttribute("aria-checked", "false");
+    await settingsPage.close();
+  });
+
+  test.fixme(
+    "XT-08 設定オンで arXiv abs のみ注入・保存後「✓保存済み」・非arXivページに非注入" +
+      "(chrome.permissions.request の実ユーザージェスチャー要求により Playwright 自動化不可。followups 参照)",
+    async () => {},
+  );
+
+  test("XT-10 送信キュー永続: API停止中の保存が失敗キューに残り、コンテキスト再起動後も残り、復旧後に再試行で送信される", async () => {
+    const userDataDir = mkdtempSync(join(tmpdir(), "yk-ext-xt10-"));
+    const url = freshArxiv();
+
+    // 1) API 停止状態を模倣(ingest 系エンドポイントのみネットワークエラーにする)→保存→失敗キュー。
+    const ctx1 = await createExtensionContext(userDataDir);
+    try {
+      await ensureLoggedIn(ctx1);
+      await ctx1.route("**/api/ingest/arxiv", (route) => route.abort("connectionfailed"));
+      const page = await ctx1.newPage();
+      await page.goto(popupUrl(await extensionIdOf(ctx1), url));
+      await expect(page.getByText("品質レベル A 見込み")).toBeVisible();
+      await page.locator(".ext-note-input").press("Enter");
+      await expect(page.getByText(/送信できなかった保存が 1 件あります/)).toBeVisible({
+        timeout: 15_000,
+      });
+      await page.close();
+    } finally {
+      // persistent context を完全に終了しないと同一 userDataDir を再度開けない。
+      await ctx1.close();
+    }
+
+    // 2) コンテキスト再起動(同一 userDataDir → chrome.storage.local が引き継がれる)。
+    //    API はまだ停止状態のまま: キューが再起動後も残ることを確認する。
+    const ctx2 = await createExtensionContext(userDataDir);
+    try {
+      await ensureLoggedIn(ctx2);
+      await ctx2.route("**/api/ingest/arxiv", (route) => route.abort("connectionfailed"));
+      const page2 = await ctx2.newPage();
+      await page2.goto(popupUrl(await extensionIdOf(ctx2), url));
+      await page2.getByText(/送信できなかった保存が 1 件あります/).click();
+      await expect(page2.getByText(url)).toBeVisible().catch(async () => {
+        // タイトル行はURLでなくtitleを表示するため、行の存在のみ確認する。
+        await expect(page2.locator(".ext-queue-row")).toHaveCount(1);
+      });
+      await page2.close();
+    } finally {
+      await ctx2.close();
+    }
+
+    // 3) API 復旧(route を張らない)→再起動→「再試行」で送信される(background.ts の
+    //    followups: chrome.alarms 自動再送は本スライスで省略されているため、復旧後の送信は
+    //    ユーザーの「再試行」操作が起点。plans/12 の「自動送信」は既知のギャップ。followups 参照)。
+    const ctx3 = await createExtensionContext(userDataDir);
+    try {
+      await ensureLoggedIn(ctx3);
+      const page3 = await ctx3.newPage();
+      await page3.goto(popupUrl(await extensionIdOf(ctx3), url));
+      await page3.getByText(/送信できなかった保存が 1 件あります/).click();
+      await page3.getByRole("button", { name: "再試行" }).first().click();
+      await expect(page3.getByText(/送信できなかった保存が/)).toBeHidden({ timeout: 15_000 });
+      await page3.close();
+    } finally {
+      await ctx3.close();
+    }
   });
 });
