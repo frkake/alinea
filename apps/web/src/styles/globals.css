@@ -5,6 +5,8 @@
 @import "@yakudoku/tokens/css/accents.css";
 @import "@yakudoku/tokens/css/fonts.css";
 @import "@yakudoku/tokens/css/theme.css";
+/* ビューア訳文モードのブロック/インライン数式(lib/katex-render.ts)。 */
+@import "katex/dist/katex.min.css";
 
 /* デスクトップ基準: min-width 1200px(plans/08 §7.2 MIN_APP_WIDTH)。 */
 html,
@@ -54,4 +56,41 @@ html[data-theme="dark"] .yk-seg-selected {
   background: rgba(196, 148, 50, 0.3);
   border-radius: 2px;
   padding: 0 1px;
+}
+
+/* 訳文モード: スケルトン脈動(1b §5.9)。 */
+@keyframes yk-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* 訳文モード: 段落ホバーで「対」ボタンを出す(1b §5.3)。 */
+.yk-paragraph .yk-parallel-toggle {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.yk-paragraph:hover .yk-parallel-toggle,
+.yk-paragraph .yk-parallel-toggle:focus-visible {
+  opacity: 1;
+}
+
+/* 訳文モード: ジャンプ先ブロックの一時強調(1b §5.2 / §5.7)。 */
+.yk-block-flash {
+  background: var(--pr-acc-s);
+  transition: background 300ms ease;
+}
+
+/* KaTeX ブロック数式のホバーアクション(1b: ✦この式を説明 / LaTeXをコピー)。 */
+.yk-equation .yk-equation-actions {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.yk-equation:hover .yk-equation-actions,
+.yk-equation:focus-within .yk-equation-actions {
+  opacity: 1;
 }
