@@ -46,11 +46,19 @@ function formatRelativeDay(iso: string): string {
   return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
 }
 
+export interface AnnotationListPanelProps {
+  /**
+   * モバイル縮退のボトムシート(mobile.md §4.5)から閲覧専用で再利用する場合 true。
+   * コメント編集・削除ボタンを非描画にする(決定)。ジャンプ・フィルタ・エクスポートは維持。
+   */
+  readOnly?: boolean;
+}
+
 /**
- * 注釈タブ本体(1b §3.1 AnnotationsTab。viewer-shell §6.5: props なし、
+ * 注釈タブ本体(1b §3.1 AnnotationsTab。viewer-shell §6.5: SidePanel からは props なし、
  * useViewerStore() から itemId を取得)。フィルタ+一覧+未配置+Markdown エクスポート導線。
  */
-export function AnnotationListPanel() {
+export function AnnotationListPanel({ readOnly = false }: AnnotationListPanelProps = {}) {
   const itemId = useViewerStore((s) => s.itemId);
   const requestScroll = useViewerStore((s) => s.requestScroll);
   const pendingAnnotationId = useViewerStore((s) => s.pendingAnnotationId);
@@ -238,6 +246,7 @@ export function AnnotationListPanel() {
             <AnnotationCard
               key={ann.id}
               annotation={ann}
+              readOnly={readOnly}
               editing={editingId === ann.id}
               editingText={editingText}
               onStartEditComment={() => {
@@ -278,6 +287,8 @@ export function AnnotationListPanel() {
 
 interface AnnotationCardProps {
   annotation: Annotation;
+  /** 閲覧専用(mobile.md §4.5)。コメント編集・削除ボタンを非描画にする。 */
+  readOnly?: boolean;
   editing: boolean;
   editingText: string;
   onStartEditComment: () => void;
@@ -289,6 +300,7 @@ interface AnnotationCardProps {
 
 function AnnotationCard({
   annotation,
+  readOnly = false,
   editing,
   editingText,
   onStartEditComment,
@@ -346,7 +358,7 @@ function AnnotationCard({
         >
           「{annotation.anchor.quote ?? ""}」
         </div>
-        {editing ? (
+        {editing && !readOnly ? (
           <textarea
             autoFocus
             aria-label="コメントを編集"
@@ -377,7 +389,7 @@ function AnnotationCard({
           <div
             onClick={(e) => {
               e.stopPropagation();
-              onStartEditComment();
+              if (!readOnly) onStartEditComment();
             }}
             style={{
               fontSize: 11.5,
@@ -386,7 +398,7 @@ function AnnotationCard({
               background: "var(--pr-bg-comment)",
               borderRadius: 5,
               padding: "6px 8px",
-              cursor: "text",
+              cursor: readOnly ? "default" : "text",
             }}
           >
             💬 {annotation.comment}
@@ -397,7 +409,7 @@ function AnnotationCard({
           {unplaced ? " · 未配置" : ""}
         </div>
       </div>
-      {hovered && !unplaced ? (
+      {hovered && !unplaced && !readOnly ? (
         <button
           type="button"
           aria-label="注釈を削除"

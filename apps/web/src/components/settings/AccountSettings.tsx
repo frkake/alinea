@@ -22,6 +22,8 @@ export interface AccountSettingsProps {
   onRasterChange: (next: boolean) => void;
   onSaveKey: (provider: ByokProvider, apiKey: string) => Promise<unknown>;
   onDeleteKey: (provider: ByokProvider) => void;
+  /** モバイル縮退(mobile.md §1.2-7)。API キーの設定/削除(変更系)を非描画にする。参照は可。 */
+  readOnly?: boolean;
 }
 
 const ACCOUNT_ROUTES: ReadonlyArray<{ useCase: LlmUseCase; label: string; description: string }> = [
@@ -39,6 +41,7 @@ export function AccountSettings({
   onRasterChange,
   onSaveKey,
   onDeleteKey,
+  readOnly = false,
 }: AccountSettingsProps) {
   const byProvider = new Map(apiKeys.map((k) => [k.provider, k]));
 
@@ -59,6 +62,7 @@ export function AccountSettings({
                 onDelete={() => {
                   onDeleteKey(provider);
                 }}
+                readOnly={readOnly}
               />
             );
           })}

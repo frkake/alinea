@@ -63,6 +63,16 @@ describe("ContinueReading", () => {
     await user.click(screen.getByText("Flow Straight and Fast"));
     expect(onOpen).toHaveBeenCalledWith("li_1");
   });
+
+  // mobile.md §5.2: 縦積み 1 カラム(カード幅 100%)。
+  test("isMobile switches the card grid to a single column", () => {
+    const { container } = render(
+      <ContinueReading items={[makeItem()]} onOpen={() => {}} isMobile />,
+    );
+    expect(container.querySelector('[style*="grid-template-columns"]')).toHaveStyle({
+      gridTemplateColumns: "1fr",
+    });
+  });
 });
 
 describe("formatRelativeDay", () => {

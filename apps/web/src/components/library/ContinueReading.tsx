@@ -14,6 +14,8 @@ import { cardBibLine } from "@/components/library/format";
 export interface ContinueReadingProps {
   items: LibraryItemSummary[];
   onOpen: (id: string) => void;
+  /** モバイル縮退(mobile.md §5.2)。カード幅 100% の 1 カラムにする。 */
+  isMobile?: boolean;
 }
 
 /** 前回読書の日単位相対表記(§3.3)。当日=今日/1日前=昨日/2〜6日前=n日前/7〜13日前=先週/14日以上=M/D。 */
@@ -28,7 +30,7 @@ export function formatRelativeDay(iso: string, now: Date = new Date()): string {
   return `${target.getMonth() + 1}/${target.getDate()}`;
 }
 
-export function ContinueReading({ items, onOpen }: ContinueReadingProps) {
+export function ContinueReading({ items, onOpen, isMobile = false }: ContinueReadingProps) {
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <h2 style={{ fontSize: 12, fontWeight: 700, color: "var(--pr-text-sub)", margin: 0 }}>
@@ -40,7 +42,7 @@ export function ContinueReading({ items, onOpen }: ContinueReadingProps) {
           description="ライブラリから論文を開くとここに表示されます"
         />
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 12 }}>
           {items.map((item) => (
             <ContinueReadingCard key={item.id} item={item} onOpen={onOpen} />
           ))}

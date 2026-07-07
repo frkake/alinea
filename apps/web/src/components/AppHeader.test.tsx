@@ -109,4 +109,20 @@ describe("AppHeader (VT-UI-01)", () => {
     await user.keyboard("{Escape}");
     expect(input).toHaveValue("ab");
   });
+
+  // mobile.md §5.1: モバイル縮退のナビドロワーを開くハンバーガー(onMenuClick 指定時のみ表示)。
+  test("shows a hamburger only when onMenuClick is provided, and clicking it invokes the callback", async () => {
+    const user = userEvent.setup();
+    const onMenuClick = vi.fn();
+    const { rerender } = renderHeader();
+    expect(screen.queryByLabelText("メニューを開く")).toBeNull();
+
+    rerender(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <AppHeader onMenuClick={onMenuClick} />
+      </QueryClientProvider>,
+    );
+    await user.click(screen.getByLabelText("メニューを開く"));
+    expect(onMenuClick).toHaveBeenCalledTimes(1);
+  });
 });

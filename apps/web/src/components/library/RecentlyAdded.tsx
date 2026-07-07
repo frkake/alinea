@@ -61,9 +61,17 @@ export interface RecentlyAddedProps {
   items: LibraryItemSummary[];
   onOpen: (id: string) => void;
   now?: Date;
+  /** モバイル縮退(mobile.md §5.2)。カード幅 100% の 1 カラムにする。 */
+  isMobile?: boolean;
 }
 
-export function RecentlyAdded({ weekCount, items, onOpen, now = new Date() }: RecentlyAddedProps) {
+export function RecentlyAdded({
+  weekCount,
+  items,
+  onOpen,
+  now = new Date(),
+  isMobile = false,
+}: RecentlyAddedProps) {
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, minHeight: 0 }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
@@ -82,7 +90,7 @@ export function RecentlyAdded({ weekCount, items, onOpen, now = new Date() }: Re
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "1fr 1fr",
+            gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",
             gap: 12,
             overflowY: "auto",
             minHeight: 0,

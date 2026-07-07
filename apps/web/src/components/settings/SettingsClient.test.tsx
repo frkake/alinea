@@ -2,10 +2,11 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { SettingsClient } from "@/components/settings/SettingsClient";
 import type { SettingsCategory, SettingsData } from "@/components/settings/types";
+import { mockMatchMedia } from "@/test-utils/mockMatchMedia";
 
 const replace = vi.fn();
 vi.mock("next/navigation", () => ({
@@ -225,5 +226,45 @@ describe("SettingsClient (4f)", () => {
     renderSettings("chat");
     await screen.findByText("チャットモデル");
     expect(screen.getByText("注釈・メモを文脈に含める")).toBeInTheDocument();
+  });
+});
+
+// mobile.md §1 実装 1「設定(ナビ折りたたみ)」/ §1.2-7「API キー・エクスポート実行は非描画」。
+describe("SettingsClient mobile reduction (mobile.md)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test("collapses the always-expanded left nav into a tap-to-open category dropdown", async () => {
+    mockMatchMedia(true);
+    const user = userEvent.setup();
+    renderSettings("account");
+    await screen.findByText("API キー(BYOK)");
+
+    // 常時展開の左ナビ(NavItem)は無く、代わりに現在カテゴリを表示するボタンがある。
+    expect(screen.queryByRole("button", { name: "エクスポート" })).toBeNull();
+    const trigger = screen.getByRole("button", { name: /カテゴリ: アカウント/ });
+    await user.click(trigger);
+    await user.click(screen.getByRole("menuitemradio", { name: "エクスポート" }));
+    expect(replace).toHaveBeenCalledWith("/settings?category=export");
+  });
+
+  test("hides API key set/delete controls (readOnly) while keeping the masked value visible", async () => {
+    mockMatchMedia(true);
+    renderSettings("account", fullSettings());
+    await screen.findByText("API キー(BYOK)");
+    expect(screen.queryByRole("button", { name: "設定" })).toBeNull();
+  });
+
+  test("replaces export execution with a read-only note", async () => {
+    mockMatchMedia(true);
+    renderSettings("export");
+    await screen.findByText("エクスポート");
+    expect(screen.queryByRole("button", { name: /Markdown/ })).toBeNull();
+    expect(screen.getAllByText(/実行はデスクトップから行えます/).length).toBeGreaterThan(0);
   });
 });

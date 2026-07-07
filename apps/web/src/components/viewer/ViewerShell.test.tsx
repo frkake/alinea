@@ -77,6 +77,42 @@ describe("ViewerHeader modes (VT-VIEW-01)", () => {
   });
 });
 
+// mobile.md §4.2: モバイル縮退ヘッダは 戻る/目次/タイトル/ステータスピル/訳文バッジ の 5 要素のみ。
+describe("ViewerHeader mobile reduction (mobile.md §4.2)", () => {
+  beforeEach(resetStore);
+
+  const baseProps = {
+    title: "Flow Straight and Fast",
+    qualityLevel: "A" as const,
+    status: "reading" as const,
+    mode: "translation" as const,
+    onModeChange: vi.fn(),
+    onStatusChange: vi.fn(),
+    onBack: vi.fn(),
+  };
+
+  test("hides mode tabs, in-paper search, and overflow menu; shows the 訳文 badge and a toc button", () => {
+    const onOpenToc = vi.fn();
+    renderWithClient(<ViewerHeader {...baseProps} isMobile onOpenToc={onOpenToc} />);
+
+    expect(screen.getByText("訳文")).toBeInTheDocument();
+    expect(screen.queryByText("対訳")).toBeNull();
+    expect(screen.queryByText("原文")).toBeNull();
+    expect(screen.queryByText("PDF")).toBeNull();
+    expect(screen.queryByPlaceholderText("この論文内を検索")).toBeNull();
+    expect(screen.queryByLabelText("その他")).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("目次を開く"));
+    expect(onOpenToc).toHaveBeenCalledTimes(1);
+  });
+
+  test("still exposes the interactive status pill", () => {
+    renderWithClient(<ViewerHeader {...baseProps} isMobile />);
+    const pill = screen.getByRole("button", { name: /読んでいる/ });
+    expect(pill).toHaveAttribute("aria-haspopup", "menu");
+  });
+});
+
 describe("SidePanel tabs (VT-VIEW-01)", () => {
   beforeEach(resetStore);
 

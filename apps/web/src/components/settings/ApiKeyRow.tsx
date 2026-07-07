@@ -14,6 +14,8 @@ export interface ApiKeyRowProps {
   onSave: (apiKey: string) => Promise<unknown>;
   onDelete: () => void;
   divider?: boolean;
+  /** モバイル縮退(mobile.md §1.2-7)。設定/再設定・削除ボタンを非描画にする。参照は可。 */
+  readOnly?: boolean;
 }
 
 /** ISO 日付 → "YYYY/M/D"。 */
@@ -36,7 +38,15 @@ const smallButton = {
   fontFamily: "inherit" as const,
 };
 
-export function ApiKeyRow({ provider, masked, createdAt, onSave, onDelete, divider = false }: ApiKeyRowProps) {
+export function ApiKeyRow({
+  provider,
+  masked,
+  createdAt,
+  onSave,
+  onDelete,
+  divider = false,
+  readOnly = false,
+}: ApiKeyRowProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
@@ -93,28 +103,30 @@ export function ApiKeyRow({ provider, masked, createdAt, onSave, onDelete, divid
         </span>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <button
-          ref={triggerRef}
-          type="button"
-          style={smallButton}
-          onClick={() => {
-            setError(null);
-            setOpen((v) => !v);
-          }}
-        >
-          {isSet ? "再設定" : "設定"}
-        </button>
-        {isSet ? (
+      {readOnly ? null : (
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <button
+            ref={triggerRef}
             type="button"
-            style={{ ...smallButton, color: "var(--pr-warn)" }}
-            onClick={onDelete}
+            style={smallButton}
+            onClick={() => {
+              setError(null);
+              setOpen((v) => !v);
+            }}
           >
-            削除
+            {isSet ? "再設定" : "設定"}
           </button>
-        ) : null}
-      </div>
+          {isSet ? (
+            <button
+              type="button"
+              style={{ ...smallButton, color: "var(--pr-warn)" }}
+              onClick={onDelete}
+            >
+              削除
+            </button>
+          ) : null}
+        </div>
+      )}
 
       <Popover
         open={open}

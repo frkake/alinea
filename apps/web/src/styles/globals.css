@@ -8,10 +8,21 @@
 /* ビューア訳文モードのブロック/インライン数式(lib/katex-render.ts)。 */
 @import "katex/dist/katex.min.css";
 
-/* デスクトップ基準: min-width 1200px(plans/08 §7.2 MIN_APP_WIDTH)。 */
-html,
-body {
-  min-width: 1200px;
+/* デスクトップ基準: min-width 1200px(plans/08 §7.2 MIN_APP_WIDTH)。
+   768px 未満はモバイル縮退レイアウト(plans/09-screens/mobile.md §2 決定)のため
+   min-width を 0 とし、100vw に収まるようにする。768〜1199px はデスクトップ縮小
+   (水平スクロール許容)として同じ 1200px 基準を適用する。 */
+@media (min-width: 768px) {
+  html,
+  body {
+    min-width: 1200px;
+  }
+}
+@media (max-width: 767px) {
+  html,
+  body {
+    min-width: 0;
+  }
 }
 
 body {

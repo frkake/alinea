@@ -9,6 +9,7 @@ import { ViewSwitch } from "@/components/library/ViewSwitch";
 import { QuickFilterBar } from "@/components/library/QuickFilterBar";
 import { LibraryTableView } from "@/components/library/LibraryTableView";
 import { LibraryCard } from "@/components/library/LibraryCard";
+import { useIsMobile } from "@/hooks/useMediaQuery";
 import type { LibraryView, Quick, SortState } from "@/components/library/types";
 
 /** サーバがソート可能なキー(plans/03 §5.1 / library_items._SORTS)。ステータス/品質はソート不可。 */
@@ -29,9 +30,12 @@ const VALID_SORT_KEYS = new Set<SortState["key"]>([
  */
 export default function LibraryPage() {
   const router = useRouter();
+  const isMobile = useIsMobile();
   const [view, setView] = useState<LibraryView>("table");
   const [quick, setQuick] = useState<Quick>("all");
   const [sort, setSort] = useState<SortState>({ key: "updated_at", dir: "desc" });
+  // モバイル縮退(mobile.md §5.1): カードビューのみ(テーブルビューは提供しない)。
+  const effectiveView: LibraryView = isMobile ? "card" : view;
 
   const facetsQuery = useQuery({
     queryKey: ["library", "facets"],
@@ -63,7 +67,13 @@ export default function LibraryPage() {
 
   return (
     <div
-      style={{ display: "flex", flexDirection: "column", gap: 12, padding: "16px 22px", minHeight: 0 }}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+        padding: isMobile ? "16px" : "16px 22px",
+        minHeight: 0,
+      }}
     >
       {/* 見出し行 */}
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -71,9 +81,12 @@ export default function LibraryPage() {
         {total != null ? (
           <span style={{ fontSize: 11.5, color: "var(--pr-text-muted)" }}>{total} 本</span>
         ) : null}
-        <span style={{ marginLeft: 6 }}>
-          <ViewSwitch view={view} onViewChange={setView} />
-        </span>
+        {/* ビュー切替(カード⇄テーブル)は操作系のためモバイルでは非描画(mobile.md §5.1)。 */}
+        {isMobile ? null : (
+          <span style={{ marginLeft: 6 }}>
+            <ViewSwitch view={view} onViewChange={setView} />
+          </span>
+        )}
       </div>
 
       {/* クイックフィルタ */}
@@ -81,7 +94,7 @@ export default function LibraryPage() {
 
       {/* 本体 */}
       <LibraryBody
-        view={view}
+        view={effectiveView}
         loading={listQuery.isPending}
         error={listQuery.isError}
         onRetry={() => void listQuery.refetch()}
@@ -94,6 +107,7 @@ export default function LibraryPage() {
         sort={sort}
         onSortChange={onSortChange}
         onOpen={openReader}
+        gridColumns={isMobile ? "1fr" : "1fr 1fr 1fr"}
       />
     </div>
   );
@@ -111,6 +125,8 @@ interface LibraryBodyProps {
   sort: SortState;
   onSortChange: (sort: SortState) => void;
   onOpen: (id: string) => void;
+  /** カードグリッドの列数(mobile.md §5.1: モバイルは 1fr の 1 カラム)。 */
+  gridColumns?: string;
 }
 
 function LibraryBody({
@@ -125,6 +141,7 @@ function LibraryBody({
   sort,
   onSortChange,
   onOpen,
+  gridColumns = "1fr 1fr 1fr",
 }: LibraryBodyProps) {
   if (error) {
     return (
@@ -167,7 +184,7 @@ function LibraryBody({
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "1fr 1fr 1fr",
+        gridTemplateColumns: gridColumns,
         gap: 14,
         overflowY: "auto",
         minHeight: 0,

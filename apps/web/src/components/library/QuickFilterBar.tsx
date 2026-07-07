@@ -20,7 +20,7 @@ export function QuickFilterBar({ facets, quick, onQuickChange }: QuickFilterBarP
     <div
       role="group"
       aria-label="クイックフィルタ"
-      style={{ display: "flex", alignItems: "center", gap: 6 }}
+      style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}
     >
       {QUICK_ORDER.map((value) => (
         <FilterChip

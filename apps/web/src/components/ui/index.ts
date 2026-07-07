@@ -9,6 +9,7 @@ export { Toggle, type ToggleProps } from "@/components/ui/Toggle";
 export { Card, type CardProps } from "@/components/ui/Card";
 export { Popover, type PopoverProps } from "@/components/ui/Popover";
 export { Modal, type ModalProps } from "@/components/ui/Modal";
+export { Drawer, type DrawerProps } from "@/components/ui/Drawer";
 export { ProgressBar, type ProgressBarProps } from "@/components/ui/ProgressBar";
 export { SearchBox, type SearchBoxProps } from "@/components/ui/SearchBox";
 export { SidebarNav, type SidebarNavProps, type SidebarNavItem } from "@/components/ui/SidebarNav";

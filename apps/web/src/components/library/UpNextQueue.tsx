@@ -46,9 +46,11 @@ export interface UpNextQueueProps {
   onReorder: (items: LibraryItemSummary[]) => void;
   /** 「整理する」クリック(`/library?status=up_next` への遷移は呼び出し側)。 */
   onOrganize: () => void;
+  /** モバイル縮退(mobile.md §1.2)。並べ替え(上下ボタン)を非描画にする。閲覧・遷移は維持。 */
+  hideReorder?: boolean;
 }
 
-export function UpNextQueue({ items, onOpen, onReorder, onOrganize }: UpNextQueueProps) {
+export function UpNextQueue({ items, onOpen, onReorder, onOrganize, hideReorder = false }: UpNextQueueProps) {
   const dismissedCount = useDashboardUiStore((s) => s.queueWarnDismissedCount);
   const dismissQueueWarn = useDashboardUiStore((s) => s.dismissQueueWarn);
 
@@ -72,7 +74,9 @@ export function UpNextQueue({ items, onOpen, onReorder, onOrganize }: UpNextQueu
           すぐ読むキュー
         </h2>
         {count > 0 ? (
-          <span style={{ fontSize: 10.5, color: "var(--pr-text-muted)" }}>{count} 本 · 並べ替え可</span>
+          <span style={{ fontSize: 10.5, color: "var(--pr-text-muted)" }}>
+            {count} 本{hideReorder ? "" : " · 並べ替え可"}
+          </span>
         ) : null}
       </div>
 
@@ -90,6 +94,7 @@ export function UpNextQueue({ items, onOpen, onReorder, onOrganize }: UpNextQueu
               index={index}
               isLast={index === items.length - 1}
               onOpen={onOpen}
+              hideReorder={hideReorder}
               onMoveUp={() => {
                 move(index, -1);
               }}
@@ -130,6 +135,7 @@ interface QueueRowProps {
   index: number;
   isLast: boolean;
   onOpen: (id: string) => void;
+  hideReorder?: boolean;
   onMoveUp: () => void;
   onMoveDown: () => void;
   disableUp: boolean;
@@ -145,6 +151,7 @@ function QueueRow({
   index,
   isLast,
   onOpen,
+  hideReorder = false,
   onMoveUp,
   onMoveDown,
   disableUp,
@@ -173,27 +180,29 @@ function QueueRow({
         borderBottom: isLast ? "none" : "1px solid var(--pr-border-hair)",
       }}
     >
-      {/* 並べ替え(上下ボタン。deviations: dnd-kit の代替) */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 1, flex: "none" }}>
-        <button
-          type="button"
-          aria-label="上へ移動"
-          disabled={disableUp}
-          onClick={onMoveUp}
-          style={moveButtonStyle}
-        >
-          ▲
-        </button>
-        <button
-          type="button"
-          aria-label="下へ移動"
-          disabled={disableDown}
-          onClick={onMoveDown}
-          style={moveButtonStyle}
-        >
-          ▼
-        </button>
-      </div>
+      {/* 並べ替え(上下ボタン。deviations: dnd-kit の代替)。モバイルでは操作系のため非描画。 */}
+      {hideReorder ? null : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 1, flex: "none" }}>
+          <button
+            type="button"
+            aria-label="上へ移動"
+            disabled={disableUp}
+            onClick={onMoveUp}
+            style={moveButtonStyle}
+          >
+            ▲
+          </button>
+          <button
+            type="button"
+            aria-label="下へ移動"
+            disabled={disableDown}
+            onClick={onMoveDown}
+            style={moveButtonStyle}
+          >
+            ▼
+          </button>
+        </div>
+      )}
       <span style={{ fontSize: 11, color: "var(--pr-text-muted)", width: 12, flex: "none" }}>
         {index + 1}
       </span>

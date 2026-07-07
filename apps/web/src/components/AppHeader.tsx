@@ -17,12 +17,17 @@ export interface AppHeaderProps {
   showSearch?: boolean;
   /** アバターのイニシャル。 */
   initials?: string;
+  /**
+   * モバイル縮退(mobile.md §5.1)。指定時、ワードマーク左にハンバーガー(≡)を表示し、
+   * タップでナビドロワーを開く(AppLayout がサイドバー代替として管理)。
+   */
+  onMenuClick?: () => void;
 }
 
 const MIN_QUERY_LENGTH = 2; // 1e §5.3・§6.3: 正規化後 2 文字未満では発火しない
 const DEBOUNCE_MS = 250; // 1e §6.3・plans/01 §3.4
 
-export function AppHeader({ showSearch = true, initials = "YK" }: AppHeaderProps) {
+export function AppHeader({ showSearch = true, initials = "YK", onMenuClick }: AppHeaderProps) {
   const router = useRouter();
   const pathname = usePathname();
   const queryClient = useQueryClient();
@@ -158,6 +163,25 @@ export function AppHeader({ showSearch = true, initials = "YK" }: AppHeaderProps
         padding: "0 18px",
       }}
     >
+      {onMenuClick ? (
+        <button
+          type="button"
+          aria-label="メニューを開く"
+          onClick={onMenuClick}
+          style={{
+            width: 24,
+            fontSize: 16,
+            color: "var(--pr-text-icon)",
+            border: "none",
+            background: "transparent",
+            cursor: "pointer",
+            flex: "none",
+          }}
+        >
+          ☰
+        </button>
+      ) : null}
+
       {/* ワードマーク */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, width: 198 }}>
         <span

@@ -39,6 +39,10 @@ export interface ViewerHeaderProps {
    * tooltip「この論文には PDF がありません」を出す(非表示にはしない)。
    */
   pdfDisabled?: boolean;
+  /** モバイル縮退(mobile.md §4.2)。true で 戻る/目次/タイトル/ステータスピル/訳文バッジの5要素に縮退する。 */
+  isMobile?: boolean;
+  /** モバイルの目次ボタン(≡)タップで目次ドロワーを開く(mobile.md §4.3)。 */
+  onOpenToc?: () => void;
 }
 
 /** ビューアヘッダ(viewer-shell §4)。M1 は 訳文/対訳/原文/PDF の 4 モード表示。 */
@@ -51,6 +55,8 @@ export function ViewerHeader({
   pdfDisabled = false,
   onStatusChange,
   onBack,
+  isMobile = false,
+  onOpenToc,
 }: ViewerHeaderProps) {
   const style = useViewerStore((s) => s.style);
   const setStyle = useViewerStore((s) => s.setStyle);
@@ -76,6 +82,94 @@ export function ViewerHeader({
     cursor: "pointer",
     fontFamily: "inherit",
   };
+
+  // モバイル縮退(mobile.md §4.2): 戻る/目次/タイトル/ステータスピル/訳文バッジの 5 要素のみ。
+  // スタイルセレクタ・論文内検索・オーバーフローメニュー・パネル開閉・モード切替タブは非描画。
+  if (isMobile) {
+    return (
+      <header
+        style={{
+          height: 52,
+          flex: "none",
+          background: "var(--pr-bg-card)",
+          borderBottom: "1px solid var(--pr-border-header)",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "0 12px",
+          fontFamily: "var(--pr-font-ui)",
+        }}
+      >
+        <button
+          type="button"
+          aria-label="戻る"
+          onClick={onBack}
+          style={{
+            width: 20,
+            textAlign: "center",
+            fontSize: 16,
+            color: "var(--pr-text-icon)",
+            border: "none",
+            background: "transparent",
+            cursor: "pointer",
+          }}
+        >
+          ‹
+        </button>
+
+        <button
+          type="button"
+          aria-label="目次を開く"
+          onClick={onOpenToc}
+          style={{
+            width: 20,
+            fontSize: 14,
+            color: "var(--pr-text-icon)",
+            border: "none",
+            background: "transparent",
+            cursor: "pointer",
+          }}
+        >
+          ☰
+        </button>
+
+        <span
+          title={title}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            fontSize: 13,
+            fontWeight: 600,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            color: "var(--pr-text)",
+          }}
+        >
+          {title}
+        </span>
+
+        <StatusPill status={status} size="md" interactive onChange={onStatusChange} />
+
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            height: 18,
+            padding: "0 7px",
+            borderRadius: 4,
+            fontSize: 10,
+            fontWeight: 600,
+            background: "var(--pr-acc-s)",
+            color: "var(--pr-a)",
+            flex: "none",
+          }}
+        >
+          訳文
+        </span>
+      </header>
+    );
+  }
 
   return (
     <header

@@ -128,4 +128,24 @@ describe("UpNextQueue", () => {
     await user.click(screen.getByText("Paper 1"));
     expect(onOpen).toHaveBeenCalledWith("1");
   });
+
+  // mobile.md §1.2 実装 3: 並べ替え(操作系)はモバイルで非描画。閲覧・遷移(onOpen)は維持。
+  test("hideReorder hides the up/down move buttons but keeps rows openable", async () => {
+    const user = userEvent.setup();
+    const onOpen = vi.fn();
+    render(
+      <UpNextQueue
+        items={makeItems(2)}
+        onOpen={onOpen}
+        onReorder={() => {}}
+        onOrganize={() => {}}
+        hideReorder
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "上へ移動" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "下へ移動" })).toBeNull();
+    expect(screen.queryByText(/並べ替え可/)).toBeNull();
+    await user.click(screen.getByText("Paper 2"));
+    expect(onOpen).toHaveBeenCalledWith("2");
+  });
 });

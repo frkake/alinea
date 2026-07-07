@@ -16,6 +16,8 @@ export interface ParallelPopoverProps {
   onRetranslate?: () => void;
   /** 再翻訳ジョブ実行中(フッタを非活性化)。 */
   retranslating?: boolean;
+  /** モバイル縮退(mobile.md §4.4)。再翻訳フッタ(操作系)を非描画にする。 */
+  isMobile?: boolean;
 }
 
 const footerLink: CSSProperties = {
@@ -35,6 +37,7 @@ export function ParallelPopover({
   onClose,
   onRetranslate,
   retranslating = false,
+  isMobile = false,
 }: ParallelPopoverProps) {
   return (
     <div
@@ -82,33 +85,35 @@ export function ParallelPopover({
       >
         <InlineRenderer inlines={sourceInlines} />
       </div>
-      <div
-        style={{
-          fontFamily: "var(--pr-font-ui)",
-          display: "flex",
-          gap: 14,
-          alignItems: "center",
-          fontSize: 10.5,
-          color: "var(--pr-text-icon)",
-          marginTop: 10,
-          paddingTop: 8,
-          borderTop: "1px solid var(--pr-border-hair)",
-        }}
-      >
-        <span style={{ color: "var(--pr-acc)", fontWeight: 600 }}>訳がおかしい?</span>
-        <button
-          type="button"
-          onClick={onRetranslate}
-          disabled={retranslating}
-          style={{ ...footerLink, opacity: retranslating ? 0.5 : 1 }}
+      {isMobile ? null : (
+        <div
+          style={{
+            fontFamily: "var(--pr-font-ui)",
+            display: "flex",
+            gap: 14,
+            alignItems: "center",
+            fontSize: 10.5,
+            color: "var(--pr-text-icon)",
+            marginTop: 10,
+            paddingTop: 8,
+            borderTop: "1px solid var(--pr-border-hair)",
+          }}
         >
-          再翻訳
-        </button>
-        {retranslating ? <span>再翻訳中…</span> : null}
-        <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 5 }}>
-          <Keycap mono>t</Keycap> で開閉
-        </span>
-      </div>
+          <span style={{ color: "var(--pr-acc)", fontWeight: 600 }}>訳がおかしい?</span>
+          <button
+            type="button"
+            onClick={onRetranslate}
+            disabled={retranslating}
+            style={{ ...footerLink, opacity: retranslating ? 0.5 : 1 }}
+          >
+            再翻訳
+          </button>
+          {retranslating ? <span>再翻訳中…</span> : null}
+          <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 5 }}>
+            <Keycap mono>t</Keycap> で開閉
+          </span>
+        </div>
+      )}
     </div>
   );
 }

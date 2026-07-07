@@ -194,6 +194,16 @@ describe("RecentlyAdded variants", () => {
     renderWithClient(<RecentlyAdded weekCount={0} items={[]} onOpen={() => {}} now={NOW} />);
     expect(screen.getByText("今週追加された論文はありません")).toBeInTheDocument();
   });
+
+  // mobile.md §5.2: 縦積み 1 カラム(カード幅 100%)。
+  test("isMobile switches the card grid to a single column", () => {
+    const { container } = renderWithClient(
+      <RecentlyAdded weekCount={1} items={[makeItem()]} onOpen={() => {}} now={NOW} isMobile />,
+    );
+    expect(container.querySelector('[style*="grid-template-columns"]')).toHaveStyle({
+      gridTemplateColumns: "1fr",
+    });
+  });
 });
 
 describe("formatAddedAt", () => {

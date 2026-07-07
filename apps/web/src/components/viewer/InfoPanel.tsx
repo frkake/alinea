@@ -22,6 +22,11 @@ export interface InfoPanelProps {
   ingestTimeline: TimelineEntry[];
   /** エクスポート導線用。 */
   itemId: string;
+  /**
+   * モバイル縮退のボトムシート(mobile.md §4.5)から閲覧専用で再利用する場合 true。
+   * 再取り込み(操作系)を非描画にする(決定)。処理ログの閲覧・エクスポートは維持。
+   */
+  readOnly?: boolean;
 }
 
 /** 品質レベルの説明文(逐語。2a §4.2-b。docs/02 の品質定義)。 */
@@ -94,7 +99,14 @@ interface JobProgress {
 }
 
 /** 情報タブ(2a §3〜4)。書誌・品質と取り込み(タイムライン+再取り込み+処理ログ)・ライセンス・エクスポート・フッタ注記。 */
-export function InfoPanel({ paper, revision, licenseCard, ingestTimeline, itemId }: InfoPanelProps) {
+export function InfoPanel({
+  paper,
+  revision,
+  licenseCard,
+  ingestTimeline,
+  itemId,
+  readOnly = false,
+}: InfoPanelProps) {
   const level: "A" | "B" = revision.quality_level === "B" ? "B" : "A";
   const timeline = formatTimeline(ingestTimeline);
   const reuse = licenseCard.figure_reuse;
@@ -300,20 +312,22 @@ export function InfoPanel({ paper, revision, licenseCard, ingestTimeline, itemId
             </div>
           ) : null}
           <div style={{ display: "flex", gap: 12, paddingLeft: 3 }}>
-            <button
-              type="button"
-              onClick={() => setReingestConfirmOpen(true)}
-              disabled={reingestPending}
-              style={{
-                ...actionLinkStyle,
-                color: "var(--pr-acc)",
-                fontWeight: 600,
-                opacity: reingestPending ? 0.6 : 1,
-                cursor: reingestPending ? "default" : "pointer",
-              }}
-            >
-              再取り込み
-            </button>
+            {readOnly ? null : (
+              <button
+                type="button"
+                onClick={() => setReingestConfirmOpen(true)}
+                disabled={reingestPending}
+                style={{
+                  ...actionLinkStyle,
+                  color: "var(--pr-acc)",
+                  fontWeight: 600,
+                  opacity: reingestPending ? 0.6 : 1,
+                  cursor: reingestPending ? "default" : "pointer",
+                }}
+              >
+                再取り込み
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setIngestLogOpen(true)}

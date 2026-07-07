@@ -120,3 +120,62 @@ describe("TranslatedParagraph searchHighlight (plans/11 §7)", () => {
     expect(container.querySelector("mark.yk-highlight-term")).toHaveTextContent("整流フロ");
   });
 });
+
+// mobile.md §4.4: モバイルではホバー用「対」ボタンを非描画にし、段落タップで対訳ポップを開閉する。
+describe("TranslatedParagraph mobile tap-to-toggle (mobile.md §4.4)", () => {
+  test("hides the hover 対 toggle button and toggles the pop on paragraph tap instead", () => {
+    const onTogglePop = vi.fn();
+    render(
+      <TranslatedParagraph
+        block={block()}
+        unit={unit()}
+        parallelLabel="¶1 / 1 Introduction"
+        popOpen={false}
+        onTogglePop={onTogglePop}
+        isMobile
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "対訳を表示" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /拡散モデル/ }));
+    expect(onTogglePop).toHaveBeenCalledTimes(1);
+  });
+
+  test("clicking the annotation chip does not also toggle the pop (event does not double-fire)", () => {
+    const onTogglePop = vi.fn();
+    const onAnnotationClick = vi.fn();
+    const highlights: PlacedHighlight[] = [
+      { id: "ann_1", start: 0, end: 6, color: "important", number: 2 },
+    ];
+    render(
+      <TranslatedParagraph
+        block={block()}
+        unit={unit()}
+        parallelLabel="¶1 / 1 Introduction"
+        popOpen={false}
+        onTogglePop={onTogglePop}
+        highlights={highlights}
+        onAnnotationClick={onAnnotationClick}
+        isMobile
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "注釈 2 を表示" }));
+    expect(onAnnotationClick).toHaveBeenCalledWith("ann_1");
+    expect(onTogglePop).not.toHaveBeenCalled();
+  });
+
+  test("keeps the desktop hover button and does not tap-toggle when isMobile is false", () => {
+    const onTogglePop = vi.fn();
+    render(
+      <TranslatedParagraph
+        block={block()}
+        unit={unit()}
+        parallelLabel="¶1 / 1 Introduction"
+        popOpen={false}
+        onTogglePop={onTogglePop}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "対訳を表示" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("拡散モデルは反復ステップを要する。以上。"));
+    expect(onTogglePop).not.toHaveBeenCalled();
+  });
+});

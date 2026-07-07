@@ -12,7 +12,9 @@ import {
 } from "@yakudoku/api-client";
 import { useToast } from "@/components/ui/Toast";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Popover } from "@/components/ui/Popover";
 import { useTheme } from "@/components/ThemeProvider";
+import { useIsMobile } from "@/hooks/useMediaQuery";
 import { AccountSettings } from "@/components/settings/AccountSettings";
 import { TranslationSettings } from "@/components/settings/TranslationSettings";
 import { DisplaySettings } from "@/components/settings/DisplaySettings";
@@ -65,6 +67,7 @@ export function SettingsClient({ category }: { category: SettingsCategory }) {
   const router = useRouter();
   const { setAccent, setBodyFont } = useTheme();
   const contentRef = useRef<HTMLDivElement>(null);
+  const isMobile = useIsMobile();
 
   // 左ナビ切替でコンテンツの scrollTop を 0 に戻す(4f §5.2)。
   useEffect(() => {
@@ -220,13 +223,24 @@ export function SettingsClient({ category }: { category: SettingsCategory }) {
   };
 
   return (
-    <div style={{ display: "flex", minHeight: 0, flex: 1 }}>
-      <SettingsCategoryNav
-        active={category}
-        onSelect={(next) => {
-          router.replace(`/settings?category=${next}`);
-        }}
-      />
+    <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", minHeight: 0, flex: 1 }}>
+      {/* モバイル縮退(mobile.md §1 実装 1): カテゴリナビを折りたたむ(タップで展開する
+          ドロップダウンに差し替え。決定)。 */}
+      {isMobile ? (
+        <MobileSettingsCategoryNav
+          active={category}
+          onSelect={(next) => {
+            router.replace(`/settings?category=${next}`);
+          }}
+        />
+      ) : (
+        <SettingsCategoryNav
+          active={category}
+          onSelect={(next) => {
+            router.replace(`/settings?category=${next}`);
+          }}
+        />
+      )}
       <div
         ref={contentRef}
         style={{
@@ -266,6 +280,7 @@ export function SettingsClient({ category }: { category: SettingsCategory }) {
               onDeleteKey={(provider) => {
                 deleteKeyMutation.mutate(provider);
               }}
+              readOnly={isMobile}
             />
           ) : category === "display" ? (
             <DisplaySettings
@@ -299,7 +314,7 @@ export function SettingsClient({ category }: { category: SettingsCategory }) {
               onDeadlineReminderToggle={onDeadlineReminderToggle}
             />
           ) : category === "export" ? (
-            <ExportSettings />
+            <ExportSettings readOnly={isMobile} />
           ) : (
             <ExtensionSettings settings={settings} onToggle={onExtensionToggle} />
           )}
@@ -335,6 +350,93 @@ function SettingsCategoryNav({
         <NavItem key={c.id} id={c.id} label={c.label} selected={c.id === active} onSelect={onSelect} />
       ))}
     </nav>
+  );
+}
+
+/**
+ * モバイル縮退のカテゴリナビ(mobile.md §1 実装 1「設定(ナビ折りたたみ)」)。
+ * 常時展開の 216px 左ナビの代わりに、現在カテゴリを表示するボタン+タップで開く
+ * ドロップダウン(Popover)に折りたたむ。
+ */
+function MobileSettingsCategoryNav({
+  active,
+  onSelect,
+}: {
+  active: SettingsCategory;
+  onSelect: (next: SettingsCategory) => void;
+}) {
+  const anchorRef = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const activeLabel = CATEGORIES.find((c) => c.id === active)?.label ?? "";
+
+  return (
+    <div
+      style={{
+        flex: "none",
+        borderBottom: "1px solid var(--pr-border-pane)",
+        background: "var(--pr-bg-pane)",
+        padding: "10px 14px",
+      }}
+    >
+      <button
+        ref={anchorRef}
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          width: "100%",
+          height: 32,
+          padding: "0 12px",
+          border: "1px solid var(--pr-border-control)",
+          borderRadius: 8,
+          background: "var(--pr-bg-control)",
+          color: "var(--pr-text)",
+          fontSize: 12.5,
+          fontWeight: 600,
+          cursor: "pointer",
+          fontFamily: "inherit",
+        }}
+      >
+        カテゴリ: {activeLabel}
+        <span style={{ marginLeft: "auto", color: "var(--pr-text-muted)", fontSize: 9 }}>▾</span>
+      </button>
+      <Popover open={open} onClose={() => setOpen(false)} anchorRef={anchorRef} width={260} caret={false}>
+        <div role="menu" style={{ padding: 4 }}>
+          {CATEGORIES.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={c.id === active}
+              onClick={() => {
+                onSelect(c.id);
+                setOpen(false);
+              }}
+              style={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                padding: "8px 10px",
+                border: "none",
+                borderRadius: 6,
+                background: c.id === active ? "var(--pr-acc-s)" : "transparent",
+                color: c.id === active ? "var(--pr-acc)" : "var(--pr-text-mid)",
+                fontWeight: c.id === active ? 600 : 400,
+                fontSize: 12.5,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+      </Popover>
+    </div>
   );
 }
 
