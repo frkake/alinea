@@ -1,0 +1,6 @@
+# WXT 生成物・ビルド出力(コミットしない)
+.wxt/
+.output/
+stats.html
+stats-*.json
+*.zip

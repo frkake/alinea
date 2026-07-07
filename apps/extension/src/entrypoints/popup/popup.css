@@ -1,0 +1,676 @@
+/* 拡張ポップアップのスタイル(3a §4.4〜§4.6・フッタ・§5.1)。
+ * 色はトークン(@yakudoku/tokens の --pr-* と、ここで定義する拡張ローカル --ext-*)を使い、
+ * ルール中に hex を直書きしない(3a §4.4 が --ext-ok-* を定義する方針に倣う)。 */
+
+:root {
+  /* popup 固有色(3a §4.4〜§4.6 の逐語値)。 */
+  --ext-hair: #f0ede4; /* ヘッダ/フッタ区切り */
+  --ext-hair-soft: #eae7de; /* メモ入力枠 */
+  --ext-field: #ddd9cf; /* ピル/タグ/ドロップダウン枠 */
+  --ext-muted: #9a9ea4; /* 淡色テキスト */
+  --ext-label: #5b6067; /* ラベル */
+  --ext-text: #3c4046; /* 本文中間色 */
+  --ext-strong: #1e2227; /* 強文字 */
+  --ext-chip: #f1efe9; /* タグチップ/グレーバッジ地 */
+  --ext-footer-bg: #fcfbf8; /* フッタ地 */
+  --ext-ok-bg: rgba(101, 148, 113, 0.16); /* 検出/成功バッジ地 */
+  --ext-ok-fg: #4c7458; /* 検出/成功/品質A文字 */
+  --ext-green: #659471; /* 完了チェック緑 */
+  --ext-placeholder: #b0b4ba; /* プレースホルダ */
+  --ext-track: #ece9df; /* プログレストラック */
+  --ext-card-border: #e2dfd5; /* 論文カード枠 */
+  --ext-thumb-bg: #efede6; /* サムネ地 */
+  --ext-thumb-border: #e0ddd3; /* サムネ枠 */
+  --ext-warn: #a05a42; /* エラー文字(= tokens WARN_COLOR) */
+  --ext-row-hover: #faf9f5; /* ドロップダウン項目ホバー */
+  --ext-badge-gray-fg: #777b81; /* グレーバッジ文字 */
+}
+
+html,
+body {
+  width: 372px;
+  margin: 0;
+  background: #ffffff;
+}
+
+.ext-popup {
+  font-family: var(--pr-font-ui);
+  color: var(--ext-strong);
+  background: #ffffff;
+}
+
+.ext-popup *,
+.ext-popup *::before,
+.ext-popup *::after {
+  box-sizing: border-box;
+}
+
+.ext-popup button {
+  font-family: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+}
+
+.ext-popup button:focus-visible {
+  outline: 1.5px solid var(--pr-acc);
+  outline-offset: 1px;
+}
+
+/* ── ヘッダ(3a §4.4) ─────────────────────────── */
+.ext-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--ext-hair);
+}
+
+.ext-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: 5px;
+  background: var(--pr-a);
+  color: #ffffff;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.ext-header-title {
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.ext-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 17px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+.ext-badge-ok {
+  background: var(--ext-ok-bg);
+  color: var(--ext-ok-fg);
+}
+
+.ext-badge-gray {
+  background: var(--ext-chip);
+  color: var(--ext-badge-gray-fg);
+}
+
+.ext-badge-success {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ext-ok-bg);
+  color: var(--ext-ok-fg);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.ext-gear {
+  margin-left: auto;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--ext-muted);
+}
+
+/* ── 本文共通(3a §4.4〜§4.6) ─────────────────── */
+.ext-body {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 12px 14px;
+}
+
+/* ── 書誌(状態1) ──────────────────────────── */
+.ext-bib {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ext-bib-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.ext-bib-meta {
+  font-size: 10.5px;
+  color: var(--ext-muted);
+}
+
+.ext-quality {
+  font-size: 10px;
+}
+
+.ext-quality-a {
+  color: var(--ext-ok-fg);
+}
+
+.ext-quality-b {
+  color: var(--ext-muted);
+}
+
+/* ── ラベル付き行 ─────────────────────────── */
+.ext-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ext-row-label {
+  width: 58px;
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ext-label);
+}
+
+/* ステータスピル(状態1) */
+.ext-pill-group {
+  display: flex;
+  gap: 4px;
+}
+
+.ext-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--ext-field);
+  border-radius: 999px;
+  background: #ffffff;
+  font-size: 10.5px;
+  color: var(--ext-label);
+}
+
+.ext-pill-selected {
+  border-color: var(--pr-a);
+  background: var(--pr-as);
+  color: var(--pr-a);
+  font-weight: 600;
+}
+
+/* タグ入力(状態1) */
+.ext-tag-box {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid var(--ext-field);
+  border-radius: 6px;
+}
+
+.ext-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 3px;
+  background: var(--ext-chip);
+  color: var(--ext-text);
+  font-size: 10px;
+}
+
+.ext-tag-remove {
+  padding: 0;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--ext-muted);
+}
+
+.ext-tag-input {
+  flex: 1;
+  min-width: 48px;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 10px;
+  color: var(--ext-text);
+}
+
+.ext-tag-input::placeholder {
+  color: var(--ext-placeholder);
+}
+
+.ext-tag-suggest {
+  margin-left: auto;
+  font-size: 9.5px;
+  color: var(--pr-a);
+  white-space: nowrap;
+}
+
+/* メモ入力(状態1・コレクション欄は M2 まで非表示) */
+.ext-note-input {
+  width: 100%;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--ext-hair-soft);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 10.5px;
+  color: var(--ext-text);
+}
+
+.ext-note-input::placeholder {
+  color: var(--ext-placeholder);
+}
+
+/* ── ボタン ───────────────────────────────── */
+.ext-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+}
+
+.ext-btn-save {
+  width: 100%;
+  height: 34px;
+  gap: 7px;
+  border-radius: 7px;
+  background: var(--pr-a);
+  color: #ffffff;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.ext-btn-save:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.ext-keycap {
+  padding: 0 5px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 3px;
+  font-size: 9.5px;
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.ext-error-line {
+  font-size: 9.5px;
+  color: var(--ext-warn);
+}
+
+.ext-privacy-note {
+  margin-top: -3px;
+  font-size: 9.5px;
+  color: var(--ext-muted);
+  text-align: center;
+}
+
+/* ── 状態2: 保存直後 ─────────────────────────── */
+.ext-paper-card {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--ext-card-border);
+  border-radius: 8px;
+}
+
+.ext-thumb {
+  width: 40px;
+  height: 52px;
+  flex: none;
+  border-radius: 4px;
+  background: var(--ext-thumb-bg);
+  border: 1px solid var(--ext-thumb-border);
+}
+
+.ext-paper-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ext-paper-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.ext-pipeline-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 9.5px;
+}
+
+.ext-pl-done {
+  color: var(--ext-green);
+}
+
+.ext-pl-active {
+  color: var(--pr-a);
+  font-weight: 600;
+}
+
+.ext-pl-muted {
+  color: var(--ext-muted);
+}
+
+.ext-pl-warn {
+  color: var(--ext-warn);
+}
+
+.ext-progress-track {
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--ext-track);
+}
+
+.ext-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--pr-a);
+}
+
+.ext-button-row {
+  display: flex;
+  gap: 6px;
+}
+
+.ext-btn-primary {
+  flex: 1;
+  height: 30px;
+  background: var(--pr-a);
+  color: #ffffff;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.ext-btn-secondary {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--ext-field);
+  background: #ffffff;
+  color: var(--ext-label);
+  font-size: 11.5px;
+}
+
+.ext-desc-note {
+  font-size: 9.5px;
+  color: var(--ext-muted);
+  line-height: 1.6;
+}
+
+/* ── 状態3: 既にライブラリ ───────────────────── */
+.ext-existing-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--ext-label);
+}
+
+.ext-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--ext-field);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--ext-strong);
+  font-size: 10.5px;
+}
+
+.ext-status-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.ext-existing-meta {
+  font-size: 11px;
+  color: var(--ext-label);
+}
+
+.ext-error-inline {
+  font-size: 9.5px;
+  color: var(--ext-warn);
+}
+
+.ext-last-position {
+  font-size: 10.5px;
+  color: var(--ext-muted);
+}
+
+.ext-dropdown-anchor {
+  position: relative;
+  display: flex;
+}
+
+.ext-status-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  width: 180px;
+  padding: 4px;
+  border: 1px solid var(--ext-field);
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: var(--pr-shadow-pop);
+  z-index: var(--z-dropdown);
+}
+
+.ext-status-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.ext-status-menu-item:hover {
+  background: var(--ext-row-hover);
+}
+
+.ext-status-menu-item .ext-status-dot {
+  width: 7px;
+  height: 7px;
+}
+
+.ext-status-menu-label {
+  flex: 1;
+}
+
+.ext-status-menu-check {
+  color: var(--pr-a);
+}
+
+/* ── 状態0: 未ログイン ───────────────────────── */
+.ext-login {
+  align-items: center;
+  gap: 12px;
+}
+
+.ext-login-desc {
+  margin: 0;
+  padding: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--ext-label);
+  text-align: center;
+}
+
+.ext-login-btn {
+  height: 32px;
+  font-size: 12px;
+}
+
+/* ── 状態L: ローディングスケルトン ─────────────── */
+.ext-skeleton {
+  gap: 8px;
+}
+
+.ext-sk-line,
+.ext-sk-block {
+  border-radius: 3px;
+  background: var(--ext-chip);
+  animation: ext-pulse 1200ms ease-in-out infinite;
+}
+
+.ext-sk-line {
+  height: 12px;
+}
+
+.ext-sk-meta {
+  height: 10px;
+}
+
+.ext-sk-block {
+  height: 22px;
+}
+
+@keyframes ext-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* ── 状態5 / エラー ─────────────────────────── */
+.ext-unsupported-desc {
+  margin: 0;
+  padding: 2px 0;
+  font-size: 10.5px;
+  color: var(--ext-muted);
+  line-height: 1.7;
+}
+
+.ext-retry-btn {
+  align-self: flex-start;
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--ext-field);
+  font-size: 11px;
+}
+
+/* ── フッタ: 直近の取り込み(3a §4.4 フッタ) ──── */
+.ext-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 14px 11px;
+  border-top: 1px solid var(--ext-hair);
+  background: var(--ext-footer-bg);
+}
+
+.ext-footer-heading {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: var(--ext-muted);
+}
+
+.ext-recent-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 0;
+  font-size: 10.5px;
+  color: var(--ext-text);
+  text-align: left;
+}
+
+.ext-spinner {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  border: 2px solid var(--pr-am);
+  border-top-color: var(--pr-a);
+  border-radius: 50%;
+  animation: ext-spin 800ms linear infinite;
+}
+
+@keyframes ext-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ext-recent-mark {
+  width: 11px;
+  flex: none;
+  font-size: 10px;
+  text-align: center;
+}
+
+.ext-recent-mark-done {
+  color: var(--ext-green);
+}
+
+.ext-recent-mark-fail {
+  color: var(--ext-warn);
+}
+
+.ext-recent-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ext-recent-right {
+  flex: none;
+  font-size: 9.5px;
+  color: var(--ext-muted);
+}
+
+.ext-recent-right-fail {
+  color: var(--ext-warn);
+}
+
+/* ── ホバー(3a §5.2・全状態共通) ─────────────── */
+.ext-popup .ext-pill:hover,
+.ext-popup .ext-btn-secondary:hover,
+.ext-popup .ext-tag-chip:hover,
+.ext-popup .ext-recent-row:hover {
+  filter: brightness(0.97);
+}
+
+.ext-popup .ext-btn-primary:hover,
+.ext-popup .ext-btn-save:not(:disabled):hover {
+  filter: brightness(1.08);
+}
