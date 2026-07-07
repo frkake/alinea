@@ -385,9 +385,15 @@ async def get_viewer(item_id: str, user: CurrentUser, db: DbDep) -> ViewerInit:
     figure_count = sum(1 for _s, b in content.iter_blocks() if b.type == "figure")
     table_count = sum(1 for _s, b in content.iter_blocks() if b.type == "table")
 
+    # リソースの件数バッジは status='active' のみ数える(docs/12 §5・plans/02)。
+    active_resources = await db.scalar(
+        select(func.count())
+        .select_from(ResourceLink)
+        .where(ResourceLink.library_item_id == item.id, ResourceLink.status == "active")
+    )
     counts = ViewerCounts(
         annotations=await _count(db, Annotation, Annotation.library_item_id, item.id),
-        resources=await _count(db, ResourceLink, ResourceLink.library_item_id, item.id),
+        resources=int(active_resources or 0),
         figures=figure_count + table_count,
         notes=await _count(db, Note, Note.library_item_id, item.id),
     )

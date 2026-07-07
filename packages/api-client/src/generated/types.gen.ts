@@ -96,6 +96,40 @@ export type AnchorRef = {
 };
 
 /**
+ * AnchorRefOut
+ */
+export type AnchorRefOut = {
+    /**
+     * Revision Id
+     */
+    revision_id: string;
+    /**
+     * Block Id
+     */
+    block_id: string;
+    /**
+     * Start
+     */
+    start?: number | null;
+    /**
+     * End
+     */
+    end?: number | null;
+    /**
+     * Quote
+     */
+    quote?: string | null;
+    /**
+     * Side
+     */
+    side?: string;
+    /**
+     * Display
+     */
+    display: string;
+};
+
+/**
  * Annotation
  * plans/03 §8.1 Annotation。
  */
@@ -280,6 +314,182 @@ export type ApiKeyPutResponse = {
 };
 
 /**
+ * ArticleBlockContentOut
+ */
+export type ArticleBlockContentOut = {
+    heading?: HeadingContentOut | null;
+    /**
+     * Markdown
+     */
+    markdown?: string | null;
+    quote?: QuoteContentOut | null;
+    figure?: FigureContentOut | null;
+    figure_link_card?: FigureLinkCardOut | null;
+    explainer?: ExplainerContentOut | null;
+    discussion?: DiscussionContentOut | null;
+    attribution?: AttributionContentOut | null;
+};
+
+/**
+ * ArticleBlockOut
+ */
+export type ArticleBlockOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Type
+     */
+    type: 'heading' | 'paragraph' | 'quote_source' | 'figure_embed' | 'explainer_figure' | 'discussion' | 'attribution';
+    content: ArticleBlockContentOut;
+    /**
+     * Evidence
+     */
+    evidence: Array<EvidenceItemOut>;
+    /**
+     * Origin
+     */
+    origin: 'ai' | 'user_highlight';
+    /**
+     * Locked
+     */
+    locked: boolean;
+};
+
+/**
+ * ArticleBlockRewriteRequest
+ */
+export type ArticleBlockRewriteRequest = {
+    /**
+     * Instruction
+     */
+    instruction?: string | null;
+};
+
+/**
+ * ArticleGenerateRequest
+ */
+export type ArticleGenerateRequest = {
+    /**
+     * Preset
+     */
+    preset: 'beginner' | 'implementer' | 'researcher' | 'reading_group';
+    /**
+     * Include Math
+     */
+    include_math?: boolean | null;
+};
+
+/**
+ * ArticleJobResponse
+ */
+export type ArticleJobResponse = {
+    /**
+     * Job Id
+     */
+    job_id: string;
+};
+
+/**
+ * ArticleOut
+ */
+export type ArticleOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Preset
+     */
+    preset: 'beginner' | 'implementer' | 'researcher' | 'reading_group';
+    /**
+     * Include Math
+     */
+    include_math: boolean;
+    /**
+     * Version
+     */
+    version: number;
+    /**
+     * Generated At
+     */
+    generated_at: string;
+    /**
+     * Disclaimer
+     */
+    disclaimer: string;
+    /**
+     * Overview Figure
+     */
+    overview_figure?: {
+        [key: string]: unknown;
+    } | null;
+    /**
+     * Blocks
+     */
+    blocks: Array<ArticleBlockOut>;
+};
+
+/**
+ * ArticleRegenerateRequest
+ */
+export type ArticleRegenerateRequest = {
+    /**
+     * Instruction
+     */
+    instruction?: string | null;
+    /**
+     * Preset
+     */
+    preset?: ('beginner' | 'implementer' | 'researcher' | 'reading_group') | null;
+    /**
+     * Include Math
+     */
+    include_math?: boolean | null;
+};
+
+/**
+ * ArticleVersionItemOut
+ */
+export type ArticleVersionItemOut = {
+    /**
+     * Version
+     */
+    version: number;
+    /**
+     * Generated At
+     */
+    generated_at: string;
+    /**
+     * Preset
+     */
+    preset?: ('beginner' | 'implementer' | 'researcher' | 'reading_group') | null;
+    /**
+     * Instruction
+     */
+    instruction?: string | null;
+};
+
+/**
+ * ArticleVersionsResponse
+ */
+export type ArticleVersionsResponse = {
+    /**
+     * Items
+     */
+    items: Array<ArticleVersionItemOut>;
+};
+
+/**
  * AsideBlock
  */
 export type AsideBlock = {
@@ -291,6 +501,16 @@ export type AsideBlock = {
      * Label
      */
     label: 'outside_knowledge' | 'speculation';
+    /**
+     * Text
+     */
+    text: string;
+};
+
+/**
+ * AttributionContentOut
+ */
+export type AttributionContentOut = {
     /**
      * Text
      */
@@ -446,6 +666,90 @@ export type ChatThreadListResponse = {
 };
 
 /**
+ * CollectionCreateBody
+ * §13.1 ``POST /api/collections``。
+ */
+export type CollectionCreateBody = {
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Description
+     */
+    description?: string | null;
+    /**
+     * Deadline
+     */
+    deadline?: string | null;
+};
+
+/**
+ * CollectionDetailResponse
+ * §13.1 ``GET /api/collections/{id}``。
+ */
+export type CollectionDetailResponse = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Description
+     */
+    description?: string | null;
+    /**
+     * Deadline
+     */
+    deadline?: string | null;
+    /**
+     * Days Left
+     */
+    days_left?: number | null;
+    progress: CollectionProgress;
+    share: ShareInfo;
+    /**
+     * Entries
+     */
+    entries: Array<CollectionEntryOut>;
+};
+
+/**
+ * CollectionEntryOut
+ * §13.1 ``CollectionEntry``。
+ */
+export type CollectionEntryOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Order
+     */
+    order: number;
+    library_item: LibraryItemSummary;
+    /**
+     * Assignee
+     */
+    assignee?: string | null;
+    /**
+     * Assignee Is Self
+     */
+    assignee_is_self: boolean;
+    /**
+     * Presentation Minutes
+     */
+    presentation_minutes?: number | null;
+    /**
+     * Note
+     */
+    note?: string | null;
+};
+
+/**
  * CollectionFacet
  */
 export type CollectionFacet = {
@@ -461,6 +765,80 @@ export type CollectionFacet = {
      * Count
      */
     count: number;
+};
+
+/**
+ * CollectionListItem
+ * §13.1 ``GET /api/collections`` の items 要素。
+ */
+export type CollectionListItem = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Deadline
+     */
+    deadline?: string | null;
+    /**
+     * Days Left
+     */
+    days_left?: number | null;
+    /**
+     * Item Count
+     */
+    item_count: number;
+    /**
+     * Done Count
+     */
+    done_count: number;
+};
+
+/**
+ * CollectionListResponse
+ */
+export type CollectionListResponse = {
+    /**
+     * Items
+     */
+    items: Array<CollectionListItem>;
+};
+
+/**
+ * CollectionPatchBody
+ * §13.1 ``PATCH /api/collections/{id}``。全て任意・指定フィールドのみ更新。
+ */
+export type CollectionPatchBody = {
+    /**
+     * Name
+     */
+    name?: string | null;
+    /**
+     * Description
+     */
+    description?: string | null;
+    /**
+     * Deadline
+     */
+    deadline?: string | null;
+};
+
+/**
+ * CollectionProgress
+ */
+export type CollectionProgress = {
+    /**
+     * Done
+     */
+    done: number;
+    /**
+     * Total
+     */
+    total: number;
 };
 
 /**
@@ -572,6 +950,30 @@ export type DeadlinesSection = {
 };
 
 /**
+ * DiscussionContentOut
+ */
+export type DiscussionContentOut = {
+    /**
+     * Items
+     */
+    items: Array<DiscussionItemOut>;
+};
+
+/**
+ * DiscussionItemOut
+ */
+export type DiscussionItemOut = {
+    /**
+     * Text
+     */
+    text: string;
+    /**
+     * Origin
+     */
+    origin: 'ai' | 'user_highlight';
+};
+
+/**
  * DuplicateResolutionBody
  */
 export type DuplicateResolutionBody = {
@@ -617,6 +1019,66 @@ export type EmailRequestResponse = {
 };
 
 /**
+ * EntriesOrderBody
+ * §13.2 ``PUT /api/collections/{id}/entries/order``。
+ */
+export type EntriesOrderBody = {
+    /**
+     * Entry Ids
+     */
+    entry_ids: Array<string>;
+};
+
+/**
+ * EntryCreateBody
+ * §13.2 ``POST /api/collections/{id}/entries``。
+ */
+export type EntryCreateBody = {
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+};
+
+/**
+ * EntryPatchBody
+ * §13.2 ``PATCH /api/collection-entries/{id}``。全て任意・指定フィールドのみ更新。
+ */
+export type EntryPatchBody = {
+    /**
+     * Assignee
+     */
+    assignee?: string | null;
+    /**
+     * Assignee Is Self
+     */
+    assignee_is_self?: boolean | null;
+    /**
+     * Presentation Minutes
+     */
+    presentation_minutes?: number | null;
+    /**
+     * Note
+     */
+    note?: string | null;
+};
+
+/**
+ * EvidenceItemOut
+ */
+export type EvidenceItemOut = {
+    /**
+     * Ref
+     */
+    ref: number;
+    /**
+     * Display
+     */
+    display: string;
+    anchor: AnchorRefOut;
+};
+
+/**
  * EvidenceRef
  * markdown ブロック内インライン根拠(`[[ev:n]]` トークンに対応)。
  */
@@ -630,6 +1092,24 @@ export type EvidenceRef = {
      */
     display: string;
     anchor: AnchorRef;
+};
+
+/**
+ * ExplainerContentOut
+ */
+export type ExplainerContentOut = {
+    /**
+     * Figure Id
+     */
+    figure_id: string;
+    /**
+     * Image Url
+     */
+    image_url: string;
+    /**
+     * Caption
+     */
+    caption: string;
 };
 
 /**
@@ -673,6 +1153,32 @@ export type FacetsResponse = {
 };
 
 /**
+ * FigureContentOut
+ */
+export type FigureContentOut = {
+    /**
+     * Figure Block Id
+     */
+    figure_block_id: string;
+    /**
+     * Image Url
+     */
+    image_url: string;
+    /**
+     * Caption Ja
+     */
+    caption_ja: string;
+    /**
+     * Credit
+     */
+    credit: string;
+    /**
+     * License Badge
+     */
+    license_badge: string;
+};
+
+/**
  * FigureItem
  */
 export type FigureItem = {
@@ -705,6 +1211,20 @@ export type FigureItem = {
      */
     image_url: string | null;
     position: FigurePosition;
+};
+
+/**
+ * FigureLinkCardOut
+ */
+export type FigureLinkCardOut = {
+    /**
+     * Figure Display
+     */
+    figure_display: string;
+    /**
+     * Message
+     */
+    message: string;
 };
 
 /**
@@ -862,6 +1382,20 @@ export type HttpValidationError = {
      * Detail
      */
     detail?: Array<ValidationError>;
+};
+
+/**
+ * HeadingContentOut
+ */
+export type HeadingContentOut = {
+    /**
+     * Level
+     */
+    level: number;
+    /**
+     * Text
+     */
+    text: string;
 };
 
 /**
@@ -1590,6 +2124,16 @@ export type NotificationPatch = {
 };
 
 /**
+ * OkResponse
+ */
+export type OkResponse = {
+    /**
+     * Ok
+     */
+    ok?: boolean;
+};
+
+/**
  * PaperBib
  * plans/03 §1.7 PaperBib。
  */
@@ -1935,6 +2479,17 @@ export type QuotaUsage = {
 };
 
 /**
+ * QuoteContentOut
+ */
+export type QuoteContentOut = {
+    /**
+     * Text En
+     */
+    text_en: string;
+    anchor: AnchorRefOut;
+};
+
+/**
  * ReadAllResponse
  */
 export type ReadAllResponse = {
@@ -2076,6 +2631,127 @@ export type RegenerateRequest = {
      * Content
      */
     content?: string | null;
+};
+
+/**
+ * ResourceCreateRequest
+ * POST /api/library-items/{id}/resources(plans/03 §12.2)。
+ */
+export type ResourceCreateRequest = {
+    /**
+     * Url
+     */
+    url: string;
+    /**
+     * Note
+     */
+    note?: string | null;
+};
+
+/**
+ * ResourceLink
+ * plans/03 §12.1 ResourceLink(逐語)。
+ */
+export type ResourceLink = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Kind
+     */
+    kind: 'github' | 'youtube' | 'slides' | 'article';
+    /**
+     * Url
+     */
+    url: string;
+    /**
+     * Official
+     */
+    official: boolean;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Source Label
+     */
+    source_label: string;
+    /**
+     * Thumbnail Url
+     */
+    thumbnail_url?: string | null;
+    /**
+     * Meta
+     */
+    meta?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Meta Fetched
+     */
+    meta_fetched: boolean;
+    /**
+     * Note
+     */
+    note?: string | null;
+    /**
+     * Created At
+     */
+    created_at: string;
+};
+
+/**
+ * ResourceListResponse
+ * GET /api/library-items/{id}/resources(plans/03 §12.1)。
+ */
+export type ResourceListResponse = {
+    /**
+     * Items
+     */
+    items: Array<ResourceLink>;
+    suggestion?: ResourceSuggestion | null;
+    /**
+     * Count
+     */
+    count: number;
+};
+
+/**
+ * ResourcePatchRequest
+ * PATCH /api/resources/{resource_id}(plans/03 §12.3)。
+ *
+ * ``note`` は明示的に ``null`` を送るとメモを消せる。未送信(フィールド省略)は不変。
+ * 区別のため呼び出し側は ``model_fields_set`` を見ること。
+ */
+export type ResourcePatchRequest = {
+    /**
+     * Title
+     */
+    title?: string | null;
+    /**
+     * Kind
+     */
+    kind?: ('github' | 'youtube' | 'slides' | 'article') | null;
+    /**
+     * Note
+     */
+    note?: string | null;
+};
+
+/**
+ * ResourceSuggestion
+ * 公式実装の自動検出提案(docs/12 §5)。件数バッジには数えない。
+ */
+export type ResourceSuggestion = {
+    /**
+     * Url
+     */
+    url: string;
+    /**
+     * Detected From
+     */
+    detected_from?: 'arxiv_page';
 };
 
 /**
@@ -2523,6 +3199,44 @@ export type SendMessageRequest = {
 };
 
 /**
+ * ShareInfo
+ * §13.1 詳細レスポンスの ``share`` / §13.3 の応答。
+ */
+export type ShareInfo = {
+    /**
+     * Status
+     */
+    status: string;
+    /**
+     * Token
+     */
+    token?: string | null;
+    /**
+     * Url
+     */
+    url?: string | null;
+    /**
+     * Include Notes
+     */
+    include_notes: boolean;
+    /**
+     * Included Note Count
+     */
+    included_note_count: number;
+};
+
+/**
+ * SharePatchBody
+ * §13.3 ``PATCH /api/collections/{id}/share``。
+ */
+export type SharePatchBody = {
+    /**
+     * Include Notes
+     */
+    include_notes: boolean;
+};
+
+/**
  * StatsSection
  * §5.12 ``stats``。直近 12 週(古→新)の読書時間棒グラフ+今週の読了本数(docs/06 §6.5)。
  */
@@ -2877,6 +3591,386 @@ export type ViewerTranslation = {
      * Progress Pct
      */
     progress_pct: number;
+};
+
+/**
+ * VocabAi
+ * plans/03 §11.3 の ``ai`` オブジェクト。
+ */
+export type VocabAi = {
+    context_meaning?: VocabMeaning | null;
+    /**
+     * Interpretation
+     */
+    interpretation?: string | null;
+    /**
+     * Etymology
+     */
+    etymology?: string | null;
+    /**
+     * Mnemonic
+     */
+    mnemonic?: string | null;
+    /**
+     * Related Expressions
+     */
+    related_expressions?: string | null;
+    /**
+     * Edited Fields
+     */
+    edited_fields?: Array<string>;
+    /**
+     * Generation Error
+     */
+    generation_error?: string | null;
+};
+
+/**
+ * VocabCounts
+ * plans/03 §11.1 counts(フィルタに関わらない語彙帳全体の総数)。
+ */
+export type VocabCounts = {
+    /**
+     * All
+     */
+    all: number;
+    /**
+     * Word
+     */
+    word: number;
+    /**
+     * Collocation
+     */
+    collocation: number;
+    /**
+     * Idiom
+     */
+    idiom: number;
+    /**
+     * Due
+     */
+    due: number;
+};
+
+/**
+ * VocabCreate
+ * POST /api/vocab(plans/03 §11.2「語彙に追加」)。
+ */
+export type VocabCreate = {
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+    /**
+     * Term
+     */
+    term: string;
+    anchor: Anchor;
+    /**
+     * Context Sentence
+     */
+    context_sentence: string;
+    highlight: VocabHighlight;
+};
+
+/**
+ * VocabCreateResponse
+ */
+export type VocabCreateResponse = {
+    entry: VocabEntryDetail;
+    /**
+     * Generation Job Id
+     */
+    generation_job_id: string;
+};
+
+/**
+ * VocabEntryDetail
+ * plans/03 §11.3 VocabEntryDetail。
+ */
+export type VocabEntryDetail = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Kind
+     */
+    kind: 'word' | 'collocation' | 'idiom';
+    /**
+     * Term
+     */
+    term: string;
+    /**
+     * Meaning Short
+     */
+    meaning_short?: string | null;
+    source: VocabSource;
+    /**
+     * Added At
+     */
+    added_at: string;
+    /**
+     * Generation
+     */
+    generation: 'pending' | 'done' | 'failed';
+    /**
+     * Pos Label
+     */
+    pos_label?: string | null;
+    /**
+     * Ipa
+     */
+    ipa?: string | null;
+    anchor: AnchorRef;
+    /**
+     * Context Sentence
+     */
+    context_sentence: string;
+    highlight: VocabHighlight;
+    ai: VocabAi;
+    srs: VocabSrs;
+};
+
+/**
+ * VocabEntrySummary
+ * plans/03 §11.1 VocabEntrySummary。
+ */
+export type VocabEntrySummary = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Kind
+     */
+    kind: 'word' | 'collocation' | 'idiom';
+    /**
+     * Term
+     */
+    term: string;
+    /**
+     * Meaning Short
+     */
+    meaning_short?: string | null;
+    source: VocabSource;
+    /**
+     * Added At
+     */
+    added_at: string;
+    /**
+     * Generation
+     */
+    generation: 'pending' | 'done' | 'failed';
+};
+
+/**
+ * VocabHighlight
+ */
+export type VocabHighlight = {
+    /**
+     * Start
+     */
+    start: number;
+    /**
+     * End
+     */
+    end: number;
+};
+
+/**
+ * VocabListResponse
+ */
+export type VocabListResponse = {
+    /**
+     * Items
+     */
+    items: Array<VocabEntrySummary>;
+    /**
+     * Next Cursor
+     */
+    next_cursor: string | null;
+    /**
+     * Total
+     */
+    total: number;
+    counts: VocabCounts;
+};
+
+/**
+ * VocabMeaning
+ */
+export type VocabMeaning = {
+    /**
+     * Short
+     */
+    short: string;
+    /**
+     * Long
+     */
+    long: string;
+};
+
+/**
+ * VocabPatch
+ * PATCH /api/vocab/{vocab_id}(plans/03 §11.4)。
+ */
+export type VocabPatch = {
+    /**
+     * Kind
+     */
+    kind?: ('word' | 'collocation' | 'idiom') | null;
+    /**
+     * Term
+     */
+    term?: string | null;
+    /**
+     * Pos Label
+     */
+    pos_label?: string | null;
+    /**
+     * Ipa
+     */
+    ipa?: string | null;
+    ai?: VocabPatchAi | null;
+};
+
+/**
+ * VocabPatchAi
+ * plans/03 §11.4 ``ai`` 部分(指定フィールドのみ編集)。
+ */
+export type VocabPatchAi = {
+    context_meaning?: VocabMeaning | null;
+    /**
+     * Interpretation
+     */
+    interpretation?: string | null;
+    /**
+     * Etymology
+     */
+    etymology?: string | null;
+    /**
+     * Mnemonic
+     */
+    mnemonic?: string | null;
+    /**
+     * Related Expressions
+     */
+    related_expressions?: string | null;
+};
+
+/**
+ * VocabRegenerateRequest
+ * POST /api/vocab/{vocab_id}/regenerate(plans/03 §11.6)。省略時は未編集フィールド全部。
+ */
+export type VocabRegenerateRequest = {
+    /**
+     * Fields
+     */
+    fields?: Array<string> | null;
+};
+
+/**
+ * VocabRegenerateResponse
+ */
+export type VocabRegenerateResponse = {
+    /**
+     * Job Id
+     */
+    job_id: string;
+};
+
+/**
+ * VocabReviewHistoryEntry
+ */
+export type VocabReviewHistoryEntry = {
+    /**
+     * Result
+     */
+    result: 'again' | 'good';
+    /**
+     * At
+     */
+    at: string;
+};
+
+/**
+ * VocabReviewQueueResponse
+ * GET /api/vocab/review-queue(plans/03 §11.7)。
+ */
+export type VocabReviewQueueResponse = {
+    /**
+     * Items
+     */
+    items: Array<VocabEntryDetail>;
+    /**
+     * Total
+     */
+    total: number;
+};
+
+/**
+ * VocabReviewRequest
+ * POST /api/vocab/{vocab_id}/review(plans/03 §11.8)。
+ */
+export type VocabReviewRequest = {
+    /**
+     * Result
+     */
+    result: 'again' | 'good';
+};
+
+/**
+ * VocabReviewResponse
+ */
+export type VocabReviewResponse = {
+    srs: VocabSrs;
+    /**
+     * Next Review Display
+     */
+    next_review_display: string;
+};
+
+/**
+ * VocabSource
+ * 出典表示(plans/03 §11.1。「Rectified Flow · §2.1」)。
+ */
+export type VocabSource = {
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+    /**
+     * Paper Title
+     */
+    paper_title: string;
+    /**
+     * Display
+     */
+    display: string;
+};
+
+/**
+ * VocabSrs
+ * plans/03 §11.3 の ``srs`` オブジェクト(docs/11 §7.1)。
+ */
+export type VocabSrs = {
+    /**
+     * Stage
+     */
+    stage: 1 | 2 | 3 | 4 | 5;
+    /**
+     * Next Review At
+     */
+    next_review_at: string | null;
+    /**
+     * Review Count
+     */
+    review_count: number;
+    /**
+     * History
+     */
+    history: Array<VocabReviewHistoryEntry>;
 };
 
 /**
@@ -5485,6 +6579,1034 @@ export type ExportBibtexResponses = {
      */
     200: unknown;
 };
+
+export type ArticlesGetData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/article';
+};
+
+export type ArticlesGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ArticlesGetError = ArticlesGetErrors[keyof ArticlesGetErrors];
+
+export type ArticlesGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: ArticleOut;
+};
+
+export type ArticlesGetResponse = ArticlesGetResponses[keyof ArticlesGetResponses];
+
+export type ArticlesGenerateData = {
+    body: ArticleGenerateRequest;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/article';
+};
+
+export type ArticlesGenerateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ArticlesGenerateError = ArticlesGenerateErrors[keyof ArticlesGenerateErrors];
+
+export type ArticlesGenerateResponses = {
+    /**
+     * Successful Response
+     */
+    202: ArticleJobResponse;
+};
+
+export type ArticlesGenerateResponse = ArticlesGenerateResponses[keyof ArticlesGenerateResponses];
+
+export type ArticlesRegenerateData = {
+    body: ArticleRegenerateRequest;
+    path: {
+        /**
+         * Article Id
+         */
+        article_id: string;
+    };
+    query?: never;
+    url: '/api/articles/{article_id}/regenerate';
+};
+
+export type ArticlesRegenerateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ArticlesRegenerateError = ArticlesRegenerateErrors[keyof ArticlesRegenerateErrors];
+
+export type ArticlesRegenerateResponses = {
+    /**
+     * Successful Response
+     */
+    202: ArticleJobResponse;
+};
+
+export type ArticlesRegenerateResponse = ArticlesRegenerateResponses[keyof ArticlesRegenerateResponses];
+
+export type ArticlesListVersionsData = {
+    body?: never;
+    path: {
+        /**
+         * Article Id
+         */
+        article_id: string;
+    };
+    query?: never;
+    url: '/api/articles/{article_id}/versions';
+};
+
+export type ArticlesListVersionsErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ArticlesListVersionsError = ArticlesListVersionsErrors[keyof ArticlesListVersionsErrors];
+
+export type ArticlesListVersionsResponses = {
+    /**
+     * Successful Response
+     */
+    200: ArticleVersionsResponse;
+};
+
+export type ArticlesListVersionsResponse = ArticlesListVersionsResponses[keyof ArticlesListVersionsResponses];
+
+export type ArticlesRestoreVersionData = {
+    body?: never;
+    path: {
+        /**
+         * Article Id
+         */
+        article_id: string;
+        /**
+         * Version
+         */
+        version: number;
+    };
+    query?: never;
+    url: '/api/articles/{article_id}/versions/{version}/restore';
+};
+
+export type ArticlesRestoreVersionErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ArticlesRestoreVersionError = ArticlesRestoreVersionErrors[keyof ArticlesRestoreVersionErrors];
+
+export type ArticlesRestoreVersionResponses = {
+    /**
+     * Successful Response
+     */
+    200: ArticleOut;
+};
+
+export type ArticlesRestoreVersionResponse = ArticlesRestoreVersionResponses[keyof ArticlesRestoreVersionResponses];
+
+export type ArticlesBlockRewriteData = {
+    body: ArticleBlockRewriteRequest;
+    path: {
+        /**
+         * Article Id
+         */
+        article_id: string;
+        /**
+         * Block Id
+         */
+        block_id: string;
+    };
+    query?: never;
+    url: '/api/articles/{article_id}/blocks/{block_id}/rewrite';
+};
+
+export type ArticlesBlockRewriteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ArticlesBlockRewriteError = ArticlesBlockRewriteErrors[keyof ArticlesBlockRewriteErrors];
+
+export type ArticlesBlockRewriteResponses = {
+    /**
+     * Successful Response
+     */
+    202: ArticleJobResponse;
+};
+
+export type ArticlesBlockRewriteResponse = ArticlesBlockRewriteResponses[keyof ArticlesBlockRewriteResponses];
+
+export type CollectionsListData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/collections';
+};
+
+export type CollectionsListResponses = {
+    /**
+     * Successful Response
+     */
+    200: CollectionListResponse;
+};
+
+export type CollectionsListResponse = CollectionsListResponses[keyof CollectionsListResponses];
+
+export type CollectionsCreateData = {
+    body: CollectionCreateBody;
+    path?: never;
+    query?: never;
+    url: '/api/collections';
+};
+
+export type CollectionsCreateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CollectionsCreateError = CollectionsCreateErrors[keyof CollectionsCreateErrors];
+
+export type CollectionsCreateResponses = {
+    /**
+     * Successful Response
+     */
+    201: CollectionDetailResponse;
+};
+
+export type CollectionsCreateResponse = CollectionsCreateResponses[keyof CollectionsCreateResponses];
+
+export type CollectionsDeleteData = {
+    body?: never;
+    path: {
+        /**
+         * Collection Id
+         */
+        collection_id: string;
+    };
+    query?: never;
+    url: '/api/collections/{collection_id}';
+};
+
+export type CollectionsDeleteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CollectionsDeleteError = CollectionsDeleteErrors[keyof CollectionsDeleteErrors];
+
+export type CollectionsDeleteResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type CollectionsDeleteResponse = CollectionsDeleteResponses[keyof CollectionsDeleteResponses];
+
+export type CollectionsGetData = {
+    body?: never;
+    path: {
+        /**
+         * Collection Id
+         */
+        collection_id: string;
+    };
+    query?: never;
+    url: '/api/collections/{collection_id}';
+};
+
+export type CollectionsGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CollectionsGetError = CollectionsGetErrors[keyof CollectionsGetErrors];
+
+export type CollectionsGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: CollectionDetailResponse;
+};
+
+export type CollectionsGetResponse = CollectionsGetResponses[keyof CollectionsGetResponses];
+
+export type CollectionsUpdateData = {
+    body: CollectionPatchBody;
+    path: {
+        /**
+         * Collection Id
+         */
+        collection_id: string;
+    };
+    query?: never;
+    url: '/api/collections/{collection_id}';
+};
+
+export type CollectionsUpdateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CollectionsUpdateError = CollectionsUpdateErrors[keyof CollectionsUpdateErrors];
+
+export type CollectionsUpdateResponses = {
+    /**
+     * Successful Response
+     */
+    200: CollectionDetailResponse;
+};
+
+export type CollectionsUpdateResponse = CollectionsUpdateResponses[keyof CollectionsUpdateResponses];
+
+export type CollectionsAddEntryData = {
+    body: EntryCreateBody;
+    path: {
+        /**
+         * Collection Id
+         */
+        collection_id: string;
+    };
+    query?: never;
+    url: '/api/collections/{collection_id}/entries';
+};
+
+export type CollectionsAddEntryErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CollectionsAddEntryError = CollectionsAddEntryErrors[keyof CollectionsAddEntryErrors];
+
+export type CollectionsAddEntryResponses = {
+    /**
+     * Successful Response
+     */
+    201: CollectionEntryOut;
+};
+
+export type CollectionsAddEntryResponse = CollectionsAddEntryResponses[keyof CollectionsAddEntryResponses];
+
+export type CollectionEntriesDeleteData = {
+    body?: never;
+    path: {
+        /**
+         * Entry Id
+         */
+        entry_id: string;
+    };
+    query?: never;
+    url: '/api/collection-entries/{entry_id}';
+};
+
+export type CollectionEntriesDeleteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CollectionEntriesDeleteError = CollectionEntriesDeleteErrors[keyof CollectionEntriesDeleteErrors];
+
+export type CollectionEntriesDeleteResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type CollectionEntriesDeleteResponse = CollectionEntriesDeleteResponses[keyof CollectionEntriesDeleteResponses];
+
+export type CollectionEntriesUpdateData = {
+    body: EntryPatchBody;
+    path: {
+        /**
+         * Entry Id
+         */
+        entry_id: string;
+    };
+    query?: never;
+    url: '/api/collection-entries/{entry_id}';
+};
+
+export type CollectionEntriesUpdateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CollectionEntriesUpdateError = CollectionEntriesUpdateErrors[keyof CollectionEntriesUpdateErrors];
+
+export type CollectionEntriesUpdateResponses = {
+    /**
+     * Successful Response
+     */
+    200: CollectionEntryOut;
+};
+
+export type CollectionEntriesUpdateResponse = CollectionEntriesUpdateResponses[keyof CollectionEntriesUpdateResponses];
+
+export type CollectionsReorderEntriesData = {
+    body: EntriesOrderBody;
+    path: {
+        /**
+         * Collection Id
+         */
+        collection_id: string;
+    };
+    query?: never;
+    url: '/api/collections/{collection_id}/entries/order';
+};
+
+export type CollectionsReorderEntriesErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CollectionsReorderEntriesError = CollectionsReorderEntriesErrors[keyof CollectionsReorderEntriesErrors];
+
+export type CollectionsReorderEntriesResponses = {
+    /**
+     * Successful Response
+     */
+    200: OkResponse;
+};
+
+export type CollectionsReorderEntriesResponse = CollectionsReorderEntriesResponses[keyof CollectionsReorderEntriesResponses];
+
+export type CollectionsShareRevokeData = {
+    body?: never;
+    path: {
+        /**
+         * Collection Id
+         */
+        collection_id: string;
+    };
+    query?: never;
+    url: '/api/collections/{collection_id}/share';
+};
+
+export type CollectionsShareRevokeErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CollectionsShareRevokeError = CollectionsShareRevokeErrors[keyof CollectionsShareRevokeErrors];
+
+export type CollectionsShareRevokeResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type CollectionsShareRevokeResponse = CollectionsShareRevokeResponses[keyof CollectionsShareRevokeResponses];
+
+export type CollectionsShareUpdateData = {
+    body: SharePatchBody;
+    path: {
+        /**
+         * Collection Id
+         */
+        collection_id: string;
+    };
+    query?: never;
+    url: '/api/collections/{collection_id}/share';
+};
+
+export type CollectionsShareUpdateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CollectionsShareUpdateError = CollectionsShareUpdateErrors[keyof CollectionsShareUpdateErrors];
+
+export type CollectionsShareUpdateResponses = {
+    /**
+     * Successful Response
+     */
+    200: ShareInfo;
+};
+
+export type CollectionsShareUpdateResponse = CollectionsShareUpdateResponses[keyof CollectionsShareUpdateResponses];
+
+export type CollectionsShareIssueData = {
+    body?: never;
+    path: {
+        /**
+         * Collection Id
+         */
+        collection_id: string;
+    };
+    query?: never;
+    url: '/api/collections/{collection_id}/share';
+};
+
+export type CollectionsShareIssueErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CollectionsShareIssueError = CollectionsShareIssueErrors[keyof CollectionsShareIssueErrors];
+
+export type CollectionsShareIssueResponses = {
+    /**
+     * Successful Response
+     */
+    201: ShareInfo;
+};
+
+export type CollectionsShareIssueResponse = CollectionsShareIssueResponses[keyof CollectionsShareIssueResponses];
+
+export type VocabListData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Kind
+         */
+        kind?: Array<string> | null;
+        /**
+         * Due
+         */
+        due?: boolean | null;
+        /**
+         * Q
+         */
+        q?: string | null;
+        /**
+         * Library Item Id
+         */
+        library_item_id?: string | null;
+        /**
+         * Sort
+         */
+        sort?: string;
+        /**
+         * Cursor
+         */
+        cursor?: string | null;
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/api/vocab';
+};
+
+export type VocabListErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabListError = VocabListErrors[keyof VocabListErrors];
+
+export type VocabListResponses = {
+    /**
+     * Successful Response
+     */
+    200: VocabListResponse;
+};
+
+export type VocabListResponse2 = VocabListResponses[keyof VocabListResponses];
+
+export type VocabCreateData = {
+    body: VocabCreate;
+    path?: never;
+    query?: never;
+    url: '/api/vocab';
+};
+
+export type VocabCreateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabCreateError = VocabCreateErrors[keyof VocabCreateErrors];
+
+export type VocabCreateResponses = {
+    /**
+     * Successful Response
+     */
+    201: VocabCreateResponse;
+};
+
+export type VocabCreateResponse2 = VocabCreateResponses[keyof VocabCreateResponses];
+
+export type VocabReviewQueueData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/vocab/review-queue';
+};
+
+export type VocabReviewQueueResponses = {
+    /**
+     * Successful Response
+     */
+    200: VocabReviewQueueResponse;
+};
+
+export type VocabReviewQueueResponse2 = VocabReviewQueueResponses[keyof VocabReviewQueueResponses];
+
+export type VocabExportMarkdownData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Kind
+         */
+        kind?: Array<string> | null;
+        /**
+         * Due
+         */
+        due?: boolean | null;
+        /**
+         * Q
+         */
+        q?: string | null;
+        /**
+         * Library Item Id
+         */
+        library_item_id?: string | null;
+        /**
+         * Sort
+         */
+        sort?: string;
+    };
+    url: '/api/vocab/export/markdown';
+};
+
+export type VocabExportMarkdownErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabExportMarkdownError = VocabExportMarkdownErrors[keyof VocabExportMarkdownErrors];
+
+export type VocabExportMarkdownResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type VocabDeleteData = {
+    body?: never;
+    path: {
+        /**
+         * Vocab Id
+         */
+        vocab_id: string;
+    };
+    query?: never;
+    url: '/api/vocab/{vocab_id}';
+};
+
+export type VocabDeleteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabDeleteError = VocabDeleteErrors[keyof VocabDeleteErrors];
+
+export type VocabDeleteResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type VocabDeleteResponse = VocabDeleteResponses[keyof VocabDeleteResponses];
+
+export type VocabGetData = {
+    body?: never;
+    path: {
+        /**
+         * Vocab Id
+         */
+        vocab_id: string;
+    };
+    query?: never;
+    url: '/api/vocab/{vocab_id}';
+};
+
+export type VocabGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabGetError = VocabGetErrors[keyof VocabGetErrors];
+
+export type VocabGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: VocabEntryDetail;
+};
+
+export type VocabGetResponse = VocabGetResponses[keyof VocabGetResponses];
+
+export type VocabUpdateData = {
+    body: VocabPatch;
+    path: {
+        /**
+         * Vocab Id
+         */
+        vocab_id: string;
+    };
+    query?: never;
+    url: '/api/vocab/{vocab_id}';
+};
+
+export type VocabUpdateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabUpdateError = VocabUpdateErrors[keyof VocabUpdateErrors];
+
+export type VocabUpdateResponses = {
+    /**
+     * Successful Response
+     */
+    200: VocabEntryDetail;
+};
+
+export type VocabUpdateResponse = VocabUpdateResponses[keyof VocabUpdateResponses];
+
+export type VocabRegenerateData = {
+    body: VocabRegenerateRequest;
+    path: {
+        /**
+         * Vocab Id
+         */
+        vocab_id: string;
+    };
+    query?: never;
+    url: '/api/vocab/{vocab_id}/regenerate';
+};
+
+export type VocabRegenerateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabRegenerateError = VocabRegenerateErrors[keyof VocabRegenerateErrors];
+
+export type VocabRegenerateResponses = {
+    /**
+     * Successful Response
+     */
+    202: VocabRegenerateResponse;
+};
+
+export type VocabRegenerateResponse2 = VocabRegenerateResponses[keyof VocabRegenerateResponses];
+
+export type VocabReviewData = {
+    body: VocabReviewRequest;
+    path: {
+        /**
+         * Vocab Id
+         */
+        vocab_id: string;
+    };
+    query?: never;
+    url: '/api/vocab/{vocab_id}/review';
+};
+
+export type VocabReviewErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabReviewError = VocabReviewErrors[keyof VocabReviewErrors];
+
+export type VocabReviewResponses = {
+    /**
+     * Successful Response
+     */
+    200: VocabReviewResponse;
+};
+
+export type VocabReviewResponse2 = VocabReviewResponses[keyof VocabReviewResponses];
+
+export type ResourcesListData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/resources';
+};
+
+export type ResourcesListErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ResourcesListError = ResourcesListErrors[keyof ResourcesListErrors];
+
+export type ResourcesListResponses = {
+    /**
+     * Successful Response
+     */
+    200: ResourceListResponse;
+};
+
+export type ResourcesListResponse = ResourcesListResponses[keyof ResourcesListResponses];
+
+export type ResourcesCreateData = {
+    body: ResourceCreateRequest;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/resources';
+};
+
+export type ResourcesCreateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ResourcesCreateError = ResourcesCreateErrors[keyof ResourcesCreateErrors];
+
+export type ResourcesCreateResponses = {
+    /**
+     * Successful Response
+     */
+    201: ResourceLink;
+};
+
+export type ResourcesCreateResponse = ResourcesCreateResponses[keyof ResourcesCreateResponses];
+
+export type ResourcesDeleteData = {
+    body?: never;
+    path: {
+        /**
+         * Resource Id
+         */
+        resource_id: string;
+    };
+    query?: never;
+    url: '/api/resources/{resource_id}';
+};
+
+export type ResourcesDeleteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ResourcesDeleteError = ResourcesDeleteErrors[keyof ResourcesDeleteErrors];
+
+export type ResourcesDeleteResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type ResourcesDeleteResponse = ResourcesDeleteResponses[keyof ResourcesDeleteResponses];
+
+export type ResourcesUpdateData = {
+    body: ResourcePatchRequest;
+    path: {
+        /**
+         * Resource Id
+         */
+        resource_id: string;
+    };
+    query?: never;
+    url: '/api/resources/{resource_id}';
+};
+
+export type ResourcesUpdateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ResourcesUpdateError = ResourcesUpdateErrors[keyof ResourcesUpdateErrors];
+
+export type ResourcesUpdateResponses = {
+    /**
+     * Successful Response
+     */
+    200: ResourceLink;
+};
+
+export type ResourcesUpdateResponse = ResourcesUpdateResponses[keyof ResourcesUpdateResponses];
+
+export type ResourcesRefreshMetaData = {
+    body?: never;
+    path: {
+        /**
+         * Resource Id
+         */
+        resource_id: string;
+    };
+    query?: never;
+    url: '/api/resources/{resource_id}/refresh-meta';
+};
+
+export type ResourcesRefreshMetaErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ResourcesRefreshMetaError = ResourcesRefreshMetaErrors[keyof ResourcesRefreshMetaErrors];
+
+export type ResourcesRefreshMetaResponses = {
+    /**
+     * Successful Response
+     */
+    200: ResourceLink;
+};
+
+export type ResourcesRefreshMetaResponse = ResourcesRefreshMetaResponses[keyof ResourcesRefreshMetaResponses];
+
+export type ResourcesSuggestionAcceptData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/resource-suggestion/accept';
+};
+
+export type ResourcesSuggestionAcceptErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ResourcesSuggestionAcceptError = ResourcesSuggestionAcceptErrors[keyof ResourcesSuggestionAcceptErrors];
+
+export type ResourcesSuggestionAcceptResponses = {
+    /**
+     * Successful Response
+     */
+    201: ResourceLink;
+};
+
+export type ResourcesSuggestionAcceptResponse = ResourcesSuggestionAcceptResponses[keyof ResourcesSuggestionAcceptResponses];
+
+export type ResourcesSuggestionDismissData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/resource-suggestion/dismiss';
+};
+
+export type ResourcesSuggestionDismissErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ResourcesSuggestionDismissError = ResourcesSuggestionDismissErrors[keyof ResourcesSuggestionDismissErrors];
+
+export type ResourcesSuggestionDismissResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type ResourcesSuggestionDismissResponse = ResourcesSuggestionDismissResponses[keyof ResourcesSuggestionDismissResponses];
 
 export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});

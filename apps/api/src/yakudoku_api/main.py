@@ -20,9 +20,11 @@ from yakudoku_api.routers import (
     annotations as annotations_router,
 )
 from yakudoku_api.routers import (
+    articles,
     assets,
     auth,
     chat,
+    collections,
     dashboard,
     export,
     glossaries,
@@ -34,9 +36,11 @@ from yakudoku_api.routers import (
     notes,
     notifications,
     papers,
+    resources,
     search,
     translations,
     viewer,
+    vocab,
 )
 from yakudoku_api.routers import (
     settings as settings_router,
@@ -82,6 +86,10 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router)
     app.include_router(glossaries.router)
     app.include_router(export.router)
+    app.include_router(articles.router)
+    app.include_router(collections.router)
+    app.include_router(vocab.router)
+    app.include_router(resources.router)
 
     return app
 

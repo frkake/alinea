@@ -18,7 +18,7 @@ from yakudoku_core.ingest import joblog
 from yakudoku_core.jobs.store import JobStore
 
 from yakudoku_worker.bootstrap import on_shutdown, on_startup
-from yakudoku_worker.cron import check_quality_promotions
+from yakudoku_worker.cron import check_quality_promotions, send_deadline_reminders
 from yakudoku_worker.settings import BULK_QUEUE, INTERACTIVE_QUEUE, redis_settings
 
 log = structlog.get_logger("yakudoku.worker")
@@ -27,9 +27,10 @@ log = structlog.get_logger("yakudoku.worker")
 JobHandler = Callable[[dict[str, Any], JobStore, Job], Awaitable[None]]
 HANDLERS: dict[str, JobHandler] = {}
 
-# LLM ルータを必須とする kind(取り込みはアブストラクト翻訳/要約、翻訳はセクション翻訳で使う)。
+# LLM ルータを必須とする kind(取り込みはアブストラクト翻訳/要約、翻訳はセクション翻訳、
+# article は記事生成・ブロック書き直しで使う)。
 # ``ctx['router']`` が未構成(運営キー未設定)なら P3 準拠で可視的に失敗させる(bootstrap 参照)。
-_LLM_REQUIRED_KINDS = frozenset({"ingest", "translation"})
+_LLM_REQUIRED_KINDS = frozenset({"ingest", "translation", "article"})
 _NO_ROUTER_MESSAGE = (
     "LLM プロバイダの API キーが未設定です(運営キー/BYOK いずれも無し)。"
     "設定後に再試行してください。"
@@ -80,7 +81,11 @@ class BulkWorker:
 
     functions: ClassVar[list[Any]] = [run_job]
     # check_quality_promotions: 毎日 07:30 JST(= 22:30 UTC 前日。plans/05 §12.3)。
-    cron_jobs: ClassVar[list[Any]] = [cron(check_quality_promotions, hour={22}, minute={30})]
+    # send_deadline_reminders: 毎日 08:00 JST(= 23:00 UTC 前日。plans/01 §4.3・M2-09)。
+    cron_jobs: ClassVar[list[Any]] = [
+        cron(check_quality_promotions, hour={22}, minute={30}),
+        cron(send_deadline_reminders, hour={23}, minute={0}),
+    ]
     queue_name = BULK_QUEUE
     redis_settings = redis_settings()
     max_jobs = 4
@@ -92,3 +97,7 @@ class BulkWorker:
 # import 時に各 kind のハンドラを HANDLERS へ登録する(ingest / translation)。
 # 本モジュール(main)の定義完了後に配線するため末尾で import する(循環 import 回避)。
 from yakudoku_worker import tasks as _tasks  # noqa: E402, F401
+from yakudoku_worker.tasks.generate_article import run_article_job  # noqa: E402
+
+# kind='article'(generate/regenerate/block_rewrite を payload.op で振り分ける。plans/07 §4)。
+HANDLERS["article"] = run_article_job

@@ -34,7 +34,7 @@ from yakudoku_core.arxiv.fetch import (
     arxiv_throttle,
     make_arxiv_client,
 )
-from yakudoku_core.arxiv.ids import ArxivId, normalize_arxiv_id
+from yakudoku_core.arxiv.ids import ArxivId, eprint_url, normalize_arxiv_id
 from yakudoku_core.arxiv.metadata import ArxivMeta, fetch_metadata
 from yakudoku_core.db.models import (
     DocumentRevision,
@@ -60,6 +60,13 @@ from yakudoku_core.parsing.html_parser import (
 from yakudoku_core.parsing.html_parser import (
     ParsedDocument,
     parse_arxiv_html,
+)
+from yakudoku_core.parsing.latex_parser import (
+    PARSER_VERSION as LATEX_PARSER_VERSION,
+)
+from yakudoku_core.parsing.latex_parser import (
+    LatexParseError,
+    parse_arxiv_latex,
 )
 from yakudoku_core.parsing.pdf_parser import (
     PARSER_VERSION as PDF_PARSER_VERSION,
@@ -201,7 +208,6 @@ class IngestRun:
             if self.is_pdf_upload
             else normalize_arxiv_id(self.payload.arxiv_id or self.payload.url or "")
         )
-        self.parser_version: str = PDF_PARSER_VERSION if self.is_pdf_upload else HTML_PARSER_VERSION
         self.source_version: str = ""
         self.source_format: str = "pdf_upload" if self.is_pdf_upload else "arxiv_html"
         self.revision_id: str | None = None
@@ -212,6 +218,19 @@ class IngestRun:
         self._pdf_bytes: bytes | None = None
         self.style: str = "natural"
         self._settings_obj: TranslationSettings | None = None
+
+    @property
+    def parser_version(self) -> str:
+        """取得優先順位 LaTeX > HTML > PDF(plans/05 §1.3・§5・M2-01)。
+
+        ``source_format`` は fetching 段で確定するため(`_stage_fetching`)、parsing/structuring
+        段(そのあと)から読む本プロパティは常に実際に使ったパーサと一致する。
+        """
+        if self.is_pdf_upload:
+            return PDF_PARSER_VERSION
+        if self.source_format == "latex":
+            return LATEX_PARSER_VERSION
+        return HTML_PARSER_VERSION
 
     # -- ORM 取得(都度フレッシュ) ---------------------------------------
 
@@ -356,7 +375,7 @@ class IngestRun:
         if http is None:
             http = make_arxiv_client(self.deps.settings)
         assert self.ref is not None
-        html_bytes = b""
+        source_bytes = b""
         try:
             meta = await fetch_metadata(self.ref, http=http, settings=self.deps.settings)
             paper = await self._get_paper()
@@ -366,21 +385,42 @@ class IngestRun:
             )
             await self.session.commit()
             base = _www_base(self.deps.settings)
-            html_bytes = await self._fetch_html(http, base)
             assert self.paper_id is not None
-            await self.deps.s3.put(
-                self.deps.s3.sources_bucket,
-                StorageKeys.arxiv_html(self.paper_id, self.source_version),
-                html_bytes,
-                content_type="text/html; charset=utf-8",
-            )
-            await self._record_source_asset(
-                "arxiv_html",
-                StorageKeys.arxiv_html(self.paper_id, self.source_version),
-                content_type="text/html",
-                byte_size=len(html_bytes),
-                source_url=f"{base}/html/{self.ref.versioned}",
-            )
+            # 取得優先順位 LaTeX > HTML > PDF(plans/05 §1.3・§5・M2-01)。
+            latex_bytes = await self._fetch_latex_best_effort(http)
+            if latex_bytes is not None:
+                self.source_format = "latex"
+                source_bytes = latex_bytes
+                await self.deps.s3.put(
+                    self.deps.s3.sources_bucket,
+                    StorageKeys.latex_tar(self.paper_id, self.source_version),
+                    latex_bytes,
+                    content_type="application/gzip",
+                )
+                await self._record_source_asset(
+                    "arxiv_latex",  # plans/02 §4.3 ck_source_assets_kind の許容値
+                    StorageKeys.latex_tar(self.paper_id, self.source_version),
+                    content_type="application/gzip",
+                    byte_size=len(latex_bytes),
+                    source_url=eprint_url(
+                        self.ref, self.deps.settings.yakudoku_arxiv_base_url or None
+                    ),
+                )
+            else:
+                source_bytes = await self._fetch_html(http, base)
+                await self.deps.s3.put(
+                    self.deps.s3.sources_bucket,
+                    StorageKeys.arxiv_html(self.paper_id, self.source_version),
+                    source_bytes,
+                    content_type="text/html; charset=utf-8",
+                )
+                await self._record_source_asset(
+                    "arxiv_html",
+                    StorageKeys.arxiv_html(self.paper_id, self.source_version),
+                    content_type="text/html",
+                    byte_size=len(source_bytes),
+                    source_url=f"{base}/html/{self.ref.versioned}",
+                )
             await self._fetch_pdf_best_effort(http, base)
         finally:
             if owns_http:
@@ -390,7 +430,7 @@ class IngestRun:
             "fetching",
             "info",
             joblog.fetch_timeline_message(self.source_format),
-            detail={"format": self.source_format, "bytes": len(html_bytes)},
+            detail={"format": self.source_format, "bytes": len(source_bytes)},
             timeline=True,
         )
         await self.store.checkpoint(
@@ -399,6 +439,43 @@ class IngestRun:
             {"source_version": self.source_version, "source_format": self.source_format},
             progress=10,
         )
+
+    async def _fetch_latex_best_effort(self, http: httpx.AsyncClient) -> bytes | None:
+        """LaTeX ソース(e-print)を試行取得する(取得優先順位 §1.3・§5。M2-01)。
+
+        取得・展開・パース(検証用)のいずれかに失敗した場合は ``None`` を返し、呼び出し側が
+        既存の HTML 経路へ可視的にフォールバックする(``jobs.log`` warn。P3)。既存の
+        HTML/PDF 経路は変更しない。
+        """
+        assert self.ref is not None
+        try:
+            await self._throttle()
+            resp = await http.get(
+                eprint_url(self.ref, self.deps.settings.yakudoku_arxiv_base_url or None),
+                timeout=httpx.Timeout(60.0, connect=5.0),
+            )
+        except httpx.HTTPError as exc:
+            await self._log(
+                "fetching",
+                "warn",
+                "LaTeX ソース取得に失敗(HTML へフォールバック)",
+                detail={"error": str(exc)},
+            )
+            return None
+        if resp.status_code != 200 or "pdf" in resp.headers.get("content-type", "").lower():
+            return None
+        data = resp.content
+        try:
+            parse_arxiv_latex(data)  # 展開・メイン .tex 特定・構文解析まで検証する
+        except LatexParseError as exc:
+            await self._log(
+                "fetching",
+                "warn",
+                "LaTeX ソースの解析に失敗(HTML へフォールバック)",
+                detail={"error": str(exc), "kind": exc.kind},
+            )
+            return None
+        return data
 
     async def _get_pdf_bytes(self) -> bytes:
         """アップロード原本 PDF を S3 から取得する(未取得なら都度取得。§9.2)。"""
@@ -567,12 +644,22 @@ class IngestRun:
             )
             return
 
-        # parsing: HTML(S3)→ ブロックモデル。
-        raw = await self.deps.s3.get(
-            self.deps.s3.sources_bucket,
-            StorageKeys.arxiv_html(self.paper_id, self.source_version),
-        )
-        self.parsed = parse_arxiv_html(raw.decode("utf-8"))
+        # parsing: LaTeX(優先)または HTML(いずれも S3)→ ブロックモデル(§1.3・§5・M2-01)。
+        if self.source_format == "latex":
+            raw = await self.deps.s3.get(
+                self.deps.s3.sources_bucket,
+                StorageKeys.latex_tar(self.paper_id, self.source_version),
+            )
+            try:
+                self.parsed = parse_arxiv_latex(raw)
+            except LatexParseError as exc:
+                raise FetchError("parse_error", f"latex parse failed: {exc}") from exc
+        else:
+            raw = await self.deps.s3.get(
+                self.deps.s3.sources_bucket,
+                StorageKeys.arxiv_html(self.paper_id, self.source_version),
+            )
+            self.parsed = parse_arxiv_html(raw.decode("utf-8"))
         await self.store.checkpoint(self.job_id, "parsing", {}, progress=20)
 
         # structuring: リビジョン永続化・図保存・検索索引・サムネイル。
@@ -1205,7 +1292,10 @@ def _degrade_unresolved_refs(parsed: ParsedDocument) -> int:
                 il.t = "text"
                 il.v = il.v or ""
                 count += 1
-            elif il.t == "emphasis" and il.children:
+            elif il.t == "emphasis" and getattr(il, "children", None):
+                # Inline モデルは children 属性を持たない(v 形)。dict ベースの入れ子形
+                # (plans/06 §4.2)を受けた場合のみ再帰する。素の emphasis で
+                # AttributeError にならないようガードする。
                 fix(il.children)
 
     for blk in parsed.blocks:
