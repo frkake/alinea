@@ -86,11 +86,15 @@ async def test_export_paper_markdown_includes_all_sections(
     user = await db_session.get(User, uid)
     assert user is not None
 
+    # papers.arxiv_id はユーザーを問わずグローバルに一意(uq_papers_arxiv_id)。他テスト
+    # (test_chat.py 等)や並走する他エージェントのシード投入と衝突しないよう、固定の
+    # 実在 arXiv ID ではなくテストごとにユニークな ID を使う(deviations 参照)。
+    arxiv_id = f"9909.{uuid.uuid4().int % 100000:05d}"
     paper = await factories.make_paper(
         db_session,
         owner=user,
         visibility="private",
-        arxiv_id="2209.03003",
+        arxiv_id=arxiv_id,
         title="Flow Straight and Fast",
     )
     rev = await factories.make_revision(db_session, paper=paper)
@@ -126,18 +130,18 @@ async def test_export_paper_markdown_includes_all_sections(
     resp = await client.get(f"/api/library-items/{item.id}/export/markdown")
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"].startswith("text/markdown")
-    assert 'filename="2209.03003.md"' in resp.headers["content-disposition"]
+    assert f'filename="{arxiv_id}.md"' in resp.headers["content-disposition"]
 
     body = resp.text
     # Obsidian 互換 front-matter。
     assert body.startswith("---\n")
     front, _, rest = body[4:].partition("\n---\n")
     assert "title: Flow Straight and Fast" in front
-    assert "arxiv_id: '2209.03003'" in front
+    assert f"arxiv_id: '{arxiv_id}'" in front
     assert "status: reading" in front
     # 書誌。
     assert "# Flow Straight and Fast" in rest
-    assert "**arXiv**: 2209.03003" in rest
+    assert f"**arXiv**: {arxiv_id}" in rest
     # メモ。
     assert "## メモ" in rest
     assert "### 要点" in rest

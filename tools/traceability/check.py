@@ -7,16 +7,16 @@
    (`- [ ]` / `- [x]`)の件数が plans/12 §6 の対応表(`### 6.N docs/NN`)の行数と
    一致し、REV 以外の全行に自動テスト ID が割り当てられていること。
 
-2. **テスト ID の実在**(Task 34 / M0-38): §6 が参照する「M0 対象」のテスト ID
-   (PY-* / HP-* / VT-*)が、リポジトリ内の実テストファイルに docstring/コメント
-   タグとして実在すること。M0 スコープ外(M1/M2/M3)の ID は `DEFERRED` レジストリ
-   で明示し、検査対象から外す(理由付き)。
+2. **テスト ID の実在**(M0-38 で導入・M1-23 で M1 対応に拡張): §6 が参照する
+   「M0/M1 対象」のテスト ID(PY-* / HP-* / VT-*)が、リポジトリ内の実テストファイルに
+   docstring/コメントタグとして実在すること。M0/M1 スコープ外(plans/13 §7 で M2/M3
+   タスクに割付済み)の ID は `DEFERRED` レジストリで明示し、検査対象から外す(理由付き)。
 
-   PW-* / XT-* / VR-* は M0-39(E2E・VR)が並行作成中のため **ソフト扱い**:
-   未実装でも FAIL させず警告のみ。SM-*(実 LLM スモーク)/ PF-*(性能)/ REV-*
-   (手動レビュー)は自動テストではないため情報表示のみ。
+   PW-* / XT-* / VR-* は E2E・VR(M0-39・M1-24 などが並行/後続で作成中)のため
+   **ソフト扱い**: 未実装でも FAIL させず警告のみ。SM-*(実 LLM スモーク)/ PF-*
+   (性能)/ REV-*(手動レビュー)は自動テストではないため情報表示のみ。
 
-終了コード: M0 対象 ID の未割付・未実装が 0、かつ件数突合が成立していれば 0。
+終了コード: M0/M1 対象 ID の未割付・未実装が 0、かつ件数突合が成立していれば 0。
 それ以外は 1(CI ゲート)。
 
 依存: 標準ライブラリのみ。実行: `uv run python tools/traceability/check.py [--verbose]`。
@@ -41,59 +41,51 @@ DOCS_DIR = REPO_ROOT / "docs"
 ID_TOKEN = re.compile(r"(?:PY|HP|VT|PW|XT|VR|SM|PF|REV)-[0-9A-Za-z]+(?:-[0-9A-Za-z]+)?")
 
 # レイヤ分類。
-HARD_PREFIXES = ("PY", "HP", "VT")  # M0 自動テスト(pytest/hypothesis/vitest)= 必達
-SOFT_PREFIXES = ("PW", "XT", "VR")  # E2E / 拡張E2E / VR = M0-39 が並行作成中(ソフト)
+HARD_PREFIXES = ("PY", "HP", "VT")  # M0/M1 自動テスト(pytest/hypothesis/vitest)= 必達
+SOFT_PREFIXES = ("PW", "XT", "VR")  # E2E / 拡張E2E / VR = M0-39・M1-24 で並行/後続作成中(ソフト)
 INFO_PREFIXES = ("SM", "PF", "REV")  # スモーク / 性能 / 手動レビュー = 自動ゲート対象外
 
-# --- M0 スコープ外(deferred)レジストリ -----------------------------------
-# plans/12 §6 は M0〜M3 全体の受け入れ基準を対象とする。本ツールの M0 ゲートは
-# 「M0 で実装される機能のテスト」だけを必達とする。以下は docs/10 ロードマップと
-# 本 M0 計画(docs/superpowers/plans/2026-07-06-m0-core-reading-experience.md)の
-# タスク範囲に照らして M0 では未実装(= M1/M2/M3)と判定した ID。各行に理由を明記。
+# --- M0/M1 スコープ外(deferred)レジストリ ---------------------------------
+# plans/12 §6 は M0〜M3 全体の受け入れ基準を対象とする。本ツールの M0/M1 ゲートは
+# 「M0/M1 で実装される機能のテスト」だけを必達とする(M1-23 で M1 分を追加)。割付の正は
+# plans/13-work-breakdown.md §7(受け入れテストのタスク割付表)。以下は同表で M2/M3
+# タスクに割付済み(= M0/M1 では未実装)と判定した ID。各行に理由を明記。
 #
 # 家族単位(そのプレフィックス配下の全 ID を defer):
 DEFERRED_FAMILIES: dict[str, str] = {
-    "PY-VOC": "M2 語彙帳(docs/11・docs/10 AC-10-10)",
-    "PY-RES": "M2 リソース(docs/12)",
-    "PY-ART": "M2 記事生成(docs/07・AC-10-08)",
-    "PY-FIG": "M2 概要図/解説図(docs/07・AC-10-08)",
-    "PY-COL": "M2 コレクション(docs/06・AC-10-09)",
-    "PY-SHR": "M2 共有ページ(AC-10-09)",
-    "PY-EXP": "M1 エクスポート(docs/06・P5)",
-    "PY-NTF": "M1 通知(docs/06)",
-    "PY-ANN": "M1 注釈CRUD/リアンカー(M0 側パネルは 3 タブのみ)",
-    "PY-NOTE": "M1 メモ昇格(docs/05)",
-    "PY-GLS": "M1/M2 用語集CRUD(docs/11)",
-    "PY-SRCH": "M1 横断検索(AC-10-06)",
-    "VT-VOC": "M2 語彙帳UI",
+    "PY-VOC": "M2 語彙帳(docs/11・docs/10 AC-10-10。plans/13 §7 M2-11)",
+    "PY-RES": "M2 リソース(docs/12。plans/13 §7 M2-13)",
+    "PY-ART": "M2 記事生成(docs/07・AC-10-08。plans/13 §7 M2-03/M2-08)",
+    "PY-FIG": "M2 概要図/解説図(docs/07・AC-10-08。plans/13 §7 M2-05/M2-06)",
+    "PY-COL": "M2 コレクション(docs/06・AC-10-09。plans/13 §7 M2-09)",
+    "PY-SHR": "M2 共有ページ(AC-10-09。plans/13 §7 M2-10)",
+    "VT-VOC": "M2 語彙帳UI(plans/13 §7 M2-12)",
 }
-# 個別 ID 単位(M0 家族の中で当該項目だけ M1/M2):
+# 個別 ID 単位(家族の中で当該項目だけ M2/M3。M1-23 で PY-EXP/NTF/ANN/NOTE/GLS/SRCH/
+# ING-04・07/PARSE-03/LIB-05・06 および VT-VIEW-08/VT-LIB-03/VT-XTU-02・03 の M1 実装分を
+# HARD(必達・非 deferred)へ昇格した):
 DEFERRED_IDS: dict[str, str] = {
-    "PY-DB-07": "M1/M2 テーブル制約(vocab_entries)",
-    "PY-DB-08": "M2 テーブル制約(resource_links)",
-    "PY-DB-09": "M1 テーブル制約(notifications)",
-    "PY-DB-10": "M2 テーブル制約(collection_share_tokens)",
-    "PY-DB-11": "M2 テーブル制約(articles)",
-    "PY-DB-12": "M2 テーブル制約(overview/explainer_figures)",
-    "PY-ING-04": "M1 PDF取り込み(AC-10-07)",
-    "PY-ING-07": "M2 B→A 昇格(AC-10-11)",
-    "PY-PARSE-02": "M2 LaTeX パーサ(AC-10-11)",
-    "PY-PARSE-03": "M1 PDF パーサ(AC-10-07)",
-    "PY-LIB-05": "M1 ステータス提案/ハートビート(AC-10-05)",
-    "PY-LIB-06": "M1 読了フロー(AC-10-05)",
-    "PY-LIB-07": "M1 保存フィルタ(docs/06)",
-    "VT-VIEW-08": "M1 注釈一覧(M0 側パネルは チャット/図表/情報 の 3 タブのみ)",
-    "VT-VIEW-13": "M2 概要図フレーム(docs/07)",
-    "VT-VIEW-14": "M2 記事メタ行(docs/07)",
-    "VT-VIEW-15": "M2 記事ブロックホバー(docs/07)",
-    "VT-VIEW-16": "M2 議論リスト(docs/07)",
-    "VT-VIEW-17": "M2 リソースカード(docs/12)",
-    "VT-VIEW-18": "M2 リソースタブバッジ(docs/12)",
-    "VT-VIEW-19": "M2 リソース『開く ↗』(docs/12)",
-    "VT-LIB-03": "M1 キュー『積みすぎ』警告(docs/06)",
-    "VT-XTU-02": "M1 拡張 PDF 判定(AC-10-07)",
-    "VT-XTU-03": "M1 拡張 送信キュー永続/リトライ(docs/08 ハードニング)",
-    "HP-05": "M2 SVG 決定性(概要図・docs/09 AC-09-10)",
+    "PY-DB-07": "M1/M2 テーブル制約(vocab_entries。plans/13 §7 は PY-VOC 経由で M2-11)",
+    "PY-DB-08": "M2 テーブル制約(resource_links。plans/13 §7 は PY-RES 経由で M2-13)",
+    "PY-DB-09": (
+        "M1 テーブル制約(notifications)。M1-07 で機能実装済みだが制約自体の専用テストは"
+        "未実装(M1-23 の対象 ID 一覧に含まれないため本ツールでは継続 defer)"
+    ),
+    "PY-DB-10": "M2 テーブル制約(collection_share_tokens。plans/13 §7 M2-10)",
+    "PY-DB-11": "M2 テーブル制約(articles。plans/13 §7 M2-03 系)",
+    "PY-DB-12": "M2 テーブル制約(overview/explainer_figures。plans/13 §7 M2-05/M2-06)",
+    "PY-PARSE-02": "M2 LaTeX パーサ(AC-10-11。plans/13 §7 M2-01)",
+    "PY-EXP-03": "M2 CSV エクスポート(plans/13 §7 M2-15)",
+    "PY-EXP-04": "M2 全量 JSON エクスポート(plans/13 §7 M2-15)",
+    "PY-LIB-07": "M2 保存フィルタ(docs/06。plans/13 §7 M2-14)",
+    "VT-VIEW-13": "M2 概要図フレーム(docs/07。plans/13 §7 M2-07)",
+    "VT-VIEW-14": "M2 記事メタ行(docs/07。plans/13 §7 M2-07)",
+    "VT-VIEW-15": "M2 記事ブロックホバー(docs/07。plans/13 §7 M2-07)",
+    "VT-VIEW-16": "M2 議論リスト(docs/07。plans/13 §7 M2-07)",
+    "VT-VIEW-17": "M2 リソースカード(docs/12。plans/13 §7 M2-13)",
+    "VT-VIEW-18": "M2 リソースタブバッジ(docs/12。plans/13 §7 M2-13)",
+    "VT-VIEW-19": "M2 リソース『開く ↗』(docs/12。plans/13 §7 M2-13)",
+    "HP-05": "M2 SVG 決定性(概要図・docs/09 AC-09-10。plans/13 §7 M2-05)",
 }
 
 # §6 サブセクション見出し → docs ファイル prefix の対応(件数突合用)。
@@ -304,11 +296,11 @@ def main() -> int:
 
     # --- レポート ---------------------------------------------------------
     print("=" * 72)
-    print("トレーサビリティ検査(plans/12 §6・§16 / Task 34 M0-38)")
+    print("トレーサビリティ検査(plans/12 §6・§16 / M0-38・M1-23)")
     print("=" * 72)
     print(f"§6 参照テスト ID: {len(all_referenced)} 種")
-    print(f"  M0 必達(PY/HP/VT・非 deferred): {len(hard)}")
-    print(f"  M0 スコープ外(deferred M1/M2/M3): {len(deferred)}")
+    print(f"  M0/M1 必達(PY/HP/VT・非 deferred): {len(hard)}")
+    print(f"  M0/M1 スコープ外(deferred M2/M3): {len(deferred)}")
     print(f"  ソフト(PW/XT/VR・M0-39 並行作成): {len(soft)}")
     print(f"  自動ゲート対象外(SM/PF/REV): {len(info)}")
     print("-" * 72)
@@ -316,7 +308,7 @@ def main() -> int:
 
     if args.verbose:
         print("-" * 72)
-        print("[M0 必達 ID の割付先]")
+        print("[M0/M1 必達 ID の割付先]")
         for tid in hard:
             where = tags.get(tid)
             mark = "OK  " if where else "MISS"
@@ -345,7 +337,7 @@ def main() -> int:
     if hard_missing:
         ok = False
         print("-" * 72)
-        print(f"NG M0 必達だが未実装のテスト ID({len(hard_missing)} 件):")
+        print(f"NG M0/M1 必達だが未実装のテスト ID({len(hard_missing)} 件):")
         for tid in hard_missing:
             print(f"  - {tid}  (家族 {_family(tid)}・タグが実テストに存在しない)")
         print("  → 実テストに `# <ID>:` タグを付けるか、M1/M2 なら DEFERRED に理由付きで登録する。")
@@ -364,7 +356,7 @@ def main() -> int:
 
     print("=" * 72)
     if ok:
-        print("PASS: M0 対象テスト ID の未割付・未実装 0 / 件数突合 OK")
+        print("PASS: M0/M1 対象テスト ID の未割付・未実装 0 / 件数突合 OK")
         return 0
     print("FAIL: 上記を解消すること")
     return 1

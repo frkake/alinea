@@ -1,7 +1,8 @@
 """dashboard API テスト(M1-09 / plans/03 §5.12・§5.7・docs/06 §6)。
 
-- PY-LIB-04: ``GET /api/dashboard`` の 5 区画(続きを読む・すぐ読むキュー・締切・最近追加・統計)
-  と ``PUT /api/library-items/queue-order`` の往復・422 バリデーションを検証する。
+- ``GET /api/dashboard`` の 5 区画(続きを読む・すぐ読むキュー・締切・最近追加・統計)を検証する。
+- PY-LIB-04: ``PUT /api/library-items/queue-order``(up_next 全 ID の並べ替え・up_next 以外
+  混在/不足/重複/他ユーザー ID の 422)を検証する(plans/12 §2.4)。
 
 DB は実 PostgreSQL。テストデータは私有 Paper(owner=テストユーザー)として作り、teardown の
 purge_user でカスケード削除する。認証はセッション直発行 + cookie(test_library_api.py と同じ
@@ -290,7 +291,7 @@ async def test_dashboard_stats_weekly_hours_and_finished_count(
 
 
 # ---------------------------------------------------------------------------
-# PUT /api/library-items/queue-order(§5.7)
+# PY-LIB-04: PUT /api/library-items/queue-order(§5.7)
 # ---------------------------------------------------------------------------
 async def test_queue_order_reorders_up_next_items(
     auth: tuple[AsyncClient, str], db_session: AsyncSession, factories: Any

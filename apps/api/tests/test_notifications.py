@@ -305,6 +305,15 @@ async def test_notifications_cursor_pagination_no_dup_no_miss(
     assert len(set(seen)) == 5
 
 
+async def test_notifications_invalid_cursor_is_422(
+    auth: tuple[AsyncClient, User], db_session: AsyncSession, redis_client: Any
+) -> None:
+    ac, _user = auth
+    res = await ac.get("/api/notifications", params={"cursor": "not-a-valid-cursor"})
+    assert res.status_code == 422, res.text
+    assert res.json()["code"] == "validation_error"
+
+
 async def test_patch_notification_marks_read(
     auth: tuple[AsyncClient, User], db_session: AsyncSession, redis_client: Any
 ) -> None:

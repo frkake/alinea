@@ -230,6 +230,60 @@ async def test_create_note_invalid_source_message_id_is_422(
     assert resp.json()["code"] == "validation_error"
 
 
+async def test_create_note_non_numeric_source_message_id_is_422(
+    client: AsyncClient, note_ctx: SimpleNamespace
+) -> None:
+    resp = await client.post(
+        f"/api/library-items/{note_ctx.item_id}/notes",
+        json={"content_md": "x", "source_message_id": "not-a-number"},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "validation_error"
+
+
+async def test_create_note_source_message_from_other_item_is_422(
+    client: AsyncClient, note_ctx: SimpleNamespace
+) -> None:
+    """source_message_id が別 library_item のスレッドに属するメッセージは 422(§9)。"""
+    other_item = await factories.make_library_item(note_ctx.db, status="reading")
+    other_thread = await factories.make_chat_thread(note_ctx.db, library_item=other_item)
+    other_msg = await factories.make_chat_message(
+        note_ctx.db, thread=other_thread, role="assistant", text_plain="別の論文の回答"
+    )
+    await note_ctx.db.commit()
+
+    resp = await client.post(
+        f"/api/library-items/{note_ctx.item_id}/notes",
+        json={"content_md": "x", "source_message_id": str(other_msg.id)},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "validation_error"
+
+
+async def test_notes_invalid_uuid_path_params_are_404(
+    client: AsyncClient, note_ctx: SimpleNamespace
+) -> None:
+    assert (await client.get("/api/library-items/not-a-uuid/notes")).status_code == 404
+    assert (
+        await client.post("/api/library-items/not-a-uuid/notes", json={"content_md": "x"})
+    ).status_code == 404
+    assert (
+        await client.patch("/api/notes/not-a-uuid", json={"content_md": "x"})
+    ).status_code == 404
+    assert (await client.delete("/api/notes/not-a-uuid")).status_code == 404
+
+
+async def test_summarize_to_note_other_users_thread_is_404(
+    client: AsyncClient, note_ctx: SimpleNamespace, db_session: AsyncSession
+) -> None:
+    other_item = await factories.make_library_item(db_session, status="reading")
+    other_thread = await factories.make_chat_thread(db_session, library_item=other_item)
+    await db_session.commit()
+
+    resp = await client.post(f"/api/chat/threads/{other_thread.id}/summarize-to-note")
+    assert resp.status_code == 404
+
+
 # ---------------------------------------------------------------------------
 # §10.5: まとめてメモ化
 # ---------------------------------------------------------------------------

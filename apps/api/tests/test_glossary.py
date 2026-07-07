@@ -329,6 +329,75 @@ async def test_other_user_cannot_access_paper_scope(
         await db_session.commit()
 
 
+async def test_create_scope_global_is_forbidden(
+    client: AsyncClient, ctx: SimpleNamespace, term: str
+) -> None:
+    """PY-GLS-01: global への書き込み 403 は PATCH/DELETE だけでなく POST(作成)も対象。"""
+    r = await client.post(
+        "/api/glossary/terms",
+        json={"scope": "global", "source_term": term, "target_term": "y", "policy": "translate"},
+    )
+    assert r.status_code == 403, r.text
+
+
+async def test_create_and_list_scope_paper_without_library_item_id_is_422(
+    client: AsyncClient, ctx: SimpleNamespace, term: str
+) -> None:
+    r = await client.post(
+        "/api/glossary/terms",
+        json={"scope": "paper", "source_term": term, "target_term": "y", "policy": "translate"},
+    )
+    assert r.status_code == 422, r.text
+    assert r.json()["code"] == "validation_error"
+
+    r2 = await client.get("/api/glossary/terms", params={"scope": "paper"})
+    assert r2.status_code == 422, r2.text
+
+
+async def test_promote_non_paper_scope_term_is_conflict(
+    client: AsyncClient, ctx: SimpleNamespace, term: str
+) -> None:
+    r = await client.post(
+        "/api/glossary/terms",
+        json={"scope": "user", "source_term": term, "target_term": "y", "policy": "translate"},
+    )
+    assert r.status_code == 201, r.text
+    user_term_id = r.json()["id"]
+
+    r2 = await client.post(f"/api/glossary/terms/{user_term_id}/promote")
+    assert r2.status_code == 409, r2.text
+    assert r2.json()["code"] == "conflict"
+
+
+async def test_patch_and_delete_scope_user_by_non_owner_is_forbidden(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    ctx: SimpleNamespace,
+    term: str,
+) -> None:
+    r = await client.post(
+        "/api/glossary/terms",
+        json={"scope": "user", "source_term": term, "target_term": "y", "policy": "translate"},
+    )
+    assert r.status_code == 201, r.text
+    term_id = r.json()["id"]
+
+    other = await make_user(db_session, email=f"gls-nonowner-{uuid.uuid4().hex}@example.com")
+    await db_session.commit()
+    other_id = str(other.id)
+    try:
+        await _login(client, redis_client, other)
+        r2 = await client.patch(f"/api/glossary/terms/{term_id}", json={"target_term": "z"})
+        assert r2.status_code == 403, r2.text
+        r3 = await client.delete(f"/api/glossary/terms/{term_id}")
+        assert r3.status_code == 403, r3.text
+    finally:
+        await db_session.commit()
+        await purge_user(db_session, other_id)
+        await db_session.commit()
+
+
 # ---------------------------------------------------------------------------
 # PY-GLS-02: dry_run 影響数 / 実適用(影響ブロックのみ再翻訳)。PY-TR-09 と対をなす。
 # ---------------------------------------------------------------------------
