@@ -366,6 +366,39 @@ async def test_regenerate_appends_new_answer(
     assert len([m for m in msgs2 if m["role"] == "assistant"]) == 2
 
 
+# PY-CHAT-02: 選択アンカー + quick_action 付き送信の SSE、空内容の 400。
+async def test_send_message_with_quick_action_and_anchor(
+    client: AsyncClient, chat_ctx: SimpleNamespace
+) -> None:
+    threads = (await client.get(f"/api/library-items/{chat_ctx.item_id}/chat/threads")).json()[
+        "items"
+    ]
+    thread_id = threads[0]["id"]
+
+    resp = await client.post(
+        f"/api/chat/threads/{thread_id}/messages",
+        json={
+            "content": "",
+            "quick_action": "summary_3line",
+            "context_anchors": [
+                {
+                    "revision_id": chat_ctx.revision_id,
+                    "block_id": "blk-1-p1-aaaa",
+                    "side": "source",
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    frames = _parse_sse(resp.text)
+    assert frames[0]["event"] == "start"
+    assert frames[-1]["event"] == "done"
+
+    # 空内容 + 選択アンカー無し → 400。
+    bad = await client.post(f"/api/chat/threads/{thread_id}/messages", json={"content": "   "})
+    assert bad.status_code == 400
+
+
 async def test_new_thread_crud_and_main_thread_undeletable(
     client: AsyncClient, chat_ctx: SimpleNamespace
 ) -> None:

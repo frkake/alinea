@@ -13,6 +13,7 @@ __pycache__/
 dist/
 build/
 coverage/
+!tools/coverage/
 .nyc_output/
 .coverage
 .hypothesis/

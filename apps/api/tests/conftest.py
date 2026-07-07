@@ -156,3 +156,16 @@ class MailpitClient:
 @pytest.fixture
 def mailpit() -> MailpitClient:
     return MailpitClient(MAILPIT_API)
+
+
+@pytest.fixture
+def factories() -> Any:
+    """共有 async ファクトリ(plans/12 §2.3・factories.py)。
+
+    使い方: `await factories.make_library_item(db_session, status="reading")`。
+    ファクトリは flush まで(commit しない)。API(別セッション)から見せるテストは
+    構築後に `await db_session.commit()` すること。後始末は purge_user(users カスケード)。
+    """
+    import factories as _factories
+
+    return _factories

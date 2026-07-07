@@ -1,0 +1,23 @@
+# カバレッジ設定(Task 34 / M0-38)。ci.yml から --cov-config で参照する。
+#
+# 除外方針: 実プロバイダ SDK アダプタ(packages/llm/providers/*)は「実 LLM API に接続
+# して初めて実行される」コードであり、plans/12 §16 の CI ゲート
+# 「CI(PR)が実 LLM・実 arXiv へ一切接続しない」により CI 環境では構造的に到達不能。
+# これらは §8.2 録画リプレイ(vcr)・§8.3 実 API スモーク(RUN_LLM_SMOKE=1)で担保する
+# 層であり、CI の単体カバレッジ分母からは外す(pragma で個別に潰さず、層ごとに omit)。
+# 抽象化層本体(router/routing/registry/structured/tokens/caching/Fake/mock_server)は
+# 計測対象に残す。
+
+[run]
+branch = false
+omit =
+    */yakudoku_llm/providers/*
+    */site-packages/*
+    */tests/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    raise NotImplementedError
+    \.\.\.

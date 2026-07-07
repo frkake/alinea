@@ -324,6 +324,7 @@ async def test_prioritize_noop(
     assert r.json() == {"ok": True}
 
 
+# PY-TR-08: 直訳オンデマンド(§7.5)— 初回で 202+翻訳ジョブ。
 async def test_section_translate_creates_job(
     auth_client: AsyncClient, seeded: Seeded, db_session: AsyncSession
 ) -> None:
@@ -342,6 +343,36 @@ async def test_section_translate_creates_job(
     assert row[0] == "translation"
     assert row[1] == "on_demand"
     assert row[2] == "queued"
+
+
+# PY-TR-08: 直訳(literal)オンデマンド — 初回 202+ジョブ、同一要求は同じジョブ
+# (idempotency_key で重複生成なし = 以後即時。docs/03 §7 / plans/12 §2.4)。
+async def test_ondemand_literal_translate_idempotent(
+    auth_client: AsyncClient, seeded: Seeded, db_session: AsyncSession
+) -> None:
+    literal_set = await _shared_set_id(db_session, seeded.revision_id, "literal")
+    r1 = await auth_client.post(
+        f"/api/translation-sets/{literal_set}/sections/sec-3/translate", json={}
+    )
+    assert r1.status_code == 202, r1.text
+    job1 = r1.json()["job_id"]
+    assert job1
+    # 同一 (set, section) の再要求 → 同じ job_id(即時・重複生成なし)。
+    r2 = await auth_client.post(
+        f"/api/translation-sets/{literal_set}/sections/sec-3/translate", json={}
+    )
+    assert r2.status_code == 202, r2.text
+    assert r2.json()["job_id"] == job1
+    await db_session.rollback()
+    row = (
+        await db_session.execute(
+            text("SELECT payload->>'set_id', payload->>'reason' FROM jobs WHERE id = :j"),
+            {"j": job1},
+        )
+    ).first()
+    assert row is not None
+    assert row[0] == literal_set
+    assert row[1] == "on_demand"
 
 
 async def test_retranslate_machine_unit(
@@ -369,6 +400,8 @@ async def test_retranslate_machine_unit(
     assert row[1] == str(unit_id)
 
 
+# PY-TR-09: 手動編集(state=edited)の非上書き — retranslate は discard_edit なしで 409、
+# discard_edit=true で 202(docs/03 §11 / plans/12 §2.4)。
 async def test_retranslate_edited_unit_conflict(
     auth_client: AsyncClient, seeded: Seeded, db_session: AsyncSession
 ) -> None:
@@ -392,3 +425,21 @@ async def test_retranslate_edited_unit_conflict(
         json={"discard_edit": True},
     )
     assert r2.status_code == 202, r2.text
+
+
+# ---------------------------------------------------------------------------
+# §6.2 リビジョン一覧
+# ---------------------------------------------------------------------------
+async def test_list_revisions(auth_client: AsyncClient, seeded: Seeded) -> None:
+    r = await auth_client.get(f"/api/papers/{seeded.paper_id}/revisions")
+    assert r.status_code == 200, r.text
+    items = r.json()["items"]
+    assert len(items) >= 1
+    current = [i for i in items if i["is_current"]]
+    assert len(current) == 1
+    assert current[0]["id"] == seeded.revision_id
+    assert current[0]["quality_level"] == "A"
+
+    # 存在しない paper は 404。
+    miss = await auth_client.get("/api/papers/00000000-0000-0000-0000-000000000000/revisions")
+    assert miss.status_code == 404
