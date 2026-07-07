@@ -43,7 +43,8 @@ test.describe("PW-04 ライブラリ テーブルビュー(M1 分)", () => {
       const m = /(\d+)$/.exec(text ?? "");
       counts[label] = m ? Number(m[1]) : 0;
     }
-    expect(counts["すべて"]).toBe(counts["未読"] + counts["途中"] + counts["読了"] + counts["要再確認"]);
+    const count = (label: string): number => counts[label] ?? 0;
+    expect(count("すべて")).toBe(count("未読") + count("途中") + count("読了") + count("要再確認"));
   });
 
   test.fixme(

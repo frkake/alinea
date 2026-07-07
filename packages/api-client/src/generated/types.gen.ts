@@ -12,6 +12,24 @@ export type AccountDeleteBody = {
 };
 
 /**
+ * AdoptRevisionRequest
+ */
+export type AdoptRevisionRequest = {
+    /**
+     * Revision Id
+     */
+    revision_id: string;
+};
+
+/**
+ * AdoptRevisionResponse
+ */
+export type AdoptRevisionResponse = {
+    library_item: LibraryItemSummary;
+    reanchor: ReanchorCounts;
+};
+
+/**
  * Anchor
  * 共通位置参照(plans/03 §1.7 / plans/02 §3.1 AnchorJson)。
  */
@@ -1507,6 +1525,10 @@ export type NotificationActionResponse = {
      * Library Item
      */
     library_item?: unknown | null;
+    /**
+     * Job Id
+     */
+    job_id?: string | null;
 };
 
 /**
@@ -1920,6 +1942,56 @@ export type ReadAllResponse = {
      * Updated
      */
     updated: number;
+};
+
+/**
+ * ReadingHeartbeatBody
+ */
+export type ReadingHeartbeatBody = {
+    /**
+     * Client Session Id
+     */
+    client_session_id: string;
+    /**
+     * Started At
+     */
+    started_at: string;
+    /**
+     * Last Activity At
+     */
+    last_activity_at: string;
+    /**
+     * Active Seconds
+     */
+    active_seconds: number;
+};
+
+/**
+ * ReadingHeartbeatResponse
+ */
+export type ReadingHeartbeatResponse = {
+    /**
+     * Reading Seconds Total
+     */
+    reading_seconds_total: number;
+    /**
+     * Today Reading Minutes
+     */
+    today_reading_minutes: number;
+};
+
+/**
+ * ReanchorCounts
+ */
+export type ReanchorCounts = {
+    /**
+     * Moved
+     */
+    moved: number;
+    /**
+     * Unplaced
+     */
+    unplaced: number;
 };
 
 /**
@@ -3376,6 +3448,36 @@ export type PapersPdfResponses = {
     200: unknown;
 };
 
+export type LibraryItemsAdoptRevisionData = {
+    body: AdoptRevisionRequest;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/adopt-revision';
+};
+
+export type LibraryItemsAdoptRevisionErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type LibraryItemsAdoptRevisionError = LibraryItemsAdoptRevisionErrors[keyof LibraryItemsAdoptRevisionErrors];
+
+export type LibraryItemsAdoptRevisionResponses = {
+    /**
+     * Successful Response
+     */
+    200: AdoptRevisionResponse;
+};
+
+export type LibraryItemsAdoptRevisionResponse = LibraryItemsAdoptRevisionResponses[keyof LibraryItemsAdoptRevisionResponses];
+
 export type AssetsGetData = {
     body?: never;
     path: {
@@ -4431,6 +4533,36 @@ export type LibraryItemsSetQueueOrderResponses = {
 
 export type LibraryItemsSetQueueOrderResponse = LibraryItemsSetQueueOrderResponses[keyof LibraryItemsSetQueueOrderResponses];
 
+export type LibraryItemsReadingSessionHeartbeatData = {
+    body: ReadingHeartbeatBody;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/reading-sessions';
+};
+
+export type LibraryItemsReadingSessionHeartbeatErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type LibraryItemsReadingSessionHeartbeatError = LibraryItemsReadingSessionHeartbeatErrors[keyof LibraryItemsReadingSessionHeartbeatErrors];
+
+export type LibraryItemsReadingSessionHeartbeatResponses = {
+    /**
+     * Successful Response
+     */
+    200: ReadingHeartbeatResponse;
+};
+
+export type LibraryItemsReadingSessionHeartbeatResponse = LibraryItemsReadingSessionHeartbeatResponses[keyof LibraryItemsReadingSessionHeartbeatResponses];
+
 export type SettingsGetData = {
     body?: never;
     path?: never;
@@ -5261,6 +5393,98 @@ export type GlossaryPromoteTermResponses = {
 };
 
 export type GlossaryPromoteTermResponse = GlossaryPromoteTermResponses[keyof GlossaryPromoteTermResponses];
+
+export type ExportPaperMarkdownData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/markdown';
+};
+
+export type ExportPaperMarkdownErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportPaperMarkdownError = ExportPaperMarkdownErrors[keyof ExportPaperMarkdownErrors];
+
+export type ExportPaperMarkdownResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type ExportAnnotationsMarkdownData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/annotations';
+};
+
+export type ExportAnnotationsMarkdownErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportAnnotationsMarkdownError = ExportAnnotationsMarkdownErrors[keyof ExportAnnotationsMarkdownErrors];
+
+export type ExportAnnotationsMarkdownResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type ExportBibtexData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Status
+         */
+        status?: Array<string> | null;
+        /**
+         * Tag
+         */
+        tag?: Array<string> | null;
+        /**
+         * Year
+         */
+        year?: Array<number> | null;
+    };
+    url: '/api/export/bibtex';
+};
+
+export type ExportBibtexErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportBibtexError = ExportBibtexErrors[keyof ExportBibtexErrors];
+
+export type ExportBibtexResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
 
 export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
