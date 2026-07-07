@@ -45,6 +45,8 @@ from yakudoku_core.translation.prompts import (
     field_profile,
 )
 
+from yakudoku_worker import notify
+
 # translate_section が担当する reason(plans/06 §3.1)。
 _SECTION_REASONS = frozenset({"initial", "literal", "on_demand", "table"})
 # 単一ユニット再翻訳(proposal 保存。plans/06 §11.1)。
@@ -329,7 +331,7 @@ async def run_translation_job(ctx: dict[str, Any], store: JobStore, job: Job) ->
         if tset is not None:
             revision = await store.session.get(DocumentRevision, tset.revision_id)
             if revision is not None:
-                await finalize_ingest_if_body_complete(
+                completed = await finalize_ingest_if_body_complete(
                     store.session,
                     set_id=set_id,
                     ingest_job_id=str(ingest_job_id),
@@ -338,3 +340,14 @@ async def run_translation_job(ctx: dict[str, Any], store: JobStore, job: Job) ->
                     source_version=str(payload.get("source_version") or revision.source_version),
                     appendix_untranslated=bool(payload.get("appendix_untranslated", False)),
                 )
+                if completed and job.user_id and job.library_item_id:
+                    # 取り込み完了通知(plans/05 §12.1)。job_id=親 ingest ジョブで 1 回限り。
+                    paper = await store.session.get(Paper, revision.paper_id)
+                    await notify.fire_translation_complete(
+                        store.session,
+                        ctx.get("redis"),
+                        user_id=str(job.user_id),
+                        library_item_id=str(job.library_item_id),
+                        paper_title=paper.title if paper else "",
+                        job_id=str(ingest_job_id),
+                    )

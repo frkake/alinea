@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 import httpx
+import structlog
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -50,6 +51,7 @@ from yakudoku_core.document.blocks import Block, DocumentContent
 from yakudoku_core.document.plaintext import block_to_plain
 from yakudoku_core.ingest import joblog, progress
 from yakudoku_core.ingest.bib_estimate import estimate_bibliography
+from yakudoku_core.ingest.reanchor import ReanchorStats, reanchor_paper
 from yakudoku_core.ingest.thumbnail import render_thumbnail, select_thumbnail_figure
 from yakudoku_core.jobs.store import JobStore
 from yakudoku_core.parsing.html_parser import (
@@ -79,6 +81,8 @@ from yakudoku_core.translation.pipeline import (
     translate_block,
     translate_section,
 )
+
+from yakudoku_worker import notify
 
 # ✦3行要約 + 提案タグ(plans/07 §3.1・plans/05 §11.1。1 呼び出しで生成)。
 SUMMARY_SCHEMA_NAME = "summary_3line_v1"
@@ -113,6 +117,8 @@ SUMMARY_SYSTEM_PROMPT = (
 
 _MAX_SUGGESTED_TAGS = 5
 
+log = structlog.get_logger("yakudoku.worker.pipeline")
+
 
 class IngestJobPayload(BaseModel):
     """ingest ジョブの payload(plans/05 §2.7)。"""
@@ -123,6 +129,11 @@ class IngestJobPayload(BaseModel):
     requested_version: str | None = None
     url: str | None = None
     library_item_id: str | None = None
+    # 通知「変更する」(B→A 昇格提案の apply。plans/03 §16.4・plans/05 §12.3)経由の reingest
+    # にのみ立てるフラグ。structuring で新リビジョンが確定した時点で adopt-revision と同一の
+    # 内部処理(papers.latest_revision_id 切替+reanchor_paper)を自動実行する(M1-07 followup)。
+    # 通常の reingest(再取り込みボタン)では立てない — 自動適用はしない(P6)。
+    adopt_on_complete: bool = False
 
 
 @dataclass
@@ -248,6 +259,59 @@ class IngestRun:
         job = await self._get_job()
         await joblog.log(self.session, job, stage, level, message, detail=detail, timeline=timeline)
 
+    # -- SSE 進捗発行(2a §5.7・plans/03 §21.2) ---------------------------
+
+    async def _publish_stage(
+        self, stage: str, progress_pct: int, *, status: str = "running"
+    ) -> None:
+        """段階遷移を SSE で発行する(InfoPanel の再取り込み進捗トースト。M1-07 followup)。
+
+        ``routers/jobs.py`` の ``GET /api/jobs/{job_id}/events`` は ``events:user:{user_id}``
+        (``services/events.py``)に流れたイベントを ``job_id`` で絞り込んで転送する。ここで
+        publish する ``data`` は InfoPanel.tsx の ``onProgress`` がそのまま読む形
+        (``{stage, status, progress_pct}``。``_job_state_frame`` の progress 分岐と同形)に揃える。
+        """
+        if self.deps.publish is None or self.user_id is None:
+            return
+        try:
+            await self.deps.publish(
+                {
+                    "type": "job.progress",
+                    "user_id": self.user_id,
+                    "job_id": self.job_id,
+                    "status": status,
+                    "stage": stage,
+                    "progress_pct": progress_pct,
+                }
+            )
+        except Exception as exc:  # SSE は best-effort。ジョブ本体を止めない(§2.4 と同方針)。
+            await log.awarning("ingest_publish_stage_failed", stage=stage, error=str(exc))
+
+    async def _reanchor_after_adopt(self, old_revision_id: str) -> None:
+        """通知「変更する」経由の reingest(``adopt_on_complete``)。
+
+        ``POST /api/library-items/{id}/adopt-revision``(§6.8)と同一の ``reanchor_paper``
+        (py-core 共有ロジック)を structuring の最終処理として同一ジョブ内で実行する
+        (plans/05 §4.5「別ジョブにしない」)。自動適用はしない(P6): このパスは
+        ``adopt_on_complete=true`` のときのみ通る(notifications action=apply が立てるフラグ)。
+        """
+        assert self.paper_id is not None and self.revision_id is not None
+        if old_revision_id == self.revision_id:
+            return
+        stats: ReanchorStats = await reanchor_paper(
+            self.session,
+            paper_id=self.paper_id,
+            old_revision_id=old_revision_id,
+            new_revision_id=self.revision_id,
+        )
+        await self.session.commit()
+        await self._log(
+            "structuring",
+            "info",
+            f"リビジョン昇格のリアンカー: 移動 {stats.moved} 件・未配置 {stats.unplaced} 件",
+            detail={"moved": stats.moved, "unplaced": stats.unplaced, "adopted": True},
+        )
+
     async def _throttle(self) -> None:
         if self.deps.redis is not None:
             await self.deps.throttle(self.deps.redis)
@@ -281,6 +345,7 @@ class IngestRun:
             return
 
         await self.store.set_progress(self.job_id, 10, stage="fetching")
+        await self._publish_stage("fetching", 10)
         if self.is_pdf_upload:
             await self._stage_fetching_pdf()
             return
@@ -477,7 +542,11 @@ class IngestRun:
             return
 
         await self.store.set_progress(self.job_id, 20, stage="parsing")
+        await self._publish_stage("parsing", 20)
         assert self.paper_id is not None
+        # adopt_on_complete(通知「変更する」経由の reingest)は新リビジョン確定後に旧リビジョンを
+        # 追従させる(§4.5)。構造化前に「現在の latest」を旧リビジョンとして確定しておく。
+        old_revision_id = str((await self._get_paper()).latest_revision_id or "") or None
         if self.is_pdf_upload:
             data = await self._get_pdf_bytes()
             try:
@@ -489,7 +558,10 @@ class IngestRun:
             await self.store.checkpoint(self.job_id, "parsing", {}, progress=20)
 
             await self.store.set_progress(self.job_id, 35, stage="structuring")
+            await self._publish_stage("structuring", 35)
             await self._structure_pdf(data)
+            if self.payload.adopt_on_complete and old_revision_id is not None:
+                await self._reanchor_after_adopt(old_revision_id)
             await self.store.checkpoint(
                 self.job_id, "structuring", {"revision_id": self.revision_id}, progress=35
             )
@@ -505,7 +577,10 @@ class IngestRun:
 
         # structuring: リビジョン永続化・図保存・検索索引・サムネイル。
         await self.store.set_progress(self.job_id, 35, stage="structuring")
+        await self._publish_stage("structuring", 35)
         await self._structure()
+        if self.payload.adopt_on_complete and old_revision_id is not None:
+            await self._reanchor_after_adopt(old_revision_id)
         await self.store.checkpoint(
             self.job_id, "structuring", {"revision_id": self.revision_id}, progress=35
         )
@@ -735,6 +810,7 @@ class IngestRun:
             return
 
         await self.store.set_progress(self.job_id, 50, stage="translating_abstract")
+        await self._publish_stage("translating_abstract", 50)
         paper = await self._get_paper()
         if paper.abstract:
             unit = await translate_block(
@@ -916,6 +992,7 @@ class IngestRun:
         assert self.content is not None and self.set_id is not None
         first = progress.first_translatable_section(self.content)
         await self.store.set_progress(self.job_id, 55, stage="readable")
+        await self._publish_stage("readable", 55)
         if first is not None:
             # 第 1 本文セクションを ingest ジョブ内で直接翻訳(§2.1。冪等 UPSERT)。
             await translate_section(
@@ -943,10 +1020,12 @@ class IngestRun:
         body_section_ids = [sid for sid in section_block_map if sid != first]
 
         await self.store.set_progress(self.job_id, 55, stage="translating_body")
+        await self._publish_stage("translating_body", 55)
 
         # クォータ確認(翻訳段のみ停止。§2.6)。
         if body_section_ids and await self._is_over_quota():
             await self.store.mark_waiting_quota(self.job_id)
+            await self._publish_stage("translating_body", 55, status="waiting_quota")
             await self._log(
                 "translating_body",
                 "warn",
@@ -1036,7 +1115,7 @@ class IngestRun:
     async def _finalize(self, settings: TranslationSettings, appendix_ids: list[str]) -> None:
         assert self.content is not None and self.set_id is not None
         appendix_untranslated = bool(appendix_ids) and not settings.auto_translate_appendix
-        await progress.finalize_ingest_if_body_complete(
+        completed = await progress.finalize_ingest_if_body_complete(
             self.session,
             set_id=self.set_id,
             ingest_job_id=self.job_id,
@@ -1044,6 +1123,26 @@ class IngestRun:
             style=self.style,
             source_version=self.source_version,
             appendix_untranslated=appendix_untranslated,
+        )
+        if completed:
+            # 完了ナッジ(§21.2)。job_events は job_id 一致のイベントを受けて DB の
+            # 最終状態(succeeded)を再確認し done フレームを組む(routers/jobs.py 参照)ため、
+            # ここでの data 自体は any でよいが InfoPanel の onProgress と同形に揃える。
+            await self._publish_stage("complete", 100, status="succeeded")
+            await self._fire_translation_complete()
+
+    async def _fire_translation_complete(self) -> None:
+        """取り込み完了通知(plans/05 §12.1)。job_id 単位で 1 回限り(notify.py 側で保証)。"""
+        if self.user_id is None or self.library_item_id is None:
+            return
+        paper = await self._get_paper()
+        await notify.fire_translation_complete(
+            self.session,
+            self.deps.redis,
+            user_id=self.user_id,
+            library_item_id=self.library_item_id,
+            paper_title=paper.title,
+            job_id=self.job_id,
         )
 
     async def _is_over_quota(self) -> bool:
