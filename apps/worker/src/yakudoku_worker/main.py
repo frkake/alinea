@@ -65,3 +65,8 @@ class BulkWorker:
     redis_settings = redis_settings()
     max_jobs = 4
     job_timeout = 1800
+
+
+# import 時に各 kind のハンドラを HANDLERS へ登録する(ingest / translation)。
+# 本モジュール(main)の定義完了後に配線するため末尾で import する(循環 import 回避)。
+from yakudoku_worker import tasks as _tasks  # noqa: E402, F401
