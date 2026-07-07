@@ -323,9 +323,13 @@ async def find_affected_blocks(
     rows = (
         await session.execute(
             text(
+                # index 名つき condition 形式: seq scan 時もインデックスと同じ
+                # トークナイザ/ステミングで評価される(プランナ依存の取りこぼし防止)。
                 "SELECT block_id, source_text FROM block_search_index "
                 "WHERE revision_id = :revision_id AND in_translation_scope "
-                "AND source_text &@~ :source_term"
+                "AND source_text &@~ (:source_term, NULL, "
+                "'pgroonga_block_search_index_source_text')"
+                "::pgroonga_full_text_search_condition"
             ),
             {"revision_id": revision_id, "source_term": source_term},
         )

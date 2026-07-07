@@ -144,7 +144,8 @@ _HITS_SQL: TextClause = text(
       FROM block_search_index b
       JOIN my_items mi ON mi.revision_id = b.revision_id
       JOIN document_revisions dr ON dr.id = b.revision_id
-      WHERE b.source_text &@~ (SELECT pq FROM params)
+      WHERE b.source_text &@~ ((SELECT pq FROM params), NULL,
+          'pgroonga_block_search_index_source_text')::pgroonga_full_text_search_condition
     ),
     hit_body_translation AS (
       SELECT mi.library_item_id, ts.revision_id, tu.block_id,
@@ -153,7 +154,8 @@ _HITS_SQL: TextClause = text(
       FROM translation_units tu
       JOIN translation_sets ts ON ts.id = tu.set_id
       JOIN my_items mi ON mi.revision_id = ts.revision_id
-      WHERE tu.text_ja &@~ (SELECT pq FROM params)
+      WHERE tu.text_ja &@~ ((SELECT pq FROM params), NULL,
+          'pgroonga_translation_units_text_ja')::pgroonga_full_text_search_condition
         AND ts.style = :style
         AND (ts.scope = 'shared' OR ts.user_id = CAST(:user_id AS uuid))
         AND tu.set_id = (
@@ -183,13 +185,18 @@ _HITS_SQL: TextClause = text(
     ),
     hit_note AS (
       SELECT n.library_item_id, n.id AS note_id,
-             (n.title &@~ (SELECT pq FROM params))    AS title_matched,
-             (n.body_md &@~ (SELECT pq FROM params))  AS body_matched,
+             (n.title &@~ ((SELECT pq FROM params), NULL,
+                 'pgroonga_notes_body')::pgroonga_full_text_search_condition)    AS title_matched,
+             (n.body_md &@~ ((SELECT pq FROM params), NULL,
+                 'pgroonga_notes_body')::pgroonga_full_text_search_condition)  AS body_matched,
              pgroonga_score(n.tableoid, n.ctid)::float AS score,
              n.created_at AS hit_at
       FROM notes n
       JOIN library_items li ON li.id = n.library_item_id AND li.user_id = CAST(:user_id AS uuid)
-      WHERE n.title &@~ (SELECT pq FROM params) OR n.body_md &@~ (SELECT pq FROM params)
+      WHERE n.title &@~ ((SELECT pq FROM params), NULL,
+                'pgroonga_notes_body')::pgroonga_full_text_search_condition
+         OR n.body_md &@~ ((SELECT pq FROM params), NULL,
+                'pgroonga_notes_body')::pgroonga_full_text_search_condition
     ),
     hit_annotation AS (
       SELECT a.library_item_id, a.id AS annotation_id, a.anchor,
@@ -197,7 +204,8 @@ _HITS_SQL: TextClause = text(
              a.created_at AS hit_at
       FROM annotations a
       JOIN library_items li ON li.id = a.library_item_id AND li.user_id = CAST(:user_id AS uuid)
-      WHERE a.kind = 'comment' AND a.body &@~ (SELECT pq FROM params)
+      WHERE a.kind = 'comment' AND a.body &@~ ((SELECT pq FROM params), NULL,
+          'pgroonga_annotations_text')::pgroonga_full_text_search_condition
     ),
     hit_chat_raw AS (
       SELECT th.library_item_id, m.thread_id, m.id AS message_id, m.role,
@@ -206,7 +214,8 @@ _HITS_SQL: TextClause = text(
       FROM chat_messages m
       JOIN chat_threads th ON th.id = m.thread_id
       JOIN library_items li ON li.id = th.library_item_id AND li.user_id = CAST(:user_id AS uuid)
-      WHERE m.text_plain &@~ (SELECT pq FROM params)
+      WHERE m.text_plain &@~ ((SELECT pq FROM params), NULL,
+          'pgroonga_chat_messages_text')::pgroonga_full_text_search_condition
     ),
     hit_chat AS (
       SELECT library_item_id, thread_id,
@@ -233,20 +242,30 @@ _HITS_SQL: TextClause = text(
       FROM article_blocks ab
       JOIN articles       ar ON ar.id = ab.article_id
       JOIN library_items  li ON li.id = ar.library_item_id AND li.user_id = CAST(:user_id AS uuid)
-      WHERE ab.text_plain &@~ (SELECT pq FROM params)
+      WHERE ab.text_plain &@~ ((SELECT pq FROM params), NULL,
+          'pgroonga_article_blocks_text')::pgroonga_full_text_search_condition
     ),
     hit_biblio AS (
       SELECT mi.library_item_id,
              pgroonga_score(p.tableoid, p.ctid)::float AS score,
-             (p.title &@~ (SELECT pq FROM params))                       AS title_matched,
-             COALESCE(p.abstract &@~ (SELECT pq FROM params), false)     AS abstract_matched,
-             COALESCE(p.abstract_ja &@~ (SELECT pq FROM params), false)  AS abstract_ja_matched,
+             (p.title &@~ ((SELECT pq FROM params), NULL,
+                 'pgroonga_papers_biblio_en')::pgroonga_full_text_search_condition)
+                                                                            AS title_matched,
+             COALESCE(p.abstract &@~ ((SELECT pq FROM params), NULL,
+                 'pgroonga_papers_biblio_en')::pgroonga_full_text_search_condition,
+                      false)                                                AS abstract_matched,
+             COALESCE(p.abstract_ja &@~ ((SELECT pq FROM params), NULL,
+                 'pgroonga_papers_biblio_ja')::pgroonga_full_text_search_condition,
+                      false)                                                AS abstract_ja_matched,
              p.created_at AS hit_at
       FROM papers p
       JOIN my_items mi ON mi.paper_id = p.id
-      WHERE p.title &@~ (SELECT pq FROM params)
-         OR p.abstract &@~ (SELECT pq FROM params)
-         OR p.abstract_ja &@~ (SELECT pq FROM params)
+      WHERE p.title &@~ ((SELECT pq FROM params), NULL,
+          'pgroonga_papers_biblio_en')::pgroonga_full_text_search_condition
+         OR p.abstract &@~ ((SELECT pq FROM params), NULL,
+             'pgroonga_papers_biblio_en')::pgroonga_full_text_search_condition
+         OR p.abstract_ja &@~ ((SELECT pq FROM params), NULL,
+             'pgroonga_papers_biblio_ja')::pgroonga_full_text_search_condition
     )
     SELECT library_item_id, 'body'::text AS kind, score, hit_at,
            jsonb_build_object('revision_id', revision_id, 'block_id', block_id,
@@ -1052,7 +1071,9 @@ async def search_in_paper(
             text(
                 "SELECT block_id FROM block_search_index "
                 "WHERE revision_id = CAST(:rid AS uuid) "
-                "AND source_text &@~ pgroonga_query_escape(:q)"
+                "AND source_text &@~ (pgroonga_query_escape(:q), NULL, "
+                "'pgroonga_block_search_index_source_text')"
+                "::pgroonga_full_text_search_condition"
             ),
             {"rid": revision_id, "q": query},
         )
@@ -1066,7 +1087,9 @@ async def search_in_paper(
                 "JOIN translation_sets ts ON ts.id = tu.set_id "
                 "WHERE ts.revision_id = CAST(:rid AS uuid) AND ts.style = :style "
                 "AND (ts.scope = 'shared' OR ts.user_id = CAST(:uid AS uuid)) "
-                "AND tu.text_ja &@~ pgroonga_query_escape(:q) "
+                "AND tu.text_ja &@~ (pgroonga_query_escape(:q), NULL, "
+                "'pgroonga_translation_units_text_ja')"
+                "::pgroonga_full_text_search_condition "
                 "AND tu.set_id = ("
                 "  SELECT u2.set_id FROM translation_units u2 "
                 "  JOIN translation_sets s2 ON s2.id = u2.set_id "
