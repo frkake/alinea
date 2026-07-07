@@ -13,6 +13,8 @@ dependencies = [
   "selectolax>=0.3.29",
   "xxhash>=3.4.0",
   "httpx==0.28.1",
+  "yakudoku-llm",
+  "redis>=5.0.0",
 ]
 
 [build-system]

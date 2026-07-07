@@ -1520,9 +1520,11 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-ulid" },
+    { name = "redis" },
     { name = "selectolax" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "xxhash" },
+    { name = "yakudoku-llm" },
 ]
 
 [package.metadata]
@@ -1533,9 +1535,11 @@ requires-dist = [
     { name = "pydantic", specifier = "==2.11.7" },
     { name = "pydantic-settings", specifier = "==2.10.1" },
     { name = "python-ulid", specifier = "==3.0.0" },
+    { name = "redis", specifier = ">=5.0.0" },
     { name = "selectolax", specifier = ">=0.3.29" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.41" },
     { name = "xxhash", specifier = ">=3.4.0" },
+    { name = "yakudoku-llm", editable = "packages/llm" },
 ]
 
 [[package]]
