@@ -3,6 +3,7 @@
 import type { CSSProperties } from "react";
 import { Keycap } from "@/components/ui/Keycap";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
+import { SOURCE_TEXT_ATTR } from "@/components/viewer/text-offset";
 import type { Inline } from "@/components/viewer/document-types";
 
 export interface ParallelPopoverProps {
@@ -71,6 +72,7 @@ export function ParallelPopover({
         </button>
       </div>
       <div
+        {...{ [SOURCE_TEXT_ATTR]: "" }}
         style={{
           fontFamily: "var(--pr-font-en)",
           fontSize: 14.5,

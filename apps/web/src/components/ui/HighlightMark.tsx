@@ -3,6 +3,13 @@ import type { CSSProperties, ReactNode } from "react";
 /** 注釈ハイライトの色種別(plans/03 §8.1 AnnColor)。 */
 export type HighlightColor = "important" | "question" | "idea" | "term";
 
+/**
+ * オフセット計算除外マーカー(1b §5.5 の Anchor 構築。`text-offset.ts` が参照)。
+ * 丸数字チップは選択メニュー操作後に DOM へ差し込まれる装飾要素であり、
+ * 本文の実テキストではないため文字オフセット計算から除外する。
+ */
+export const SKIP_OFFSET_ATTR = "data-yk-skip-offset";
+
 export interface HighlightMarkProps {
   color: HighlightColor;
   /** 文書順 1 始まり連番(placed 注釈のみ。無ければ丸数字チップを描かない)。 */
@@ -58,6 +65,7 @@ export function HighlightMark({
           aria-label={`注釈 ${annotationNumber} を表示`}
           style={chipStyle(color)}
           onClick={onClickAnnotation}
+          {...{ [SKIP_OFFSET_ATTR]: "" }}
         >
           {annotationNumber}
         </button>

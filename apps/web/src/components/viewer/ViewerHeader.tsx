@@ -5,10 +5,10 @@ import type { ReadingStatus } from "@yakudoku/tokens";
 import { QualityBadge } from "@/components/ui/QualityBadge";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
-import { SearchBox } from "@/components/ui/SearchBox";
 import { Popover } from "@/components/ui/Popover";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import type { ViewerMode } from "@/components/viewer/ViewerShell";
+import { InPaperSearch } from "@/components/viewer/InPaperSearch";
 
 /**
  * M1 の表示モードは 訳文 / 対訳 / 原文 / PDF の 4 つ(plans/13 §1.5・M1-20)。
@@ -56,10 +56,6 @@ export function ViewerHeader({
   const setStyle = useViewerStore((s) => s.setStyle);
   const panelOpen = useViewerStore((s) => s.panelOpen);
   const setPanel = useViewerStore((s) => s.setPanel);
-  const searchQuery = useViewerStore((s) => s.searchQuery);
-  const setSearchQuery = useViewerStore((s) => s.setSearchQuery);
-  const openSearch = useViewerStore((s) => s.openSearch);
-  const closeSearch = useViewerStore((s) => s.closeSearch);
 
   const styleAnchor = useRef<HTMLButtonElement>(null);
   const overflowAnchor = useRef<HTMLButtonElement>(null);
@@ -192,14 +188,7 @@ export function ViewerHeader({
         ))}
       </Popover>
 
-      <SearchBox
-        variant="in-paper"
-        value={searchQuery}
-        onChange={setSearchQuery}
-        onFocusChange={(f) => (f ? openSearch() : closeSearch())}
-        placeholder="この論文内を検索"
-        shortcutLabel="/"
-      />
+      <InPaperSearch />
 
       <button
         ref={overflowAnchor}

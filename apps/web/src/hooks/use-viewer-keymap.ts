@@ -24,6 +24,7 @@ export function useViewerKeymap(params: {
 }): void {
   const { mode, onModeChange, onFocusSearch } = params;
   const toggleBilingualPop = useViewerStore((s) => s.toggleBilingualPop);
+  const toggleBookmark = useViewerStore((s) => s.toggleBookmark);
   const setPanel = useViewerStore((s) => s.setPanel);
   const requestScroll = useViewerStore((s) => s.requestScroll);
 
@@ -65,6 +66,10 @@ export function useViewerKeymap(params: {
         case "c":
           setPanel(true, "chat");
           break;
+        case "b":
+          // 現在セクションのブックマーク切替(viewer-shell §10。実処理は 1b が担う)。
+          toggleBookmark();
+          break;
         case "j":
           moveBlock(1, store.currentBlockId, requestScroll);
           break;
@@ -79,7 +84,7 @@ export function useViewerKeymap(params: {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [mode, onModeChange, onFocusSearch, toggleBilingualPop, setPanel, requestScroll]);
+  }, [mode, onModeChange, onFocusSearch, toggleBilingualPop, toggleBookmark, setPanel, requestScroll]);
 }
 
 /** 次/前の段落ブロックへスクロール依頼(viewer-shell §10 の j/k)。 */

@@ -1,4 +1,6 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { TocNode } from "@yakudoku/api-client";
 import { ViewerHeader } from "@/components/viewer/ViewerHeader";
@@ -13,7 +15,13 @@ function resetStore() {
     style: "natural",
     tocOpen: true,
     itemId: "li_test",
+    revisionId: "rev_test",
   });
+}
+
+function renderWithClient(ui: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
 }
 
 // VT-VIEW-01: シェル — 表示モード切替(M1 は 4 モード: 訳文/対訳/原文/PDF)・サイドパネル 3 タブ
@@ -31,7 +39,7 @@ describe("ViewerHeader modes (VT-VIEW-01)", () => {
   };
 
   test("M1 shows 訳文/対訳/原文/PDF, hides 記事(M2-07 まで未実装)", () => {
-    render(<ViewerHeader {...baseProps} />);
+    renderWithClient(<ViewerHeader {...baseProps} />);
     expect(screen.getByText("訳文")).toBeInTheDocument();
     expect(screen.getByText("対訳")).toBeInTheDocument();
     expect(screen.getByText("原文")).toBeInTheDocument();
@@ -41,25 +49,31 @@ describe("ViewerHeader modes (VT-VIEW-01)", () => {
 
   test("clicking a mode segment calls onModeChange", () => {
     const onModeChange = vi.fn();
-    render(<ViewerHeader {...baseProps} onModeChange={onModeChange} />);
+    renderWithClient(<ViewerHeader {...baseProps} onModeChange={onModeChange} />);
     fireEvent.click(screen.getByText("対訳"));
     expect(onModeChange).toHaveBeenCalledWith("parallel");
   });
 
   test("clicking PDF calls onModeChange('pdf')", () => {
     const onModeChange = vi.fn();
-    render(<ViewerHeader {...baseProps} onModeChange={onModeChange} />);
+    renderWithClient(<ViewerHeader {...baseProps} onModeChange={onModeChange} />);
     fireEvent.click(screen.getByText("PDF"));
     expect(onModeChange).toHaveBeenCalledWith("pdf");
   });
 
   test("pdfDisabled=true disables the PDF segment with a tooltip and ignores clicks", () => {
     const onModeChange = vi.fn();
-    render(<ViewerHeader {...baseProps} onModeChange={onModeChange} pdfDisabled />);
+    renderWithClient(<ViewerHeader {...baseProps} onModeChange={onModeChange} pdfDisabled />);
     const pdfSegment = screen.getByText("PDF");
     expect(pdfSegment).toHaveAttribute("title", "この論文には PDF がありません");
     fireEvent.click(pdfSegment);
     expect(onModeChange).not.toHaveBeenCalled();
+  });
+
+  // M1-13/配線: ヘッダの検索ボックスは InPaperSearch(実機能)そのもの。
+  test("mounts the real InPaperSearch box (この論文内を検索 placeholder)", () => {
+    renderWithClient(<ViewerHeader {...baseProps} />);
+    expect(screen.getByPlaceholderText("この論文内を検索")).toBeInTheDocument();
   });
 });
 

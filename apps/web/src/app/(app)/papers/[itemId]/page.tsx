@@ -36,6 +36,9 @@ export default function ViewerPage() {
   const setPanel = useViewerStore((s) => s.setPanel);
   const requestScroll = useViewerStore((s) => s.requestScroll);
   const style = useViewerStore((s) => s.style);
+  const requestAnnotationFocus = useViewerStore((s) => s.requestAnnotationFocus);
+  const requestNoteFocus = useViewerStore((s) => s.requestNoteFocus);
+  const setPendingHighlightQuery = useViewerStore((s) => s.setPendingHighlightQuery);
   const addPendingAnchor = useViewerChatStore((s) => s.addPendingAnchor);
 
   const viewerQuery = useQuery({
@@ -62,16 +65,31 @@ export default function ViewerPage() {
     }
   }, [viewer, rawMode, mode, itemId, router]);
 
-  // 補助クエリの 1 回消費(?block / ?section / ?panel)→ URL から除去。
+  // 補助クエリの 1 回消費(plans/11 §7 の検索ヒット遷移: ?block/?section/?panel/?hl/
+  // ?annotation/?note/?thread/?message)→ URL から除去する。
   useEffect(() => {
     if (!viewer) return;
     const block = searchParams.get("block");
     const section = searchParams.get("section");
     const panel = searchParams.get("panel");
-    if (!block && !section && !panel) return;
+    const hl = searchParams.get("hl");
+    const annotationId = searchParams.get("annotation");
+    const noteId = searchParams.get("note");
+    const threadId = searchParams.get("thread");
+    const messageId = searchParams.get("message");
+    if (!block && !section && !panel && !hl && !annotationId && !noteId && !threadId && !messageId) {
+      return;
+    }
     if (block) requestScroll({ kind: "block", blockId: block });
     else if (section) requestScroll({ kind: "section", sectionId: section });
     if (panel) setPanel(true, panel as SidePanelTabId);
+    if (hl) setPendingHighlightQuery(hl);
+    if (annotationId) requestAnnotationFocus(annotationId);
+    if (noteId) requestNoteFocus(noteId);
+    // thread/message(チャットの深リンク。plans/11 §7 の「チャット」行)は ChatPanel が
+    // まだスレッド/メッセージ選択を URL から受け取れない(1a 担当・別レーン所有)ため、
+    // 現時点では panel=chat を開くところまでに留める。URL 契約(viewer-shell §3.1)に
+    // 従いパラメータ自体は消費(除去)する — followups 参照。
     router.replace(`/papers/${itemId}?mode=${mode}`, { scroll: false });
     // 初期化時 1 回のみ。
     // eslint-disable-next-line react-hooks/exhaustive-deps

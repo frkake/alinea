@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   annotationsCreate,
@@ -53,11 +53,14 @@ function formatRelativeDay(iso: string): string {
 export function AnnotationListPanel() {
   const itemId = useViewerStore((s) => s.itemId);
   const requestScroll = useViewerStore((s) => s.requestScroll);
+  const pendingAnnotationId = useViewerStore((s) => s.pendingAnnotationId);
+  const consumeAnnotationFocus = useViewerStore((s) => s.consumeAnnotationFocus);
   const toast = useToast();
   const qc = useQueryClient();
   const [filter, setFilter] = useState<AnnFilter>("all");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
+  const listRef = useRef<HTMLDivElement>(null);
 
   const queryKey = ["annotations", itemId];
   const query = useQuery({
@@ -94,6 +97,22 @@ export function AnnotationListPanel() {
     void qc.invalidateQueries({ queryKey });
     if (itemId) void qc.invalidateQueries({ queryKey: ["viewer", itemId] });
   };
+
+  // 検索ヒット遷移「注釈」(plans/11 §7 `?annotation=`)。該当カードへスクロール+2000ms 強調。
+  useEffect(() => {
+    if (!pendingAnnotationId) return;
+    if (query.isLoading) return;
+    const el = listRef.current?.querySelector<HTMLElement>(
+      `[data-annotation-id="${pendingAnnotationId}"]`,
+    );
+    if (el) {
+      el.scrollIntoView({ block: "center" });
+      el.classList.add("yk-block-flash");
+      window.setTimeout(() => el.classList.remove("yk-block-flash"), 2000);
+    }
+    consumeAnnotationFocus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAnnotationId, query.isLoading, items]);
 
   const onJump = (ann: Annotation) => {
     if (!ann.placed) return;
@@ -191,6 +210,7 @@ export function AnnotationListPanel() {
       </div>
 
       <div
+        ref={listRef}
         style={{
           flex: 1,
           minHeight: 0,
@@ -283,6 +303,7 @@ function AnnotationCard({
 
   return (
     <div
+      data-annotation-id={annotation.id}
       role={unplaced ? undefined : "button"}
       tabIndex={unplaced ? undefined : 0}
       onMouseEnter={() => setHovered(true)}

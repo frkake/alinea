@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { notesCreate, notesDelete, notesList, notesUpdate, type Note } from "@yakudoku/api-client";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -30,11 +30,14 @@ function formatRelativeDay(iso: string): string {
 export function NotesPanel() {
   const itemId = useViewerStore((s) => s.itemId);
   const requestScroll = useViewerStore((s) => s.requestScroll);
+  const pendingNoteId = useViewerStore((s) => s.pendingNoteId);
+  const consumeNoteFocus = useViewerStore((s) => s.consumeNoteFocus);
   const toast = useToast();
   const qc = useQueryClient();
   const [draft, setDraft] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
+  const listRef = useRef<HTMLDivElement>(null);
 
   const queryKey = ["notes", itemId];
   const query = useQuery({
@@ -48,6 +51,20 @@ export function NotesPanel() {
   const items = query.data?.items ?? [];
 
   const invalidate = () => void qc.invalidateQueries({ queryKey });
+
+  // 検索ヒット遷移「メモ」(plans/11 §7 `?note=`)。該当メモへスクロール+2000ms 強調。
+  useEffect(() => {
+    if (!pendingNoteId) return;
+    if (query.isLoading) return;
+    const el = listRef.current?.querySelector<HTMLElement>(`[data-note-id="${pendingNoteId}"]`);
+    if (el) {
+      el.scrollIntoView({ block: "center" });
+      el.classList.add("yk-block-flash");
+      window.setTimeout(() => el.classList.remove("yk-block-flash"), 2000);
+    }
+    consumeNoteFocus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingNoteId, query.isLoading, items]);
 
   const onCreate = () => {
     const content = draft.trim();
@@ -90,6 +107,7 @@ export function NotesPanel() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       <div
+        ref={listRef}
         style={{
           flex: 1,
           minHeight: 0,
@@ -106,6 +124,7 @@ export function NotesPanel() {
           items.map((note) => (
             <div
               key={note.id}
+              data-note-id={note.id}
               style={{
                 background: "var(--pr-bg-card)",
                 border: "1px solid var(--pr-border-card)",

@@ -180,6 +180,18 @@ describe("AnnotationListPanel (VT-VIEW-08)", () => {
     );
   });
 
+  // plans/11 §7: 検索ヒット遷移「注釈」(?annotation=)。該当カードへスクロール+一発消費。
+  test("scrolls to and flashes the card matching pendingAnnotationId, then consumes it", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    mockList([ann({ id: "a1" }), ann({ id: "a2", color: "question" })]);
+    useViewerStore.setState({ pendingAnnotationId: "a2" });
+    renderWithClient(<AnnotationListPanel />);
+    await screen.findAllByText(/拡散モデルは反復ステップを要する/);
+
+    await waitFor(() => expect(useViewerStore.getState().pendingAnnotationId).toBeNull());
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+  });
+
   test("clicking a comment turns it into an editable textarea, saved via PATCH on blur", async () => {
     mockList([ann({ id: "a1", comment: "元のコメント" })]);
     renderWithClient(<AnnotationListPanel />);

@@ -1,15 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  annotationsCreate,
+  annotationsDelete,
+  annotationsList,
   translationsListUnits,
   viewerGetDocument,
+  type Annotation,
+  type AnnotationListResponse,
   type LastPosition,
   type TocNode,
   type TranslationUnitItem,
 } from "@yakudoku/api-client";
 import { useToast } from "@/components/ui/Toast";
+import type { HighlightColor } from "@/components/ui/HighlightMark";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
@@ -17,12 +23,17 @@ import { ResumeBanner } from "@/components/viewer/ResumeBanner";
 import { SectionHeading } from "@/components/viewer/SectionHeading";
 import { SelectionMenu } from "@/components/viewer/SelectionMenu";
 import { SummaryCard } from "@/components/viewer/SummaryCard";
-import { TranslatedParagraph } from "@/components/viewer/TranslatedParagraph";
+import { TranslatedParagraph, type PlacedHighlight } from "@/components/viewer/TranslatedParagraph";
+import { SOURCE_TEXT_ATTR, textOffsetWithin } from "@/components/viewer/text-offset";
 import type {
   DocBlock,
   DocSection,
   DocumentResponse,
 } from "@/components/viewer/document-types";
+
+function tmpId(): string {
+  return `tmp_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : Date.now()}`;
+}
 
 export interface TranslationPaneProps {
   itemId: string;
@@ -81,6 +92,7 @@ function buildBlockSectionMap(sections: DocSection[]): Map<string, string> {
  * document(原文構造)+ units(訳文)を取得し、段落=訳文・数式=KaTeX で描画する。
  */
 export function TranslationPane({
+  itemId,
   revisionId,
   style,
   toc,
@@ -89,21 +101,30 @@ export function TranslationPane({
   onDetailedSummary,
   onAskAI,
 }: TranslationPaneProps) {
-  // itemId は契約に含むが、読書位置保存は ViewerShell の useReadingPosition が担う。
+  // 読書位置保存は ViewerShell の useReadingPosition が担う(itemId は注釈・ブックマーク用)。
   const toast = useToast();
+  const qc = useQueryClient();
   const panelOpen = useViewerStore((s) => s.panelOpen);
   const activeTab = useViewerStore((s) => s.activeTab);
   const setCurrentBlock = useViewerStore((s) => s.setCurrentBlock);
   const currentBlockId = useViewerStore((s) => s.currentBlockId);
+  const activeSectionId = useViewerStore((s) => s.activeSectionId);
   const popSignal = useViewerStore((s) => s.bilingualPopToggleSignal);
+  const bookmarkSignal = useViewerStore((s) => s.bookmarkToggleSignal);
   const pendingScroll = useViewerStore((s) => s.pendingScrollTarget);
   const consumeScroll = useViewerStore((s) => s.consumeScroll);
+  const pendingHighlightQuery = useViewerStore((s) => s.pendingHighlightQuery);
+  const setPendingHighlightQuery = useViewerStore((s) => s.setPendingHighlightQuery);
   const selection = useViewerStore((s) => s.selection);
   const setSelection = useViewerStore((s) => s.setSelection);
+  const setPanel = useViewerStore((s) => s.setPanel);
+  const requestAnnotationFocus = useViewerStore((s) => s.requestAnnotationFocus);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [openPopBlockId, setOpenPopBlockId] = useState<string | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  // `hl` を一発マークする対象ブロック(pendingScroll 消費と同時に確定。plans/11 §7)。
+  const [hlBlockId, setHlBlockId] = useState<string | null>(null);
 
   const docQuery = useQuery({
     queryKey: ["document", revisionId],
@@ -113,6 +134,70 @@ export function TranslationPane({
       ).data as DocumentResponse,
     staleTime: Infinity,
   });
+
+  // 注釈(ハイライト。M1-02/03)。AnnotationListPanel と同一キーでキャッシュを共有する。
+  const annotationsQueryKey = ["annotations", itemId];
+  const annotationsQuery = useQuery({
+    queryKey: annotationsQueryKey,
+    queryFn: async () =>
+      (
+        await annotationsList({
+          path: { item_id: itemId },
+          query: { kind: "highlight" },
+          throwOnError: true,
+        })
+      ).data,
+    enabled: Boolean(itemId),
+    staleTime: 0,
+  });
+
+  // ブックマーク(kind='bookmark')。キー `b`(1b §5.4)の対象セクション判定に使う。
+  const bookmarksQueryKey = ["annotations", itemId, "bookmark"];
+  const bookmarksQuery = useQuery({
+    queryKey: bookmarksQueryKey,
+    queryFn: async () =>
+      (
+        await annotationsList({
+          path: { item_id: itemId },
+          query: { kind: "bookmark" },
+          throwOnError: true,
+        })
+      ).data,
+    enabled: Boolean(itemId),
+    staleTime: 0,
+  });
+
+  // 本文に配置するハイライト範囲(訳文側のみ。1b §4.5-5)+ 文書順の注釈番号(1b §5.6)。
+  const highlightsByBlock = useMemo(() => {
+    const map = new Map<string, PlacedHighlight[]>();
+    let seq = 0;
+    for (const a of annotationsQuery.data?.items ?? []) {
+      if (!a.placed) continue;
+      seq += 1;
+      if (a.anchor.side !== "translation") continue;
+      if (a.anchor.start == null || a.anchor.end == null) continue;
+      const list = map.get(a.anchor.block_id) ?? [];
+      list.push({
+        id: a.id,
+        start: a.anchor.start,
+        end: a.anchor.end,
+        color: (a.color ?? "term") as HighlightColor,
+        number: seq,
+      });
+      map.set(a.anchor.block_id, list);
+    }
+    for (const list of map.values()) list.sort((x, y) => x.start - y.start);
+    return map;
+  }, [annotationsQuery.data]);
+
+  // 本文の丸数字チップクリック → 注釈タブの該当カードへ(1b §5.7)。
+  const onAnnotationClick = useCallback(
+    (annotationId: string) => {
+      setPanel(true, "annotations");
+      requestAnnotationFocus(annotationId);
+    },
+    [setPanel, requestAnnotationFocus],
+  );
 
   const doc = docQuery.data;
   const sectionIds = useMemo(() => collectSectionIds(doc?.sections ?? []), [doc]);
@@ -201,9 +286,18 @@ export function TranslationPane({
       window.setTimeout(() => el.classList.remove("yk-block-flash"), 2000);
     }
     consumeScroll();
-  }, [pendingScroll, doc, consumeScroll]);
+    // `hl` の一発マークは遷移先ブロックのみ(plans/11 §7)。数秒後に消す(本来は次ナビゲーションで
+    // 消える契約だが、同一ページに留まる場合の保険として一定時間後に解除する)。
+    if (pendingHighlightQuery && pendingScroll.kind === "block") {
+      setHlBlockId(pendingScroll.blockId);
+      window.setTimeout(() => {
+        setHlBlockId(null);
+        setPendingHighlightQuery(null);
+      }, 4000);
+    }
+  }, [pendingScroll, doc, consumeScroll, pendingHighlightQuery, setPendingHighlightQuery]);
 
-  // テキスト選択 → 選択メニュー(1b §5.5。M0 は ✦AIに質問 / コピー)。
+  // テキスト選択 → 選択メニュー(1b §5.5)。アンカーのブロック内文字オフセットも構築する。
   const onPointerUp = useCallback(() => {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
@@ -229,11 +323,25 @@ export function TranslationPane({
       setSelection(null);
       return;
     }
+    // 選択元の判定: 対訳ポップ内原文・未訳フォールバック原文([data-yk-source-text])なら
+    // 'source'、それ以外(訳文段落)は 'translation'(1b §5.5)。
+    const ancestorEl =
+      range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+        ? (range.commonAncestorContainer as Element)
+        : range.commonAncestorContainer.parentElement;
+    const sourceRoot = ancestorEl?.closest(`[${SOURCE_TEXT_ATTR}]`) ?? null;
+    const side: "source" | "translation" =
+      sourceRoot && blockEl.contains(sourceRoot) ? "source" : "translation";
+    const offsetRoot = side === "source" && sourceRoot ? sourceRoot : blockEl;
+    const start = textOffsetWithin(offsetRoot, range.startContainer, range.startOffset);
+    const end = start + text.length;
     const rect = range.getBoundingClientRect();
     setSelection({
       blockId: blockEl.dataset.blockId ?? "",
-      side: "translation",
+      side,
       quote: text.slice(0, 500),
+      start,
+      end,
       rect: { top: rect.top, left: rect.left, bottom: rect.bottom, right: rect.right },
     });
   }, [setSelection]);
@@ -250,6 +358,100 @@ export function TranslationPane({
     },
     [selection, toast, setSelection],
   );
+
+  // 選択メニューの色ドット/コメント保存 → 注釈作成(楽観的更新。1b §5.6)。
+  const createHighlight = useCallback(
+    (color: HighlightColor, comment: string | null) => {
+      const sel = selection;
+      if (!sel || !itemId) return;
+      setSelection(null);
+      const anchor = {
+        revision_id: revisionId,
+        block_id: sel.blockId,
+        start: sel.start,
+        end: sel.end,
+        quote: sel.quote,
+        side: sel.side,
+      };
+      const optimistic: Annotation = {
+        id: tmpId(),
+        kind: "highlight",
+        color,
+        anchor: { ...anchor, display: "" },
+        comment,
+        placed: true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      const prev = qc.getQueryData<AnnotationListResponse>(annotationsQueryKey);
+      qc.setQueryData<AnnotationListResponse>(annotationsQueryKey, (old) =>
+        old ? { ...old, items: [...old.items, optimistic] } : old,
+      );
+      void annotationsCreate({
+        path: { item_id: itemId },
+        body: { kind: "highlight", color, anchor, comment: comment && comment.length > 0 ? comment : null },
+      }).then(
+        () => {
+          void qc.invalidateQueries({ queryKey: annotationsQueryKey });
+          void qc.invalidateQueries({ queryKey: ["viewer", itemId] });
+        },
+        () => {
+          if (prev) qc.setQueryData(annotationsQueryKey, prev);
+          toast({
+            kind: "error",
+            message: "注釈を保存できませんでした",
+            action: { label: "再試行", onClick: () => createHighlight(color, comment) },
+          });
+        },
+      );
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selection, itemId, revisionId, qc, toast, setSelection],
+  );
+
+  // ブックマーク切替(viewer-shell §10 キー `b`。1b §5.4 が実処理を担う)。
+  const firstBookmarkSignal = useRef(bookmarkSignal);
+  useEffect(() => {
+    if (bookmarkSignal === firstBookmarkSignal.current) return;
+    firstBookmarkSignal.current = bookmarkSignal;
+    if (!itemId || !activeSectionId) return;
+    const existing = bookmarksQuery.data?.items.find((a) => a.anchor.block_id === activeSectionId);
+    const after = () => {
+      void qc.invalidateQueries({ queryKey: bookmarksQueryKey });
+      void qc.invalidateQueries({ queryKey: ["viewer", itemId] });
+    };
+    if (existing) {
+      void annotationsDelete({ path: { annotation_id: existing.id } }).then(
+        () => {
+          after();
+          toast({ kind: "success", message: "ブックマークを解除しました" });
+        },
+        () => toast({ kind: "error", message: "ブックマークを更新できませんでした" }),
+      );
+    } else {
+      void annotationsCreate({
+        path: { item_id: itemId },
+        body: {
+          kind: "bookmark",
+          anchor: {
+            revision_id: revisionId,
+            block_id: activeSectionId,
+            start: null,
+            end: null,
+            quote: null,
+            side: "source",
+          },
+        },
+      }).then(
+        () => {
+          after();
+          toast({ kind: "success", message: "ブックマークしました" });
+        },
+        () => toast({ kind: "error", message: "ブックマークを更新できませんでした" }),
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookmarkSignal]);
 
   const showBanner = lastPosition != null && !bannerDismissed;
 
@@ -285,6 +487,10 @@ export function TranslationPane({
           ) : null
         }
         onExplainEquation={(latex) => onAskAI?.(latex)}
+        highlightsByBlock={highlightsByBlock}
+        onAnnotationClick={onAnnotationClick}
+        hlBlockId={hlBlockId}
+        pendingHighlightQuery={pendingHighlightQuery}
       />
     ));
   }
@@ -330,7 +536,7 @@ export function TranslationPane({
       </div>
       {selection ? (
         <SelectionMenu
-          milestone="M0"
+          milestone="M1"
           side={selection.side}
           position={{ top: selection.rect.bottom + 8, left: selection.rect.left }}
           onAskAI={() => {
@@ -338,6 +544,8 @@ export function TranslationPane({
             setSelection(null);
           }}
           onCopy={copySelection}
+          onHighlight={(color) => createHighlight(color, null)}
+          onComment={(color, comment) => createHighlight(color, comment.length > 0 ? comment : null)}
         />
       ) : null}
     </div>
@@ -353,6 +561,12 @@ interface SectionViewProps {
   onTogglePop: (blockId: string) => void;
   summary: ReactNode;
   onExplainEquation: (latex: string) => void;
+  /** ブロック単位の注釈ハイライト(1b §4.5-5)。 */
+  highlightsByBlock: Map<string, PlacedHighlight[]>;
+  onAnnotationClick: (annotationId: string) => void;
+  /** `hl` を一発マークする対象ブロック(plans/11 §7)。 */
+  hlBlockId: string | null;
+  pendingHighlightQuery: string | null;
 }
 
 function SectionView({
@@ -364,6 +578,10 @@ function SectionView({
   onTogglePop,
   summary,
   onExplainEquation,
+  highlightsByBlock,
+  onAnnotationClick,
+  hlBlockId,
+  pendingHighlightQuery,
 }: SectionViewProps) {
   const meta = tocMap.get(section.id);
   const number = meta?.number ?? section.heading?.number ?? null;
@@ -398,6 +616,9 @@ function SectionView({
               parallelLabel={label}
               popOpen={openPopBlockId === block.id}
               onTogglePop={() => onTogglePop(block.id)}
+              highlights={highlightsByBlock.get(block.id) ?? []}
+              onAnnotationClick={onAnnotationClick}
+              searchHighlight={hlBlockId === block.id ? pendingHighlightQuery : null}
             />
           );
         }
@@ -421,6 +642,10 @@ function SectionView({
           onTogglePop={onTogglePop}
           summary={null}
           onExplainEquation={onExplainEquation}
+          highlightsByBlock={highlightsByBlock}
+          onAnnotationClick={onAnnotationClick}
+          hlBlockId={hlBlockId}
+          pendingHighlightQuery={pendingHighlightQuery}
         />
       ))}
     </section>

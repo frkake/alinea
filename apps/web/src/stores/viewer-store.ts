@@ -18,6 +18,9 @@ export interface ViewerSelection {
   /** 選択元。原文(対訳ポップ内)なら 'source'、訳文段落なら 'translation'。 */
   side: "source" | "translation";
   quote: string;
+  /** ブロック内文字オフセット(1b §5.5 の Anchor 構築用。取得不能時は null)。 */
+  start: number | null;
+  end: number | null;
   /** メニュー配置に使う選択矩形(ビューポート座標)。 */
   rect: { top: number; left: number; bottom: number; right: number };
 }
@@ -48,8 +51,17 @@ interface ViewerStoreState {
   // 対訳ポップ開閉シグナル(viewer-shell §10 キー `t`。0 起点で +1)
   bilingualPopToggleSignal: number;
 
+  // ブックマーク切替シグナル(viewer-shell §10 キー `b`。0 起点で +1。1b が実処理を担う)
+  bookmarkToggleSignal: number;
+
   // テキスト選択(選択メニュー。null=非表示)
   selection: ViewerSelection | null;
+
+  // 検索ヒット遷移(plans/11 §7)の一発消費ターゲット。対象タブが消費して null に戻す。
+  pendingAnnotationId: string | null;
+  pendingNoteId: string | null;
+  /** `?hl=` の値。遷移先ブロック内だけをマークする一発消費クエリ。 */
+  pendingHighlightQuery: string | null;
 
   // actions
   initViewer(itemId: string, revisionId: string): void;
@@ -63,7 +75,13 @@ interface ViewerStoreState {
   closeSearch(): void;
   setSearchQuery(query: string): void;
   toggleBilingualPop(): void;
+  toggleBookmark(): void;
   setSelection(selection: ViewerSelection | null): void;
+  requestAnnotationFocus(annotationId: string): void;
+  consumeAnnotationFocus(): void;
+  requestNoteFocus(noteId: string): void;
+  consumeNoteFocus(): void;
+  setPendingHighlightQuery(query: string | null): void;
 }
 
 function readLocal(key: string): string | null {
@@ -129,7 +147,11 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
   searchOpen: false,
   searchQuery: "",
   bilingualPopToggleSignal: 0,
+  bookmarkToggleSignal: 0,
   selection: null,
+  pendingAnnotationId: null,
+  pendingNoteId: null,
+  pendingHighlightQuery: null,
 
   initViewer(itemId, revisionId) {
     const tocRaw = readLocal(`yk-toc-open:${itemId}`);
@@ -203,7 +225,31 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
     set((s) => ({ bilingualPopToggleSignal: s.bilingualPopToggleSignal + 1 }));
   },
 
+  toggleBookmark() {
+    set((s) => ({ bookmarkToggleSignal: s.bookmarkToggleSignal + 1 }));
+  },
+
   setSelection(selection) {
     set({ selection });
+  },
+
+  requestAnnotationFocus(annotationId) {
+    set({ pendingAnnotationId: annotationId });
+  },
+
+  consumeAnnotationFocus() {
+    set({ pendingAnnotationId: null });
+  },
+
+  requestNoteFocus(noteId) {
+    set({ pendingNoteId: noteId });
+  },
+
+  consumeNoteFocus() {
+    set({ pendingNoteId: null });
+  },
+
+  setPendingHighlightQuery(query) {
+    set({ pendingHighlightQuery: query });
   },
 }));

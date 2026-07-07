@@ -18,6 +18,7 @@ import { PdfSidebar } from "@/components/viewer/pdf/PdfSidebar";
 import { PdfPane } from "@/components/viewer/pdf/PdfPane";
 import { PdfDocumentProvider } from "@/components/viewer/pdf/use-pdf-document";
 import { useReadingPosition } from "@/hooks/use-reading-position";
+import { useReadingSession } from "@/hooks/use-reading-session";
 import { useViewerKeymap } from "@/hooks/use-viewer-keymap";
 import { useSSE } from "@/lib/sse";
 
@@ -70,6 +71,7 @@ export function ViewerShell({
   }, [initViewer, itemId, revisionId]);
 
   useReadingPosition({ itemId, revisionId, mode });
+  useReadingSession({ itemId, enabled: trackReadingTime });
   useViewerKeymap({ mode, onModeChange, onFocusSearch: () => openSearch() });
 
   // PDF アセット無し論文(2a §5.3): ヘッダの「PDF」セグメントを disabled にし、
@@ -202,8 +204,8 @@ export function ViewerShell({
           </>
         )}
         <SidePanel
-          milestone="M0"
-          counts={{}}
+          milestone="M1"
+          counts={{ annotations: viewer.counts.annotations, resources: viewer.counts.resources }}
           renderTab={(tab) => {
             if (tab === "chat") return <ChatPanel itemId={itemId} />;
             if (tab === "figures") return <FiguresPanel itemId={itemId} revisionId={revisionId} />;

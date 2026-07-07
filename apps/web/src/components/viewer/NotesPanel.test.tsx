@@ -95,6 +95,20 @@ describe("NotesPanel", () => {
     await waitFor(() => expect(notesDelete).toHaveBeenCalledWith({ path: { note_id: "note_1" } }));
   });
 
+  // plans/11 §7: 検索ヒット遷移「メモ」(?note=)。該当メモへスクロール+一発消費。
+  test("scrolls to and flashes the note matching pendingNoteId, then consumes it", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    vi.mocked(notesList).mockResolvedValue({
+      data: { items: [note({ id: "note_1" }), note({ id: "note_2", content_md: "2つ目" })] },
+    } as never);
+    useViewerStore.setState({ pendingNoteId: "note_2" });
+    renderWithClient(<NotesPanel />);
+    await screen.findByText("2つ目");
+
+    await waitFor(() => expect(useViewerStore.getState().pendingNoteId).toBeNull());
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+  });
+
   test("anchor chips request a scroll to the source block", async () => {
     const requestScroll = vi.fn();
     useViewerStore.setState({ requestScroll });
