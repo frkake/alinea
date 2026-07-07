@@ -11,16 +11,15 @@ import { useToast } from "@/components/ui/Toast";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import type { ViewerMode } from "@/components/viewer/ViewerShell";
 import { InPaperSearch } from "@/components/viewer/InPaperSearch";
+import { ArticleRegenerateButton } from "@/components/viewer/article/ArticleRegenerateButton";
 
-/**
- * M1 の表示モードは 訳文 / 対訳 / 原文 / PDF の 4 つ(plans/13 §1.5・M1-20)。
- * 「記事」は M2-07 まで未実装のため非表示(グレーアウトしない。plans/13 の決定)。
- */
-export const M1_MODE_OPTIONS = [
+/** 表示モードの 5 タブ(plans/13 §1.5・M2-07 で「記事」を追加)。 */
+export const MODE_OPTIONS = [
   { value: "translation", label: "訳文" },
   { value: "parallel", label: "対訳" },
   { value: "source", label: "原文" },
   { value: "pdf", label: "PDF" },
+  { value: "article", label: "記事" },
 ] as const satisfies ReadonlyArray<{ value: ViewerMode; label: string }>;
 
 const STYLE_LABELS: Record<TranslationStyle, string> = {
@@ -29,6 +28,8 @@ const STYLE_LABELS: Record<TranslationStyle, string> = {
 };
 
 export interface ViewerHeaderProps {
+  /** `ArticleRegenerateButton`(mode=article のみ)の記事取得・再生成 API 呼び出しに使う。 */
+  itemId: string;
   title: string;
   qualityLevel: "A" | "B";
   status: ReadingStatus;
@@ -49,6 +50,7 @@ export interface ViewerHeaderProps {
 
 /** ビューアヘッダ(viewer-shell §4)。M1 は 訳文/対訳/原文/PDF の 4 モード表示。 */
 export function ViewerHeader({
+  itemId,
   title,
   qualityLevel,
   status,
@@ -288,7 +290,7 @@ export function ViewerHeader({
       <div style={{ flex: 1 }} />
 
       <SegmentedControl
-        options={M1_MODE_OPTIONS.map((opt) =>
+        options={MODE_OPTIONS.map((opt) =>
           opt.value === "pdf" && pdfDisabled
             ? { ...opt, disabled: true, title: "この論文には PDF がありません" }
             : opt,
@@ -299,55 +301,63 @@ export function ViewerHeader({
         ariaLabel="表示モード"
       />
 
-      <button
-        ref={styleAnchor}
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={styleOpen}
-        style={controlBtn}
-        onClick={() => setStyleOpen((v) => !v)}
-      >
-        スタイル: {STYLE_LABELS[style]}
-        {style === "literal" && literalStatus === "generating" ? "(生成中…)" : ""}
-        <span style={{ color: "var(--pr-text-muted)", fontSize: 9 }}>▾</span>
-      </button>
-      <Popover
-        open={styleOpen}
-        onClose={() => setStyleOpen(false)}
-        anchorRef={styleAnchor}
-        width={180}
-        placement="bottom-end"
-        caret={false}
-      >
-        {(["natural", "literal"] as TranslationStyle[]).map((s) => (
+      {mode === "article" ? (
+        // 記事モードのみこのスロットに「✦ 指示つき再生成」を表示する(1h §4.2-7)。
+        // 他モードは「スタイル: 自然訳 ▾」(docs/04 §2)。
+        <ArticleRegenerateButton itemId={itemId} />
+      ) : (
+        <>
           <button
-            key={s}
+            ref={styleAnchor}
             type="button"
-            role="menuitem"
-            onClick={() => {
-              setStyle(s);
-              setStyleOpen(false);
-              // 「直訳」選択で TranslationSet 未生成なら生成開始(1b §4.2-7・plans/06 §10.2)。
-              if (s === "literal") ensureLiteralGenerated();
-            }}
-            style={{
-              display: "block",
-              width: "100%",
-              textAlign: "left",
-              border: "none",
-              background: "transparent",
-              cursor: "pointer",
-              fontFamily: "inherit",
-              fontSize: 12,
-              padding: "8px 12px",
-              color: s === style ? "var(--pr-acc)" : "var(--pr-text-mid)",
-              fontWeight: s === style ? 600 : 400,
-            }}
+            aria-haspopup="menu"
+            aria-expanded={styleOpen}
+            style={controlBtn}
+            onClick={() => setStyleOpen((v) => !v)}
           >
-            {STYLE_LABELS[s]}
+            スタイル: {STYLE_LABELS[style]}
+            {style === "literal" && literalStatus === "generating" ? "(生成中…)" : ""}
+            <span style={{ color: "var(--pr-text-muted)", fontSize: 9 }}>▾</span>
           </button>
-        ))}
-      </Popover>
+          <Popover
+            open={styleOpen}
+            onClose={() => setStyleOpen(false)}
+            anchorRef={styleAnchor}
+            width={180}
+            placement="bottom-end"
+            caret={false}
+          >
+            {(["natural", "literal"] as TranslationStyle[]).map((s) => (
+              <button
+                key={s}
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setStyle(s);
+                  setStyleOpen(false);
+                  // 「直訳」選択で TranslationSet 未生成なら生成開始(1b §4.2-7・plans/06 §10.2)。
+                  if (s === "literal") ensureLiteralGenerated();
+                }}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  fontSize: 12,
+                  padding: "8px 12px",
+                  color: s === style ? "var(--pr-acc)" : "var(--pr-text-mid)",
+                  fontWeight: s === style ? 600 : 400,
+                }}
+              >
+                {STYLE_LABELS[s]}
+              </button>
+            ))}
+          </Popover>
+        </>
+      )}
 
       <InPaperSearch />
 

@@ -42,6 +42,7 @@ function renderWithClient(ui: ReactNode) {
 }
 
 const baseProps = {
+  itemId: "li_1",
   title: "Flow Straight and Fast",
   qualityLevel: "A" as const,
   status: "reading" as const,

@@ -60,6 +60,14 @@ interface ViewerStoreState {
   // 対訳ポップ開閉シグナル(viewer-shell §10 キー `t`。0 起点で +1)
   bilingualPopToggleSignal: number;
 
+  /**
+   * 記事「✦ 指示つき再生成」の進行状態(1h §5.3)。トリガーは `ArticleRegenerateButton`
+   * (ヘッダ)、表示は `ArticleRegenBanner`(本文)— ツリー上の兄弟のため、この横断状態で橋渡しする
+   * (literalStatus と同方針)。
+   */
+  articleRegenerating: boolean;
+  articleRegenProgressPct: number;
+
   // ブックマーク切替シグナル(viewer-shell §10 キー `b`。0 起点で +1。1b が実処理を担う)
   bookmarkToggleSignal: number;
 
@@ -89,6 +97,7 @@ interface ViewerStoreState {
     setId?: string | null;
   }): void;
   setCurrentBlock(blockId: string, sectionId: string): void;
+  setArticleRegenState(state: { regenerating: boolean; progressPct?: number }): void;
   requestScroll(target: PendingScrollTarget): void;
   consumeScroll(): void;
   openSearch(query?: string): void;
@@ -173,6 +182,8 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
   searchQuery: "",
   bilingualPopToggleSignal: 0,
   bookmarkToggleSignal: 0,
+  articleRegenerating: false,
+  articleRegenProgressPct: 0,
   selection: null,
   pendingAnnotationId: null,
   pendingNoteId: null,
@@ -204,6 +215,9 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
       literalStatus: "unknown",
       literalJobId: null,
       literalSetId: null,
+      // 論文が変わるので前の論文の記事再生成表示は引き継がない。
+      articleRegenerating: false,
+      articleRegenProgressPct: 0,
     });
   },
 
@@ -238,6 +252,13 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
 
   setCurrentBlock(blockId, sectionId) {
     set({ currentBlockId: blockId, activeSectionId: sectionId });
+  },
+
+  setArticleRegenState({ regenerating, progressPct }) {
+    set((s) => ({
+      articleRegenerating: regenerating,
+      articleRegenProgressPct: progressPct === undefined ? s.articleRegenProgressPct : progressPct,
+    }));
   },
 
   requestScroll(target) {

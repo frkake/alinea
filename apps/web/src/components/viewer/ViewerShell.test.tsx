@@ -29,6 +29,7 @@ describe("ViewerHeader modes (VT-VIEW-01)", () => {
   beforeEach(resetStore);
 
   const baseProps = {
+    itemId: "li_test",
     title: "Flow Straight and Fast",
     qualityLevel: "A" as const,
     status: "reading" as const,
@@ -38,13 +39,13 @@ describe("ViewerHeader modes (VT-VIEW-01)", () => {
     onBack: vi.fn(),
   };
 
-  test("M1 shows 訳文/対訳/原文/PDF, hides 記事(M2-07 まで未実装)", () => {
+  test("shows all 5 mode tabs: 訳文/対訳/原文/PDF/記事(M2-07)", () => {
     renderWithClient(<ViewerHeader {...baseProps} />);
     expect(screen.getByText("訳文")).toBeInTheDocument();
     expect(screen.getByText("対訳")).toBeInTheDocument();
     expect(screen.getByText("原文")).toBeInTheDocument();
     expect(screen.getByText("PDF")).toBeInTheDocument();
-    expect(screen.queryByText("記事")).toBeNull();
+    expect(screen.getByText("記事")).toBeInTheDocument();
   });
 
   test("clicking a mode segment calls onModeChange", () => {
@@ -82,6 +83,7 @@ describe("ViewerHeader mobile reduction (mobile.md §4.2)", () => {
   beforeEach(resetStore);
 
   const baseProps = {
+    itemId: "li_test",
     title: "Flow Straight and Fast",
     qualityLevel: "A" as const,
     status: "reading" as const,

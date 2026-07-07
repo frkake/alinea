@@ -102,6 +102,15 @@ export function ViewerShell({
     router.replace(`/papers/${itemId}?mode=translation&block=${blockId}`, { scroll: false });
   };
 
+  // 目次の節クリック(viewer-shell §5.2)。記事モードは独自目次を持たないため、
+  // 位置予約(requestScroll)後に mode=translation へ遷移する(1h §5.7 決定)。
+  const onTocSectionClick = (sectionId: string) => {
+    requestScroll({ kind: "section", sectionId });
+    if (mode === "article") {
+      router.replace(`/papers/${itemId}?mode=translation`, { scroll: false });
+    }
+  };
+
   // 部分読書: SSE で翻訳完了/失敗を受けたら該当クエリを invalidate し本文を差し替える
   // (viewer-shell §2.3。translation.unit_completed → units + viewer 進捗)。
   useSSE({
@@ -176,6 +185,7 @@ export function ViewerShell({
       }}
     >
       <ViewerHeader
+        itemId={itemId}
         title={viewer.library_item.paper.title}
         qualityLevel={viewer.library_item.quality_level === "B" ? "B" : "A"}
         status={viewer.library_item.status as ReadingStatus}
@@ -220,7 +230,7 @@ export function ViewerShell({
                   open={tocOpen}
                   onToggle={setTocOpen}
                   activeSectionId={activeSectionId}
-                  onSectionClick={(sectionId) => requestScroll({ kind: "section", sectionId })}
+                  onSectionClick={onTocSectionClick}
                   onTranslateAppendix={onTranslateAppendix}
                   onFocusSearch={() => openSearch()}
                 />

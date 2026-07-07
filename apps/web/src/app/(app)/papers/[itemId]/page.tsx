@@ -9,17 +9,18 @@ import { ViewerShell, type ViewerMode } from "@/components/viewer/ViewerShell";
 import { TranslationPane } from "@/components/viewer/TranslationPane";
 import { BilingualPane } from "@/components/viewer/BilingualPane";
 import { SourcePane } from "@/components/viewer/SourcePane";
+import { ArticlePane } from "@/components/viewer/article/ArticlePane";
 import { useViewerStore } from "@/stores/viewer-store";
 import { useViewerChatStore } from "@/stores/viewer-chat-store";
 import { useIsMobile } from "@/hooks/useMediaQuery";
 import type { SidePanelTabId } from "@/components/ui/SidePanelTabs";
 import type { DocBlock } from "@/components/viewer/document-types";
 
-/** M1 で表示・遷移可能な 4 モード(plans/13 §1.5・M1-20 で PDF を追加)。 */
-const M1_MODES: readonly ViewerMode[] = ["translation", "parallel", "source", "pdf"];
+/** 表示・遷移可能な 5 モード(plans/13 §1.5・M1-20 で PDF、M2-07 で記事を追加)。 */
+const VIEWER_MODES: readonly ViewerMode[] = ["translation", "parallel", "source", "pdf", "article"];
 
 function normalizeMode(raw: string | null, fallback: ViewerMode): ViewerMode {
-  if (raw && (M1_MODES as readonly string[]).includes(raw)) return raw as ViewerMode;
+  if (raw && (VIEWER_MODES as readonly string[]).includes(raw)) return raw as ViewerMode;
   return fallback;
 }
 
@@ -179,6 +180,10 @@ export default function ViewerPage() {
     // PDF モードの本文(PdfPane)は ViewerShell が自前で描画する(mode==='pdf' 分岐。
     // 2a §3.1「ViewerShell.tsx(mode=pdf で PdfPane 描画)」)。children は使われない。
     paneContent = null;
+  } else if (effectiveMode === "article") {
+    paneContent = (
+      <ArticlePane libraryItemId={itemId} revisionId={revisionId} lastPosition={viewer.last_position} />
+    );
   } else {
     paneContent = (
       <SourcePane

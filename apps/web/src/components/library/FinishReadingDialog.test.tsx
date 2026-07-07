@@ -20,6 +20,11 @@ vi.mock("@/components/ui/Toast", async (importOriginal) => {
   return { ...actual, useToast: vi.fn() };
 });
 
+const pushMock = vi.fn();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: pushMock }),
+}));
+
 function makeItem(overrides: Partial<LibraryItemSummary> = {}): LibraryItemSummary {
   return {
     id: "li_1",
@@ -186,9 +191,18 @@ describe("FinishReadingDialog (M1-06 / 1g)", () => {
     await waitFor(() => expect(screen.getByText("✓ メモに保存しました")).toBeInTheDocument());
   });
 
-  test("does not render the article-mode follow-up card (hidden until M2-07)", () => {
-    renderDialog(makeItem({ summary_3line: ["一行目"] }));
-    expect(screen.queryByText("記事モードで読み返す →")).not.toBeInTheDocument();
+  test("renders the article-mode follow-up card even without a summary (M2-07)", () => {
+    renderDialog(makeItem({ summary_3line: null }));
+    expect(screen.getByText("記事モードで読み返す →")).toBeInTheDocument();
+    expect(screen.getByText("メモとチャットから読み物を自動構成")).toBeInTheDocument();
+  });
+
+  test("clicking the article-mode follow-up card closes the dialog and navigates unconditionally", async () => {
+    const user = userEvent.setup();
+    const { onClose } = renderDialog(makeItem({ summary_3line: ["一行目"] }));
+    await user.click(screen.getByText("記事モードで読み返す →"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(pushMock).toHaveBeenCalledWith("/papers/li_1?mode=article");
   });
 
   test("Ctrl+Enter triggers save", async () => {

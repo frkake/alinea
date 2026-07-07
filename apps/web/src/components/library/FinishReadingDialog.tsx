@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { libraryItemsUpdate, notesCreate, type LibraryItemSummary } from "@yakudoku/api-client";
 import { Modal } from "@/components/ui/Modal";
@@ -17,7 +18,8 @@ import {
  * 読了フロー(1g)の中央モーダル(plans/09-screens/1g・docs/06 §3)。
  *
  * 本タスクの縮小スコープ(orchestrator 指示):
- * - 「記事モードで読み返す →」カードは M2-07 まで非表示(1g §4.5.2 カード2 は実装しない)。
+ * - 「記事モードで読み返す →」カード(1g §4.5.2 カード2・§5.7)は M2-07 で表示化済み。
+ *   常時表示・無条件遷移(記事未生成時の生成 CTA は 1h 側の責務。loading/done 状態を持たない)。
  * - 「✦ 要約をメモに保存」は 1g 全文仕様のチャット詳細要約 SSE 生成フローではなく、
  *   `LibraryItemSummary.summary_3line`(既存の ✦3行要約)をそのままメモ化する簡易版
  *   (`POST /api/library-items/{id}/notes`)。summary_3line が無い場合はカード非表示。
@@ -52,6 +54,7 @@ function normalizeNote(value: string): string | null {
 }
 
 export function FinishReadingDialog({ item, onClose }: FinishReadingDialogProps) {
+  const router = useRouter();
   const qc = useQueryClient();
   const toast = useToast();
   const noteRef = useRef<HTMLTextAreaElement>(null);
@@ -119,6 +122,13 @@ export function FinishReadingDialog({ item, onClose }: FinishReadingDialogProps)
     } catch {
       setSummaryState("error");
     }
+  };
+
+  // カード 2「記事モードで読み返す →」(1g §5.7): 常に idle・無条件遷移。記事未生成時の
+  // 生成 CTA は記事モード画面(1h)側の責務(本カードは判定を持たない)。
+  const onOpenArticle = () => {
+    onClose();
+    router.push(`/papers/${item.id}?mode=article`);
   };
 
   return (
@@ -275,9 +285,10 @@ export function FinishReadingDialog({ item, onClose }: FinishReadingDialogProps)
             />
           </div>
 
-          {/* 導線カード(要約をメモに保存)。記事モードカードは M2-07 まで非表示。 */}
-          {hasSummary ? (
-            <div style={{ display: "flex", gap: 8 }}>
+          {/* 導線カード(FollowupActionCard ×2。1g §4.5.2)。カード1は summary_3line が
+              無い場合は非表示、カード2(記事モードで読み返す →)は常時表示・無条件遷移。 */}
+          <div style={{ display: "flex", gap: 8 }}>
+            {hasSummary ? (
               <button
                 type="button"
                 onClick={() => void onSaveSummaryToNote()}
@@ -323,8 +334,32 @@ export function FinishReadingDialog({ item, onClose }: FinishReadingDialogProps)
                     : "この論文の ✦3行要約をメモとして保存します"}
                 </span>
               </button>
-            </div>
-          ) : null}
+            ) : null}
+            <button
+              type="button"
+              onClick={onOpenArticle}
+              style={{
+                flex: 1,
+                border: "1px solid var(--pr-border-card)",
+                borderRadius: 8,
+                padding: "10px 12px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 3,
+                background: "var(--pr-bg-app)",
+                cursor: "pointer",
+                textAlign: "left",
+                fontFamily: "inherit",
+              }}
+            >
+              <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--pr-acc)" }}>
+                記事モードで読み返す →
+              </span>
+              <span style={{ fontSize: 10, lineHeight: 1.5, color: "var(--pr-text-muted)" }}>
+                メモとチャットから読み物を自動構成
+              </span>
+            </button>
+          </div>
         </div>
 
         {/* フッタ部 */}
