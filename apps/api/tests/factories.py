@@ -401,6 +401,10 @@ async def make_annotation(
         if revision is None:
             revision = await make_revision(db, paper=None)
         anchor = anchor_for(revision, 0)
+    # ``quote`` は annotations.quote(GENERATED ALWAYS AS anchor->>'quote')に写像される
+    # 生成列。ORM で直接 INSERT できないため anchor JSONB 側に畳み込む(0001 §4.7)。
+    if quote is not None:
+        anchor = {**anchor, "quote": quote}
     # kind_shape CHECK: bookmark=両 NULL / highlight=color / comment=color+body。
     if kind == "bookmark":
         color, body = None, None
@@ -413,7 +417,6 @@ async def make_annotation(
         color=color,
         body=body,
         anchor=anchor,
-        quote=quote,
     )
     db.add(ann)
     await db.flush()
