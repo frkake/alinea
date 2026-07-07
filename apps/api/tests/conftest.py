@@ -13,7 +13,7 @@ import os
 import re
 import sys
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +37,20 @@ DATABASE_URL = os.environ.get(
     "postgresql+asyncpg://yakudoku:yakudoku@localhost:5432/yakudoku",
 )
 MAILPIT_API = os.environ.get("MAILPIT_API", "http://localhost:8025")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _clear_rate_limit_windows() -> Iterator[None]:
+    """前回実行が残したレート制限ウィンドウを掃除する(短時間の再実行が 429 化するのを防ぐ)。"""
+    import redis as redis_sync
+
+    r = redis_sync.Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
+    try:
+        for key in r.scan_iter("rl:*"):
+            r.delete(key)
+    finally:
+        r.close()
+    yield
 
 
 @pytest_asyncio.fixture(autouse=True)

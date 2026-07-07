@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from yakudoku_core.settings import CoreSettings
 
 
@@ -29,10 +30,14 @@ class ApiSettings(CoreSettings):
     oauth_github_client_secret: str = ""
 
     # LLM 運営キー(plans/04 §11.1-2・§16。未設定プロバイダはチェーンから除外)。
-    # env 変数名は plans/04 §16 の逐語(google は google-genai 既定に合わせ GEMINI_API_KEY)。
+    # google は plans/04 §16(GEMINI_API_KEY)と plans/01 §8.4 / .env.example
+    # (GOOGLE_API_KEY)が食い違うため両方受理する(GEMINI が優先)。
     openai_api_key: str = ""
     anthropic_api_key: str = ""
-    gemini_api_key: str = ""
+    gemini_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY", "gemini_api_key"),
+    )
     deepseek_api_key: str = ""
     xai_api_key: str = ""
 

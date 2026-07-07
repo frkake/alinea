@@ -3,15 +3,30 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _find_env_file() -> str:
+    """cwd から上方向に .env を探す(apps/api 等のサブディレクトリ実行でも同じ .env を読む)。
+
+    見つからなければ従来どおり cwd 相対 ".env"(= 実質未読)。本番は環境変数で渡すため
+    .env が無くても動く。
+    """
+    cwd = Path.cwd()
+    for directory in (cwd, *cwd.parents):
+        candidate = directory / ".env"
+        if candidate.is_file():
+            return str(candidate)
+    return ".env"
 
 
 class CoreSettings(BaseSettings):
     """api / worker が共用する型付き設定。秘匿値のみを環境変数から読む。"""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_find_env_file(),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
