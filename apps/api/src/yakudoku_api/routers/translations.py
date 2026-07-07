@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+from typing import Any
 
 from fastapi import APIRouter, Response, status
+from pydantic import BaseModel
 from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from yakudoku_core.db.models import (
@@ -21,8 +23,10 @@ from yakudoku_core.db.models import (
     TranslationUnit,
     User,
 )
-from yakudoku_core.document.blocks import DocumentContent, Section
+from yakudoku_core.document.blocks import Block, DocumentContent, Section
+from yakudoku_core.document.plaintext import block_to_plain
 from yakudoku_core.jobs.store import JobStore
+from yakudoku_core.translation import glossary as glossary_core
 from yakudoku_core.translation.glossary import glossary_hash
 from yakudoku_core.translation.pipeline import (
     BLOCKING_FLAGS,
@@ -30,7 +34,9 @@ from yakudoku_core.translation.pipeline import (
     compute_progress,
     compute_translation_scope,
     resolve_display_units,
+    run_quality_checks,
 )
+from yakudoku_core.translation.placeholder import encode_block
 
 from yakudoku_api.deps import CurrentUser, DbDep
 from yakudoku_api.errors import ProblemException
@@ -378,6 +384,168 @@ async def retranslate(
         },
     )
     return RetranslateResponse(job_id=job_id)
+
+
+# --- §7.7 手動編集 -------------------------------------------------------------------
+
+
+class UnitEditRequest(BaseModel):
+    text_ja: str
+
+
+class UnitEditResponse(BaseModel):
+    unit_id: str
+    state: str
+    text_ja: str
+    set_id: str
+
+
+async def _get_unit_or_404(db: AsyncSession, unit_id: str) -> TranslationUnit:
+    try:
+        unit = await db.get(TranslationUnit, int(unit_id))
+    except ValueError:
+        raise ProblemException("not_found") from None
+    if unit is None:
+        raise ProblemException("not_found")
+    return unit
+
+
+async def _ensure_personal_unit(
+    db: AsyncSession, tset: TranslationSet, unit: TranslationUnit, user: User
+) -> tuple[TranslationSet, TranslationUnit]:
+    """共有セットへの書き込みは personal フォーク+ユニット複製を用意する(plans/06 §9.2)。
+
+    ``tset.scope != "shared"`` ならそのまま返す(すでに自分の personal セット)。
+    """
+    if tset.scope != "shared":
+        return tset, unit
+    personal_set = await glossary_core.resolve_or_create_personal_set(
+        db, revision_id=str(tset.revision_id), style=tset.style, user_id=str(user.id)
+    )
+    existing = await db.scalar(
+        select(TranslationUnit).where(
+            TranslationUnit.set_id == personal_set.id, TranslationUnit.block_id == unit.block_id
+        )
+    )
+    if existing is not None:
+        return personal_set, existing
+    forked = TranslationUnit(
+        set_id=str(personal_set.id),
+        block_id=unit.block_id,
+        source_hash=unit.source_hash,
+        content_ja=unit.content_ja,
+        text_ja=unit.text_ja,
+        state=unit.state,
+        quality_flags=list(unit.quality_flags or []),
+        proposal=unit.proposal,
+        model=unit.model,
+    )
+    db.add(forked)
+    await db.flush()
+    return personal_set, forked
+
+
+@router.put(
+    "/api/translation-units/{unit_id}",
+    response_model=UnitEditResponse,
+    operation_id="translations_edit_unit",
+)
+async def edit_unit(
+    unit_id: str, body: UnitEditRequest, user: CurrentUser, db: DbDep
+) -> UnitEditResponse:
+    unit = await _get_unit_or_404(db, unit_id)
+    tset, _revision, _paper = await _set_with_access(db, str(unit.set_id), user)
+    target_set, target_unit = await _ensure_personal_unit(db, tset, unit, user)
+
+    # 手動編集はプレースホルダ構造を失う(単一の text インラインとして保存。plans/06 §11.3)。
+    # content_ja の実体は Inline[] | TableTranslationJson(plans/02 §3.2・plans/06 §10.4)で
+    # モデルの dict[str, Any] 注釈は簡略化されている。
+    target_unit.text_ja = body.text_ja
+    target_unit.content_ja = [{"t": "text", "v": body.text_ja}]  # type: ignore[assignment]
+    target_unit.state = "edited"
+    target_unit.quality_flags = []
+    await db.commit()
+    return UnitEditResponse(
+        unit_id=str(target_unit.id),
+        state="edited",
+        text_ja=target_unit.text_ja,
+        set_id=str(target_set.id),
+    )
+
+
+# --- §7.8 proposal の採用・破棄 ------------------------------------------------------
+
+
+class ProposalAcceptResponse(BaseModel):
+    unit_id: str
+    text_ja: str
+    state: str
+
+
+def _find_block(content: DocumentContent, block_id: str) -> Block | None:
+    for _sec, blk in content.iter_blocks():
+        if blk.id == block_id:
+            return blk
+    return None
+
+
+def _recompute_quality_flags(
+    revision: DocumentRevision, block_id: str, text_ja: str, snapshot: list[Any]
+) -> list[str]:
+    """proposal 採用時の品質フラグ再計算(plans/06 §11.2)。プレースホルダ検証は対象外(§11.1 で
+    保存前に済んでいるため)。ブロックが見つからない場合はフラグなしとする。
+    """
+    block = _find_block(_as_content(revision), block_id)
+    if block is None:
+        return []
+    encoded = encode_block(block.model_dump())
+    source_plain = block_to_plain(block)
+    return run_quality_checks(encoded, source_plain, text_ja, snapshot)
+
+
+@router.post(
+    "/api/translation-units/{unit_id}/proposal/accept",
+    response_model=ProposalAcceptResponse,
+    operation_id="translations_accept_proposal",
+)
+async def accept_proposal(unit_id: str, user: CurrentUser, db: DbDep) -> ProposalAcceptResponse:
+    unit = await _get_unit_or_404(db, unit_id)
+    tset, revision, _paper = await _set_with_access(db, str(unit.set_id), user)
+
+    proposal = unit.proposal
+    if not isinstance(proposal, dict) or not proposal:
+        raise ProblemException("not_found", detail="採用可能な proposal がありません")
+
+    target_set, target_unit = await _ensure_personal_unit(db, tset, unit, user)
+    text_ja = str(proposal.get("text_ja", ""))
+    content_ja = proposal.get("content_ja")
+    target_unit.text_ja = text_ja
+    if content_ja is not None:
+        target_unit.content_ja = content_ja
+    target_unit.state = "machine"
+    if proposal.get("model"):
+        target_unit.model = str(proposal["model"])
+    target_unit.quality_flags = _recompute_quality_flags(
+        revision, unit.block_id, text_ja, list(target_set.glossary_snapshot or [])
+    )
+    target_unit.proposal = None
+    await db.commit()
+    return ProposalAcceptResponse(
+        unit_id=str(target_unit.id), text_ja=target_unit.text_ja, state=target_unit.state
+    )
+
+
+@router.delete(
+    "/api/translation-units/{unit_id}/proposal",
+    status_code=status.HTTP_204_NO_CONTENT,
+    operation_id="translations_discard_proposal",
+)
+async def discard_proposal(unit_id: str, user: CurrentUser, db: DbDep) -> Response:
+    unit = await _get_unit_or_404(db, unit_id)
+    await _set_with_access(db, str(unit.set_id), user)
+    unit.proposal = None
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --- §5.8 読書位置の自動保存 -------------------------------------------------------
