@@ -20,7 +20,7 @@ export interface AccountSettingsProps {
   apiKeys: ApiKeyItem[];
   onRouteChange: (useCase: LlmUseCase, entry: RouteEntry) => void;
   onRasterChange: (next: boolean) => void;
-  onSaveKey: (provider: ByokProvider, apiKey: string) => void;
+  onSaveKey: (provider: ByokProvider, apiKey: string) => Promise<unknown>;
   onDeleteKey: (provider: ByokProvider) => void;
 }
 
@@ -55,9 +55,7 @@ export function AccountSettings({
                 masked={item?.masked ?? null}
                 createdAt={item?.created_at ?? null}
                 divider={index < BYOK_PROVIDERS.length - 1}
-                onSave={(apiKey) => {
-                  onSaveKey(provider, apiKey);
-                }}
+                onSave={(apiKey) => onSaveKey(provider, apiKey)}
                 onDelete={() => {
                   onDeleteKey(provider);
                 }}

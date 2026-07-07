@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 import { ApiKeyRow } from "@/components/settings/ApiKeyRow";
@@ -9,7 +9,7 @@ import type { AvailableModels } from "@/components/settings/types";
 describe("ApiKeyRow (BYOK)", () => {
   test("unset row shows 未設定 and 設定, then saves a trimmed key", async () => {
     const user = userEvent.setup();
-    const onSave = vi.fn();
+    const onSave = vi.fn().mockResolvedValue(undefined);
     render(
       <ApiKeyRow provider="openai" masked={null} createdAt={null} onSave={onSave} onDelete={() => {}} />,
     );
@@ -33,7 +33,7 @@ describe("ApiKeyRow (BYOK)", () => {
         provider="anthropic"
         masked="sk-…3fA"
         createdAt="2026-07-01T12:00:00Z"
-        onSave={() => {}}
+        onSave={() => Promise.resolve()}
         onDelete={onDelete}
       />,
     );
@@ -41,6 +41,39 @@ describe("ApiKeyRow (BYOK)", () => {
     expect(screen.getByRole("button", { name: "再設定" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "削除" }));
     expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  test("422 (validation_error) shows an inline message and keeps the popover open (4f §5.4)", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockRejectedValue({ code: "validation_error", status: 422 });
+    render(
+      <ApiKeyRow provider="openai" masked={null} createdAt={null} onSave={onSave} onDelete={() => {}} />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "設定" }));
+    const input = screen.getByPlaceholderText("API キーを貼り付け");
+    await user.type(input, "bad-key");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(await screen.findByText("キーの形式が正しくありません")).toBeInTheDocument();
+    // ポップオーバーは開いたまま(入力欄が見え続ける)
+    expect(screen.getByPlaceholderText("API キーを貼り付け")).toBeInTheDocument();
+  });
+
+  test("non-422 failure does not show the inline 422 message (Toast is the caller's responsibility)", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockRejectedValue(new Error("network error"));
+    render(
+      <ApiKeyRow provider="openai" masked={null} createdAt={null} onSave={onSave} onDelete={() => {}} />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "設定" }));
+    const input = screen.getByPlaceholderText("API キーを貼り付け");
+    await user.type(input, "some-key");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(screen.queryByText("キーの形式が正しくありません")).not.toBeInTheDocument();
   });
 });
 

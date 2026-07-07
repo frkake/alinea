@@ -1,11 +1,94 @@
 /**
- * 設定画面(4f)の型・語彙(M0 スコープ: アカウント + 翻訳の LLM 節)。
+ * 設定画面(4f)の型・語彙(M1-17: 8 カテゴリ完成)。
  * GET /api/settings のレスポンスは生成 SDK では緩い型({[key:string]:unknown})のため、
  * 画面で使う部分だけをここで型付けする(API の schemas/settings.py と 1:1)。
  */
 
-/** M0 で表示する設定カテゴリ(他カテゴリは非表示=M1)。 */
-export type SettingsCategory = "account" | "translation";
+import type { AccentKey } from "@/lib/theme";
+
+/** 設定カテゴリ 8 種(4f §4.3。左ナビの表示順と同一)。 */
+export type SettingsCategory =
+  | "account"
+  | "display"
+  | "translation"
+  | "reading"
+  | "chat"
+  | "notifications"
+  | "export"
+  | "extension";
+
+export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
+  "account",
+  "display",
+  "translation",
+  "reading",
+  "chat",
+  "notifications",
+  "export",
+  "extension",
+];
+
+export function isSettingsCategory(v: string | undefined): v is SettingsCategory {
+  return !!v && (SETTINGS_CATEGORIES as readonly string[]).includes(v);
+}
+
+/** 既定の翻訳スタイル(4f §4.4.1)。 */
+export type TranslationStyle = "natural" | "literal";
+/** ステータスの自動遷移(4f §4.5.2)。 */
+export type StatusTransition = "auto" | "suggest" | "off";
+/** テーマ(display.theme。本画面では未描画=M1-17 スコープ外だが型は保持)。 */
+export type ThemePrefValue = "light" | "dark" | "system";
+/** 本文の書体(4f §4.7.5)。 */
+export type BodyFontValue = "serif" | "sans";
+/** アクセントの hex 値(plans/03 §17.1)。 */
+export type AccentHex = "#3E5C76" | "#4A6B57" | "#6E5A7E" | "#7A5C48";
+
+export interface DisplayPrefs {
+  theme: ThemePrefValue;
+  accent: AccentHex;
+  body_font: BodyFontValue;
+  font_size_px: number;
+  line_height: number;
+  content_width_px: number;
+}
+
+export interface TranslationPrefs {
+  default_style: TranslationStyle;
+  auto_translate_appendix: boolean;
+  translate_table_cells: boolean;
+  suggest_section_selection_over_30_pages: boolean;
+}
+
+export interface ReadingPrefs {
+  track_reading_time: boolean;
+  status_transition: StatusTransition;
+}
+
+export interface ChatPrefs {
+  include_annotations_and_notes: boolean;
+}
+
+export interface NotificationsPrefs {
+  translation_complete: boolean;
+  status_suggestion: boolean;
+  deadline_reminder: boolean;
+}
+
+export interface ExtensionPrefs {
+  arxiv_inline_button: boolean;
+}
+
+/** アクセントの hex → data-accent キー対応(plans/08 §2.3 ACCENTS)。 */
+export const ACCENT_SWATCHES: ReadonlyArray<{ hex: AccentHex; key: AccentKey; label: string }> = [
+  { hex: "#3E5C76", key: "slate", label: "スレートブルー" },
+  { hex: "#4A6B57", key: "green", label: "緑" },
+  { hex: "#6E5A7E", key: "purple", label: "紫" },
+  { hex: "#7A5C48", key: "terracotta", label: "テラコッタ" },
+];
+
+export function accentKeyForHex(hex: string): AccentKey {
+  return ACCENT_SWATCHES.find((s) => s.hex === hex)?.key ?? "slate";
+}
 
 export type ProviderId = "openai" | "anthropic" | "google" | "deepseek" | "xai";
 
@@ -46,8 +129,14 @@ export interface LlmRouting {
   overview_figure_raster_mode: boolean;
 }
 
-/** GET /api/settings のうち M0 で参照する部分。 */
+/** GET /api/settings のレスポンス(4f 全カテゴリで参照する部分)。 */
 export interface SettingsData {
+  display: DisplayPrefs;
+  translation: TranslationPrefs;
+  reading: ReadingPrefs;
+  chat: ChatPrefs;
+  notifications: NotificationsPrefs;
+  extension: ExtensionPrefs;
   llm_routing: LlmRouting;
   available_models: AvailableModels;
 }

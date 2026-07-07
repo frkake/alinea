@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { Popover } from "@/components/ui/Popover";
+import { isValidationErrorLike } from "@/components/settings/errors";
 import { PROVIDER_LABELS, type ByokProvider } from "@/components/settings/types";
 
 /** BYOK 1 行 + キー編集ポップオーバー(4f §4.7.4-2)。 */
@@ -9,7 +10,8 @@ export interface ApiKeyRowProps {
   provider: ByokProvider;
   masked: string | null;
   createdAt: string | null;
-  onSave: (apiKey: string) => void;
+  /** 失敗時は reject する(422 はポップオーバー内にインライン表示。§5.4)。 */
+  onSave: (apiKey: string) => Promise<unknown>;
   onDelete: () => void;
   divider?: boolean;
 }
@@ -38,6 +40,8 @@ export function ApiKeyRow({ provider, masked, createdAt, onSave, onDelete, divid
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
 
   const isSet = masked != null;
   const created = formatCreatedAt(createdAt);
@@ -47,11 +51,21 @@ export function ApiKeyRow({ provider, masked, createdAt, onSave, onDelete, divid
 
   const trimmed = draft.trim();
 
-  const submit = () => {
-    if (!trimmed) return;
-    onSave(trimmed);
-    setDraft("");
-    setOpen(false);
+  const submit = async () => {
+    if (!trimmed || pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      await onSave(trimmed);
+      setDraft("");
+      setOpen(false);
+    } catch (err) {
+      // 422(キー形式不正)はポップオーバー内にインライン表示し、開いたままにする(4f §5.4)。
+      // それ以外の失敗は呼び出し側(SettingsClient)の Toast に委ねる。
+      setError(isValidationErrorLike(err) ? "キーの形式が正しくありません" : null);
+    } finally {
+      setPending(false);
+    }
   };
 
   return (
@@ -85,6 +99,7 @@ export function ApiKeyRow({ provider, masked, createdAt, onSave, onDelete, divid
           type="button"
           style={smallButton}
           onClick={() => {
+            setError(null);
             setOpen((v) => !v);
           }}
         >
@@ -111,55 +126,63 @@ export function ApiKeyRow({ provider, masked, createdAt, onSave, onDelete, divid
         placement="bottom-end"
         caret={false}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: 12 }}>
-          <input
-            type="password"
-            value={draft}
-            autoFocus
-            placeholder="API キーを貼り付け"
-            aria-label={`${PROVIDER_LABELS[provider]} の API キー`}
-            onChange={(e) => {
-              setDraft(e.target.value);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                submit();
-              }
-            }}
-            style={{
-              flex: 1,
-              minWidth: 0,
-              height: 28,
-              padding: "0 10px",
-              border: "1px solid var(--pr-border-control)",
-              borderRadius: 6,
-              fontSize: 11.5,
-              fontFamily: "inherit",
-              background: "var(--pr-bg-control)",
-              color: "var(--pr-text)",
-            }}
-          />
-          <button
-            type="button"
-            disabled={!trimmed}
-            onClick={submit}
-            style={{
-              height: 28,
-              padding: "0 12px",
-              border: "none",
-              borderRadius: 6,
-              background: "var(--pr-acc)",
-              color: "#FFFFFF",
-              fontSize: 11.5,
-              fontWeight: 600,
-              cursor: trimmed ? "pointer" : "default",
-              opacity: trimmed ? 1 : 0.5,
-              fontFamily: "inherit",
-            }}
-          >
-            保存
-          </button>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="password"
+              value={draft}
+              autoFocus
+              placeholder="API キーを貼り付け"
+              aria-label={`${PROVIDER_LABELS[provider]} の API キー`}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                setError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void submit();
+                }
+              }}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                height: 28,
+                padding: "0 10px",
+                border: "1px solid var(--pr-border-control)",
+                borderRadius: 6,
+                fontSize: 11.5,
+                fontFamily: "inherit",
+                background: "var(--pr-bg-control)",
+                color: "var(--pr-text)",
+              }}
+            />
+            <button
+              type="button"
+              disabled={!trimmed || pending}
+              onClick={() => {
+                void submit();
+              }}
+              style={{
+                height: 28,
+                padding: "0 12px",
+                border: "none",
+                borderRadius: 6,
+                background: "var(--pr-acc)",
+                color: "#FFFFFF",
+                fontSize: 11.5,
+                fontWeight: 600,
+                cursor: trimmed && !pending ? "pointer" : "default",
+                opacity: trimmed && !pending ? 1 : 0.5,
+                fontFamily: "inherit",
+              }}
+            >
+              保存
+            </button>
+          </div>
+          {error ? (
+            <span style={{ fontSize: 10, color: "var(--pr-warn)" }}>{error}</span>
+          ) : null}
         </div>
       </Popover>
     </div>

@@ -1,9 +1,9 @@
 import { SettingsClient } from "@/components/settings/SettingsClient";
-import type { SettingsCategory } from "@/components/settings/types";
+import { isSettingsCategory, type SettingsCategory } from "@/components/settings/types";
 
 /**
- * 設定画面(4f、M0 スコープ)。?category= で account / translation を切替。
- * 省略・M0 未対応カテゴリ(export など)は account へ正規化(4f §1 の決定)。
+ * 設定画面(4f)。?category= で 8 カテゴリを切替。
+ * 省略時・不正値は account へ正規化する(4f §1 の決定。URL は書き換えない)。
  */
 export default async function SettingsPage({
   searchParams,
@@ -11,6 +11,6 @@ export default async function SettingsPage({
   searchParams: Promise<{ category?: string }>;
 }) {
   const { category } = await searchParams;
-  const normalized: SettingsCategory = category === "translation" ? "translation" : "account";
+  const normalized: SettingsCategory = isSettingsCategory(category) ? category : "account";
   return <SettingsClient category={normalized} />;
 }
