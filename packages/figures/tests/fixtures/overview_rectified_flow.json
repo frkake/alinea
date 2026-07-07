@@ -1,0 +1,37 @@
+{
+  "dsl": {
+    "layout": "flow-3",
+    "cards": [
+      {
+        "role": "problem",
+        "label": "課題",
+        "heading": "拡散モデルは生成に多数のステップを要する",
+        "body": "確率フローODEの経路が曲がっているため、少ないステップでは離散化誤差が大きくなる。",
+        "tone": "neutral"
+      },
+      {
+        "role": "proposal",
+        "label": "提案 — RECTIFIED FLOW",
+        "heading": "始点と終点を直線で結ぶ輸送を学習する",
+        "body": "線形補間経路上で速度場を回帰し、reflow で経路を繰り返し直線化する。",
+        "tone": "accent"
+      },
+      {
+        "role": "result",
+        "label": "結果",
+        "heading": "1ステップ生成でも高品質を達成",
+        "body": "reflow 2回+蒸留で FID 4.85 を1ステップで達成し、従来手法を上回った。",
+        "tone": "green"
+      }
+    ],
+    "connectors": [
+      { "from": 0, "to": 1 },
+      { "from": 1, "to": 2 }
+    ],
+    "footer": {
+      "generated_by": "✦ AI 生成 · 訳読",
+      "date": "2026-07-06"
+    }
+  },
+  "evidence_chips": ["§1", "§2.2", "表1"]
+}

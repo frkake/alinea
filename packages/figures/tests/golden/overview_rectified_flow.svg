@@ -1,0 +1,38 @@
+  <svg xmlns="http://www.w3.org/2000/svg" width="718" height="210.39" viewBox="0 0 718 210.39" font-family="'IBM Plex Sans JP', sans-serif">
+  <rect x="0" y="0" width="718" height="210.39" fill="#FFFFFF"/>
+  <rect x="20" y="18" width="191.88" height="144.39" rx="8" fill="#FBFAF7" stroke="#E2DFD5"/>
+  <path d="M20,21 L20,21 Q20,18 23,18 L208.88,18 Q211.88,18 211.88,21 L211.88,21 Z" fill="#B0ACA2"/>
+  <text x="34" y="42.36" font-size="9.5" font-weight="700" letter-spacing="0.6" fill="#8A8E94">課題</text>
+  <text x="34" y="66.82" font-size="12" font-weight="600" fill="#1E2227">拡散モデルは生成に多数のス</text>
+  <text x="34" y="86.02" font-size="12" font-weight="600" fill="#1E2227">テップを要する</text>
+  <text x="34" y="110.88" font-size="10.5" fill="#5B6067">確率フローODEの経路が曲がって</text>
+  <text x="34" y="128.21" font-size="10.5" fill="#5B6067">いるため、少ないステップでは離</text>
+  <text x="34" y="145.54" font-size="10.5" fill="#5B6067">散化誤差が大きくなる。</text>
+  <rect x="243.88" y="18" width="230.24" height="144.39" rx="8" fill="#FFFFFF" stroke="var(--pr-am, rgba(62,92,118,0.32))"/>
+  <path d="M243.88,21 L243.88,21 Q243.88,18 246.88,18 L471.12,18 Q474.12,18 474.12,21 L474.12,21 Z" fill="var(--pr-a, #3E5C76)"/>
+  <text x="257.88" y="42.36" font-size="9.5" font-weight="700" letter-spacing="0.6" fill="var(--pr-a, #3E5C76)">提案 — RECTIFIED FLOW</text>
+  <text x="257.88" y="66.82" font-size="12" font-weight="600" fill="#1E2227">始点と終点を直線で結ぶ輸送を学習</text>
+  <text x="257.88" y="86.02" font-size="12" font-weight="600" fill="#1E2227">する</text>
+  <text x="257.88" y="110.88" font-size="10.5" fill="#5B6067">線形補間経路上で速度場を回帰し、</text>
+  <text x="257.88" y="128.21" font-size="10.5" fill="#5B6067">reflow で経路を繰り返し直線化する。</text>
+  <rect x="506.12" y="18" width="191.88" height="144.39" rx="8" fill="#FBFAF7" stroke="#E2DFD5"/>
+  <path d="M506.12,21 L506.12,21 Q506.12,18 509.12,18 L695,18 Q698,18 698,21 L698,21 Z" fill="#659471"/>
+  <text x="520.12" y="42.36" font-size="9.5" font-weight="700" letter-spacing="0.6" fill="#4C7458">結果</text>
+  <text x="520.12" y="66.82" font-size="12" font-weight="600" fill="#1E2227">1ステップ生成でも高品質を達</text>
+  <text x="520.12" y="86.02" font-size="12" font-weight="600" fill="#1E2227">成</text>
+  <text x="520.12" y="110.88" font-size="10.5" fill="#5B6067">reflow 2回+蒸留で FID 4.85 を1</text>
+  <text x="520.12" y="128.21" font-size="10.5" fill="#5B6067">ステップで達成し、従来手法を上</text>
+  <text x="520.12" y="145.54" font-size="10.5" fill="#5B6067">回った。</text>
+  <text x="227.88" y="95.95" font-size="16" text-anchor="middle" fill="#B0B4BA">→</text>
+  <text x="490.12" y="95.95" font-size="16" text-anchor="middle" fill="#B0B4BA">→</text>
+  <line x1="0" y1="180.39" x2="718" y2="180.39" stroke="#F0EDE4"/>
+  <rect x="0" y="180.39" width="718" height="30" fill="#FBFAF7"/>
+  <text x="20" y="198.81" font-size="9.5" fill="#9A9EA4">✦ AI 生成 · 訳読 · 2026-07-06</text>
+  <text x="592.25" y="198.81" font-size="9.5" text-anchor="end" fill="#9A9EA4">根拠:</text>
+  <rect x="598.25" y="187.89" width="25.95" height="15" rx="7.5" fill="#FFFFFF" stroke="var(--pr-am, rgba(62,92,118,0.32))"/>
+  <text x="611.22" y="198.63" font-size="9" text-anchor="middle" fill="var(--pr-a, #3E5C76)">§1</text>
+  <rect x="630.2" y="187.89" width="35.85" height="15" rx="7.5" fill="#FFFFFF" stroke="var(--pr-am, rgba(62,92,118,0.32))"/>
+  <text x="648.12" y="198.63" font-size="9" text-anchor="middle" fill="var(--pr-a, #3E5C76)">§2.2</text>
+  <rect x="672.05" y="187.89" width="25.95" height="15" rx="7.5" fill="#FFFFFF" stroke="var(--pr-am, rgba(62,92,118,0.32))"/>
+  <text x="685.02" y="198.63" font-size="9" text-anchor="middle" fill="var(--pr-a, #3E5C76)">表1</text>
+  </svg>
