@@ -422,8 +422,35 @@ async def arxiv_query(request: Request) -> Response:
 
 async def arxiv_eprint(request: Request) -> Response:
     arxiv_id = request.path_params.get("arxiv_id", "")
-    # 決定的な gzip(mtime=0)。中身は最小の LaTeX ソースを模した固定バイト列。
-    source = f"\\documentclass{{article}}\\begin{{document}}Mock {arxiv_id}\\end{{document}}\n"
+    # 決定的な gzip(mtime=0)の単一ファイル LaTeX ソース。_LATEXML_HTML と同一の
+    # 論理構造(§1 Introduction+式(1)/§2 Method+図/参考文献)を持たせ、M2-01 の
+    # LaTeX 優先経路でも E2E が同じ本文(例: PW-11 の quote リアンカー対象
+    # "The mock method paragraph.")を得られるようにする。
+    source = (
+        "\\documentclass{article}\n"
+        f"\\title{{Mock Paper for {arxiv_id}}}\n"
+        "\\author{Mock Author}\n"
+        "\\begin{document}\n"
+        "\\maketitle\n"
+        "\\begin{abstract}\n"
+        f"A deterministic mock abstract for {arxiv_id}.\n"
+        "\\end{abstract}\n"
+        "\\section{Introduction}\n"
+        "Deterministic mock introduction with inline math $x_{0}$.\n"
+        "\\begin{equation}\n"
+        "y=f(x)\n"
+        "\\end{equation}\n"
+        "\\section{Method}\n"
+        "The mock method paragraph.\n"
+        "\\begin{figure}\n"
+        "\\includegraphics{x1.png}\n"
+        "\\caption{Mock figure caption.}\n"
+        "\\end{figure}\n"
+        "\\begin{thebibliography}{1}\n"
+        "\\bibitem{ref1} Mock Reference. Deterministic citations, 2026.\n"
+        "\\end{thebibliography}\n"
+        "\\end{document}\n"
+    )
     blob = gzip.compress(source.encode(), mtime=0)
     return Response(blob, media_type="application/gzip")
 

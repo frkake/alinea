@@ -33,46 +33,102 @@ from yakudoku_llm.types import (
 _PLACEHOLDER = re.compile(r"⟦[^⟧]*⟧")
 
 # 既定 structured ルックアップ表(§8.1)。呼び出し側スキーマに対して検証する。
+#
+# 決定(M2-17 followup): 以下 3 件は元の記述が呼び出し側スキーマ(yakudoku_core.article.schema /
+# yakudoku_figures.dsl / yakudoku_worker.tasks.generate_vocab_ai の実装)と整合しておらず
+# (キー名不一致・必須フィールド欠落・additionalProperties=false 違反)、YAKUDOKU_FAKE_LLM=1
+# 経路(E2E・開発)で record 生成/概要図/語彙 AI 生成が ProviderChainExhausted で必ず失敗する
+# バグだった。E2E(PW-13/PW-20)を通すための最小修正として実装側スキーマに合わせて書き直す
+# (deviations 参照)。
 _DEFAULT_STRUCTURED: dict[str, dict[str, Any]] = {
     "overview_figure_dsl_v1": {
-        "title": "Rectified Flow",
+        "layout": "flow-3",
         "cards": [
-            {"id": "c1", "label": "ノイズ"},
-            {"id": "c2", "label": "直線輸送"},
-            {"id": "c3", "label": "データ"},
+            {
+                "role": "problem",
+                "label": "課題",
+                "heading": "既存手法は輸送が非直線的で低速",
+                "body": "従来のフローは曲がった経路をたどり、生成に多くのステップを要する。",
+                "tone": "neutral",
+            },
+            {
+                "role": "proposal",
+                "label": "提案 — RECTIFIED FLOW",
+                "heading": "確率フローを直線化する学習法",
+                "body": "ノイズとデータを結ぶ輸送写像を直線に近づけて学習する。",
+                "tone": "accent",
+            },
+            {
+                "role": "result",
+                "label": "結果",
+                "heading": "少ないステップで高品質な生成",
+                "body": "直線化により推論のステップ数を大きく削減できる。",
+                "tone": "green",
+            },
         ],
-        "edges": [{"from": "c1", "to": "c2"}, {"from": "c2", "to": "c3"}],
+        "connectors": [{"from": 0, "to": 1}, {"from": 1, "to": 2}],
     },
-    "vocab_entry_v1": {
-        "term": "rectified flow",
-        "reading": "レクティファイド フロー",
-        "definition_ja": "直線的な確率フローで生成を行う手法。",
-        "part_of_speech": "noun",
-        "examples": ["Rectified flow straightens the trajectory."],
-        "related": ["flow matching"],
-        "outside_knowledge": False,
-        "confidence": 0.9,
+    # yakudoku_worker.tasks.generate_vocab_ai の実スキーマ名・9 フィールドと一致させる
+    # (plans/07 §7.2)。旧名 vocab_entry_v1 は実装のどこからも参照されない死んだキーだった。
+    "vocab_content_v1": {
+        "kind": "word",
+        "pos_label": "他動詞",
+        "ipa": "/ˌrektɪˈfaɪd fləʊ/",  # noqa: RUF001
+        "meaning_short": "直線化されたフロー",
+        "meaning_long": (
+            "確率フローを**直線的な輸送**へ整える手法。"
+            "この文では「rectified flow」がその学習法を指す。"
+        ),
+        "interpretation": (
+            "ノイズとデータを結ぶ経路を直線に近づけることで、少ないステップでの生成を可能にする考え方。"
+        ),
+        "etymology": "rectify(まっすぐにする)+ flow(流れ)。",
+        "mnemonic": "曲がった川を「まっすぐ(rectify)」に付け替えるイメージ。",
+        "related_forms": "flow matching, straight-line transport",
     },
     "article_v1": {
+        "title": "Rectified Flow を読む",
         "blocks": [
-            {"type": "heading", "text": "概要"},
-            {"type": "paragraph", "text": "本稿は Rectified Flow を解説する。"},
-            {"type": "heading", "text": "手法"},
-            {"type": "paragraph", "text": "確率フローを直線化する。"},
-            {"type": "heading", "text": "結果"},
-            {"type": "paragraph", "text": "少ステップで高品質を得る。"},
-        ]
+            {"type": "heading", "heading": {"level": 2, "text": "概要"}},
+            {"type": "paragraph", "markdown": "本稿は Rectified Flow を解説する。"},
+            {"type": "heading", "heading": {"level": 2, "text": "手法"}},
+            {
+                "type": "paragraph",
+                "markdown": "確率フローを直線化する。",
+                # E2E(rectified-flow シード)の実セクション ID。根拠チップ→原文ジャンプの
+                # 検証対象(PW-13)。§4.5 step2 は未知参照を無害に落とすため、シード以外の
+                # コンテキストで使っても記事生成自体は失敗しない。
+                "evidence": ["sec-2"],
+            },
+            {"type": "heading", "heading": {"level": 2, "text": "結果"}},
+            {"type": "paragraph", "markdown": "少ステップで高品質を得る。"},
+            {
+                "type": "discussion",
+                "discussion": {
+                    "items": [
+                        {"text": "少ないステップでの生成品質はどこまで改善するか?", "origin": "ai"},
+                        {"text": "他のドメインへの応用可能性は?", "origin": "ai"},
+                    ]
+                },
+            },
+            {"type": "heading", "heading": {"level": 2, "text": "まとめ"}},
+            {"type": "paragraph", "markdown": "本稿の要点を振り返る。"},
+        ],
     },
     "chat_answer_v1": {
         "answer_md": "本論文では直線化された輸送を用いる[[ev:1]]。",
         "evidence": [{"index": 1, "block_id": "blk-0001"}],
         "outside_knowledge": "一般に拡散モデルは多ステップを要する(論文外の知識)。",
     },
+    # 数字トークンを含めない(pipeline._summary_numbers_ok は要約中の数字が原稿に
+    # 部分一致するか検証するため。ランダムな arXiv 末尾番号に依存して検証が揺れると
+    # summary_3line 生成の成否が非決定になり VR-1g 等がフレークする — 原文にある数値
+    # だけを使う実運用の制約を Fake でも守り、決定的に検証を通す)。
     "summary_3line_v1": {
         "summary_lines": [
-            "課題: 決定的モック要約の 1 行目(課題)。",
-            "手法: 決定的モック要約の 2 行目(手法)。",
-            "結果: 決定的モック要約の 3 行目(結果)。",
+            "課題: 既存手法は輸送が非直線的で生成が低速になりがち。",
+            "手法: 確率フローを直線的な輸送へ整える学習法を提案する。",
+            "結果: 少ないステップで高品質な生成・転送を実現する。",
         ],
         "suggested_tags": ["mock", "e2e"],
     },
