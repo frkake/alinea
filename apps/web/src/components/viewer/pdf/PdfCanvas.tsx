@@ -47,6 +47,10 @@ export interface PdfCanvasProps {
   displayPages: (number | null)[];
   /** 複数ページ/見開きを縦に並べる場合のページ行。未指定時は displayPages を 1 行として扱う。 */
   pageGroups?: (number | null)[][];
+  /** 対訳表示用。同じ pageNumber の別PDFを右側に描く。 */
+  comparisonGetPage?: (pageNumber: number) => Promise<PdfPageLike>;
+  comparisonPageCount?: number | null;
+  comparisonSyncMap?: PdfSyncMap;
   activePage?: number;
   scale: number;
   getPage: (pageNumber: number) => Promise<PdfPageLike>;
@@ -78,6 +82,9 @@ const PDF_CANVAS_PADDING_Y_PX = 20;
 export function PdfCanvas({
   displayPages,
   pageGroups,
+  comparisonGetPage,
+  comparisonPageCount,
+  comparisonSyncMap,
   activePage,
   scale,
   getPage,
@@ -102,6 +109,7 @@ export function PdfCanvas({
   const groupsKeyRef = useRef("");
   const groups = pageGroups ?? [displayPages];
   const groupsKey = groups.map((row) => row.map((p) => p ?? "_").join(",")).join("|");
+  const comparisonSelect = useMemo(() => () => undefined, []);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -229,31 +237,70 @@ export function PdfCanvas({
                 width: "max-content",
               }}
             >
-              {row.map((p, idx) =>
-                p == null ? (
+              {row.map((p, idx) => {
+                if (p == null) {
+                  return (
+                    <div
+                      key={`empty-${rowIndex}-${idx}`}
+                      aria-hidden
+                      style={{
+                        width: pageSlotSize?.width ?? 0,
+                        height: pageSlotSize?.height ?? 0,
+                        flex: "none",
+                      }}
+                    />
+                  );
+                }
+                const comparisonPageAvailable =
+                  comparisonGetPage && (comparisonPageCount == null || p <= comparisonPageCount);
+                return (
                   <div
-                    key={`empty-${rowIndex}-${idx}`}
-                    aria-hidden
+                    key={`slot-${p}`}
                     style={{
-                      width: pageSlotSize?.width ?? 0,
-                      height: pageSlotSize?.height ?? 0,
-                      flex: "none",
+                      display: "flex",
+                      gap: comparisonGetPage ? PDF_PAGE_GAP_PX : 0,
+                      alignItems: "flex-start",
                     }}
-                  />
-                ) : (
-                  <PdfPageLayer
-                    key={p}
-                    pageNumber={p}
-                    scale={scale}
-                    getPage={getPage}
-                    syncMap={syncMap}
-                    selectedBlockId={selectedBlockId}
-                    onSelectBlock={onSelectBlock}
-                    onOpenInTranslation={onOpenInTranslation}
-                    onPageSizeResolved={onPageSizeResolved}
-                  />
-                ),
-              )}
+                  >
+                    <PdfPageLayer
+                      key={`source-${p}`}
+                      pageNumber={p}
+                      scale={scale}
+                      getPage={getPage}
+                      syncMap={syncMap}
+                      selectedBlockId={selectedBlockId}
+                      onSelectBlock={onSelectBlock}
+                      onOpenInTranslation={onOpenInTranslation}
+                      onPageSizeResolved={onPageSizeResolved}
+                    />
+                    {comparisonGetPage ? (
+                      comparisonPageAvailable ? (
+                        <PdfPageLayer
+                          key={`comparison-${p}`}
+                          pageNumber={p}
+                          scale={scale}
+                          getPage={comparisonGetPage}
+                          syncMap={comparisonSyncMap ?? syncMap}
+                          selectedBlockId={null}
+                          onSelectBlock={comparisonSelect}
+                          onOpenInTranslation={() => undefined}
+                          trackVisible={false}
+                        />
+                      ) : (
+                        <div
+                          key={`comparison-empty-${p}`}
+                          aria-hidden
+                          style={{
+                            width: pageSlotSize?.width ?? 0,
+                            height: pageSlotSize?.height ?? 0,
+                            flex: "none",
+                          }}
+                        />
+                      )
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
           ))}
         </div>
@@ -291,6 +338,7 @@ interface PdfPageLayerProps {
   onSelectBlock: (hit: SyncBlockHit | null) => void;
   onOpenInTranslation: (blockId: string) => void;
   onPageSizeResolved?: (sizePt: { width: number; height: number }) => void;
+  trackVisible?: boolean;
 }
 
 interface PdfAnnotationLinkItem {
@@ -309,6 +357,7 @@ function PdfPageLayer({
   onSelectBlock,
   onOpenInTranslation,
   onPageSizeResolved,
+  trackVisible = true,
 }: PdfPageLayerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
@@ -456,7 +505,7 @@ function PdfPageLayer({
     <div
       ref={wrapRef}
       className="yk-pdf-page-layer"
-      data-pdf-page={pageNumber}
+      data-pdf-page={trackVisible ? pageNumber : undefined}
       onPointerDown={onDragStart}
       onPointerMove={onDragMove}
       onMouseDown={onDragStart}

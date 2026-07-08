@@ -172,9 +172,10 @@ export function ViewerShell({
   };
 
   const progressPct = viewer.translation?.progress_pct ?? 0;
-  const pdfVariantQuery = pdfDocumentMode === "source" ? "" : `?variant=${pdfDocumentMode}`;
+  const pdfFetchMode = pdfDocumentMode === "translated" ? "translated" : "source";
+  const pdfVariantQuery = pdfFetchMode === "source" ? "" : `?variant=${pdfFetchMode}`;
   const pdfDownloadLabel =
-    pdfDocumentMode === "source" ? "原文PDF" : pdfDocumentMode === "translated" ? "日本語PDF" : "対訳PDF";
+    pdfFetchMode === "source" ? "原文PDF" : "日本語PDF";
 
   return (
     <div
@@ -204,7 +205,7 @@ export function ViewerShell({
       />
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
         {effectiveMode === "pdf" ? (
-          <PdfDocumentProvider paperId={paperId} variant={pdfDocumentMode}>
+          <PdfDocumentProvider paperId={paperId} variant={pdfFetchMode}>
             <PdfSidebar
               toc={viewer.toc}
               activeSectionId={activeSectionId}

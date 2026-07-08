@@ -45,7 +45,7 @@ from yakudoku_core.settings import CoreSettings
 from yakudoku_core.storage.s3 import S3Storage, StorageKeys
 from yakudoku_core.translation.pipeline import BLOCKING_FLAGS
 
-PDF_BUILD_VERSION = "latex-ja-pdf-1.0.0"
+PDF_BUILD_VERSION = "latex-ja-pdf-1.1.0"
 DEFAULT_TEXLIVE_IMAGE = "yakudoku-texlive-ja:latest"
 
 _SECTION_CMD_RE = re.compile(
@@ -127,7 +127,6 @@ class RenderedLatexSource:
 class LatexPdfBuildOutcome:
     built: bool
     translated_key: str | None = None
-    bilingual_key: str | None = None
     warnings: list[str] = field(default_factory=list)
     skipped_reason: str | None = None
 
@@ -173,6 +172,7 @@ def _unit_is_displayable(unit: TranslationUnit) -> bool:
 
 
 def _latex_escape_text(text: str) -> str:
+    text = "".join(ch for ch in text if ch >= " " or ch in "\n\t")
     repl = {
         "\\": r"\textbackslash{}",
         "{": r"\{",
@@ -353,9 +353,11 @@ def _transform_env(
         return _replace_whole_env(inner, cursor, "theorem")
     if base == "abstract" and abstract_ja:
         return _latex_escape_text(abstract_ja)
+    if base == "document":
+        return _transform_latex_text(inner, cursor, abstract_ja)
     if base in _SKIP_ENVS:
         return inner
-    return _transform_latex_text(inner, cursor, abstract_ja)
+    return inner
 
 
 def _transform_latex_text(text: str, cursor: _TranslationCursor, abstract_ja: str | None) -> str:
@@ -566,42 +568,6 @@ def _validate_translated_pdf(pdf_bytes: bytes) -> None:
         doc.close()
 
 
-def _build_bilingual_pdf(original_pdf: bytes, translated_pdf: bytes) -> bytes:
-    src = fitz.open(stream=original_pdf, filetype="pdf")
-    ja = fitz.open(stream=translated_pdf, filetype="pdf")
-    out = fitz.open()
-    try:
-        page_count = max(src.page_count, ja.page_count)
-        if page_count < 1:
-            raise LatexPdfBuildError("invalid_pdf", "cannot build bilingual PDF from empty inputs")
-        for index in range(page_count):
-            src_page = src.load_page(index) if index < src.page_count else None
-            ja_page = ja.load_page(index) if index < ja.page_count else None
-            fallback_rect = fitz.Rect(0, 0, 612, 792)
-            src_rect = (
-                src_page.rect
-                if src_page is not None
-                else ja_page.rect
-                if ja_page
-                else fallback_rect
-            )
-            ja_rect = ja_page.rect if ja_page is not None else src_rect
-            height = max(src_rect.height, ja_rect.height)
-            half_width = max(src_rect.width, ja_rect.width)
-            page = out.new_page(width=half_width * 2, height=height)
-            if src_page is not None:
-                page.show_pdf_page(fitz.Rect(0, 0, half_width, height), src, src_page.number)
-            if ja_page is not None:
-                page.show_pdf_page(
-                    fitz.Rect(half_width, 0, half_width * 2, height), ja, ja_page.number
-                )
-        return bytes(out.tobytes(deflate=True, garbage=4))
-    finally:
-        out.close()
-        src.close()
-        ja.close()
-
-
 async def _compile_rendered_source(
     rendered: RenderedLatexSource, *, image: str, timeout_s: int
 ) -> bytes:
@@ -675,30 +641,6 @@ async def _record_pdf_asset(
     )
 
 
-async def _load_original_pdf(
-    session: AsyncSession, storage: S3Storage, *, paper_id: str, source_version: str
-) -> bytes | None:
-    asset = (
-        (
-            await session.execute(
-                select(SourceAsset)
-                .where(
-                    SourceAsset.paper_id == paper_id,
-                    SourceAsset.source_version == source_version,
-                    SourceAsset.kind.in_(("pdf", "arxiv_pdf", "pdf_upload", "extension_capture")),
-                )
-                .order_by(SourceAsset.created_at.desc())
-                .limit(1)
-            )
-        )
-        .scalars()
-        .first()
-    )
-    if asset is None:
-        return None
-    return await storage.get(storage.sources_bucket, asset.storage_key)
-
-
 async def _find_latex_asset(
     session: AsyncSession, *, paper_id: str, source_version: str
 ) -> SourceAsset | None:
@@ -732,7 +674,7 @@ async def build_latex_translation_pdfs_if_ready(
     *,
     set_id: str,
 ) -> LatexPdfBuildOutcome:
-    """Build and persist translated/bilingual PDFs when the translation set is complete."""
+    """Build and persist translated PDFs when the translation set is complete."""
 
     tset = await session.get(TranslationSet, set_id)
     if tset is None:
@@ -752,19 +694,14 @@ async def build_latex_translation_pdfs_if_ready(
     source_version = revision.source_version
     style = tset.style
     translated_key = StorageKeys.translated_pdf(paper_id, source_version, style)
-    bilingual_key = StorageKeys.bilingual_pdf(paper_id, source_version, style)
 
     existing_translated = await _find_asset(
         session, paper_id=paper_id, source_version=source_version, kind="translated_pdf"
     )
-    existing_bilingual = await _find_asset(
-        session, paper_id=paper_id, source_version=source_version, kind="bilingual_pdf"
-    )
-    if existing_translated is not None and existing_bilingual is not None:
+    if existing_translated is not None:
         return LatexPdfBuildOutcome(
             False,
             translated_key=existing_translated.storage_key,
-            bilingual_key=existing_bilingual.storage_key,
             skipped_reason="already_built",
         )
 
@@ -817,46 +754,26 @@ async def build_latex_translation_pdfs_if_ready(
         data=translated_pdf,
     )
 
-    bilingual_written_key: str | None = None
-    original_pdf = await _load_original_pdf(
-        session, storage, paper_id=paper_id, source_version=source_version
-    )
-    if original_pdf is not None:
-        bilingual_pdf = await asyncio.to_thread(_build_bilingual_pdf, original_pdf, translated_pdf)
-        await storage.put(
-            storage.sources_bucket,
-            bilingual_key,
-            bilingual_pdf,
-            content_type="application/pdf",
-            metadata={"build": PDF_BUILD_VERSION, "translation_set_id": set_id},
-        )
-        await _record_pdf_asset(
-            session,
-            paper_id=paper_id,
-            source_version=source_version,
-            kind="bilingual_pdf",
-            storage_key=bilingual_key,
-            source_url=f"translation-set:{set_id}",
-            data=bilingual_pdf,
-        )
-        bilingual_written_key = bilingual_key
-
     stats = dict(revision.stats or {})
     pdf_stats = dict(stats.get("translated_pdf") or {})
     pdf_stats[style] = {
         "build_version": PDF_BUILD_VERSION,
         "translation_set_id": set_id,
         "storage_key": translated_key,
-        "bilingual_storage_key": bilingual_written_key,
         "replacements": rendered.replacements,
         "built_at": dt.datetime.now(dt.UTC).isoformat(),
     }
     stats["translated_pdf"] = pdf_stats
+    failures = dict(stats.get("translated_pdf_failures") or {})
+    failures.pop(style, None)
+    if failures:
+        stats["translated_pdf_failures"] = failures
+    else:
+        stats.pop("translated_pdf_failures", None)
     revision.stats = stats
     await session.commit()
     return LatexPdfBuildOutcome(
         True,
         translated_key=translated_key,
-        bilingual_key=bilingual_written_key,
         warnings=rendered.warnings,
     )

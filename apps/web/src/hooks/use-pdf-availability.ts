@@ -3,6 +3,8 @@
 import { useQuery } from "@tanstack/react-query";
 import type { PdfDocumentMode } from "@/stores/pdf-view-store";
 
+type PdfFetchVariant = Exclude<PdfDocumentMode, "bilingual">;
+
 /**
  * PDF アセットの有無を軽量に判定する(2a §5.3: ヘッダの「PDF」セグメント disabled 判定用)。
  * `GET /api/papers/{paper_id}/pdf` はステータス確認後すぐ本文を破棄する(全量ダウンロードは
@@ -12,7 +14,7 @@ import type { PdfDocumentMode } from "@/stores/pdf-view-store";
 /** 戻り値: true=利用可能, false=404(アセット無し), null=判定中/未着手。 */
 export function usePdfAvailability(
   paperId: string | null,
-  variant: PdfDocumentMode = "source",
+  variant: PdfFetchVariant = "source",
 ): boolean | null {
   const generatedVariant = variant !== "source";
   const query = useQuery({

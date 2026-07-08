@@ -287,7 +287,15 @@ export function PdfToolbar({
               type="button"
               aria-pressed={active}
               disabled={!available}
-              title={available ? `${label}PDF` : `${label}PDFはまだ生成されていません`}
+              title={
+                mode === "bilingual"
+                  ? available
+                    ? "原文PDFと日本語PDFを左右に表示"
+                    : "日本語PDFはまだ生成されていません"
+                  : available
+                    ? `${label}PDF`
+                    : `${label}PDFはまだ生成されていません`
+              }
               onClick={() => onDocumentModeChange(mode)}
               style={{
                 ...outlineBtn,

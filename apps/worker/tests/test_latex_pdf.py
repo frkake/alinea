@@ -5,7 +5,6 @@ from yakudoku_core.db.models import TranslationUnit
 from yakudoku_core.document.blocks import DocumentContent
 from yakudoku_core.parsing.latex_parser import LatexArchive, parse_latex_source
 from yakudoku_worker.latex_pdf import (
-    _build_bilingual_pdf,
     _find_overfull_boxes,
     _find_pdf_page_bound_violations,
     render_translated_latex_source,
@@ -128,29 +127,3 @@ def test_find_pdf_page_bound_violations_detects_text_outside_page() -> None:
 
     assert findings
     assert "kind=text" in findings[0]
-
-
-def _pdf_with_text(*pages: str) -> bytes:
-    doc = fitz.open()
-    try:
-        for text in pages:
-            page = doc.new_page(width=300, height=420)
-            page.insert_text((36, 72), text, fontsize=12)
-        return bytes(doc.tobytes())
-    finally:
-        doc.close()
-
-
-def test_build_bilingual_pdf_keeps_page_index_alignment_without_repeating_pages() -> None:
-    original = _pdf_with_text("original page 1")
-    translated = _pdf_with_text("translated page 1", "translated page 2")
-
-    out = fitz.open(stream=_build_bilingual_pdf(original, translated), filetype="pdf")
-    try:
-        assert out.page_count == 2
-        assert "original page 1" in out.load_page(0).get_text("text")
-        page_two_text = out.load_page(1).get_text("text")
-        assert "translated page 2" in page_two_text
-        assert "original page 1" not in page_two_text
-    finally:
-        out.close()

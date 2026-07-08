@@ -14,6 +14,8 @@ import { loadPdfjs } from "@/lib/pdfjs";
 import type { PdfDocumentMode } from "@/stores/pdf-view-store";
 import type { PdfViewportLike } from "./geometry";
 
+export type PdfFetchVariant = Exclude<PdfDocumentMode, "bilingual">;
+
 /** pdf.js `RenderTask` の最小インターフェース(キャンセル可能な描画)。 */
 export interface PdfRenderTask {
   promise: Promise<unknown>;
@@ -52,7 +54,7 @@ export interface UsePdfDocumentResult {
 }
 
 const qk = {
-  pdfData: (paperId: string, variant: PdfDocumentMode) => ["pdf-data", paperId, variant] as const,
+  pdfData: (paperId: string, variant: PdfFetchVariant) => ["pdf-data", paperId, variant] as const,
 };
 
 /**
@@ -62,7 +64,7 @@ const qk = {
 export function usePdfDocument(
   paperId: string | null,
   enabled: boolean,
-  variant: PdfDocumentMode = "source",
+  variant: PdfFetchVariant = "source",
 ): UsePdfDocumentResult {
   const pdfQuery = useQuery({
     queryKey: qk.pdfData(paperId ?? "", variant),
@@ -163,7 +165,7 @@ const PdfDocumentContext = createContext<UsePdfDocumentResult | null>(null);
 
 export interface PdfDocumentProviderProps {
   paperId: string;
-  variant?: PdfDocumentMode;
+  variant?: PdfFetchVariant;
   children: ReactNode;
 }
 

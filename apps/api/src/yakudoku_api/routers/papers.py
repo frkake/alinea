@@ -45,7 +45,6 @@ _PDF_KINDS = ("pdf", "arxiv_pdf", "pdf_upload", "extension_capture")
 _PDF_VARIANT_KINDS = {
     "source": _PDF_KINDS,
     "translated": ("translated_pdf",),
-    "bilingual": ("bilingual_pdf",),
 }
 
 
@@ -180,7 +179,7 @@ async def paper_pdf(
     user: CurrentUser,
     db: DbDep,
     storage: StorageDep,
-    variant: str = Query(default="source", pattern="^(source|translated|bilingual)$"),
+    variant: str = Query(default="source", pattern="^(source|translated)$"),
 ) -> Response:
     paper = await db.get(Paper, paper_id)
     if paper is None:

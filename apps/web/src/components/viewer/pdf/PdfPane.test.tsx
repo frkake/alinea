@@ -55,6 +55,7 @@ const pdfContext: UsePdfDocumentResult = {
 
 vi.mock("./use-pdf-document", () => ({
   usePdfDocumentContext: () => pdfContext,
+  usePdfDocument: () => pdfContext,
 }));
 
 const doc: DocumentResponse = {
@@ -133,6 +134,18 @@ describe("PdfPane (2a §5)", () => {
     const { container } = renderPane();
     await screen.findByText("§2.2 Reflow");
     expect(container.querySelectorAll("[data-pdf-page]")).toHaveLength(24);
+  });
+
+  test("bilingual mode renders source and translated PDF pages side by side without tracking duplicate page slots", async () => {
+    usePdfViewStore.setState({ documentMode: "bilingual" });
+    const { container } = renderPane();
+    await screen.findByText("§2.2 Reflow");
+    await waitFor(() => {
+      const trackedPages = container.querySelectorAll("[data-pdf-page]");
+      const pageLayers = container.querySelectorAll(".yk-pdf-page-layer");
+      expect(trackedPages).toHaveLength(24);
+      expect(pageLayers).toHaveLength(48);
+    });
   });
 
   test("page navigation via the toolbar updates the store and replaces the URL with the new page", async () => {

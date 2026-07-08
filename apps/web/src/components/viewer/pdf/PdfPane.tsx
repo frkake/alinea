@@ -12,7 +12,7 @@ import { PdfToolbar } from "./PdfToolbar";
 import { PDF_PAGE_GAP_PX, PdfCanvas, spreadPages } from "./PdfCanvas";
 import { buildPdfSyncMap } from "./sync-map";
 import { computeFitScale } from "./geometry";
-import { usePdfDocumentContext } from "./use-pdf-document";
+import { usePdfDocument, usePdfDocumentContext } from "./use-pdf-document";
 
 export interface PdfPaneProps {
   itemId: string;
@@ -76,6 +76,12 @@ function pageGroupsForDocument(
   return starts.map((p) => spreadPages(p, null, true, firstPageSide));
 }
 
+function maxPageCount(a: number | null, b: number | null): number | null {
+  if (a == null) return b;
+  if (b == null) return a;
+  return Math.max(a, b);
+}
+
 /** PDF モード本文ペイン(2a §3.1・§5)。ツールバー+キャンバスを統括する。 */
 export function PdfPane({
   itemId,
@@ -98,6 +104,8 @@ export function PdfPane({
   const spread = usePdfViewStore((s) => s.spread);
   const spreadFirstPageSide = usePdfViewStore((s) => s.spreadFirstPageSide);
   const documentMode = usePdfViewStore((s) => s.documentMode);
+  const bilingualMode = documentMode === "bilingual";
+  const translatedPdf = usePdfDocument(paperId, bilingualMode, "translated");
   const selectedBlockId = usePdfViewStore((s) => s.selectedBlockId);
   const resetForItem = usePdfViewStore((s) => s.resetForItem);
   const setPage = usePdfViewStore((s) => s.setPage);
@@ -127,9 +135,12 @@ export function PdfPane({
 
   const syncMap = useMemo(() => buildPdfSyncMap(docQuery.data), [docQuery.data]);
   const disabledSyncMap = useMemo(() => buildPdfSyncMap(undefined), []);
-  const visibleSyncMap = documentMode === "source" ? syncMap : disabledSyncMap;
+  const visibleSyncMap = documentMode === "translated" ? disabledSyncMap : syncMap;
   const translatedAvailable = usePdfAvailability(paperId, "translated");
-  const bilingualAvailable = usePdfAvailability(paperId, "bilingual");
+  const bilingualAvailable = translatedAvailable;
+  const activePageCount = bilingualMode ? maxPageCount(pdf.numPages, translatedPdf.numPages) : pdf.numPages;
+  const pdfLoading = pdf.loading || (bilingualMode && translatedPdf.loading);
+  const pdfError = pdf.error || (bilingualMode && translatedPdf.error);
 
   // 初期ページの優先順(2a §5.10): ①pendingScrollTarget ②URL page ③last_position
   // ④1。②④は呼び出し側が initialPage に解決済み(同期的に分かるため)。①③は document
@@ -189,8 +200,10 @@ export function PdfPane({
   const [containerSize, setContainerSize] = useState({ width: 866, height: 800 });
   const [pageSizePt, setPageSizePt] = useState({ width: 612, height: 792 });
 
-  const displayPages = spreadPages(page, pdf.numPages, spread, spreadFirstPageSide);
-  const visibleSlots = spread ? displayPages.length : 1;
+  const displayPages = bilingualMode
+    ? [page]
+    : spreadPages(page, activePageCount, spread, spreadFirstPageSide);
+  const visibleSlots = bilingualMode ? 2 : spread ? displayPages.length : 1;
   const fitContentWidthPt = pageSizePt.width * visibleSlots;
   const fitFixedWidthPx = PDF_PAGE_GAP_PX * Math.max(0, visibleSlots - 1);
   const resolvedScale = fitMode
@@ -212,10 +225,10 @@ export function PdfPane({
   }, [fitMode, resolvedScale]);
 
   const pageGroups = useMemo(
-    () => pageGroupsForDocument(page, pdf.numPages, spread, spreadFirstPageSide),
-    [page, pdf.numPages, spread, spreadFirstPageSide],
+    () => pageGroupsForDocument(page, activePageCount, bilingualMode ? false : spread, spreadFirstPageSide),
+    [page, activePageCount, bilingualMode, spread, spreadFirstPageSide],
   );
-  const sync = documentMode === "source" ? syncMap.pageToSection(page) : null;
+  const sync = documentMode === "translated" ? null : syncMap.pageToSection(page);
   const getPdfPage = pdf.getPage;
 
   const handleOpenInTranslation = () => {
@@ -224,8 +237,8 @@ export function PdfPane({
   };
 
   const stepPage = (direction: number) => {
-    const step = spread ? 2 : 1;
-    const pageCount = pdf.numPages;
+    const step = bilingualMode ? 1 : spread ? 2 : 1;
+    const pageCount = activePageCount;
     const next = direction > 0 ? page + step : page - step;
     setPage(Math.max(1, Math.min(pageCount ?? next, next)));
   };
@@ -235,8 +248,8 @@ export function PdfPane({
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
       if (isEditableTarget(e.target)) return;
-      const pageCount = pdf.numPages;
-      const step = spread ? 2 : 1;
+      const pageCount = activePageCount;
+      const step = bilingualMode ? 1 : spread ? 2 : 1;
       switch (e.key) {
         case "ArrowLeft":
         case "PageUp":
@@ -279,7 +292,7 @@ export function PdfPane({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [page, spread, pdf.numPages, selectedBlockId, setPage, selectBlock]);
+  }, [page, spread, bilingualMode, activePageCount, selectedBlockId, setPage, selectBlock]);
 
   return (
     <div
@@ -287,8 +300,8 @@ export function PdfPane({
     >
       <PdfToolbar
         page={page}
-        pageCount={pdf.numPages}
-        zoomPct={pdf.loading ? null : Math.round(resolvedScale * 100)}
+        pageCount={activePageCount}
+        zoomPct={pdfLoading ? null : Math.round(resolvedScale * 100)}
         fitMode={fitMode}
         spread={spread}
         documentMode={documentMode}
@@ -296,7 +309,7 @@ export function PdfPane({
         bilingualAvailable={bilingualAvailable}
         spreadFirstPageSide={spreadFirstPageSide}
         syncDisplay={sync?.display ?? null}
-        loading={pdf.loading || !docQuery.data}
+        loading={pdfLoading || !docQuery.data}
         onPageChange={setPage}
         onZoomIn={zoomIn}
         onZoomOut={zoomOut}
@@ -312,6 +325,9 @@ export function PdfPane({
         activePage={page}
         scale={resolvedScale}
         getPage={getPdfPage}
+        comparisonGetPage={bilingualMode ? translatedPdf.getPage : undefined}
+        comparisonPageCount={bilingualMode ? translatedPdf.numPages : undefined}
+        comparisonSyncMap={disabledSyncMap}
         syncMap={visibleSyncMap}
         selectedBlockId={selectedBlockId}
         onSelectBlock={(hit) => selectBlock(hit?.blockId ?? null)}
@@ -326,9 +342,9 @@ export function PdfPane({
           height: pageSizePt.height * resolvedScale,
         }}
         onResize={setContainerSize}
-        loading={pdf.loading || !docQuery.data}
-        error={pdf.error}
-        onRetry={pdf.retry}
+        loading={pdfLoading || !docQuery.data}
+        error={pdfError}
+        onRetry={bilingualMode && translatedPdf.error ? translatedPdf.retry : pdf.retry}
       />
     </div>
   );

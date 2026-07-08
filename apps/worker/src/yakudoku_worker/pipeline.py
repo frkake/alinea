@@ -1430,7 +1430,6 @@ class IngestRun:
             "日本語PDFをビルドしました",
             detail={
                 "translated_pdf": outcome.translated_key,
-                "bilingual_pdf": outcome.bilingual_key,
             },
             timeline=True,
         )
