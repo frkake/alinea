@@ -97,6 +97,88 @@ describe("PdfCanvas (2a §4.2.4)", () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
+  test("Ctrl+wheel zooms instead of stepping pages", () => {
+    const onWheelZoom = vi.fn();
+    const onPageStep = vi.fn();
+    const preventDefault = vi.spyOn(Event.prototype, "preventDefault");
+    const { container } = render(
+      <PdfCanvas
+        {...baseProps({
+          displayPages: [],
+          onWheelZoom,
+          onPageStep,
+        })}
+      />,
+    );
+    const root = container.querySelector<HTMLElement>(".yk-pdf-canvas-bg");
+    if (!root) throw new Error("PDF canvas root missing");
+
+    const event = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      deltaY: -120,
+    });
+
+    try {
+      fireEvent(root, event);
+      expect(preventDefault).toHaveBeenCalled();
+      expect(onWheelZoom).toHaveBeenCalledWith(1);
+      expect(onPageStep).not.toHaveBeenCalled();
+    } finally {
+      preventDefault.mockRestore();
+    }
+  });
+
+  test("keeps the pointed PDF position under the cursor after Ctrl+wheel zoom", async () => {
+    const onWheelZoom = vi.fn();
+    const props = baseProps({ onWheelZoom });
+    const { container, rerender } = render(<PdfCanvas {...props} />);
+    const root = container.querySelector<HTMLElement>(".yk-pdf-canvas-bg");
+    if (!root) throw new Error("PDF canvas root missing");
+    const pageEl = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('[data-pdf-page="5"]');
+      if (!el) throw new Error("page layer not rendered yet");
+      return el;
+    });
+
+    root.scrollLeft = 20;
+    root.scrollTop = 30;
+    let pageRect = {
+      left: 40,
+      top: 80,
+      right: 240,
+      bottom: 380,
+      width: 200,
+      height: 300,
+      x: 40,
+      y: 80,
+      toJSON: () => ({}),
+    };
+    vi.spyOn(pageEl, "getBoundingClientRect").mockImplementation(() => pageRect);
+
+    fireEvent.wheel(pageEl, { ctrlKey: true, deltaY: -120, clientX: 90, clientY: 155 });
+    expect(onWheelZoom).toHaveBeenCalledWith(1);
+
+    pageRect = {
+      left: 30,
+      top: 60,
+      right: 430,
+      bottom: 660,
+      width: 400,
+      height: 600,
+      x: 30,
+      y: 60,
+      toJSON: () => ({}),
+    };
+    rerender(<PdfCanvas {...props} scale={2} />);
+
+    await waitFor(() => {
+      expect(root.scrollLeft).toBeCloseTo(60, 5);
+      expect(root.scrollTop).toBeCloseTo(85, 5);
+    });
+  });
+
   test("clicking inside a synced bbox reports the hit via onSelectBlock", async () => {
     const onSelectBlock = vi.fn();
     const { container } = render(<PdfCanvas {...baseProps({ onSelectBlock })} />);

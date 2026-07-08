@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -9,7 +10,6 @@ import {
   type MouseEvent,
   type PointerEvent,
   type ReactNode,
-  type WheelEvent,
 } from "react";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { loadPdfjs } from "@/lib/pdfjs";
@@ -59,6 +59,7 @@ export interface PdfCanvasProps {
   onSelectBlock: (hit: SyncBlockHit | null) => void;
   onOpenInTranslation: (blockId: string) => void;
   onPageStep?: (delta: number) => void;
+  onWheelZoom?: (delta: number) => void;
   onVisiblePageChange?: (page: number) => void;
   /** フィットモード時、実測ページ寸法(pt, scale=1)を親へ返す(ズーム%表示・再計算に使う)。 */
   onPageSizeResolved?: (sizePt: { width: number; height: number }) => void;
@@ -79,6 +80,98 @@ export const PDF_PAGE_GAP_PX = 16;
 const PDF_CANVAS_PADDING_X_PX = 16;
 const PDF_CANVAS_PADDING_Y_PX = 20;
 
+interface WheelZoomAnchor {
+  scale: number;
+  clientX: number;
+  clientY: number;
+  rootViewportX: number;
+  rootViewportY: number;
+  scrollLeft: number;
+  scrollTop: number;
+  pageEl: HTMLElement | null;
+  pageXRatio: number | null;
+  pageYRatio: number | null;
+  pageWidth: number | null;
+}
+
+function clampUnit(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
+function pageLayerFromWheelEvent(root: HTMLElement, e: WheelEvent): HTMLElement | null {
+  const candidates: Element[] = [];
+  if (e.target instanceof Element) candidates.push(e.target);
+  const pointed = document.elementFromPoint?.(e.clientX, e.clientY);
+  if (pointed) candidates.push(pointed);
+
+  for (const candidate of candidates) {
+    const pageEl = candidate.closest<HTMLElement>(".yk-pdf-page-layer");
+    if (pageEl && root.contains(pageEl)) return pageEl;
+  }
+  return null;
+}
+
+function wheelZoomAnchorFromEvent(
+  root: HTMLElement,
+  e: WheelEvent,
+  scale: number,
+): WheelZoomAnchor {
+  const rootRect = root.getBoundingClientRect();
+  const anchor: WheelZoomAnchor = {
+    scale,
+    clientX: e.clientX,
+    clientY: e.clientY,
+    rootViewportX: e.clientX - rootRect.left,
+    rootViewportY: e.clientY - rootRect.top,
+    scrollLeft: root.scrollLeft,
+    scrollTop: root.scrollTop,
+    pageEl: null,
+    pageXRatio: null,
+    pageYRatio: null,
+    pageWidth: null,
+  };
+
+  const pageEl = pageLayerFromWheelEvent(root, e);
+  const pageRect = pageEl?.getBoundingClientRect();
+  if (pageEl && pageRect && pageRect.width > 0 && pageRect.height > 0) {
+    anchor.pageEl = pageEl;
+    anchor.pageXRatio = clampUnit((e.clientX - pageRect.left) / pageRect.width);
+    anchor.pageYRatio = clampUnit((e.clientY - pageRect.top) / pageRect.height);
+    anchor.pageWidth = pageRect.width;
+  }
+  return anchor;
+}
+
+function shouldWaitForPageScale(anchor: WheelZoomAnchor, nextScale: number): boolean {
+  if (!anchor.pageEl || !anchor.pageWidth || anchor.scale <= 0) return false;
+  const pageRect = anchor.pageEl.getBoundingClientRect();
+  if (pageRect.width <= 0) return false;
+  const expectedRatio = nextScale / anchor.scale;
+  const actualRatio = pageRect.width / anchor.pageWidth;
+  return Number.isFinite(expectedRatio) && Math.abs(actualRatio - expectedRatio) > 0.02;
+}
+
+function keepWheelZoomAnchorUnderCursor(
+  root: HTMLElement,
+  anchor: WheelZoomAnchor,
+  nextScale: number,
+) {
+  if (anchor.pageEl && anchor.pageXRatio != null && anchor.pageYRatio != null) {
+    const pageRect = anchor.pageEl.getBoundingClientRect();
+    if (pageRect.width > 0 && pageRect.height > 0) {
+      const targetX = pageRect.left + pageRect.width * anchor.pageXRatio;
+      const targetY = pageRect.top + pageRect.height * anchor.pageYRatio;
+      root.scrollLeft += targetX - anchor.clientX;
+      root.scrollTop += targetY - anchor.clientY;
+      return;
+    }
+  }
+
+  const ratio = anchor.scale > 0 ? nextScale / anchor.scale : 1;
+  root.scrollLeft = (anchor.scrollLeft + anchor.rootViewportX) * ratio - anchor.rootViewportX;
+  root.scrollTop = (anchor.scrollTop + anchor.rootViewportY) * ratio - anchor.rootViewportY;
+}
+
 export function PdfCanvas({
   displayPages,
   pageGroups,
@@ -93,6 +186,7 @@ export function PdfCanvas({
   onSelectBlock,
   onOpenInTranslation,
   onPageStep,
+  onWheelZoom,
   onVisiblePageChange,
   onPageSizeResolved,
   pageSlotSize,
@@ -103,6 +197,8 @@ export function PdfCanvas({
 }: PdfCanvasProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const wheelStepAtRef = useRef(0);
+  const wheelZoomAnchorRef = useRef<WheelZoomAnchor | null>(null);
+  const wheelZoomRafRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
   const suppressVisibleUntilRef = useRef(0);
   const lastVisiblePageRef = useRef<number | null>(null);
@@ -174,6 +270,71 @@ export function PdfCanvas({
     };
   }, [onVisiblePageChange, groupsKey]);
 
+  useLayoutEffect(() => {
+    const anchor = wheelZoomAnchorRef.current;
+    if (!anchor || anchor.scale === scale) return;
+
+    let cancelled = false;
+    let attempts = 0;
+    const adjust = () => {
+      wheelZoomRafRef.current = null;
+      if (cancelled) return;
+      const root = scrollRef.current;
+      const current = wheelZoomAnchorRef.current;
+      if (!root || current !== anchor) return;
+      if (attempts < 8 && shouldWaitForPageScale(anchor, scale)) {
+        attempts += 1;
+        wheelZoomRafRef.current = window.requestAnimationFrame(adjust);
+        return;
+      }
+
+      keepWheelZoomAnchorUnderCursor(root, anchor, scale);
+      wheelZoomAnchorRef.current = null;
+    };
+
+    if (wheelZoomRafRef.current != null) {
+      window.cancelAnimationFrame(wheelZoomRafRef.current);
+    }
+    wheelZoomRafRef.current = window.requestAnimationFrame(adjust);
+    return () => {
+      cancelled = true;
+      if (wheelZoomRafRef.current != null) {
+        window.cancelAnimationFrame(wheelZoomRafRef.current);
+        wheelZoomRafRef.current = null;
+      }
+    };
+  }, [scale]);
+
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root) return;
+
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        if (!loading && onWheelZoom && e.deltaY !== 0) {
+          wheelZoomAnchorRef.current = wheelZoomAnchorFromEvent(root, e, scale);
+          onWheelZoom(e.deltaY < 0 ? 1 : -1);
+        }
+        return;
+      }
+      if (!onPageStep || loading) return;
+      if (Math.abs(e.deltaY) < Math.abs(e.deltaX) || Math.abs(e.deltaY) < 24) return;
+      const atTop = root.scrollTop <= 2;
+      const atBottom = root.scrollTop + root.clientHeight >= root.scrollHeight - 2;
+      const delta = e.deltaY > 0 ? 1 : -1;
+      if ((delta > 0 && !atBottom) || (delta < 0 && !atTop)) return;
+      const now = Date.now();
+      if (now - wheelStepAtRef.current < 450) return;
+      wheelStepAtRef.current = now;
+      e.preventDefault();
+      onPageStep(delta);
+    };
+
+    root.addEventListener("wheel", onWheel, { passive: false });
+    return () => root.removeEventListener("wheel", onWheel);
+  }, [loading, onPageStep, onWheelZoom, scale]);
+
   if (error) {
     return (
       <div className={CANVAS_BG_CLASS} style={{ flex: 1, display: "grid", placeItems: "center" }}>
@@ -185,27 +346,10 @@ export function PdfCanvas({
     );
   }
 
-  const onWheel = (e: WheelEvent<HTMLDivElement>) => {
-    if (!onPageStep || loading) return;
-    if (Math.abs(e.deltaY) < Math.abs(e.deltaX) || Math.abs(e.deltaY) < 24) return;
-    const el = scrollRef.current;
-    if (!el) return;
-    const atTop = el.scrollTop <= 2;
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
-    const delta = e.deltaY > 0 ? 1 : -1;
-    if ((delta > 0 && !atBottom) || (delta < 0 && !atTop)) return;
-    const now = Date.now();
-    if (now - wheelStepAtRef.current < 450) return;
-    wheelStepAtRef.current = now;
-    e.preventDefault();
-    onPageStep(delta);
-  };
-
   return (
     <div
       ref={scrollRef}
       className={CANVAS_BG_CLASS}
-      onWheel={onWheel}
       style={{
         flex: 1,
         overflow: "auto",

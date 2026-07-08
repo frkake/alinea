@@ -161,6 +161,21 @@ describe("PdfPane (2a §5)", () => {
     );
   });
 
+  test("Ctrl+wheel updates PDF zoom state and leaves fit mode", async () => {
+    const { container } = renderPane();
+    await screen.findByText("§2.2 Reflow");
+    const root = container.querySelector<HTMLElement>(".yk-pdf-canvas-bg");
+    if (!root) throw new Error("PDF canvas root missing");
+
+    fireEvent.wheel(root, { ctrlKey: true, deltaY: -120 });
+
+    await waitFor(() => {
+      expect(usePdfViewStore.getState().zoom).toBe(1.1);
+      expect(usePdfViewStore.getState().fitMode).toBeNull();
+    });
+    expect(screen.getByText("110%")).toBeInTheDocument();
+  });
+
   test("spread first-page side control updates the PDF view store", async () => {
     const { container } = renderPane();
     await screen.findByText("§2.2 Reflow");
