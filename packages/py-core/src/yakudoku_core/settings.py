@@ -90,6 +90,8 @@ class CoreSettings(BaseSettings):
     yakudoku_deepseek_base_url: str = ""
     yakudoku_xai_base_url: str = ""
     yakudoku_arxiv_base_url: str = ""
+    yakudoku_texlive_image: str = "yakudoku-texlive-ja:latest"
+    yakudoku_latex_build_timeout_s: int = 360
 
     @property
     def sync_database_url(self) -> str:

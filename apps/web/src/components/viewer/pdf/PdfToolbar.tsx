@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { Popover } from "@/components/ui/Popover";
-import type { PdfFitMode, PdfSpreadFirstPageSide } from "@/stores/pdf-view-store";
+import type { PdfDocumentMode, PdfFitMode, PdfSpreadFirstPageSide } from "@/stores/pdf-view-store";
 
 const FIT_LABELS: Record<PdfFitMode, string> = {
   "fit-width": "幅に合わせる",
@@ -18,6 +18,9 @@ export interface PdfToolbarProps {
   /** null = ロード中(§5.2「—%」)。 */
   zoomPct: number | null;
   fitMode: PdfFitMode | null;
+  documentMode: PdfDocumentMode;
+  translatedAvailable: boolean | null;
+  bilingualAvailable: boolean | null;
   spread: boolean;
   spreadFirstPageSide: PdfSpreadFirstPageSide;
   /** null = 同期不能(「同期: —」)。 */
@@ -28,6 +31,7 @@ export interface PdfToolbarProps {
   onZoomIn: () => void;
   onZoomOut: () => void;
   onFitModeChange: (mode: PdfFitMode) => void;
+  onDocumentModeChange: (mode: PdfDocumentMode) => void;
   onToggleSpread: () => void;
   onSpreadFirstPageSideChange: (side: PdfSpreadFirstPageSide) => void;
   onOpenInTranslation: () => void;
@@ -67,6 +71,9 @@ export function PdfToolbar({
   pageCount,
   zoomPct,
   fitMode,
+  documentMode,
+  translatedAvailable,
+  bilingualAvailable,
   spread,
   spreadFirstPageSide,
   syncDisplay,
@@ -75,6 +82,7 @@ export function PdfToolbar({
   onZoomIn,
   onZoomOut,
   onFitModeChange,
+  onDocumentModeChange,
   onToggleSpread,
   onSpreadFirstPageSideChange,
   onOpenInTranslation,
@@ -258,6 +266,48 @@ export function PdfToolbar({
           </button>
         ))}
       </Popover>
+
+      <div
+        role="group"
+        aria-label="PDF種別"
+        style={{ display: "inline-flex", flex: "none", minWidth: 0 }}
+      >
+        {(["source", "translated", "bilingual"] as const).map((mode) => {
+          const active = documentMode === mode;
+          const label = mode === "source" ? "原文" : mode === "translated" ? "日本語" : "対訳";
+          const available =
+            mode === "source"
+              ? true
+              : mode === "translated"
+                ? translatedAvailable !== false
+                : bilingualAvailable !== false;
+          return (
+            <button
+              key={mode}
+              type="button"
+              aria-pressed={active}
+              disabled={!available}
+              title={available ? `${label}PDF` : `${label}PDFはまだ生成されていません`}
+              onClick={() => onDocumentModeChange(mode)}
+              style={{
+                ...outlineBtn,
+                height: 24,
+                padding: "0 7px",
+                borderRadius:
+                  mode === "source" ? "6px 0 0 6px" : mode === "bilingual" ? "0 6px 6px 0" : 0,
+                borderLeftWidth: mode === "source" ? 1 : 0,
+                color: active ? "var(--pr-acc)" : "var(--pr-text-sub)",
+                borderColor: active ? "var(--pr-acc-m)" : "var(--pr-border-control)",
+                background: active ? "var(--pr-acc-s)" : "transparent",
+                fontWeight: active ? 700 : 500,
+                opacity: available ? 1 : 0.45,
+              }}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
 
       <button
         type="button"

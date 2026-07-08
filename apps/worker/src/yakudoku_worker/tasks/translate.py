@@ -30,8 +30,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from yakudoku_core.db.models import DocumentRevision, Job, Paper, TranslationSet, TranslationUnit
 from yakudoku_core.document.blocks import Block, DocumentContent
+from yakudoku_core.ingest import joblog
 from yakudoku_core.ingest.progress import finalize_ingest_if_body_complete
 from yakudoku_core.jobs.store import JobStore
+from yakudoku_core.settings import get_settings
+from yakudoku_core.storage.s3 import S3Storage
 from yakudoku_core.translation.glossary import format_glossary_lines, glossary_hash
 from yakudoku_core.translation.pipeline import (
     TranslatedUnit,
@@ -46,6 +49,7 @@ from yakudoku_core.translation.prompts import (
 )
 
 from yakudoku_worker import notify
+from yakudoku_worker.latex_pdf import LatexPdfBuildError, build_latex_translation_pdfs_if_ready
 
 # translate_section が担当する reason(plans/06 §3.1)。
 _SECTION_REASONS = frozenset({"initial", "literal", "on_demand", "table"})
@@ -340,6 +344,10 @@ async def run_translation_job(ctx: dict[str, Any], store: JobStore, job: Job) ->
                     source_version=str(payload.get("source_version") or revision.source_version),
                     appendix_untranslated=bool(payload.get("appendix_untranslated", False)),
                 )
+                if completed:
+                    await _build_latex_translation_pdf_after_complete(
+                        ctx, store, str(ingest_job_id), set_id
+                    )
                 if completed and job.user_id and job.library_item_id:
                     # 取り込み完了通知(plans/05 §12.1)。job_id=親 ingest ジョブで 1 回限り。
                     paper = await store.session.get(Paper, revision.paper_id)
@@ -351,3 +359,59 @@ async def run_translation_job(ctx: dict[str, Any], store: JobStore, job: Job) ->
                         paper_title=paper.title if paper else "",
                         job_id=str(ingest_job_id),
                     )
+
+
+async def _build_latex_translation_pdf_after_complete(
+    ctx: dict[str, Any],
+    store: JobStore,
+    ingest_job_id: str,
+    set_id: str,
+) -> None:
+    settings = ctx.get("settings") or get_settings()
+    storage = ctx.get("s3") or S3Storage(settings)
+    ingest_job = await store.session.get(Job, ingest_job_id)
+    try:
+        outcome = await build_latex_translation_pdfs_if_ready(
+            store.session,
+            storage,
+            settings,
+            set_id=set_id,
+        )
+    except LatexPdfBuildError as exc:
+        if ingest_job is not None:
+            await joblog.log(
+                store.session,
+                ingest_job,
+                "translating_body",
+                "warn",
+                "日本語PDFのビルドに失敗(原文/訳文ビューは利用可能)",
+                detail={"code": exc.kind, **exc.detail},
+            )
+        return
+    if ingest_job is None:
+        return
+    if not outcome.built:
+        if outcome.skipped_reason not in {"not_latex", "already_built"}:
+            await joblog.log(
+                store.session,
+                ingest_job,
+                "translating_body",
+                "warn",
+                "日本語PDFのビルドをスキップ",
+                detail={"reason": outcome.skipped_reason},
+            )
+        return
+    for warning in outcome.warnings:
+        await joblog.log(store.session, ingest_job, "translating_body", "warn", warning)
+    await joblog.log(
+        store.session,
+        ingest_job,
+        "translating_body",
+        "info",
+        "日本語PDFをビルドしました",
+        detail={
+            "translated_pdf": outcome.translated_key,
+            "bilingual_pdf": outcome.bilingual_key,
+        },
+        timeline=True,
+    )

@@ -86,6 +86,7 @@ function renderPane(overrides: Partial<Parameters<typeof PdfPane>[0]> = {}) {
     <QueryClientProvider client={client}>
       <PdfPane
         itemId="li_1"
+        paperId="paper-1"
         revisionId="rev-1"
         initialPage={5}
         onOpenInTranslation={onOpenInTranslation}
@@ -100,6 +101,10 @@ function renderPane(overrides: Partial<Parameters<typeof PdfPane>[0]> = {}) {
 describe("PdfPane (2a §5)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ status: 200, ok: true, body: { cancel: vi.fn() } }),
+    );
     currentSearch = new URLSearchParams({ mode: "pdf", page: "5" });
     usePdfViewStore.setState({
       // itemId を render 時の itemId と一致させておく(resetForItem は itemId 変化時のみ
@@ -111,6 +116,7 @@ describe("PdfPane (2a §5)", () => {
       fitMode: "actual",
       spread: false,
       spreadFirstPageSide: "right",
+      documentMode: "source",
       selectedBlockId: null,
       sidebarTab: "pages",
     });

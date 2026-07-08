@@ -84,8 +84,17 @@ Amazon SES(または同等の SMTP サービス)を使用:
 | `YAKUDOKU_*_BASE_URL` | **全て空**(モック差し替えは CI/E2E 専用) |
 | `SENTRY_DSN_API` / `SENTRY_DSN_WEB` | §1.6 の値 |
 | `ARXIV_USER_AGENT` | `yakudoku/1.0 (contact: admin@yakudoku.app)` |
+| `YAKUDOKU_TEXLIVE_IMAGE` | `yakudoku-texlive-ja:latest`。LaTeX 由来論文の日本語PDFビルド用 |
 
 > **注意**: 秘匿値に `NEXT_PUBLIC_` / `WXT_` 接頭辞を付けない(CI の grep 検査対象)。LLM のモデル ID・ルーティングは環境変数ではなく DB の設定テーブルで管理し、管理 UI /シードで変更する(再デプロイ不要 — docs/09 §3.2)。
+
+LaTeX PDF ビルドを有効にするホストでは、worker が参照する Docker イメージを事前に作成する:
+
+```bash
+docker build -f docker/texlive/Dockerfile -t yakudoku-texlive-ja:latest .
+```
+
+worker コンテナ内からビルドする構成では Docker socket を worker に渡すか、同等のコンテナ実行基盤を用意する。worker は `--pull never` で実行するため、未ビルドの環境では日本語PDF生成だけが警告でスキップされる。
 
 ## 3. prod Docker Compose と Caddyfile
 

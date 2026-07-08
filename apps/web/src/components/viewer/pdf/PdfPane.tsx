@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { viewerGetDocument } from "@yakudoku/api-client";
 import { useViewerStore } from "@/stores/viewer-store";
 import { usePdfViewStore, type PdfSpreadFirstPageSide } from "@/stores/pdf-view-store";
+import { usePdfAvailability } from "@/hooks/use-pdf-availability";
 import type { DocumentResponse } from "@/components/viewer/document-types";
 import { PdfToolbar } from "./PdfToolbar";
 import { PDF_PAGE_GAP_PX, PdfCanvas, spreadPages } from "./PdfCanvas";
@@ -15,6 +16,7 @@ import { usePdfDocumentContext } from "./use-pdf-document";
 
 export interface PdfPaneProps {
   itemId: string;
+  paperId: string;
   revisionId: string;
   /** URL `?page=` があれば採用済みの値、無ければ 1(2a §5.10 優先順②④)。 */
   initialPage: number;
@@ -77,6 +79,7 @@ function pageGroupsForDocument(
 /** PDF モード本文ペイン(2a §3.1・§5)。ツールバー+キャンバスを統括する。 */
 export function PdfPane({
   itemId,
+  paperId,
   revisionId,
   initialPage,
   lastPositionBlockId = null,
@@ -94,12 +97,14 @@ export function PdfPane({
   const fitMode = usePdfViewStore((s) => s.fitMode);
   const spread = usePdfViewStore((s) => s.spread);
   const spreadFirstPageSide = usePdfViewStore((s) => s.spreadFirstPageSide);
+  const documentMode = usePdfViewStore((s) => s.documentMode);
   const selectedBlockId = usePdfViewStore((s) => s.selectedBlockId);
   const resetForItem = usePdfViewStore((s) => s.resetForItem);
   const setPage = usePdfViewStore((s) => s.setPage);
   const zoomIn = usePdfViewStore((s) => s.zoomIn);
   const zoomOut = usePdfViewStore((s) => s.zoomOut);
   const setFitMode = usePdfViewStore((s) => s.setFitMode);
+  const setDocumentMode = usePdfViewStore((s) => s.setDocumentMode);
   const toggleSpread = usePdfViewStore((s) => s.toggleSpread);
   const setSpreadFirstPageSide = usePdfViewStore((s) => s.setSpreadFirstPageSide);
   const selectBlock = usePdfViewStore((s) => s.selectBlock);
@@ -121,6 +126,10 @@ export function PdfPane({
   });
 
   const syncMap = useMemo(() => buildPdfSyncMap(docQuery.data), [docQuery.data]);
+  const disabledSyncMap = useMemo(() => buildPdfSyncMap(undefined), []);
+  const visibleSyncMap = documentMode === "source" ? syncMap : disabledSyncMap;
+  const translatedAvailable = usePdfAvailability(paperId, "translated");
+  const bilingualAvailable = usePdfAvailability(paperId, "bilingual");
 
   // 初期ページの優先順(2a §5.10): ①pendingScrollTarget ②URL page ③last_position
   // ④1。②④は呼び出し側が initialPage に解決済み(同期的に分かるため)。①③は document
@@ -206,7 +215,7 @@ export function PdfPane({
     () => pageGroupsForDocument(page, pdf.numPages, spread, spreadFirstPageSide),
     [page, pdf.numPages, spread, spreadFirstPageSide],
   );
-  const sync = syncMap.pageToSection(page);
+  const sync = documentMode === "source" ? syncMap.pageToSection(page) : null;
   const getPdfPage = pdf.getPage;
 
   const handleOpenInTranslation = () => {
@@ -282,6 +291,9 @@ export function PdfPane({
         zoomPct={pdf.loading ? null : Math.round(resolvedScale * 100)}
         fitMode={fitMode}
         spread={spread}
+        documentMode={documentMode}
+        translatedAvailable={translatedAvailable}
+        bilingualAvailable={bilingualAvailable}
         spreadFirstPageSide={spreadFirstPageSide}
         syncDisplay={sync?.display ?? null}
         loading={pdf.loading || !docQuery.data}
@@ -289,6 +301,7 @@ export function PdfPane({
         onZoomIn={zoomIn}
         onZoomOut={zoomOut}
         onFitModeChange={setFitMode}
+        onDocumentModeChange={setDocumentMode}
         onToggleSpread={toggleSpread}
         onSpreadFirstPageSideChange={setSpreadFirstPageSide}
         onOpenInTranslation={handleOpenInTranslation}
@@ -299,7 +312,7 @@ export function PdfPane({
         activePage={page}
         scale={resolvedScale}
         getPage={getPdfPage}
-        syncMap={syncMap}
+        syncMap={visibleSyncMap}
         selectedBlockId={selectedBlockId}
         onSelectBlock={(hit) => selectBlock(hit?.blockId ?? null)}
         onOpenInTranslation={onOpenInTranslation}

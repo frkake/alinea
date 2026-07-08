@@ -21,6 +21,7 @@ export interface PdfSidebarProps {
   /** pdf.js 解決前のプレースホルダ(`viewer.revision.page_count`。2a §2.1 決定)。 */
   pageCountFallback: number | null;
   pdfDownloadHref: string;
+  pdfDownloadLabel?: string;
   open?: boolean;
   onToggle?: (open: boolean) => void;
 }
@@ -37,6 +38,7 @@ export function PdfSidebar({
   onTranslateAppendix,
   pageCountFallback,
   pdfDownloadHref,
+  pdfDownloadLabel = "原文PDF",
   open = true,
   onToggle,
 }: PdfSidebarProps) {
@@ -222,7 +224,7 @@ export function PdfSidebar({
           download
           style={{ color: "var(--pr-text-muted)", textDecoration: "none", flex: "none", whiteSpace: "nowrap" }}
         >
-          ⤓ 原文PDF
+          ⤓ {pdfDownloadLabel}
         </a>
       </div>
     </nav>

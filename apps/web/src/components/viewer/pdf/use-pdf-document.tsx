@@ -11,6 +11,7 @@ import {
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { loadPdfjs } from "@/lib/pdfjs";
+import type { PdfDocumentMode } from "@/stores/pdf-view-store";
 import type { PdfViewportLike } from "./geometry";
 
 /** pdf.js `RenderTask` の最小インターフェース(キャンセル可能な描画)。 */
@@ -51,18 +52,23 @@ export interface UsePdfDocumentResult {
 }
 
 const qk = {
-  pdfData: (paperId: string) => ["pdf-data", paperId] as const,
+  pdfData: (paperId: string, variant: PdfDocumentMode) => ["pdf-data", paperId, variant] as const,
 };
 
 /**
  * PDF 本体の取得(fetch→ArrayBuffer)と pdfjs `PDFDocumentProxy` の生成・破棄(2a §2.1・§2.2)。
  * `enabled=false` の間はフェッチしない(PDF モード表示時のみ本体取得。§2.1 決定)。
  */
-export function usePdfDocument(paperId: string | null, enabled: boolean): UsePdfDocumentResult {
+export function usePdfDocument(
+  paperId: string | null,
+  enabled: boolean,
+  variant: PdfDocumentMode = "source",
+): UsePdfDocumentResult {
   const pdfQuery = useQuery({
-    queryKey: qk.pdfData(paperId ?? ""),
+    queryKey: qk.pdfData(paperId ?? "", variant),
     queryFn: async () => {
-      const res = await fetch(`/api/papers/${paperId}/pdf`, { credentials: "include" });
+      const params = variant === "source" ? "" : `?variant=${variant}`;
+      const res = await fetch(`/api/papers/${paperId}/pdf${params}`, { credentials: "include" });
       if (!res.ok) {
         const err = new Error(`pdf fetch failed: ${res.status}`) as Error & { status?: number };
         err.status = res.status;
@@ -157,12 +163,17 @@ const PdfDocumentContext = createContext<UsePdfDocumentResult | null>(null);
 
 export interface PdfDocumentProviderProps {
   paperId: string;
+  variant?: PdfDocumentMode;
   children: ReactNode;
 }
 
 /** PdfPane / PdfSidebar が兄弟同士で同じ pdf.js ドキュメントを共有するための Provider。 */
-export function PdfDocumentProvider({ paperId, children }: PdfDocumentProviderProps) {
-  const value = usePdfDocument(paperId, true);
+export function PdfDocumentProvider({
+  paperId,
+  variant = "source",
+  children,
+}: PdfDocumentProviderProps) {
+  const value = usePdfDocument(paperId, true, variant);
   return <PdfDocumentContext.Provider value={value}>{children}</PdfDocumentContext.Provider>;
 }
 

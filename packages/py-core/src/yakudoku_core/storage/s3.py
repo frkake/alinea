@@ -35,6 +35,14 @@ class StorageKeys:
         return f"sources/{paper_id}/{source_version}/original.pdf"
 
     @staticmethod
+    def translated_pdf(paper_id: str, source_version: str, style: str) -> str:
+        return f"sources/{paper_id}/{source_version}/translated-{style}.pdf"
+
+    @staticmethod
+    def bilingual_pdf(paper_id: str, source_version: str, style: str) -> str:
+        return f"sources/{paper_id}/{source_version}/bilingual-{style}.pdf"
+
+    @staticmethod
     def metadata(paper_id: str, source_version: str) -> str:
         return f"sources/{paper_id}/{source_version}/metadata.json"
 

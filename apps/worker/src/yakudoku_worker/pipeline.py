@@ -95,6 +95,7 @@ from yakudoku_core.translation.pipeline import (
 )
 
 from yakudoku_worker import notify
+from yakudoku_worker.latex_pdf import LatexPdfBuildError, build_latex_translation_pdfs_if_ready
 
 # ✦3行要約 + 提案タグ(plans/07 §3.1・plans/05 §11.1。1 呼び出しで生成)。
 SUMMARY_SCHEMA_NAME = "summary_3line_v1"
@@ -284,7 +285,7 @@ def _render_first_page(data: bytes, filetype: str) -> bytes:
             raise FetchError("unsupported_figure_format", "figure document has no pages")
         page = doc.load_page(0)
         pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-        return pix.tobytes("png")
+        return bytes(pix.tobytes("png"))
 
 
 def _figure_asset_payload(
@@ -831,6 +832,12 @@ class IngestRun:
             "blocks": len(self.parsed.blocks),
             "translatable_blocks": len(scope.in_scope_block_ids),
         }
+        if self.source_format == "latex":
+            stats["latex_source"] = {
+                "main_tex": self.latex_main_tex_name,
+                "binary_files": sorted(self.latex_binary_files),
+                "build_version": "latex-ja-pdf-1.0.0",
+            }
         revision = DocumentRevision(
             paper_id=self.paper_id,
             source_version=self.source_version,
@@ -1382,11 +1389,51 @@ class IngestRun:
             appendix_untranslated=appendix_untranslated,
         )
         if completed:
+            await self._build_latex_translation_pdf()
             # 完了ナッジ(§21.2)。job_events は job_id 一致のイベントを受けて DB の
             # 最終状態(succeeded)を再確認し done フレームを組む(routers/jobs.py 参照)ため、
             # ここでの data 自体は any でよいが InfoPanel の onProgress と同形に揃える。
             await self._publish_stage("complete", 100, status="succeeded")
             await self._fire_translation_complete()
+
+    async def _build_latex_translation_pdf(self) -> None:
+        assert self.set_id is not None
+        try:
+            outcome = await build_latex_translation_pdfs_if_ready(
+                self.session,
+                self.deps.s3,
+                self.deps.settings,
+                set_id=self.set_id,
+            )
+        except LatexPdfBuildError as exc:
+            await self._log(
+                "translating_body",
+                "warn",
+                "日本語PDFのビルドに失敗(原文/訳文ビューは利用可能)",
+                detail={"code": exc.kind, **exc.detail},
+            )
+            return
+        if not outcome.built:
+            if outcome.skipped_reason not in {"not_latex", "already_built"}:
+                await self._log(
+                    "translating_body",
+                    "warn",
+                    "日本語PDFのビルドをスキップ",
+                    detail={"reason": outcome.skipped_reason},
+                )
+            return
+        for warning in outcome.warnings:
+            await self._log("translating_body", "warn", warning)
+        await self._log(
+            "translating_body",
+            "info",
+            "日本語PDFをビルドしました",
+            detail={
+                "translated_pdf": outcome.translated_key,
+                "bilingual_pdf": outcome.bilingual_key,
+            },
+            timeline=True,
+        )
 
     async def _fire_translation_complete(self) -> None:
         """取り込み完了通知(plans/05 §12.1)。job_id 単位で 1 回限り(notify.py 側で保証)。"""

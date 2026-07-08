@@ -4992,7 +4992,12 @@ export type PapersPdfData = {
          */
         paper_id: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * Variant
+         */
+        variant?: string;
+    };
     url: '/api/papers/{paper_id}/pdf';
 };
 

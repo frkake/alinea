@@ -138,7 +138,8 @@ CREATE TABLE source_assets (
     fetched_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_source_assets_kind CHECK (kind IN
-        ('arxiv_latex', 'arxiv_html', 'pdf', 'metadata_api', 'extension_capture'))
+        ('arxiv_latex', 'arxiv_html', 'pdf', 'translated_pdf', 'bilingual_pdf',
+         'metadata_api', 'extension_capture', 'latex_project_manifest'))
 );
 CREATE INDEX ix_source_assets_paper_id ON source_assets (paper_id);
 

@@ -8,6 +8,7 @@ import { Z_INDEX, type ReadingStatus } from "@yakudoku/tokens";
 import { useToast } from "@/components/ui/Toast";
 import { useFinishReadingStore } from "@/components/library/finishReadingStore";
 import { useViewerStore } from "@/stores/viewer-store";
+import { usePdfViewStore } from "@/stores/pdf-view-store";
 import { usePdfAvailability } from "@/hooks/use-pdf-availability";
 import { useIsMobile } from "@/hooks/useMediaQuery";
 import { ViewerHeader } from "@/components/viewer/ViewerHeader";
@@ -67,6 +68,7 @@ export function ViewerShell({
   const requestScroll = useViewerStore((s) => s.requestScroll);
   const openSearch = useViewerStore((s) => s.openSearch);
   const activeSectionId = useViewerStore((s) => s.activeSectionId);
+  const pdfDocumentMode = usePdfViewStore((s) => s.documentMode);
 
   const isMobile = useIsMobile();
   // モバイル縮退(mobile.md §4.1): mode を translation に固定して描画する。URL は書き換えない
@@ -170,6 +172,9 @@ export function ViewerShell({
   };
 
   const progressPct = viewer.translation?.progress_pct ?? 0;
+  const pdfVariantQuery = pdfDocumentMode === "source" ? "" : `?variant=${pdfDocumentMode}`;
+  const pdfDownloadLabel =
+    pdfDocumentMode === "source" ? "原文PDF" : pdfDocumentMode === "translated" ? "日本語PDF" : "対訳PDF";
 
   return (
     <div
@@ -199,19 +204,21 @@ export function ViewerShell({
       />
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
         {effectiveMode === "pdf" ? (
-          <PdfDocumentProvider paperId={paperId}>
+          <PdfDocumentProvider paperId={paperId} variant={pdfDocumentMode}>
             <PdfSidebar
               toc={viewer.toc}
               activeSectionId={activeSectionId}
               onSectionClick={(sectionId) => requestScroll({ kind: "section", sectionId })}
               onTranslateAppendix={onTranslateAppendix}
               pageCountFallback={viewer.revision.page_count}
-              pdfDownloadHref={`/api/papers/${paperId}/pdf`}
+              pdfDownloadHref={`/api/papers/${paperId}/pdf${pdfVariantQuery}`}
+              pdfDownloadLabel={pdfDownloadLabel}
               open={tocOpen}
               onToggle={setTocOpen}
             />
             <PdfPane
               itemId={itemId}
+              paperId={paperId}
               revisionId={revisionId}
               initialPage={initialPdfPage(searchParams)}
               lastPositionBlockId={

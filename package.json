@@ -7,7 +7,7 @@
     "node": "24.4.0"
   },
   "scripts": {
-    "predev": "docker compose up -d && docker compose up -d --wait db redis minio mailpit && pnpm --dir apps/api db:migrate",
+    "predev": "docker compose up -d && docker compose up -d --wait db redis minio mailpit && pnpm --dir apps/api db:migrate && bash scripts/ensure-texlive-image.sh && pnpm --dir apps/worker latex-pdf:backfill",
     "dev": "turbo dev",
     "dev:clean": "bash scripts/dev-clean.sh",
     "dev:down": "docker compose stop",

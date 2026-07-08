@@ -692,6 +692,40 @@ async def test_paper_pdf_streams_bytes(
     assert r.content == _MINIMAL_PDF
 
 
+async def test_paper_pdf_streams_translated_variant(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+    fake_storage: Any,
+) -> None:
+    user = await _login(client, db_session, redis_client, unique_email)
+    paper = Paper(arxiv_id=_rand_arxiv(), title="Translated PDF Paper", visibility="public")
+    db_session.add(paper)
+    await db_session.flush()
+    created_papers.append(paper.id)
+    db_session.add(LibraryItem(user_id=user.id, paper_id=paper.id, status="reading"))
+    db_session.add(
+        SourceAsset(
+            paper_id=paper.id,
+            kind="translated_pdf",
+            source_version="v1",
+            storage_key=f"sources/{paper.id}/v1/translated-natural.pdf",
+            content_type="application/pdf",
+            byte_size=1,
+        )
+    )
+    await db_session.commit()
+
+    r = await client.get(
+        f"/api/papers/{paper.id}/pdf", params={"variant": "translated"}, follow_redirects=False
+    )
+    assert r.status_code == 200
+    assert r.headers["content-disposition"] == 'inline; filename="paper-translated.pdf"'
+    assert r.content == _MINIMAL_PDF
+
+
 async def test_paper_pdf_missing_asset_404(
     client: AsyncClient,
     db_session: AsyncSession,

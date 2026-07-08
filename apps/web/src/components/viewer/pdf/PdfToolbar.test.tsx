@@ -8,6 +8,9 @@ function baseProps(overrides: Partial<PdfToolbarProps> = {}): PdfToolbarProps {
     pageCount: 24,
     zoomPct: 128,
     fitMode: "fit-width",
+    documentMode: "source",
+    translatedAvailable: true,
+    bilingualAvailable: true,
     spread: false,
     spreadFirstPageSide: "right",
     syncDisplay: "§2.2 Reflow",
@@ -16,6 +19,7 @@ function baseProps(overrides: Partial<PdfToolbarProps> = {}): PdfToolbarProps {
     onZoomIn: vi.fn(),
     onZoomOut: vi.fn(),
     onFitModeChange: vi.fn(),
+    onDocumentModeChange: vi.fn(),
     onToggleSpread: vi.fn(),
     onSpreadFirstPageSideChange: vi.fn(),
     onOpenInTranslation: vi.fn(),
@@ -31,6 +35,9 @@ describe("PdfToolbar (2a §4.2.3)", () => {
     expect(screen.getByText("/ 24")).toBeInTheDocument();
     expect(screen.getByText("128%")).toBeInTheDocument();
     expect(screen.getByText("幅に合わせる")).toBeInTheDocument();
+    expect(screen.getByText("原文")).toBeInTheDocument();
+    expect(screen.getByText("日本語")).toBeInTheDocument();
+    expect(screen.getByText("対訳")).toBeInTheDocument();
     expect(screen.getByText("見開き")).toBeInTheDocument();
     expect(screen.getByText("§2.2 Reflow")).toBeInTheDocument();
     expect(screen.getByText("この位置を訳文で開く →")).toBeInTheDocument();
@@ -76,6 +83,22 @@ describe("PdfToolbar (2a §4.2.3)", () => {
     expect(onZoomIn).toHaveBeenCalledTimes(1);
     expect(onZoomOut).toHaveBeenCalledTimes(1);
     expect(onToggleSpread).toHaveBeenCalledTimes(1);
+  });
+
+  test("PDF document mode control applies a choice and disables unavailable variants", () => {
+    const onDocumentModeChange = vi.fn();
+    render(
+      <PdfToolbar
+        {...baseProps({
+          translatedAvailable: true,
+          bilingualAvailable: false,
+          onDocumentModeChange,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByText("日本語"));
+    expect(onDocumentModeChange).toHaveBeenCalledWith("translated");
+    expect(screen.getByText("対訳")).toBeDisabled();
   });
 
   test("spread first-page side control is shown only in spread mode", () => {

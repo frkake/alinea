@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -42,6 +42,11 @@ router = APIRouter(tags=["papers"])
 # 原本 PDF とみなす source_assets.kind(§4.4)。"extension_capture" は POST /api/ingest/pdf
 # (拡張/一般 PDF 直接送信。M1-18)が書き込む実際の kind(ck_source_assets_kind の許容値)。
 _PDF_KINDS = ("pdf", "arxiv_pdf", "pdf_upload", "extension_capture")
+_PDF_VARIANT_KINDS = {
+    "source": _PDF_KINDS,
+    "translated": ("translated_pdf",),
+    "bilingual": ("bilingual_pdf",),
+}
 
 
 def get_storage() -> S3Storage:
@@ -171,18 +176,23 @@ async def ingest_log(paper_id: str, user: CurrentUser, db: DbDep) -> PapersInges
 
 @router.get("/api/papers/{paper_id}/pdf", operation_id="papers_pdf")
 async def paper_pdf(
-    paper_id: str, user: CurrentUser, db: DbDep, storage: StorageDep
+    paper_id: str,
+    user: CurrentUser,
+    db: DbDep,
+    storage: StorageDep,
+    variant: str = Query(default="source", pattern="^(source|translated|bilingual)$"),
 ) -> Response:
     paper = await db.get(Paper, paper_id)
     if paper is None:
         raise ProblemException("not_found")
     await assert_paper_access(db, paper, str(user.id))
 
+    kinds = _PDF_VARIANT_KINDS.get(variant, _PDF_KINDS)
     asset = (
         (
             await db.execute(
                 select(SourceAsset)
-                .where(SourceAsset.paper_id == paper_id, SourceAsset.kind.in_(_PDF_KINDS))
+                .where(SourceAsset.paper_id == paper_id, SourceAsset.kind.in_(kinds))
                 .order_by(SourceAsset.created_at.desc())
                 .limit(1)
             )
@@ -199,7 +209,7 @@ async def paper_pdf(
         media_type=asset.content_type or "application/pdf",
         headers={
             "Cache-Control": "private, max-age=600",
-            "Content-Disposition": 'inline; filename="paper.pdf"',
+            "Content-Disposition": f'inline; filename="paper-{variant}.pdf"',
         },
     )
 
