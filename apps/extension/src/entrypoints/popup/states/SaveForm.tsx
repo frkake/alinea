@@ -1,10 +1,16 @@
 // 状態1: 保存前(3a §4.4・§5.2)。書誌プレビュー + 品質見込み + ステータス3択 +
-// タグ + ひとことメモ + 保存(Enter)。コレクション欄は M2 まで非表示(Task 32)。
+// タグ + コレクション + ひとことメモ + 保存(Enter)。
+// コレクション欄は docs/10 §2 の決定により M2 で表示解禁(XT-03。plans/13 §4.2)。
 import { useState, type KeyboardEvent } from "react";
 
 import { StatusPillRow } from "@/components/StatusPillRow";
 import { TagField } from "@/components/TagField";
 import type { SaveStatus } from "@/lib/status";
+
+export interface SaveFormCollection {
+  id: string;
+  name: string;
+}
 
 export interface SaveFormPreview {
   title: string;
@@ -14,12 +20,15 @@ export interface SaveFormPreview {
   latexAvailable?: boolean | null;
   /** check.suggested_tags。 */
   suggestedTags?: string[];
+  /** GET /api/collections の一覧(M2 で表示。空配列なら「なし」のみ選べる)。 */
+  collections?: SaveFormCollection[];
 }
 
 export interface SavePayload {
   status: SaveStatus;
   tags: string[];
   quickNote: string;
+  collectionId: string | null;
 }
 
 export interface SaveFormProps {
@@ -34,10 +43,11 @@ export function SaveForm({ preview, onSave, saving = false, error = null }: Save
   const [status, setStatus] = useState<SaveStatus>("planned");
   const [tags, setTags] = useState<string[]>([]);
   const [quickNote, setQuickNote] = useState("");
+  const [collectionId, setCollectionId] = useState<string | null>(null);
 
   const triggerSave = () => {
     if (saving) return;
-    onSave?.({ status, tags, quickNote: quickNote.trim() });
+    onSave?.({ status, tags, quickNote: quickNote.trim(), collectionId });
   };
 
   // Enter で保存(3a §5.2)。タグ入力に未確定テキストがある場合は TagField が
@@ -70,6 +80,25 @@ export function SaveForm({ preview, onSave, saving = false, error = null }: Save
         onAdd={(tag) => setTags((current) => (current.includes(tag) ? current : [...current, tag]))}
         onRemove={(tag) => setTags((current) => current.filter((t) => t !== tag))}
       />
+
+      <div className="ext-row">
+        <span className="ext-row-label" id="ext-collection-label">
+          コレクション
+        </span>
+        <select
+          className="ext-collection-select"
+          aria-labelledby="ext-collection-label"
+          value={collectionId ?? ""}
+          onChange={(event) => setCollectionId(event.target.value || null)}
+        >
+          <option value="">なし</option>
+          {(preview.collections ?? []).map((collection) => (
+            <option key={collection.id} value={collection.id}>
+              {collection.name}
+            </option>
+          ))}
+        </select>
+      </div>
 
       <input
         className="ext-note-input"

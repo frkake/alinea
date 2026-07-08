@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   annotationsCreate,
   annotationsDelete,
   annotationsList,
   translationsListUnits,
+  vocabCreate,
   viewerGetDocument,
   type Annotation,
   type AnnotationListResponse,
@@ -26,6 +28,7 @@ import { SelectionMenu } from "@/components/viewer/SelectionMenu";
 import { SummaryCard } from "@/components/viewer/SummaryCard";
 import { TranslatedParagraph, type PlacedHighlight } from "@/components/viewer/TranslatedParagraph";
 import { SOURCE_TEXT_ATTR, textOffsetWithin } from "@/components/viewer/text-offset";
+import { extractVocabContext } from "@/components/viewer/vocab-context";
 import type {
   DocBlock,
   DocSection,
@@ -104,6 +107,7 @@ export function TranslationPane({
 }: TranslationPaneProps) {
   // 読書位置保存は ViewerShell の useReadingPosition が担う(itemId は注釈・ブックマーク用)。
   const toast = useToast();
+  const router = useRouter();
   const qc = useQueryClient();
   const panelOpen = useViewerStore((s) => s.panelOpen);
   const activeTab = useViewerStore((s) => s.activeTab);
@@ -346,8 +350,52 @@ export function TranslationPane({
       start,
       end,
       rect: { top: rect.top, left: rect.left, bottom: rect.bottom, right: rect.right },
+      // 「語彙に追加」の文脈センテンス抽出用(vocab-context.ts)。'source' のみ意味を持つ。
+      sourceFullText: side === "source" ? sourceRoot?.textContent ?? undefined : undefined,
     });
   }, [setSelection]);
+
+  // 「語彙に追加」(1b §5.5・M2-12/M2-17。SelectionMenu の onAddVocab は呼び出し側の責務)。
+  const addToVocab = useCallback(async () => {
+    const sel = selection;
+    if (!sel || sel.side !== "source" || sel.start == null || sel.end == null) return;
+    setSelection(null);
+    const { contextSentence, highlightStart, highlightEnd } = extractVocabContext(
+      sel.sourceFullText ?? sel.quote,
+      sel.start,
+      sel.end,
+    );
+    try {
+      const res = await vocabCreate({
+        body: {
+          library_item_id: itemId,
+          term: sel.quote,
+          anchor: {
+            revision_id: revisionId,
+            block_id: sel.blockId,
+            start: sel.start,
+            end: sel.end,
+            quote: sel.quote,
+            side: "source",
+          },
+          context_sentence: contextSentence,
+          highlight: { start: highlightStart, end: highlightEnd },
+        },
+      });
+      if (res.response.status === 409) {
+        const existingId = (res.error as { existing?: { vocab_id?: string } } | undefined)?.existing
+          ?.vocab_id;
+        toast({ kind: "info", message: "すでに語彙帳にあります" });
+        if (existingId) router.push(`/vocab/${existingId}`);
+        return;
+      }
+      if (!res.data) throw new Error("vocab create failed");
+      toast({ kind: "success", message: `「${sel.quote}」を語彙に追加しました` });
+      router.push(`/vocab/${res.data.entry.id}`);
+    } catch {
+      toast({ kind: "error", message: "語彙に追加できませんでした" });
+    }
+  }, [selection, itemId, revisionId, router, toast, setSelection]);
 
   const copySelection = useCallback(
     (format: "citation" | "plain") => {
@@ -542,7 +590,7 @@ export function TranslationPane({
           対象外のため表示しない(決定)。 */}
       {selection && !isMobile ? (
         <SelectionMenu
-          milestone="M1"
+          milestone="M2"
           side={selection.side}
           position={{ top: selection.rect.bottom + 8, left: selection.rect.left }}
           onAskAI={() => {
@@ -552,6 +600,7 @@ export function TranslationPane({
           onCopy={copySelection}
           onHighlight={(color) => createHighlight(color, null)}
           onComment={(color, comment) => createHighlight(color, comment.length > 0 ? comment : null)}
+          onAddVocab={() => void addToVocab()}
         />
       ) : null}
     </div>

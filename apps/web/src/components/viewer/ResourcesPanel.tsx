@@ -38,6 +38,8 @@ export function ResourcesPanel() {
 
   const [addPending, setAddPending] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  // 追加成功のたびに +1(ResourceAddFooter が入力欄をクリアするための合図。M2-17 followup)。
+  const [addSeq, setAddSeq] = useState(0);
   const [flashId, setFlashId] = useState<string | null>(null);
   const [suggestionPending, setSuggestionPending] = useState(false);
   const flashTimer = useRef<number | null>(null);
@@ -82,6 +84,7 @@ export function ResourcesPanel() {
     createResource(itemId, { url }).then(
       () => {
         setAddPending(false);
+        setAddSeq((n) => n + 1);
         invalidate();
         window.setTimeout(() => {
           listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
@@ -193,7 +196,7 @@ export function ResourcesPanel() {
             />
           ))}
         </div>
-        <ResourceAddFooter onAdd={onAdd} pending errorMessage={null} />
+        <ResourceAddFooter onAdd={onAdd} pending errorMessage={null} clearSignal={addSeq} />
       </div>
     );
   }
@@ -207,7 +210,7 @@ export function ResourcesPanel() {
             action={{ label: "再試行", onClick: () => void query.refetch() }}
           />
         </div>
-        <ResourceAddFooter onAdd={onAdd} pending={addPending} errorMessage={addError} />
+        <ResourceAddFooter onAdd={onAdd} pending={addPending} errorMessage={addError} clearSignal={addSeq} />
       </div>
     );
   }
@@ -261,7 +264,7 @@ export function ResourcesPanel() {
           </>
         )}
       </div>
-      <ResourceAddFooter onAdd={onAdd} pending={addPending} errorMessage={addError} />
+      <ResourceAddFooter onAdd={onAdd} pending={addPending} errorMessage={addError} clearSignal={addSeq} />
     </div>
   );
 }

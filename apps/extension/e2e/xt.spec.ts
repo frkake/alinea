@@ -77,6 +77,44 @@ test.describe.serial("拡張 E2E", () => {
     await page.close();
   });
 
+  test("XT-03 保存前フォームのコレクション欄: 一覧表示→選択→保存でエントリ追加", async ({
+    extContext,
+    extensionId,
+  }) => {
+    // コレクション欄は docs/10 §2 の決定により M2 で表示解禁(plans/13 §4.2・§7)。
+    await ensureLoggedIn(extContext);
+    const name = `XT03 輪読会 ${Date.now()}`;
+    const createRes = await extContext.request.post("http://localhost:3000/api/collections", {
+      headers: { Origin: "http://localhost:3000" },
+      data: { name },
+    });
+    expect(createRes.ok()).toBe(true);
+    const created = (await createRes.json()) as { id: string };
+
+    const url = freshArxiv();
+    const page = await extContext.newPage();
+    await page.goto(popupUrl(extensionId, url));
+    await expect(page.getByText("品質レベル A 見込み")).toBeVisible();
+
+    const select = page.getByRole("combobox", { name: "コレクション" });
+    await expect(select).toBeVisible();
+    await expect(select.getByRole("option", { name: "なし" })).toHaveCount(1);
+    await expect(select.getByRole("option", { name })).toHaveCount(1);
+    await select.selectOption({ label: name });
+
+    await page.getByRole("button", { name: /保存/ }).click();
+    await expect(page.locator(".ext-header-title")).toHaveText("保存しました");
+    await page.close();
+
+    // 保存(ingest)経路が collection_id を受けてエントリを追加している(plans/03 §3.2)。
+    const listRes = await extContext.request.get("http://localhost:3000/api/collections");
+    const { items } = (await listRes.json()) as {
+      items: Array<{ id: string; item_count: number }>;
+    };
+    const updated = items.find((item) => item.id === created.id);
+    expect(updated?.item_count).toBe(1);
+  });
+
   test("XT-05 状態3(既にライブラリ): 重複保存 UI なし + 続きから開く/ステータス変更", async ({
     extContext,
     extensionId,

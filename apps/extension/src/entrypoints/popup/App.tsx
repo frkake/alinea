@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { browser } from "wxt/browser";
 
-import type { IngestCheckResponse, IngestRecentItem, JobOut } from "@yakudoku/api-client";
+import type {
+  CollectionListItem,
+  IngestCheckResponse,
+  IngestRecentItem,
+  JobOut,
+} from "@yakudoku/api-client";
 
 import { FailedQueueBanner, type FailedQueueEntry } from "@/components/FailedQueueBanner";
 import { PopupHeader, type HeaderBadge } from "@/components/PopupHeader";
@@ -11,6 +16,7 @@ import {
   apiCheck,
   apiGetJob,
   apiGetRecent,
+  apiListCollections,
   apiMe,
   apiPatchStatus,
   apiSaveArxiv,
@@ -75,6 +81,7 @@ export function App() {
   const [savedView, setSavedView] = useState<SavedView | null>(null);
   const [job, setJob] = useState<JobOut | null>(null);
   const [recent, setRecent] = useState<IngestRecentItem[]>([]);
+  const [collections, setCollections] = useState<CollectionListItem[]>([]);
 
   // 状態4(一般ページ PDF・plans/10 §11.2)。
   const [pdfSending, setPdfSending] = useState(false);
@@ -159,6 +166,19 @@ export function App() {
     };
   }, [authed, reloadKey, savedView]);
 
+  // 保存前フォームのコレクション選択肢(docs/10 §2 の M2 決定・ポーリング不要・1 回取得)。
+  useEffect(() => {
+    if (authed !== true) return;
+    let cancelled = false;
+    (async () => {
+      const items = await apiListCollections();
+      if (!cancelled) setCollections(items);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authed, reloadKey]);
+
   // 状態2 ジョブ進捗ポーリング(succeeded/failed で停止・§2.2)。
   useEffect(() => {
     if (!savedView) return;
@@ -201,7 +221,7 @@ export function App() {
         status: payload.status,
         tags: payload.tags,
         quick_note: payload.quickNote || null,
-        collection_id: null,
+        collection_id: payload.collectionId,
       };
       const outcome = await apiSaveArxiv(body, idempotencyKey);
       setSaving(false);
@@ -506,6 +526,7 @@ export function App() {
             metaLine: buildMetaLine(check),
             latexAvailable: check?.latex_available ?? null,
             suggestedTags: check?.suggested_tags ?? [],
+            collections: collections.map((c) => ({ id: c.id, name: c.name })),
           }}
           onSave={handleSave}
           saving={saving}

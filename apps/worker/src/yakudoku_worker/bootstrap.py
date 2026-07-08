@@ -237,7 +237,11 @@ def make_publish(maker: async_sessionmaker[AsyncSession], r: redis.Redis) -> Pub
                 if library_item_id:
                     user_id = await _user_for_item(str(library_item_id))
             if not user_id:
-                await log.adebug("publish_no_target", event=event_type)
+                # structlog は第1引数(event)を予約するため、キー名を event ではなく
+                # event_type にする(以前は `event=event_type` が
+                # "got multiple values for argument 'event'" で毎回失敗し、この分岐に来た
+                # publish が常に silently 失敗していた。M2-17 で発見。deviations 参照)。
+                await log.adebug("publish_no_target", event_type=event_type)
                 return
             await _publish_event(r, str(user_id), event_type, data)
         except Exception as exc:  # publish 失敗でジョブ本体を落とさない(SSE は best-effort)。

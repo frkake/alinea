@@ -15,12 +15,30 @@ test.describe("PW-07 翻訳操作(M0)", () => {
     await openViewer(page, itemId, "translation");
   });
 
-  test("スタイル切替(自然訳 → 直訳)がヘッダに反映される", async ({ page }) => {
+  test("スタイル切替(自然訳→直訳。初回=オンデマンド生成開始、再切替=即時)がヘッダに反映される", async ({
+    page,
+  }) => {
+    // 残りセクション分のオンデマンド生成を待つため、テスト全体の予算を広げる(既定 60s)。
+    test.setTimeout(90_000);
     const styleButton = page.getByRole("button", { name: /スタイル: (自然訳|直訳)/ });
     await expect(styleButton).toContainText("自然訳");
     await styleButton.click();
     await page.getByRole("menuitem", { name: "直訳" }).click();
+    // 初回: §14 シードの literal セットは §1 のみ(オンデマンド途中状態)のため、
+    // クライアント側は常に生成要求から入る(「(生成中…)」を経て「直訳」に収束する)。
     await expect(styleButton).toContainText("直訳");
+    // 未翻訳の残りセクション分をオンデマンドで生成する(ブロック数によっては数十秒かかり得る)。
+    await expect(styleButton).not.toContainText("生成中", { timeout: 60_000 });
+
+    // 再切替: 自然訳→直訳の 2 回目は同一セッション内で literalStatus="ready" のため即時
+    // (生成中インジケータが再度出ない)。
+    await styleButton.click();
+    await page.getByRole("menuitem", { name: "自然訳" }).click();
+    await expect(styleButton).toContainText("自然訳");
+    await styleButton.click();
+    await page.getByRole("menuitem", { name: "直訳" }).click();
+    await expect(styleButton).toContainText("直訳");
+    await expect(styleButton).not.toContainText("生成中");
   });
 
   test("段落ホバーで「対」→ 対訳ポップが開く", async ({ page }) => {

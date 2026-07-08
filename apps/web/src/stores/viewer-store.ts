@@ -23,6 +23,11 @@ export interface ViewerSelection {
   end: number | null;
   /** メニュー配置に使う選択矩形(ビューポート座標)。 */
   rect: { top: number; left: number; bottom: number; right: number };
+  /**
+   * `side==='source'` の場合の選択元要素の全文(`vocab-context.ts` の文脈センテンス抽出に使う。
+   * `start`/`end` はこの全文中のオフセット)。`side==='translation'` や取得不能時は undefined。
+   */
+  sourceFullText?: string;
 }
 
 interface ViewerStoreState {

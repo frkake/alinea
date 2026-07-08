@@ -7,8 +7,11 @@ export async function openViewer(page: Page, itemId: string, mode?: string): Pro
   await expect(page.getByRole("radiogroup", { name: "表示モード" })).toBeVisible();
 }
 
-/** モード切替(訳文 / 対訳 / 原文)。 */
-export async function switchMode(page: Page, label: "訳文" | "対訳" | "原文"): Promise<void> {
+/** モード切替(訳文 / 対訳 / 原文 / PDF / 記事。plans/13 §4.2 M2-07 の 5 モード)。 */
+export async function switchMode(
+  page: Page,
+  label: "訳文" | "対訳" | "原文" | "PDF" | "記事",
+): Promise<void> {
   await page.getByRole("radio", { name: label, exact: true }).click();
 }
 

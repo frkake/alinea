@@ -5,12 +5,10 @@ import { dragSelect, openViewer } from "../fixtures/viewer";
 
 /**
  * PW-10(plans/12 §4.3): 選択メニュー。4 色ハイライト・コメント・コピーの実行、注釈一覧の
- * フィルタと件数を検証する。
- *
- * 「語彙に追加」は plans/12 の記述では PW-10 に含まれるが、実装は plans/13 §1.5 の段階公開規則
- * (SelectionMenu.tsx コメント「語彙に追加は M2 まで非表示」= 語彙帳バックエンドは M2-11)に従い
- * M1 の選択メニューには存在しない。plans/12 と plans/13 の記述差は plans/13 側(work breakdown)
- * を実装の正として扱い、本 spec では test.fixme で明示する(followups 参照)。
+ * フィルタと件数を検証する。「語彙に追加」(M2-12 の語彙帳バックエンド完成後)は
+ * M2-17 で `TranslationPane.tsx` への配線(`vocab-context.ts` の文脈センテンス抽出込み)と
+ * 併せて有効化する(followups 参照: `onAddVocab` は M2-12 の所有範囲外と明記されており
+ * 誰にも配線されていなかった実装ギャップだった)。
  */
 test.describe("PW-10 選択メニュー・注釈一覧", () => {
   test("4色ハイライト・コメント・コピー→注釈一覧のフィルタと件数", async ({ page, context }) => {
@@ -91,8 +89,53 @@ test.describe("PW-10 選択メニュー・注釈一覧", () => {
     }
   });
 
-  test.fixme(
-    "「語彙に追加」の実行(M2-11 語彙帳バックエンド完成後。plans/13 §1.5)",
-    async () => {},
-  );
+  test("「語彙に追加」の実行: 対訳ポップの原文選択→POST /api/vocab→語彙帳へ遷移", async ({ page }) => {
+    const itemId = await resolveRfItemId(page);
+    await openViewer(page, itemId, "translation");
+    const dismiss = page.getByRole("button", { name: "閉じる" });
+    if (await dismiss.isVisible().catch(() => false)) await dismiss.click();
+
+    const para = page.locator(".yk-paragraph[data-block-id]").first();
+    await para.scrollIntoViewIfNeeded();
+    await para.hover();
+    await para.getByRole("button", { name: "対訳を表示" }).click();
+    const popover = page.getByRole("dialog", { name: "対訳" });
+    await expect(popover).toBeVisible();
+    await dragSelect(page, popover.locator("[data-yk-source-text]"));
+
+    const menu = page.getByRole("menu", { name: "選択メニュー" });
+    await expect(menu).toBeVisible();
+    const addVocabItem = menu.getByRole("menuitem", { name: "語彙に追加" });
+    await expect(addVocabItem).toBeEnabled();
+
+    // 2 連続実行対策: 同一の選択(決定的シード+固定ドラッグ距離)が前回実行の語彙と重複し
+    // 409(duplicate)になっても、既存 vocab_id への遷移として許容する(実装と同じ分岐)。
+    let vocabId = "";
+    let createdByThisRun = false;
+    try {
+      const [response] = await Promise.all([
+        page.waitForResponse((res) => res.url().includes("/api/vocab") && res.request().method() === "POST"),
+        addVocabItem.click(),
+      ]);
+      if (response.status() === 201) {
+        const body = (await response.json()) as { entry: { id: string; term: string } };
+        vocabId = body.entry.id;
+        createdByThisRun = true;
+        await expect(page).toHaveURL(new RegExp(`/vocab/${vocabId}$`));
+        await expect(page.getByText(body.entry.term, { exact: false }).first()).toBeVisible();
+      } else {
+        expect(response.status()).toBe(409);
+        const body = (await response.json()) as { existing?: { vocab_id?: string } };
+        vocabId = body.existing?.vocab_id ?? "";
+        expect(vocabId).not.toBe("");
+        await expect(page).toHaveURL(new RegExp(`/vocab/${vocabId}$`));
+      }
+    } finally {
+      // 自分が今回作成した場合のみ削除する(§14 の運用規則。重複時の既存語彙は他実行の
+      // 資産のため削除しない)。
+      if (vocabId && createdByThisRun) {
+        await page.request.delete(`/api/vocab/${vocabId}`, { headers: { Origin: ORIGIN } }).catch(() => undefined);
+      }
+    }
+  });
 });

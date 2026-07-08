@@ -62,6 +62,31 @@ async def run_job(ctx: dict[str, Any], job_id: str) -> None:
                 job_id, {"stage": job.stage, "message": str(exc)}
             )
             await log.aerror("job_failed", job_id=job_id, retrying=retrying)
+        # SSE 起床通知(plans/03 §21.2)。translate.py/pipeline.py は自前で `ctx['publish']` に
+        # 詳細な進捗を発行するが、article/figure/vocab/resource_meta/export 等は
+        # ``JobStore.checkpoint``/``succeed`` で DB のみ更新するため、ハンドラ完了(成功・失敗
+        # いずれも)ごとにここで 1 回起床通知する。`/api/jobs/{job_id}/events` は起床通知の
+        # 受信ごとに DB の最新状態を読み直して done/error/progress を配信するため、これが無いと
+        # ジョブが SSE 接続確立より先に完了した場合に限り正常応答するという競合状態になり、
+        # フロントエンドが進捗 0% のまま無限に待つ(M2-17 で PW-13 実行時に発見。deviations 参照)。
+        await _notify_job_updated(ctx, job)
+
+
+async def _notify_job_updated(ctx: dict[str, Any], job: Job) -> None:
+    publish = ctx.get("publish")
+    if publish is None or job.user_id is None:
+        return
+    try:
+        await publish(
+            {
+                "type": "job.updated",
+                "job_id": str(job.id),
+                "user_id": str(job.user_id),
+                "library_item_id": str(job.library_item_id) if job.library_item_id else None,
+            }
+        )
+    except Exception as exc:  # SSE 起床通知は best-effort(ジョブ本体は既に確定済み)。
+        await log.awarning("job_updated_notify_failed", job_id=str(job.id), error=str(exc))
 
 
 class InteractiveWorker:

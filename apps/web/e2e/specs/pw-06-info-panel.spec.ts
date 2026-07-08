@@ -33,7 +33,9 @@ test.describe("PW-06 情報パネル", () => {
     await expect(page.getByText("品質レベルと取り込み", { exact: true })).toBeVisible();
     // .first(): リトライ・チェックポイント再開等で同一ステージのログ行が複数になることが
     // あるため(いずれのケースでも該当ステージが最低 1 行表示されることを確認すれば十分)。
-    await expect(page.getByText(/— arXiv から HTML 取得/).first()).toBeVisible();
+    // M2-01 以降の主経路は LaTeX(取得優先 LaTeX > HTML > PDF)。モックサーバは e-print を
+    // 常に返すため決定的に LaTeX 経路になる(joblog.fetch_timeline_message の逐語)。
+    await expect(page.getByText(/— arXiv から LaTeX ソース取得/).first()).toBeVisible();
     await expect(page.getByText(/— 構造化・図表抽出/).first()).toBeVisible();
     await expect(page.getByText(/— 全文翻訳 完了/).first()).toBeVisible();
 

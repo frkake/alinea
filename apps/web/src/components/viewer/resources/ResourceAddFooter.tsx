@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export interface ResourceAddFooterProps {
   onAdd: (url: string) => void;
@@ -8,11 +8,23 @@ export interface ResourceAddFooterProps {
   pending: boolean;
   /** 422 時のインラインエラー(plans/09-screens/5a §5.6)。 */
   errorMessage: string | null;
+  /**
+   * 追加成功のたびに変わる値(呼び出し側のカウンタ等)。変化を検知して入力欄をクリアする
+   * (連続して複数 URL を追加できるようにする。PW-21・M2-17 followup)。省略時は
+   * クリアしない(既存の呼び出し元互換)。
+   */
+  clearSignal?: number;
 }
 
 /** サイドパネル フッター(URL 入力+追加+ヘルプ文。plans/09-screens/5a §4.6)。 */
-export function ResourceAddFooter({ onAdd, pending, errorMessage }: ResourceAddFooterProps) {
+export function ResourceAddFooter({ onAdd, pending, errorMessage, clearSignal }: ResourceAddFooterProps) {
   const [value, setValue] = useState("");
+
+  // 追加成功(clearSignal の変化)で入力欄をクリアする。422 エラー時は clearSignal が
+  // 変化しないため、ユーザーが入力を訂正できるよう値を保持する。
+  useEffect(() => {
+    if (clearSignal !== undefined) setValue("");
+  }, [clearSignal]);
 
   const submit = () => {
     const trimmed = value.trim();

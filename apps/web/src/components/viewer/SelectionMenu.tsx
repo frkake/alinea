@@ -18,8 +18,10 @@ export interface SelectionMenuProps {
   /**
    * M0 は ✦AIに質問 / コピー の 2 項目のみ。M1 で 4 色ハイライト・コメントを追加。M2 で
    * 「語彙に追加」を追加(plans/13 §1.5 の段階公開規則。M2-12)。既定は後方互換のため "M0"。
-   * 呼び出し側(1b `TranslationPane` 等)が `milestone="M2"` へ更新し `onAddVocab` を渡すまで、
-   * 本項目は表示されない(deviations 参照)。
+   * `TranslationPane.tsx` は `milestone="M2"` + `onAddVocab`(`vocab-context.ts` で文脈センテンス
+   * 抽出 → `POST /api/vocab`)を渡す(M2-17 followup: M2-12 は本項目の呼び出し側配線を
+   * 明示的に所有範囲外としていたため未配線だった。deviations 参照)。他パネル(記事モード等)は
+   * 引き続き M0/M1 のまま。
    */
   milestone?: "M0" | "M1" | "M2";
   /**

@@ -4,12 +4,14 @@
 import {
   authMe,
   client,
+  collectionsList,
   ingestArxiv,
   ingestCheck,
   ingestPdf,
   ingestRecent,
   jobsGet,
   libraryItemsUpdate,
+  type CollectionListItem,
   type IngestArxivRequest,
   type IngestArxivResponse,
   type IngestCheckResponse,
@@ -94,6 +96,19 @@ export async function apiGetJob(jobId: string): Promise<JobOut> {
 export async function apiGetRecent(limit = 3): Promise<IngestRecentItem[]> {
   try {
     const res = await ingestRecent({ query: { limit } });
+    return res.data?.items ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * GET /api/collections(保存前フォームのコレクション選択・docs/10 §2 の M2 決定)。
+ * 取得失敗時は空配列(欄自体は非表示にしない — 選択肢が「なし」のみになるだけ)。
+ */
+export async function apiListCollections(): Promise<CollectionListItem[]> {
+  try {
+    const res = await collectionsList();
     return res.data?.items ?? [];
   } catch {
     return [];

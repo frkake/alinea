@@ -53,7 +53,12 @@ jobs:
       - run: psql "postgresql://yakudoku:yakudoku@localhost:5432/yakudoku" -c "CREATE EXTENSION IF NOT EXISTS pgroonga; CREATE EXTENSION IF NOT EXISTS pgcrypto;"
       - run: uv run alembic upgrade head
         working-directory: apps/api
-      # SM-01/02(+03/04): 実キーでの疎通・翻訳/チャット/画像品質サンプル(plans/12 §8.3)。
+      # SM-01〜04(plans/12 §8.3。上限コスト/回・すべて RUN_LLM_SMOKE=1 でのみ収集される
+      # `-m smoke` テストとして実装する。CI のマージゲートでは常に skip、本ワークフローのみ収集):
+      #   SM-01 疎通: 全テキスト5社×既定モデル+structured1件、画像3社×1枚($0.30)
+      #   SM-02 翻訳品質サンプル: 代表8ブロックの実翻訳→プレースホルダ検証+用語順守+文体判定($0.05)
+      #   SM-03 チャット品質サンプル: 「記載なし」質問→根拠0件+定型判定、「実験設定の整理」→表形式($0.10)
+      #   SM-04 解説図1枚実生成: PNGデコード可能・1536×1024・文字排除指示の確認($0.15)
       - name: SM-01〜04 実 API スモーク
         run: |
           set -o pipefail

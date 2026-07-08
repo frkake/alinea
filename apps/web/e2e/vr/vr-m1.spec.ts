@@ -53,28 +53,13 @@ test.describe("VR M1 追加画面", () => {
     const dialog = page.getByRole("dialog", { name: "「読んだ」にしました" });
     await expect(dialog).toBeVisible();
     await dialog.getByRole("radio", { name: /4\/5 —/ }).click();
-    // 「✦ 要約をメモに保存」導線カードの出現有無は非決定的(根本原因を特定済み):
-    // FakeLLM の固定要約文(summary_3line_v1)は「1 行目」「2 行目」「3 行目」と数字を含み、
-    // pipeline.py の `_summary_numbers_ok` はその数字トークンが原稿(タイトル/アブストラクト =
-    // freshArxivUrl() のランダムな arXiv 末尾番号を含む)に部分一致するか検証する。ランダムな
-    // 5 桁の末尾に "3" が含まれない実行(理論上 (9/10)^5 ≈ 59%)では検証が
-    // number_mismatch で失敗し、summary_3line が生成されず hasSummary が false になる
-    // (FinishReadingDialog.tsx の分岐)。
-    // これ自体はカードの表示/非表示を JS で揃えれば撮影対象として無害だが、カード有無で
-    // DOM 構造が変わる(hasSummary true 時のみ親行 <div style="display:flex;gap:8"> が
-    // マウントされる)ため、カードの button だけを display:none にすると親行は空のまま
-    // レイアウトに残り続け、祖先のフレックス(gap:16)にその分のギャップ(16px)を
-    // 消費させてダイアログの高さが hasSummary の値によって変わってしまう(mask は色を
-    // 塗るだけで高さは変えられない)。button ではなく親行そのものを非表示にすることで、
-    // hasSummary の真偽に関わらず DOM のギャップ消費を揃え、高さを決定的にする
-    // (テスト専用の DOM 操作。プロダクトコードは変更しない)。
-    const summaryCard = page.getByRole("button", { name: /要約(を保存中|をメモに保存)|メモに保存しました/ });
-    if (await summaryCard.isVisible().catch(() => false)) {
-      await summaryCard.evaluate((el) => {
-        const row = (el as HTMLElement).parentElement ?? (el as HTMLElement);
-        row.style.setProperty("display", "none", "important");
-      });
-    }
+    // 「✦ 要約をメモに保存」導線カードは決定的に出現する: FakeLLM の要約(summary_3line_v1)は
+    // 数字トークンを含まないため pipeline._summary_numbers_ok が常に通り、summary_3line が
+    // 必ず生成される(hasSummary=true 固定)。カード有無による DOM 差はもう起きないので、
+    // 出現を待ってから撮影する(以前の親行 display:none ハックは不要)。
+    await expect(
+      dialog.getByRole("button", { name: /要約(を保存中|をメモに保存)|メモに保存しました/ }),
+    ).toBeVisible();
     // 累計読書時間(reading_seconds_total)が 0 秒か否かでヘッダの日時行が1行/2行のどちらに
     // なるかも高さに影響するため、行の高さも明示的に固定する(mask は文字を塗りつぶすだけで
     // レイアウト高さは変えられない)。
