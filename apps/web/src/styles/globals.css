@@ -8,6 +8,20 @@
 /* ビューア訳文モードのブロック/インライン数式(lib/katex-render.ts)。 */
 @import "katex/dist/katex.min.css";
 
+.yk-math-fallback {
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  vertical-align: middle;
+  font-family: var(--pr-font-mono);
+  font-size: 0.92em;
+  color: var(--pr-text-body);
+  background: var(--pr-bg-inset);
+  border: 1px solid var(--pr-border-card);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
 /* デスクトップ基準: min-width 1200px(plans/08 §7.2 MIN_APP_WIDTH)。
    768px 未満はモバイル縮退レイアウト(plans/09-screens/mobile.md §2 決定)のため
    min-width を 0 とし、100vw に収まるようにする。768〜1199px はデスクトップ縮小
