@@ -488,10 +488,24 @@ _NO_OUTPUT_CMDS = {
     "hfill",
     "centering",
     "label",
+    "displaystyle",
+    "textstyle",
+    "scriptstyle",
+    "scriptscriptstyle",
 }
 _SPACE_CMDS = {"quad", "qquad"}
+_SYMBOL_CMDS = {
+    "LaTeX": "LaTeX",
+    "TeX": "TeX",
+    "eg": "e.g.",
+    "ie": "i.e.",
+    "etal": "et al.",
+    "ldots": "...",
+    "cdots": "...",
+    "dots": "...",
+}
 
-_SPECIAL_RE = re.compile(r"\$|\\\(|\\\)|\\[A-Za-z]+\*?|\\[%&_#{}$~^]|~")
+_SPECIAL_RE = re.compile(r"\$|\\\(|\\\)|\\\[|\\\]|\\[A-Za-z]+\*?|\\[%&_#{}$~^]|~")
 _BIBITEM_RE = re.compile(r"\\bibitem(?:\[[^\]]*\])?\{([^}]+)\}")
 _INCLUDEGRAPHICS_RE = re.compile(r"\\includegraphics\*?(?:\[[^\]]*\])?\{([^}]+)\}")
 _THEBIB_BEGIN_RE = re.compile(r"\\begin\{thebibliography\}")
@@ -856,7 +870,19 @@ class _LatexParser:
                 out.append(Inline(t="math_inline", v=text[m.end() : end].strip()))
                 i = end + 2
                 continue
+            if tok == "\\[":
+                end = text.find("\\]", m.end())
+                if end == -1:
+                    _append_text(out, text[m.start() :])
+                    i = n
+                    continue
+                out.append(Inline(t="math_inline", v=text[m.end() : end].strip()))
+                i = end + 2
+                continue
             if tok == "\\)":
+                i = m.end()
+                continue
+            if tok == "\\]":
                 i = m.end()
                 continue
             if tok == "~":
@@ -873,6 +899,9 @@ class _LatexParser:
         return _merge_text(out)
 
     def _dispatch_command(self, text: str, pos: int, cmd: str) -> tuple[int, list[Inline]]:
+        if cmd in _SYMBOL_CMDS:
+            arg, end = _read_optional_braced(text, pos)
+            return (end if arg == "" else pos), [Inline(t="text", v=_SYMBOL_CMDS[cmd])]
         if cmd in _CITE_CMDS:
             arg, end = _read_optional_braced(text, pos)
             keys = [k.strip() for k in (arg or "").split(",") if k.strip()]

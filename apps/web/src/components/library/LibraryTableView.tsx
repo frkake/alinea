@@ -14,12 +14,14 @@ import { BulkActionBar } from "@/components/library/BulkActionBar";
 import { toTableRow } from "@/components/library/toTableRow";
 import { useFinishReadingStore } from "@/components/library/finishReadingStore";
 import { useToast } from "@/components/ui/Toast";
+import { DeleteLibraryItemConfirmModal } from "@/components/library/DeleteLibraryItemConfirmModal";
+import { useDeleteLibraryItem } from "@/hooks/useDeleteLibraryItem";
 import type { SortState } from "@/components/library/types";
 
 /**
  * ライブラリ テーブルビューの画面組込(1e §3〜§5)。
  * 共通 LibraryTable(plans/08 §5.15)に LibraryItemSummary → LibraryTableRow の変換を橋渡しする。
- * 10 列固定・未供給列「—」は共通コンポーネント側で担保。
+ * 11 列固定・未供給列「—」は共通コンポーネント側で担保。
  * 複数選択→`BulkActionBar`(1e §4.8・§5.5・plans/03 §5.6)。ソートは呼び出し側が保持しサーバへ反映。
  */
 export interface LibraryTableViewProps {
@@ -32,8 +34,19 @@ export interface LibraryTableViewProps {
 export function LibraryTableView({ items, sort, onSortChange, onOpenRow }: LibraryTableViewProps) {
   const rows = useMemo(() => items.map(toTableRow), [items]);
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
   const qc = useQueryClient();
   const toast = useToast();
+  const deleteItem = useDeleteLibraryItem({
+    onSuccess: (deleted) => {
+      setDeleteTarget(null);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(deleted.id);
+        return next;
+      });
+    },
+  });
 
   // 一括操作(§5.6・1e §5.5): 成功・失敗いずれも選択は維持する(連続操作のため)。
   const bulkMutation = useMutation({
@@ -105,6 +118,7 @@ export function LibraryTableView({ items, sort, onSortChange, onOpenRow }: Libra
         onSortChange={onSortChange}
         onOpenRow={onOpenRow}
         onStatusChange={onStatusChange}
+        onDeleteRow={setDeleteTarget}
       />
       <BulkActionBar
         selectedCount={selectedIds.size}
@@ -122,6 +136,15 @@ export function LibraryTableView({ items, sort, onSortChange, onOpenRow }: Libra
             op: "add_to_collection",
             collection_id: collectionId,
           });
+        }}
+      />
+      <DeleteLibraryItemConfirmModal
+        open={deleteTarget !== null}
+        title={deleteTarget?.title ?? ""}
+        pending={deleteItem.isPending}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (deleteTarget) deleteItem.mutate(deleteTarget);
         }}
       />
     </>

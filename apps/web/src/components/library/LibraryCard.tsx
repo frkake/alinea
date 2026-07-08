@@ -15,7 +15,9 @@ import { useToast } from "@/components/ui/Toast";
 import { cardBibLine, formatShortDate, toPriority, toQuality, toReadingStatus } from "@/components/library/format";
 import { useFinishReadingStore } from "@/components/library/finishReadingStore";
 import { CancelIngestConfirmModal } from "@/components/library/CancelIngestConfirmModal";
+import { DeleteLibraryItemConfirmModal } from "@/components/library/DeleteLibraryItemConfirmModal";
 import { useCancelIngest } from "@/hooks/useCancelIngest";
+import { useDeleteLibraryItem } from "@/hooks/useDeleteLibraryItem";
 
 /**
  * 論文カード(4a §4.7)。M0 スコープ:
@@ -75,6 +77,7 @@ export function LibraryCard({ item, onOpen }: LibraryCardProps) {
   const qc = useQueryClient();
   const toast = useToast();
   const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const cancelIngest = useCancelIngest(
     () => {
       void qc.invalidateQueries({ queryKey: ["library"] });
@@ -86,6 +89,9 @@ export function LibraryCard({ item, onOpen }: LibraryCardProps) {
       toast({ kind: "error", message: "キャンセルできませんでした" });
     },
   );
+  const deleteItem = useDeleteLibraryItem({
+    onSuccess: () => setDeleteConfirmOpen(false),
+  });
 
   const open = () => onOpen(item.id);
   const onKey = (e: KeyboardEvent<HTMLElement>) => {
@@ -179,6 +185,36 @@ export function LibraryCard({ item, onOpen }: LibraryCardProps) {
         >
           {quality}
         </span>
+        {!processing ? (
+          <button
+            type="button"
+            aria-label={item.paper.title + " を削除"}
+            title="削除"
+            onClick={(e) => {
+              e.stopPropagation();
+              setDeleteConfirmOpen(true);
+            }}
+            style={{
+              position: "absolute",
+              top: 8,
+              right: 8,
+              height: 22,
+              minWidth: 40,
+              padding: "0 8px",
+              border: "1px solid var(--pr-border-control)",
+              borderRadius: 6,
+              background: "var(--pr-bg-card)",
+              color: "var(--pr-warn)",
+              fontSize: 10.5,
+              fontWeight: 600,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              boxShadow: "var(--pr-shadow-mono)",
+            }}
+          >
+            削除
+          </button>
+        ) : null}
       </div>
 
       {/* 本文 */}
@@ -289,6 +325,13 @@ export function LibraryCard({ item, onOpen }: LibraryCardProps) {
         pending={cancelIngest.isPending}
         onCancel={() => setCancelConfirmOpen(false)}
         onConfirm={() => cancelIngest.mutate(item.id)}
+      />
+      <DeleteLibraryItemConfirmModal
+        open={deleteConfirmOpen}
+        title={item.paper.title}
+        pending={deleteItem.isPending}
+        onCancel={() => setDeleteConfirmOpen(false)}
+        onConfirm={() => deleteItem.mutate({ id: item.id, title: item.paper.title })}
       />
     </Card>
   );

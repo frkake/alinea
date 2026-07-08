@@ -57,7 +57,7 @@ function makeItem(overrides: Partial<LibraryItemSummary> = {}): LibraryItemSumma
   };
 }
 
-// VT-LIB-01 / VT-LIB-02(10 列部)
+// VT-LIB-01 / VT-LIB-02(11 列部)
 describe("LibraryTableView", () => {
   test("renders the fixed 10 columns and dashes for unsupplied values", () => {
     renderWithClient(
@@ -69,9 +69,9 @@ describe("LibraryTableView", () => {
       />,
     );
 
-    // 10 列固定 = 全選択チェックボックス + 9 見出し
+    // 11 列固定 = 全選択チェックボックス + 10 見出し
     const rows = screen.getAllByRole("row");
-    expect(rows[0]?.children).toHaveLength(10);
+    expect(rows[0]?.children).toHaveLength(11);
 
     for (const label of [
       "論文",

@@ -138,6 +138,20 @@ def _section_display(section: Section) -> str:
     return title
 
 
+def _block_wire(block: Block) -> dict[str, Any]:
+    data = block.model_dump(mode="json", exclude_none=True)
+    if block.type in ("figure", "table", "equation") and block.asset_key:
+        data["asset_url"] = asset_url(block.asset_key)
+    return data
+
+
+def _section_wire(section: Section) -> dict[str, Any]:
+    data = section.model_dump(mode="json", exclude_none=True, exclude={"blocks", "sections"})
+    data["blocks"] = [_block_wire(block) for block in section.blocks]
+    data["sections"] = [_section_wire(sub) for sub in section.sections]
+    return data
+
+
 def _iso(value: dt.datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
@@ -496,9 +510,9 @@ async def get_document(
         section = _find_section(content, section_id)
         if section is None:
             raise ProblemException("not_found")
-        sections: list[dict[str, Any]] = [section.model_dump(mode="json", exclude_none=True)]
+        sections: list[dict[str, Any]] = [_section_wire(section)]
     else:
-        sections = [s.model_dump(mode="json", exclude_none=True) for s in content.sections]
+        sections = [_section_wire(s) for s in content.sections]
     body: dict[str, Any] = {
         "revision_id": str(revision.id),
         "quality_level": revision.quality_level,
@@ -546,7 +560,7 @@ async def get_block(revision_id: str, block_id: str, user: CurrentUser, db: DbDe
         translation = BlockTranslation(text_ja=unit.text_ja, state=unit.state)
 
     return BlockDetail(
-        block=block.model_dump(mode="json", exclude_none=True),
+        block=_block_wire(block),
         section_id=section.id,
         display=display,
         translation=translation,

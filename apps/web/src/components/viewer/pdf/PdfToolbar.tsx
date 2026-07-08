@@ -111,6 +111,15 @@ export function PdfToolbar({
       <div style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 11.5, color: "var(--pr-text-mid)" }}>
         <button
           type="button"
+          aria-label="先頭ページ"
+          style={iconBtn}
+          disabled={loading || page <= 1}
+          onClick={() => onPageChange(1)}
+        >
+          «
+        </button>
+        <button
+          type="button"
           aria-label="前のページ"
           style={iconBtn}
           disabled={loading || page <= 1}
@@ -150,6 +159,15 @@ export function PdfToolbar({
           onClick={() => onPageChange(Math.min(pageCount ?? page, page + (spread ? 2 : 1)))}
         >
           ›
+        </button>
+        <button
+          type="button"
+          aria-label="最終ページ"
+          style={iconBtn}
+          disabled={loading || pageCount == null || page >= pageCount}
+          onClick={() => pageCount != null && onPageChange(pageCount)}
+        >
+          »
         </button>
       </div>
 

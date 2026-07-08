@@ -136,6 +136,7 @@ describe("TranslationPane M1 wiring (1b §5.5 / §5.6)", () => {
             unit_id: "unit_1",
             block_id: "blk-1",
             text_ja: "整流フローは常微分方程式である。",
+            content_ja: null,
             state: "machine",
             quality_flags: [],
             proposal: null,

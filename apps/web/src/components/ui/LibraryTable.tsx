@@ -9,7 +9,7 @@ import { PriorityBadge } from "@/components/ui/PriorityBadge";
 import { DeadlineBadge } from "@/components/ui/DeadlineBadge";
 import { Popover } from "@/components/ui/Popover";
 
-/** ライブラリ専用テーブル(plans/08 §5.15、plans/09 1e §2.6)。10 列固定。 */
+/** ライブラリ専用テーブル(plans/08 §5.15、plans/09 1e §2.6)。11 列固定。 */
 export interface LibraryTableRow {
   id: string;
   title: string;
@@ -50,9 +50,10 @@ export interface LibraryTableProps {
    * `StatusPill(variant="dot-label")` の静的表示のみ(既存挙動を維持)。
    */
   onStatusChange?: (id: string, next: ReadingStatus) => void;
+  onDeleteRow?: (row: Pick<LibraryTableRow, "id" | "title">) => void;
 }
 
-const GRID_COLUMNS = "34px 1fr 108px 44px 168px 64px 66px 76px 64px 64px";
+const GRID_COLUMNS = "34px 1fr 108px 44px 168px 64px 66px 76px 64px 64px 48px";
 
 const STATUS_ORDER: readonly ReadingStatus[] = [
   "planned",
@@ -157,6 +158,7 @@ const HEADERS: Array<{ label: string; key?: SortKey }> = [
   { label: "読書時間", key: "reading_time" },
   { label: "理解度", key: "comprehension" },
   { label: "追加日", key: "added_at" },
+  { label: "操作" },
 ];
 
 function Checkbox({
@@ -218,6 +220,7 @@ export function LibraryTable({
   onSortChange,
   onOpenRow,
   onStatusChange,
+  onDeleteRow,
 }: LibraryTableProps) {
   const allSelected = rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
   const sortGlyph = sort.dir === "asc" ? " ↑" : " ↓";
@@ -414,6 +417,34 @@ export function LibraryTable({
 
             {/* 追加日 */}
             <div style={cellText(true)}>{row.addedAt}</div>
+
+            {/* 操作 */}
+            <div>
+              {onDeleteRow ? (
+                <button
+                  type="button"
+                  aria-label={row.title + " を削除"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeleteRow({ id: row.id, title: row.title });
+                  }}
+                  style={{
+                    height: 24,
+                    padding: "0 8px",
+                    border: "none",
+                    borderRadius: 6,
+                    background: "transparent",
+                    color: "var(--pr-warn)",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  削除
+                </button>
+              ) : null}
+            </div>
           </div>
         );
       })}

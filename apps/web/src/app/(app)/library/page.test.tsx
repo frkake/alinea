@@ -16,10 +16,12 @@ vi.mock("next/navigation", () => ({
 const libraryItemsFacets = vi.fn();
 const libraryItemsList = vi.fn();
 const savedFiltersCreate = vi.fn();
+const libraryItemsDelete = vi.fn();
 vi.mock("@yakudoku/api-client", () => ({
   libraryItemsFacets: (...args: unknown[]) => libraryItemsFacets(...args),
   libraryItemsList: (...args: unknown[]) => libraryItemsList(...args),
   savedFiltersCreate: (...args: unknown[]) => savedFiltersCreate(...args),
+  libraryItemsDelete: (...args: unknown[]) => libraryItemsDelete(...args),
 }));
 
 function makeItem(id: string): LibraryItemSummary {
@@ -191,5 +193,31 @@ describe("LibraryPage attribute filters and saved filters (M2-14)", () => {
       }),
     );
     expect(await screen.findByText("保存フィルタ「未読だけ」を作成しました")).toBeInTheDocument();
+  });
+});
+
+
+describe("LibraryPage delete wiring", () => {
+  test("table view deletes a library item after confirmation", async () => {
+    mockMatchMedia(false);
+    const { default: userEvent } = await import("@testing-library/user-event");
+    const user = userEvent.setup();
+    libraryItemsFacets.mockResolvedValue({ data: { quick: { all: 1 } } });
+    libraryItemsList.mockResolvedValue({ data: { items: [makeItem("1")] } });
+    libraryItemsDelete.mockResolvedValue({});
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText("Paper 1")).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Paper 1 を削除" }));
+
+    expect(screen.getByText("ライブラリから削除しますか?")).toBeInTheDocument();
+    expect(libraryItemsDelete).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "削除する" }));
+
+    await waitFor(() =>
+      expect(libraryItemsDelete).toHaveBeenCalledWith({ path: { item_id: "1" }, throwOnError: true }),
+    );
+    expect(await screen.findByText("論文を削除しました")).toBeInTheDocument();
   });
 });

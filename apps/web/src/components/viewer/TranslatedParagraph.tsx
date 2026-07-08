@@ -3,8 +3,9 @@
 import type { TranslationUnitItem } from "@yakudoku/api-client";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 import { ParallelPopover } from "@/components/viewer/ParallelPopover";
-import { renderHighlightedText, type PlacedHighlight } from "@/components/viewer/highlight-render";
+import { type PlacedHighlight } from "@/components/viewer/highlight-render";
 import { SKIP_OFFSET_ATTR, SOURCE_TEXT_ATTR } from "@/components/viewer/text-offset";
+import { TranslationInlineContent, hasTranslatedText } from "@/components/viewer/translation-content";
 import type { DocBlock } from "@/components/viewer/document-types";
 
 // PlacedHighlight は BilingualPane・SourcePane(InlineRenderer 経由)とも共有するため
@@ -26,6 +27,7 @@ export interface TranslatedParagraphProps {
   onTogglePop: () => void;
   onRetranslate?: () => void;
   onCitationClick?: (refId: string) => void;
+  onRefClick?: (ref: string, kind?: string | null) => void;
   /** この段落に配置された注釈ハイライト(start 昇順。1b §4.5-5)。 */
   highlights?: PlacedHighlight[];
   /** 本文の丸数字チップクリック → 注釈タブの該当カードへ(1b §5.7)。 */
@@ -48,13 +50,14 @@ export function TranslatedParagraph({
   onTogglePop,
   onRetranslate,
   onCitationClick,
+  onRefClick,
   highlights = [],
   onAnnotationClick,
   searchHighlight = null,
   isMobile = false,
 }: TranslatedParagraphProps) {
   const inlines = block.inlines ?? [];
-  const hasTranslation = unit != null && unit.text_ja != null;
+  const hasTranslation = hasTranslatedText(unit);
   const failed =
     !hasTranslation && (unit?.quality_flags ?? []).some((f) => FAILURE_FLAGS.has(f));
 
@@ -122,14 +125,21 @@ export function TranslatedParagraph({
         }}
       >
         {hasTranslation ? (
-          renderHighlightedText(unit?.text_ja ?? "", highlights, searchHighlight, onAnnotationClick)
+          <TranslationInlineContent
+            unit={unit}
+            highlights={highlights}
+            searchQuery={searchHighlight}
+            onAnnotationClick={onAnnotationClick}
+            onCitationClick={onCitationClick}
+            onRefClick={onRefClick}
+          />
         ) : (
           <>
             <span
               {...{ [SOURCE_TEXT_ATTR]: "" }}
               style={{ fontFamily: "var(--pr-font-en)", color: "var(--pr-text-en)" }}
             >
-              <InlineRenderer inlines={inlines} onCitationClick={onCitationClick} />
+              <InlineRenderer inlines={inlines} onCitationClick={onCitationClick} onRefClick={onRefClick} />
             </span>{" "}
             {failed ? (
               isMobile ? (
@@ -177,6 +187,8 @@ export function TranslatedParagraph({
           sourceInlines={inlines}
           onClose={onTogglePop}
           onRetranslate={onRetranslate}
+          onCitationClick={onCitationClick}
+          onRefClick={onRefClick}
           isMobile={isMobile}
         />
       ) : null}

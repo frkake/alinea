@@ -23,6 +23,17 @@ export interface PdfRenderTask {
 export interface PdfPageLike {
   getViewport(params: { scale: number }): PdfViewportLike;
   render(params: { canvasContext: CanvasRenderingContext2D; viewport: PdfViewportLike }): PdfRenderTask;
+  getTextContent?(params?: { includeMarkedContent?: boolean; disableNormalization?: boolean }): Promise<unknown>;
+  getAnnotations?(params?: { intent?: string }): Promise<PdfAnnotationLike[]>;
+}
+
+export interface PdfAnnotationLike {
+  subtype?: string;
+  url?: string | null;
+  unsafeUrl?: string | null;
+  dest?: unknown;
+  rect?: [number, number, number, number] | number[];
+  newWindow?: boolean;
 }
 
 export interface UsePdfDocumentResult {

@@ -21,13 +21,16 @@ import type { HighlightColor } from "@/components/ui/HighlightMark";
 import { useIsMobile } from "@/hooks/useMediaQuery";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
+import { FigureTableBlock } from "@/components/viewer/FigureTableBlock";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 import { ResumeBanner } from "@/components/viewer/ResumeBanner";
 import { SectionHeading } from "@/components/viewer/SectionHeading";
 import { SelectionMenu } from "@/components/viewer/SelectionMenu";
 import { SummaryCard } from "@/components/viewer/SummaryCard";
 import { TranslatedParagraph, type PlacedHighlight } from "@/components/viewer/TranslatedParagraph";
+import { buildReferenceTargetMap, resolveReferenceTarget } from "@/components/viewer/reference-targets";
 import { SOURCE_TEXT_ATTR, textOffsetWithin } from "@/components/viewer/text-offset";
+import { TranslationInlineContent } from "@/components/viewer/translation-content";
 import { extractVocabContext } from "@/components/viewer/vocab-context";
 import type {
   DocBlock,
@@ -124,6 +127,7 @@ export function TranslationPane({
   const setSelection = useViewerStore((s) => s.setSelection);
   const setPanel = useViewerStore((s) => s.setPanel);
   const requestAnnotationFocus = useViewerStore((s) => s.requestAnnotationFocus);
+  const requestScroll = useViewerStore((s) => s.requestScroll);
   const isMobile = useIsMobile();
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -235,6 +239,14 @@ export function TranslationPane({
   const blockSectionMap = useMemo(
     () => buildBlockSectionMap(doc?.sections ?? []),
     [doc],
+  );
+  const refTargets = useMemo(() => buildReferenceTargetMap(doc?.sections ?? []), [doc]);
+  const onRefClick = useCallback(
+    (ref: string) => {
+      const blockId = resolveReferenceTarget(refTargets, ref);
+      if (blockId) requestScroll({ kind: "block", blockId });
+    },
+    [refTargets, requestScroll],
   );
 
   // モバイル縮退(mobile.md §4.4): 1 カラム・本文幅 100%(720px 固定カラムは解除)。
@@ -540,6 +552,7 @@ export function TranslationPane({
         onExplainEquation={(latex) => onAskAI?.(latex)}
         highlightsByBlock={highlightsByBlock}
         onAnnotationClick={onAnnotationClick}
+        onRefClick={onRefClick}
         hlBlockId={hlBlockId}
         pendingHighlightQuery={pendingHighlightQuery}
         isMobile={isMobile}
@@ -619,6 +632,7 @@ interface SectionViewProps {
   /** ブロック単位の注釈ハイライト(1b §4.5-5)。 */
   highlightsByBlock: Map<string, PlacedHighlight[]>;
   onAnnotationClick: (annotationId: string) => void;
+  onRefClick?: (ref: string, kind?: string | null) => void;
   /** `hl` を一発マークする対象ブロック(plans/11 §7)。 */
   hlBlockId: string | null;
   pendingHighlightQuery: string | null;
@@ -637,6 +651,7 @@ function SectionView({
   onExplainEquation,
   highlightsByBlock,
   onAnnotationClick,
+  onRefClick,
   hlBlockId,
   pendingHighlightQuery,
   isMobile = false,
@@ -676,6 +691,7 @@ function SectionView({
               onTogglePop={() => onTogglePop(block.id)}
               highlights={highlightsByBlock.get(block.id) ?? []}
               onAnnotationClick={onAnnotationClick}
+              onRefClick={onRefClick}
               searchHighlight={hlBlockId === block.id ? pendingHighlightQuery : null}
               isMobile={isMobile}
             />
@@ -687,6 +703,7 @@ function SectionView({
             block={block}
             unit={unitMap.get(block.id) ?? null}
             onExplainEquation={onExplainEquation}
+            onRefClick={onRefClick}
           />
         );
       })}
@@ -703,6 +720,7 @@ function SectionView({
           onExplainEquation={onExplainEquation}
           highlightsByBlock={highlightsByBlock}
           onAnnotationClick={onAnnotationClick}
+          onRefClick={onRefClick}
           hlBlockId={hlBlockId}
           pendingHighlightQuery={pendingHighlightQuery}
           isMobile={isMobile}
@@ -717,16 +735,23 @@ function BlockView({
   block,
   unit,
   onExplainEquation,
+  onRefClick,
 }: {
   block: DocBlock;
   unit: TranslationUnitItem | null;
   onExplainEquation: (latex: string) => void;
+  onRefClick?: (ref: string, kind?: string | null) => void;
 }) {
   switch (block.type) {
     case "equation":
       return (
         <div data-block-id={block.id}>
-          <EquationBlock latex={block.latex ?? ""} number={block.number} onExplain={onExplainEquation} />
+          <EquationBlock
+            latex={block.latex ?? ""}
+            assetUrl={block.asset_url}
+            number={block.number}
+            onExplain={onExplainEquation}
+          />
         </div>
       );
     case "heading":
@@ -737,28 +762,8 @@ function BlockView({
       );
     case "figure":
     case "table": {
-      const caption = block.caption ?? [];
       return (
-        <figure
-          data-block-id={block.id}
-          style={{
-            margin: "20px 0",
-            padding: "12px 14px",
-            border: "1px solid var(--pr-border-card)",
-            borderRadius: 8,
-            fontFamily: "var(--pr-font-ui)",
-            fontSize: 12.5,
-            color: "var(--pr-text-mid)",
-          }}
-        >
-          <span style={{ fontWeight: 600 }}>{block.label ?? (block.type === "figure" ? "図" : "表")}</span>
-          {caption.length ? (
-            <span>
-              {" "}
-              <InlineRenderer inlines={caption} />
-            </span>
-          ) : null}
-        </figure>
+        <FigureTableBlock block={block} unit={unit} onRefClick={onRefClick} />
       );
     }
     case "code":
@@ -791,7 +796,11 @@ function BlockView({
             margin: "0 0 22px",
           }}
         >
-          {text != null ? text : <InlineRenderer inlines={inlines} />}
+          {text != null ? (
+            <TranslationInlineContent unit={unit} onRefClick={onRefClick} />
+          ) : (
+            <InlineRenderer inlines={inlines} onRefClick={onRefClick} />
+          )}
         </p>
       );
     }
@@ -800,8 +809,9 @@ function BlockView({
 
 /** 初期スケルトン(1b §5.9)。 */
 function PaneSkeleton() {
-  const bar = (w: number | string, h: number, mb = 12): ReactNode => (
+  const bar = (w: number | string, h: number, mb = 12, key?: number): ReactNode => (
     <div
+      key={key}
       style={{
         width: w,
         height: h,
@@ -825,7 +835,7 @@ function PaneSkeleton() {
       />
       {[0, 1, 2].map((g) => (
         <div key={g} style={{ marginBottom: 24 }}>
-          {[0, 1, 2, 3].map((i) => bar(i === 3 ? "70%" : "100%", 17))}
+          {[0, 1, 2, 3].map((i) => bar(i === 3 ? "70%" : "100%", 17, 12, i))}
         </div>
       ))}
     </div>

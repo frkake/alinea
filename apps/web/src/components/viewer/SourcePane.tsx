@@ -1,15 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { annotationsList, viewerGetDocument, type LastPosition, type TocNode } from "@yakudoku/api-client";
 import type { HighlightColor } from "@/components/ui/HighlightMark";
 import { useViewerStore } from "@/stores/viewer-store";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
+import { FigureTableBlock } from "@/components/viewer/FigureTableBlock";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 import { ResumeBanner } from "@/components/viewer/ResumeBanner";
 import { SectionHeading } from "@/components/viewer/SectionHeading";
 import type { PlacedHighlight } from "@/components/viewer/highlight-render";
+import { buildReferenceTargetMap, resolveReferenceTarget } from "@/components/viewer/reference-targets";
 import type { DocBlock, DocSection, DocumentResponse } from "@/components/viewer/document-types";
 
 export interface SourcePaneProps {
@@ -64,6 +66,7 @@ export function SourcePane({
   const setPendingHighlightQuery = useViewerStore((s) => s.setPendingHighlightQuery);
   const setPanel = useViewerStore((s) => s.setPanel);
   const requestAnnotationFocus = useViewerStore((s) => s.requestAnnotationFocus);
+  const requestScroll = useViewerStore((s) => s.requestScroll);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
@@ -127,6 +130,14 @@ export function SourcePane({
   const doc = docQuery.data;
   const tocMap = useMemo(() => buildTocMap(toc), [toc]);
   const blockSectionMap = useMemo(() => buildBlockSectionMap(doc?.sections ?? []), [doc]);
+  const refTargets = useMemo(() => buildReferenceTargetMap(doc?.sections ?? []), [doc]);
+  const onRefClick = useCallback(
+    (ref: string) => {
+      const blockId = resolveReferenceTarget(refTargets, ref);
+      if (blockId) requestScroll({ kind: "block", blockId });
+    },
+    [refTargets, requestScroll],
+  );
 
   useEffect(() => {
     const root = scrollRef.current;
@@ -200,6 +211,7 @@ export function SourcePane({
         tocMap={tocMap}
         onExplainEquation={onExplainEquation}
         onCitationClick={onCitationClick}
+        onRefClick={onRefClick}
         highlightsByBlock={highlightsByBlock}
         onAnnotationClick={onAnnotationClick}
         hlBlockId={hlBlockId}
@@ -247,6 +259,7 @@ interface SourceSectionProps {
   tocMap: Map<string, { number: string | null; titleJa: string | null }>;
   onExplainEquation?: (block: DocBlock) => void;
   onCitationClick?: (refId: string) => void;
+  onRefClick?: (ref: string, kind?: string | null) => void;
   /** ブロック単位の原文側ハイライト(M1 統合ポリッシュ: hl パリティ)。 */
   highlightsByBlock: Map<string, PlacedHighlight[]>;
   onAnnotationClick: (annotationId: string) => void;
@@ -260,6 +273,7 @@ function SourceSection({
   tocMap,
   onExplainEquation,
   onCitationClick,
+  onRefClick,
   highlightsByBlock,
   onAnnotationClick,
   hlBlockId,
@@ -280,6 +294,7 @@ function SourceSection({
           block={block}
           onExplainEquation={onExplainEquation}
           onCitationClick={onCitationClick}
+          onRefClick={onRefClick}
           highlights={highlightsByBlock.get(block.id) ?? []}
           onAnnotationClick={onAnnotationClick}
           searchHighlight={hlBlockId === block.id ? pendingHighlightQuery : null}
@@ -292,6 +307,7 @@ function SourceSection({
           tocMap={tocMap}
           onExplainEquation={onExplainEquation}
           onCitationClick={onCitationClick}
+          onRefClick={onRefClick}
           highlightsByBlock={highlightsByBlock}
           onAnnotationClick={onAnnotationClick}
           hlBlockId={hlBlockId}
@@ -306,6 +322,7 @@ function SourceBlock({
   block,
   onExplainEquation,
   onCitationClick,
+  onRefClick,
   highlights = [],
   onAnnotationClick,
   searchHighlight = null,
@@ -313,6 +330,7 @@ function SourceBlock({
   block: DocBlock;
   onExplainEquation?: (block: DocBlock) => void;
   onCitationClick?: (refId: string) => void;
+  onRefClick?: (ref: string, kind?: string | null) => void;
   /** この段落に配置された原文側ハイライト(1b §4.5-5 と対の side='source')。 */
   highlights?: PlacedHighlight[];
   onAnnotationClick?: (annotationId: string) => void;
@@ -322,7 +340,12 @@ function SourceBlock({
   if (block.type === "equation") {
     return (
       <div data-block-id={block.id}>
-        <EquationBlock latex={block.latex ?? ""} number={block.number} onExplain={() => onExplainEquation?.(block)} />
+        <EquationBlock
+          latex={block.latex ?? ""}
+          assetUrl={block.asset_url}
+          number={block.number}
+          onExplain={() => onExplainEquation?.(block)}
+        />
       </div>
     );
   }
@@ -351,6 +374,16 @@ function SourceBlock({
       </pre>
     );
   }
+  if (block.type === "figure" || block.type === "table") {
+    return (
+      <FigureTableBlock
+        block={block}
+        showTranslatedCaption={false}
+        onCitationClick={onCitationClick}
+        onRefClick={onRefClick}
+      />
+    );
+  }
   return (
     <p
       data-block-id={block.id}
@@ -365,6 +398,7 @@ function SourceBlock({
       <InlineRenderer
         inlines={block.inlines ?? []}
         onCitationClick={onCitationClick}
+        onRefClick={onRefClick}
         highlights={highlights}
         searchQuery={searchHighlight}
         onAnnotationClick={onAnnotationClick}
@@ -374,8 +408,9 @@ function SourceBlock({
 }
 
 function SkeletonLines() {
-  const bar = (w: number | string): ReactNode => (
+  const bar = (w: number | string, key?: number): ReactNode => (
     <div
+      key={key}
       style={{
         width: w,
         height: 15,
@@ -388,7 +423,7 @@ function SkeletonLines() {
   );
   return (
     <div aria-hidden>
-      {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => bar(i % 4 === 3 ? "70%" : "100%"))}
+      {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => bar(i % 4 === 3 ? "70%" : "100%", i))}
     </div>
   );
 }

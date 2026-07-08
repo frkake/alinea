@@ -217,6 +217,25 @@ def test_code_inline_from_texttt() -> None:
     assert code.v == "pip install"
 
 
+def test_inline_parser_preserves_display_math_and_symbol_macros() -> None:
+    doc = parse_latex_source(
+        "main.tex",
+        {
+            "main.tex": (
+                "\\documentclass{article}\\begin{document}\\section{M}"
+                "We use \\LaTeX{} notation, \\eg{} display math \\[ x^2 + y^2 \\]."
+                "\\end{document}"
+            )
+        },
+    )
+    para = next(b for b in doc.blocks if b.type == "paragraph")
+    text = block_to_plain(para)
+    assert "LaTeX" in text
+    assert "e.g." in text
+    math = next(il for il in para.inlines if il.t == "math_inline")
+    assert math.v == "x^2 + y^2"
+
+
 # ============================ 相互参照解決(PY-PARSE-02 の追加要件) ============================
 
 

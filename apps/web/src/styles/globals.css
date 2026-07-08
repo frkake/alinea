@@ -115,6 +115,48 @@ html[data-theme="dark"] .yk-pdf-canvas-bg {
   background: var(--pr-bg-canvas);
 }
 
+/* pdf.js text layer: canvas の上に透明テキストを重ね、PDF本文の選択/コピーを可能にする。 */
+.yk-pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  text-size-adjust: none;
+  transform-origin: 0 0;
+  z-index: 1;
+}
+.yk-pdf-text-layer :is(span, br) {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+}
+.yk-pdf-text-layer ::selection {
+  background: color-mix(in srgb, var(--pr-acc) 35%, transparent);
+}
+.yk-pdf-text-layer .endOfContent {
+  position: absolute;
+  inset: 100% 0 0;
+  user-select: none;
+}
+
+.yk-pdf-link-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.yk-pdf-link-layer a {
+  pointer-events: auto;
+  border-radius: 2px;
+}
+.yk-pdf-link-layer a:hover {
+  background: color-mix(in srgb, var(--pr-acc) 22%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--pr-acc) 60%, transparent);
+}
+
 /* 共有ページ(4c)の CTA・外部リンクホバー・フォーカスリング(§5.7 決定: デザイン未描画。
    新色は発明せず既存トークンのみで表現する)。 */
 .yk-share-cta:hover {

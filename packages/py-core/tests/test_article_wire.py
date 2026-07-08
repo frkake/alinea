@@ -166,7 +166,7 @@ def test_block_content_to_wire_figure_variant_includes_asset_url_and_flags() -> 
         "share_alike": False,
     }
     wire = block_content_to_wire("figure_embed", content, evidence_resolver=resolver)
-    assert wire["figure"]["image_url"] == "/api/assets/fig-1.png"
+    assert wire["figure"]["image_url"] == "/api/assets/ZmlnLTEucG5n"
     assert wire["figure"]["caption_separated"] is True
     assert wire["figure"]["share_alike"] is False
 

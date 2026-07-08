@@ -13,6 +13,7 @@ function unit(overrides: Partial<TranslationUnitItem> = {}): TranslationUnitItem
     unit_id: "unit_1",
     block_id: "blk-1",
     text_ja: "拡散モデルは反復ステップを要する。以上。",
+    content_ja: null,
     state: "generated",
     quality_flags: [],
     proposal: null,
@@ -79,6 +80,49 @@ describe("TranslatedParagraph highlight rendering (1b §4.5-5 / §5.6)", () => {
     expect(marks[0]).toHaveTextContent("範囲B");
     // 前後の非ハイライト部分もそのまま残る(丸数字チップの「1」は別要素として付加される)。
     expect(container.querySelector("p")?.textContent).toBe("本文A範囲B1残り");
+  });
+});
+
+describe("TranslatedParagraph structured translation content", () => {
+  test("renders translated url inlines as links", () => {
+    render(
+      <TranslatedParagraph
+        block={block()}
+        unit={unit({
+          text_ja: "関連リンク",
+          content_ja: [
+            { t: "text", v: "関連 " },
+            { t: "url", v: "OpenAI", href: "https://openai.com/" },
+          ],
+        })}
+        parallelLabel="¶1 / 1 Introduction"
+        popOpen={false}
+        onTogglePop={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "OpenAI" })).toHaveAttribute("href", "https://openai.com/");
+  });
+
+  test("keeps translated ref inlines clickable", () => {
+    const onRefClick = vi.fn();
+    render(
+      <TranslatedParagraph
+        block={block()}
+        unit={unit({
+          text_ja: "図1を参照。",
+          content_ja: [
+            { t: "ref", v: "図1", ref: "fig:overview", kind: "figure" },
+            { t: "text", v: "を参照。" },
+          ],
+        })}
+        parallelLabel="¶1 / 1 Introduction"
+        popOpen={false}
+        onTogglePop={vi.fn()}
+        onRefClick={onRefClick}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "図1" }));
+    expect(onRefClick).toHaveBeenCalledWith("fig:overview", "figure");
   });
 });
 

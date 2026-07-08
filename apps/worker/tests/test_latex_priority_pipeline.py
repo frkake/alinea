@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import base64
 import gzip
 import io
 import random
@@ -34,6 +35,7 @@ from starlette.responses import Response
 from starlette.routing import Route
 from yakudoku_core.arxiv.fetch import RedisLike
 from yakudoku_core.db.models import DocumentRevision, SourceAsset
+from yakudoku_core.document.blocks import DocumentContent
 from yakudoku_core.ingest import build_timeline
 from yakudoku_core.jobs.store import JobStore
 from yakudoku_core.settings import CoreSettings
@@ -54,6 +56,11 @@ _LATEX_MAIN_TEX = (
     "\\label{eq:one}\n"
     "E = mc^2\n"
     "\\end{equation}\n"
+    "\\begin{figure}\n"
+    "\\includegraphics{mock-figure.png}\n"
+    "\\caption{A mock figure for asset persistence.}\n"
+    "\\label{fig:mock}\n"
+    "\\end{figure}\n"
     "\\section{Method}\n"
     "The method section describes the approach in detail for testing purposes here.\n"
     "\\end{document}\n"
@@ -95,6 +102,9 @@ _OAI_XML = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 _MINIMAL_PDF = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+_PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+)
 
 
 async def _query(request: Request) -> Response:
@@ -116,6 +126,10 @@ async def _html_unused(_request: Request) -> Response:  # pragma: no cover
     return Response("html should not be fetched when latex succeeds", status_code=500)
 
 
+async def _figure_png(_request: Request) -> Response:
+    return Response(_PNG_1X1, media_type="image/png")
+
+
 async def _pdf(_request: Request) -> Response:
     return Response(_MINIMAL_PDF, media_type="application/pdf")
 
@@ -126,6 +140,7 @@ def _make_latex_arxiv_stub() -> Starlette:
             Route("/api/query", _query, methods=["GET"]),
             Route("/oai2", _oai2, methods=["GET"]),
             Route("/e-print/{arxiv_id:path}", _eprint_valid_latex, methods=["GET"]),
+            Route("/html/{versioned}/mock-figure.png", _figure_png, methods=["GET"]),
             Route("/html/{path:path}", _html_unused, methods=["GET"]),
             Route("/pdf/{arxiv_id:path}", _pdf, methods=["GET"]),
         ]
@@ -228,6 +243,11 @@ async def test_ingest_prefers_latex_source_when_available(
     assert rev.source_format == "latex"
     assert rev.parser_version == "latex-1.0.0"
     assert rev.quality_level == "A"
+    content = DocumentContent.model_validate(rev.content)
+    fig = next(block for _sec, block in content.iter_blocks() if block.type == "figure")
+    assert fig.asset_key is not None
+    assert fig.asset_key.startswith(f"figures/{ids['paper_id']}/{rev.id}/{fig.id}.")
+    assert fig.asset_key.endswith(".png")
 
     kinds = await _source_asset_kinds(db_session, ids["paper_id"])
     assert "arxiv_latex" in kinds

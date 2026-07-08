@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   annotationsList,
@@ -14,11 +14,14 @@ import type { HighlightColor } from "@/components/ui/HighlightMark";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import { useViewerChatStore } from "@/stores/viewer-chat-store";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
+import { FigureTableBlock } from "@/components/viewer/FigureTableBlock";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 import { ResumeBanner } from "@/components/viewer/ResumeBanner";
 import { SectionHeading } from "@/components/viewer/SectionHeading";
 import { TranslationColumnHeader } from "@/components/viewer/TranslationColumnHeader";
-import { renderHighlightedText, type PlacedHighlight } from "@/components/viewer/highlight-render";
+import { type PlacedHighlight } from "@/components/viewer/highlight-render";
+import { buildReferenceTargetMap, resolveReferenceTarget } from "@/components/viewer/reference-targets";
+import { TranslationInlineContent, hasTranslatedText } from "@/components/viewer/translation-content";
 import type { DocBlock, DocSection, DocumentResponse } from "@/components/viewer/document-types";
 
 /** text_ja が null で返る翻訳失敗系フラグ(plans/06 §12)。 */
@@ -98,6 +101,7 @@ export function BilingualPane({
   const setPendingHighlightQuery = useViewerStore((s) => s.setPendingHighlightQuery);
   const setPanel = useViewerStore((s) => s.setPanel);
   const requestAnnotationFocus = useViewerStore((s) => s.requestAnnotationFocus);
+  const requestScroll = useViewerStore((s) => s.requestScroll);
   const chatEvidence = useViewerChatStore((s) => s.chatEvidence);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -190,6 +194,14 @@ export function BilingualPane({
 
   const tocMap = useMemo(() => buildTocMap(toc), [toc]);
   const blockSectionMap = useMemo(() => buildBlockSectionMap(doc?.sections ?? []), [doc]);
+  const refTargets = useMemo(() => buildReferenceTargetMap(doc?.sections ?? []), [doc]);
+  const onRefClick = useCallback(
+    (ref: string) => {
+      const blockId = resolveReferenceTarget(refTargets, ref);
+      if (blockId) requestScroll({ kind: "block", blockId });
+    },
+    [refTargets, requestScroll],
+  );
 
   // 先頭可視ブロック追従(位置保存・目次同期。viewer-shell §5.4)。
   useEffect(() => {
@@ -268,6 +280,7 @@ export function BilingualPane({
         chatEvidenceDisplay={chatEvidence?.display ?? null}
         onExplainEquation={onExplainEquation}
         onCitationClick={onCitationClick}
+        onRefClick={onRefClick}
         highlightsBySide={highlightsBySide}
         onAnnotationClick={onAnnotationClick}
         hlBlockId={hlBlockId}
@@ -317,6 +330,7 @@ interface SectionColumnsProps {
   chatEvidenceDisplay: string | null;
   onExplainEquation?: (block: DocBlock) => void;
   onCitationClick?: (refId: string) => void;
+  onRefClick?: (ref: string, kind?: string | null) => void;
   /** 側別のブロック単位ハイライト(M1 統合ポリッシュ: hl パリティ)。 */
   highlightsBySide: HighlightsBySide;
   onAnnotationClick: (annotationId: string) => void;
@@ -333,6 +347,7 @@ function SectionColumns({
   chatEvidenceDisplay,
   onExplainEquation,
   onCitationClick,
+  onRefClick,
   highlightsBySide,
   onAnnotationClick,
   hlBlockId,
@@ -365,6 +380,7 @@ function SectionColumns({
                 block={block}
                 unit={unitMap.get(block.id) ?? null}
                 onCitationClick={onCitationClick}
+                onRefClick={onRefClick}
                 sourceHighlights={highlightsBySide.source.get(block.id) ?? []}
                 translationHighlights={highlightsBySide.translation.get(block.id) ?? []}
                 onAnnotationClick={onAnnotationClick}
@@ -384,8 +400,13 @@ function SectionColumns({
             );
           }
           return (
-            <div key={block.id} data-block-id={block.id} style={{ gridColumn: "1 / -1" }}>
-              <OtherBlock block={block} unit={unitMap.get(block.id) ?? null} />
+            <div key={block.id} style={{ gridColumn: "1 / -1" }}>
+              <OtherBlock
+                block={block}
+                unit={unitMap.get(block.id) ?? null}
+                onCitationClick={onCitationClick}
+                onRefClick={onRefClick}
+              />
             </div>
           );
         })}
@@ -400,6 +421,7 @@ function SectionColumns({
           chatEvidenceDisplay={chatEvidenceDisplay}
           onExplainEquation={onExplainEquation}
           onCitationClick={onCitationClick}
+          onRefClick={onRefClick}
           highlightsBySide={highlightsBySide}
           onAnnotationClick={onAnnotationClick}
           hlBlockId={hlBlockId}
@@ -415,6 +437,7 @@ export interface BilingualParagraphProps {
   /** null=未翻訳(原文フォールバック)。 */
   unit: TranslationUnitItem | null;
   onCitationClick?: (refId: string) => void;
+  onRefClick?: (ref: string, kind?: string | null) => void;
   /** 原文(左)列に配置する注釈ハイライト(1b §4.5-5 と対の side='source')。 */
   sourceHighlights?: PlacedHighlight[];
   /** 訳文(右)列に配置する注釈ハイライト(side='translation')。 */
@@ -429,13 +452,14 @@ export function BilingualParagraph({
   block,
   unit,
   onCitationClick,
+  onRefClick,
   sourceHighlights = [],
   translationHighlights = [],
   onAnnotationClick,
   searchHighlight = null,
 }: BilingualParagraphProps) {
   const inlines = block.inlines ?? [];
-  const hasTranslation = unit != null && unit.text_ja != null;
+  const hasTranslation = hasTranslatedText(unit);
   const failed = !hasTranslation && (unit?.quality_flags ?? []).some((f) => FAILURE_FLAGS.has(f));
 
   return (
@@ -454,6 +478,7 @@ export function BilingualParagraph({
         <InlineRenderer
           inlines={inlines}
           onCitationClick={onCitationClick}
+          onRefClick={onRefClick}
           highlights={sourceHighlights}
           searchQuery={searchHighlight}
           onAnnotationClick={onAnnotationClick}
@@ -469,7 +494,14 @@ export function BilingualParagraph({
         }}
       >
         {hasTranslation ? (
-          renderHighlightedText(unit?.text_ja ?? "", translationHighlights, searchHighlight, onAnnotationClick)
+          <TranslationInlineContent
+            unit={unit}
+            highlights={translationHighlights}
+            searchQuery={searchHighlight}
+            onAnnotationClick={onAnnotationClick}
+            onCitationClick={onCitationClick}
+            onRefClick={onRefClick}
+          />
         ) : failed ? (
           <span style={{ fontSize: 12, fontFamily: "var(--pr-font-ui)", color: "var(--pr-warn)" }}>
             この段落の翻訳に失敗しました
@@ -529,33 +561,39 @@ function BilingualEquation({
           ✦ チャットの根拠{referenceDisplay ? ` · ${referenceDisplay}` : ""}
         </span>
       ) : null}
-      <EquationBlock latex={block.latex ?? ""} number={block.number} onExplain={() => onExplain?.(block)} />
+      <EquationBlock
+        latex={block.latex ?? ""}
+        assetUrl={block.asset_url}
+        number={block.number}
+        onExplain={() => onExplain?.(block)}
+      />
     </div>
   );
 }
 
 /** 段落・数式以外(見出し・図表・コード等)。全幅で簡素に描画。 */
-function OtherBlock({ block, unit }: { block: DocBlock; unit: TranslationUnitItem | null }) {
+function OtherBlock({
+  block,
+  unit,
+  onCitationClick,
+  onRefClick,
+}: {
+  block: DocBlock;
+  unit: TranslationUnitItem | null;
+  onCitationClick?: (refId: string) => void;
+  onRefClick?: (ref: string, kind?: string | null) => void;
+}) {
   if (block.type === "heading") {
     return <SectionHeading number={block.number ?? null} titleJa={null} titleEn={block.title ?? ""} />;
   }
   if (block.type === "figure" || block.type === "table") {
-    const caption = block.caption ?? [];
     return (
-      <figure
-        style={{
-          margin: "12px 0",
-          padding: "12px 14px",
-          border: "1px solid var(--pr-border-card)",
-          borderRadius: 8,
-          fontFamily: "var(--pr-font-ui)",
-          fontSize: 12.5,
-          color: "var(--pr-text-mid)",
-        }}
-      >
-        <span style={{ fontWeight: 600 }}>{block.label ?? (block.type === "figure" ? "図" : "表")}</span>{" "}
-        <InlineRenderer inlines={caption} />
-      </figure>
+      <FigureTableBlock
+        block={block}
+        unit={unit}
+        onCitationClick={onCitationClick}
+        onRefClick={onRefClick}
+      />
     );
   }
   if (block.type === "code") {
@@ -585,7 +623,11 @@ function OtherBlock({ block, unit }: { block: DocBlock; unit: TranslationUnitIte
         margin: 0,
       }}
     >
-      {text != null ? text : <InlineRenderer inlines={block.inlines ?? []} />}
+      {text != null ? (
+        <TranslationInlineContent unit={unit} onCitationClick={onCitationClick} onRefClick={onRefClick} />
+      ) : (
+        <InlineRenderer inlines={block.inlines ?? []} onCitationClick={onCitationClick} onRefClick={onRefClick} />
+      )}
     </p>
   );
 }

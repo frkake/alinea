@@ -247,6 +247,7 @@ async def test_units_by_section(auth_client: AsyncClient, seeded: Seeded) -> Non
     # personal フォークが優先(edited)。
     assert unit["state"] == "edited"
     assert unit["text_ja"]
+    assert "content_ja" in unit
 
 
 async def test_units_missing_section_404(auth_client: AsyncClient, seeded: Seeded) -> None:
@@ -295,6 +296,7 @@ async def test_units_placeholder_mismatch_is_null(
     item = next((i for i in r.json()["items"] if i["block_id"] == target_block), None)
     assert item is not None
     assert item["text_ja"] is None
+    assert item["content_ja"] is None
     assert "placeholder_mismatch" in item["quality_flags"]
 
 

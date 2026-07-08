@@ -18,13 +18,14 @@ from collections.abc import Sequence
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Response
-from sqlalchemy import Integer, and_, case, cast, extract, func, or_, select, text
+from sqlalchemy import Integer, and_, case, cast, delete, extract, func, or_, select, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.sql.elements import ColumnElement
 from yakudoku_core.db.models import (
     Collection,
     CollectionEntry,
     DocumentRevision,
+    Glossary,
     LibraryItem,
     Paper,
     SavedFilter,
@@ -680,6 +681,7 @@ async def patch_item(
 async def delete_item(item_id: str, user: CurrentUserOrExt, db: DbDep) -> Response:
     item = await _get_owned(db, user.id, item_id)
     paper_id = item.paper_id
+    await db.execute(delete(Glossary).where(Glossary.library_item_id == item_id))
     await db.delete(item)  # 配下は FK ON DELETE CASCADE で消える
     await db.flush()
     # private Paper で他参照が無ければ Paper ごと削除(§5.5・docs/01 §13)。

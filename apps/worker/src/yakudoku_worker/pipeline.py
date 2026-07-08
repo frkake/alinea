@@ -703,6 +703,9 @@ class IngestRun:
         paper.latest_revision_id = revision.id
         figure_bytes, fig_warnings = await self._save_figures(self.revision_id)
         warnings.extend(fig_warnings)
+        content = self.parsed.to_document_content()
+        revision.content = content.model_dump()
+        self.content = content
         await rebuild_block_search_index(self.session, self.revision_id, content)
         warnings.extend(await self._make_thumbnail(paper, figure_bytes, self.parsed.figures))
         await self.session.commit()
@@ -741,12 +744,14 @@ class IngestRun:
                 if resp.status_code != 200:
                     raise FetchError("source_not_found", f"figure {resp.status_code}")
                 ext = "svg" if fig.asset_key.endswith(".svg") else "png"
+                key = StorageKeys.figure(self.paper_id, revision_id, fig.id, ext)
                 await self.deps.s3.put(
                     self.deps.s3.assets_bucket,
-                    StorageKeys.figure(self.paper_id, revision_id, fig.id, ext),
+                    key,
                     resp.content,
                     content_type=resp.headers.get("content-type", "image/png"),
                 )
+                fig.asset_key = key
                 out[fig.id] = resp.content
             except (httpx.HTTPError, FetchError) as exc:
                 warnings.append(f"図の切り出しに失敗(続行): {fig.label or fig.id} — {exc}")

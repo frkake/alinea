@@ -19,6 +19,7 @@ export type InlineType =
 export interface Inline {
   t: InlineType;
   v?: string;
+  children?: Inline[];
   ref?: string | null;
   kind?: string | null;
   href?: string | null;
@@ -46,6 +47,9 @@ export interface DocBlock {
   number?: string | null;
   title?: string | null;
   label?: string | null;
+  asset_key?: string | null;
+  asset_url?: string | null;
+  raw?: string | null;
   latex?: string | null;
   language?: string | null;
   code?: string | null;

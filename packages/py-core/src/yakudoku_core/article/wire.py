@@ -9,7 +9,7 @@ apps/api(GET article)と apps/worker(block rewrite の ``jobs.result``)の両方
 
 from __future__ import annotations
 
-import urllib.parse
+import base64
 from dataclasses import dataclass
 from typing import Any
 
@@ -80,7 +80,9 @@ class ExplainerRef:
 def _asset_url(storage_key: str | None) -> str:
     if not storage_key:
         return ""
-    return f"/api/assets/{urllib.parse.quote(storage_key, safe='')}"
+    raw = storage_key.encode("utf-8")
+    asset_id = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return f"/api/assets/{asset_id}"
 
 
 def _anchor_wire(

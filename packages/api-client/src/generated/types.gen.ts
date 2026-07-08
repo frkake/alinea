@@ -3871,6 +3871,10 @@ export type TranslationUnitItem = {
      */
     text_ja: string | null;
     /**
+     * Content Ja
+     */
+    content_ja: unknown | null;
+    /**
      * State
      */
     state: string;

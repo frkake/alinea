@@ -18,10 +18,29 @@ from typing import Any
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from yakudoku_api.services.session_service import create_extension_token, create_session
 from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
-from yakudoku_core.db.models import DocumentRevision, LibraryItem, Paper
+from yakudoku_core.db.models import (
+    Annotation,
+    Article,
+    ArticleBlock,
+    ChatMessage,
+    ChatThread,
+    CollectionEntry,
+    DocumentRevision,
+    Glossary,
+    GlossaryTerm,
+    Job,
+    LibraryItem,
+    Note,
+    Paper,
+    ReadingSession,
+    ResourceLink,
+    User,
+    VocabEntry,
+)
 
 
 def _build_app() -> FastAPI:
@@ -124,6 +143,11 @@ async def _mk_item(
     db.add(item)
     await db.flush()
     return str(item.id)
+
+
+async def _count(db: AsyncSession, model: Any, where: Any) -> int:
+    value = await db.scalar(select(func.count()).select_from(model).where(where))
+    return int(value or 0)
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +393,77 @@ async def test_delete_removes_item_and_private_paper(
     assert r.status_code == 204
     gone = await client.get(f"/api/library-items/{item_id}")
     assert gone.status_code == 404
+
+
+async def test_delete_cascades_related_personal_data(
+    auth: tuple[AsyncClient, str], db_session: AsyncSession, factories: Any
+) -> None:
+    client, uid = auth
+    item_id = await _mk_item(db_session, uid)
+    user = await db_session.get(User, uid)
+    item = await db_session.get(LibraryItem, item_id)
+    assert user is not None
+    assert item is not None
+    paper = await db_session.get(Paper, item.paper_id)
+    assert paper is not None
+    revision = await db_session.get(DocumentRevision, paper.latest_revision_id)
+    assert revision is not None
+
+    anchor = {
+        "revision_id": str(revision.id),
+        "block_id": "blk-p1",
+        "start": 0,
+        "end": 4,
+        "quote": "flow",
+        "side": "source",
+    }
+    thread = await factories.make_chat_thread(db_session, library_item=item)
+    await factories.make_chat_message(db_session, thread=thread)
+    await factories.make_note(db_session, library_item=item)
+    await factories.make_annotation(db_session, library_item=item, anchor=anchor)
+    await factories.make_vocab_entry(db_session, user=user, library_item=item, context_anchor=anchor)
+    await factories.make_resource_link(db_session, library_item=item)
+    await factories.make_collection(db_session, user=user, entries_of=[item])
+    article = await factories.make_article(db_session, library_item=item, with_blocks=True)
+    await factories.make_reading_session(db_session, library_item=item)
+    await factories.make_job(db_session, user=user, paper=paper, library_item=item)
+    glossary = Glossary(id=str(uuid.uuid4()), scope="paper", library_item_id=item_id)
+    db_session.add(glossary)
+    await db_session.flush()
+    db_session.add(
+        GlossaryTerm(
+            id=str(uuid.uuid4()),
+            glossary_id=str(glossary.id),
+            source_term="flow",
+            target_term="流れ",
+        )
+    )
+    paper_id = str(paper.id)
+    revision_id = str(revision.id)
+    thread_id = str(thread.id)
+    article_id = str(article.id)
+    glossary_id = str(glossary.id)
+    await db_session.commit()
+
+    r = await client.delete(f"/api/library-items/{item_id}")
+    assert r.status_code == 204
+
+    assert await _count(db_session, LibraryItem, LibraryItem.id == item_id) == 0
+    assert await _count(db_session, Paper, Paper.id == paper_id) == 0
+    assert await _count(db_session, DocumentRevision, DocumentRevision.id == revision_id) == 0
+    assert await _count(db_session, ChatThread, ChatThread.id == thread_id) == 0
+    assert await _count(db_session, ChatMessage, ChatMessage.thread_id == thread_id) == 0
+    assert await _count(db_session, Note, Note.library_item_id == item_id) == 0
+    assert await _count(db_session, Annotation, Annotation.library_item_id == item_id) == 0
+    assert await _count(db_session, VocabEntry, VocabEntry.library_item_id == item_id) == 0
+    assert await _count(db_session, ResourceLink, ResourceLink.library_item_id == item_id) == 0
+    assert await _count(db_session, CollectionEntry, CollectionEntry.library_item_id == item_id) == 0
+    assert await _count(db_session, Article, Article.id == article_id) == 0
+    assert await _count(db_session, ArticleBlock, ArticleBlock.article_id == article_id) == 0
+    assert await _count(db_session, ReadingSession, ReadingSession.library_item_id == item_id) == 0
+    assert await _count(db_session, Job, Job.library_item_id == item_id) == 0
+    assert await _count(db_session, Glossary, Glossary.id == glossary_id) == 0
+    assert await _count(db_session, GlossaryTerm, GlossaryTerm.glossary_id == glossary_id) == 0
 
 
 async def test_delete_allows_extension_token(

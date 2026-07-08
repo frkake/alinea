@@ -160,3 +160,39 @@ describe("LibraryCard cancel-ingest wiring", () => {
     expect(onOpen).toHaveBeenCalledWith("li_1");
   });
 });
+
+
+describe("LibraryCard delete wiring", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  test("削除 opens a confirm modal without navigating or calling the API", async () => {
+    const user = userEvent.setup();
+    const { onOpen } = renderCard(makeItem());
+
+    await user.click(screen.getByRole("button", { name: "Flow Straight and Fast を削除" }));
+
+    expect(screen.getByText("ライブラリから削除しますか?")).toBeInTheDocument();
+    expect(libraryItemsDelete).not.toHaveBeenCalled();
+    expect(onOpen).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "戻る" }));
+    await waitFor(() =>
+      expect(screen.queryByText("ライブラリから削除しますか?")).not.toBeInTheDocument(),
+    );
+  });
+
+  test("confirming calls DELETE /api/library-items/{id}", async () => {
+    const user = userEvent.setup();
+    vi.mocked(libraryItemsDelete).mockResolvedValue({} as never);
+    renderCard(makeItem());
+
+    await user.click(screen.getByRole("button", { name: "Flow Straight and Fast を削除" }));
+    await user.click(screen.getByRole("button", { name: "削除する" }));
+
+    await waitFor(() =>
+      expect(libraryItemsDelete).toHaveBeenCalledWith({ path: { item_id: "li_1" }, throwOnError: true }),
+    );
+  });
+});

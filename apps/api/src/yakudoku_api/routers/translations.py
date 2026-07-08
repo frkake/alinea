@@ -280,6 +280,7 @@ async def list_units(
                 unit_id=str(unit.id),
                 block_id=bid,
                 text_ja=None if blocked else unit.text_ja,
+                content_ja=None if blocked else unit.content_ja,
                 state=unit.state,
                 quality_flags=flags,
                 proposal=proposal,

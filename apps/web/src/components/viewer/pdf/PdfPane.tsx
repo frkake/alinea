@@ -150,6 +150,13 @@ export function PdfPane({
     if (target) onOpenInTranslation(target);
   };
 
+  const stepPage = (direction: number) => {
+    const step = spread ? 2 : 1;
+    const pageCount = pdf.numPages;
+    const next = direction > 0 ? page + step : page - step;
+    setPage(Math.max(1, Math.min(pageCount ?? next, next)));
+  };
+
   // 2a 固有キー(§5.5): ←/→/Home/End/j/k はページ移動、Esc は bbox 選択解除。
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -159,14 +166,21 @@ export function PdfPane({
       const step = spread ? 2 : 1;
       switch (e.key) {
         case "ArrowLeft":
+        case "PageUp":
         case "k":
           e.preventDefault();
           setPage(Math.max(1, page - step));
           break;
         case "ArrowRight":
+        case "PageDown":
+        case " ":
         case "j":
           e.preventDefault();
-          setPage(Math.min(pageCount ?? page, page + step));
+          if (e.key === " " && e.shiftKey) {
+            setPage(Math.max(1, page - step));
+          } else {
+            setPage(Math.min(pageCount ?? page, page + step));
+          }
           break;
         case "Home":
           e.preventDefault();
@@ -219,6 +233,7 @@ export function PdfPane({
         selectedBlockId={selectedBlockId}
         onSelectBlock={(hit) => selectBlock(hit?.blockId ?? null)}
         onOpenInTranslation={onOpenInTranslation}
+        onPageStep={stepPage}
         onPageSizeResolved={setPageSizePt}
         onResize={setContainerSize}
         loading={pdf.loading || !docQuery.data}

@@ -14,6 +14,8 @@ export interface ParallelPopoverProps {
   onClose: () => void;
   /** M0: 指示なし再翻訳(1b §5.3)。 */
   onRetranslate?: () => void;
+  onCitationClick?: (refId: string) => void;
+  onRefClick?: (ref: string, kind?: string | null) => void;
   /** 再翻訳ジョブ実行中(フッタを非活性化)。 */
   retranslating?: boolean;
   /** モバイル縮退(mobile.md §4.4)。再翻訳フッタ(操作系)を非描画にする。 */
@@ -36,6 +38,8 @@ export function ParallelPopover({
   sourceInlines,
   onClose,
   onRetranslate,
+  onCitationClick,
+  onRefClick,
   retranslating = false,
   isMobile = false,
 }: ParallelPopoverProps) {
@@ -83,7 +87,7 @@ export function ParallelPopover({
           color: "var(--pr-text-en)",
         }}
       >
-        <InlineRenderer inlines={sourceInlines} />
+        <InlineRenderer inlines={sourceInlines} onCitationClick={onCitationClick} onRefClick={onRefClick} />
       </div>
       {isMobile ? null : (
         <div
