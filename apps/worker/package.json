@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "uv run --no-sync arq yakudoku_worker.main.InteractiveWorker --watch src",
+    "dev": "uv run --no-sync arq yakudoku_worker.main.InteractiveWorker --watch src & uv run --no-sync arq yakudoku_worker.main.BulkWorker --watch src & wait",
     "lint": "uv run --no-sync ruff check .",
     "typecheck": "uv run --no-sync mypy .",
     "test": "uv run --no-sync pytest || test $? -eq 5"
