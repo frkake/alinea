@@ -358,12 +358,18 @@ def test_scope_excludes_appendix_reference_and_nontext() -> None:
                 "References",
                 [_ref_entry("blk-r1", "[1] ..."), _ref_entry("blk-r2", "[2] ...")],
             ),
+            _section(
+                "sec-ref-raw",
+                "",
+                "Bibliography",
+                [_para("blk-r-raw", "[1] Wang, A. A reference. 2024.")],
+            ),
         ]
     )
     scope = compute_translation_scope(content)
     assert scope.in_scope_block_ids == ["blk-a", "blk-b"]  # equation/appendix/reference 除外
     assert scope.appendix_section_ids == ["sec-A"]
-    assert scope.reference_section_ids == ["sec-ref"]
+    assert scope.reference_section_ids == ["sec-ref", "sec-ref-raw"]
     assert scope.sections == [{"section_id": "sec-1", "block_ids": ["blk-a", "blk-b"]}]
 
 
@@ -570,6 +576,43 @@ async def test_translate_section_idempotent_skip(db_session: AsyncSession) -> No
     assert second.skipped == 1
     assert second.translated == 0
     assert provider.calls == calls_after_first
+
+
+async def test_translate_section_retries_existing_blocking_unit(
+    db_session: AsyncSession,
+) -> None:
+    block = _para("blk-a", "Body text.")
+    content = _content([_section("sec-1", "1", "Introduction", [block])])
+    _paper, _rev, tset = await _make_set(db_session, content=content)
+    encoded = encode_block(block)
+    db_session.add(
+        TranslationUnit(
+            set_id=tset.id,
+            block_id="blk-a",
+            source_hash=encoded.source_hash,
+            content_ja=[],
+            text_ja="",
+            state="machine",
+            quality_flags=["placeholder_mismatch"],
+        )
+    )
+    await db_session.commit()
+
+    provider = _ScriptProvider()
+    router = LLMRouter([("fake", "deepseek-v4-flash", provider)])
+    result = await translate_section(db_session, tset.id, "sec-1", router)
+    assert result.skipped == 0
+    assert result.translated == 1
+    assert provider.calls == 1
+    row = (
+        await db_session.execute(
+            select(TranslationUnit).where(
+                TranslationUnit.set_id == tset.id, TranslationUnit.block_id == "blk-a"
+            )
+        )
+    ).scalar_one()
+    assert row.text_ja
+    assert row.quality_flags == []
 
 
 # ===========================================================================

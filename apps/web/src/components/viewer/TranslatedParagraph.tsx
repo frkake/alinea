@@ -15,7 +15,7 @@ import type { DocBlock } from "@/components/viewer/document-types";
 export type { PlacedHighlight };
 
 /** text_ja が null で返る翻訳失敗系フラグ(plans/06 §12。1b §5.9)。 */
-const FAILURE_FLAGS = new Set(["placeholder_mismatch", "provider_refusal", "untranslated"]);
+const FAILURE_FLAGS = new Set(["placeholder_mismatch", "provider_refusal", "context_overflow", "untranslated"]);
 
 export interface TranslatedParagraphProps {
   block: DocBlock;
@@ -142,30 +142,12 @@ export function TranslatedParagraph({
               <InlineRenderer inlines={inlines} onCitationClick={onCitationClick} onRefClick={onRefClick} />
             </span>{" "}
             {failed ? (
-              isMobile ? (
-                <span
-                  style={{ fontSize: 10.5, fontFamily: "var(--pr-font-ui)", color: "var(--pr-warn)" }}
-                >
-                  この段落の翻訳に失敗しました
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={onRetranslate}
-                  {...{ [SKIP_OFFSET_ATTR]: "" }}
-                  style={{
-                    border: "none",
-                    background: "transparent",
-                    cursor: "pointer",
-                    font: "inherit",
-                    fontSize: 10.5,
-                    fontFamily: "var(--pr-font-ui)",
-                    color: "var(--pr-warn)",
-                  }}
-                >
-                  この段落の翻訳に失敗しました · 再翻訳
-                </button>
-              )
+              <span
+                {...{ [SKIP_OFFSET_ATTR]: "" }}
+                style={{ fontSize: 10.5, fontFamily: "var(--pr-font-ui)", color: "var(--pr-warn)" }}
+              >
+                この段落の翻訳に失敗しました
+              </span>
             ) : (
               <span
                 style={{

@@ -38,7 +38,7 @@ function inlineOffsetLength(inline: Inline): number {
         (inline.v ?? "").length
       );
     case "citation":
-      return (inline.v || `[${inline.ref ?? ""}]`).length;
+      return displayCitationLabel(inline).length;
     case "footnote_ref":
       return (inline.v || inline.ref || "").length;
     default:
@@ -46,16 +46,31 @@ function inlineOffsetLength(inline: Inline): number {
   }
 }
 
+function displayCitationLabel(inline: Inline): string {
+  if (inline.v) return inline.v;
+  const ref = inline.ref ?? "";
+  const match = ref.match(/([A-Za-z][A-Za-z-]+).*?((?:19|20)\d{2})/);
+  if (match) {
+    const rawAuthor = match[1] ?? "";
+    const year = match[2] ?? "";
+    const author = `${rawAuthor[0]?.toUpperCase() ?? ""}${rawAuthor.slice(1)}`;
+    return `${author} et al. (${year})`;
+  }
+  return "Reference";
+}
+
 function displayRefLabel(inline: Inline): string {
   if (inline.v) return inline.v;
   const ref = inline.ref ?? "";
   const kind = inline.kind ?? "";
-  const number = ref.match(/(\d+(?:\.\d+)*)$/)?.[1] ?? ref;
-  if (kind === "figure") return `図${number}`;
-  if (kind === "table") return `表${number}`;
-  if (kind === "equation") return `式${number.startsWith("(") ? number : `(${number})`}`;
-  if (kind === "section") return `§${number}`;
-  return ref;
+  const number = ref.match(/(\d+(?:\.\d+)*)\D*$/)?.[1] ?? "";
+  if (kind === "figure") return number ? `Fig. ${number}` : "Fig.";
+  if (kind === "table") return number ? `Table ${number}` : "Table";
+  if (kind === "equation") return number ? `Eq. (${number})` : "Eq.";
+  if (kind === "section") return number ? `Sec. ${number}` : "Sec.";
+  if (kind === "algorithm") return number ? `Algorithm ${number}` : "Algorithm";
+  if (kind === "theorem") return number ? `Theorem ${number}` : "Theorem";
+  return number ? `Ref. ${number}` : "Ref.";
 }
 
 /** インライン列(原文)を描画(1b §5.3。数式=KaTeX、引用/参照=アクセント)。 */
@@ -135,7 +150,7 @@ export function InlineRenderer({
           />
         );
       case "citation": {
-        const label = inline.v || `[${inline.ref ?? ""}]`;
+        const label = displayCitationLabel(inline);
         return (
           <button
             key={key}

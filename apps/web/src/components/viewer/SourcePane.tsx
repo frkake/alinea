@@ -12,6 +12,7 @@ import { ResumeBanner } from "@/components/viewer/ResumeBanner";
 import { SectionHeading } from "@/components/viewer/SectionHeading";
 import type { PlacedHighlight } from "@/components/viewer/highlight-render";
 import { buildReferenceTargetMap, resolveReferenceTarget } from "@/components/viewer/reference-targets";
+import { sectionHeadingBlock } from "@/components/viewer/section-heading-block";
 import type { DocBlock, DocSection, DocumentResponse } from "@/components/viewer/document-types";
 
 export interface SourcePaneProps {
@@ -282,13 +283,16 @@ function SourceSection({
   const meta = tocMap.get(section.id);
   const number = meta?.number ?? section.heading?.number ?? null;
   const titleEn = section.heading?.title ?? "";
+  const headingBlock = sectionHeadingBlock(section);
 
   return (
     <section data-section-id={section.id}>
       {titleEn ? (
-        <SectionHeading number={number} titleJa={null} titleEn={titleEn} variant={number ? "heading" : "label"} />
+        <div data-block-id={headingBlock?.id}>
+          <SectionHeading number={number} titleJa={null} titleEn={titleEn} variant={number ? "heading" : "label"} />
+        </div>
       ) : null}
-      {(section.blocks ?? []).map((block) => (
+      {(section.blocks ?? []).filter((block) => block.id !== headingBlock?.id).map((block) => (
         <SourceBlock
           key={block.id}
           block={block}

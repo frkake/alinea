@@ -415,17 +415,19 @@ def _font_ok(line: _Line, body_size: float) -> bool:
 def _heading_info(line: _Line, body_size: float) -> tuple[str, str] | None:
     """見出しなら (number, title) を返す。§6.5 の確定規則(番号 or 固定語のみ)。"""
     text = _WS.sub(" ", line.text).strip()
-    if not text or not _font_ok(line, body_size):
+    if not text:
+        return None
+    key = re.sub(r"[.:\s]+$", "", text).strip().lower()
+    fixed = _FIXED_HEADINGS.get(key)
+    if fixed:
+        return "", fixed
+    if not _font_ok(line, body_size):
         return None
     m = _HEADING_SPLIT_RE.match(text)
     if m:
         number = m.group("num") or m.group("letter") or ""
         title = m.group("title").strip()
         return number, title
-    key = re.sub(r"[.:\s]+$", "", text).strip().lower()
-    fixed = _FIXED_HEADINGS.get(key)
-    if fixed:
-        return "", fixed
     return None
 
 

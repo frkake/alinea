@@ -20,7 +20,7 @@ import math
 import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from pydantic import BaseModel
@@ -76,6 +76,9 @@ BLOCKING_FLAGS: frozenset[str] = frozenset(
 
 _STRUCTURED_SCHEMA_NAME = "translation_batch_v1"
 _APPENDIX_TITLE_RE = re.compile(r"^\s*Appendi(x|ces)\b", re.IGNORECASE)
+_REFERENCE_TITLE_RE = re.compile(
+    r"\b(references|bibliography|works cited|literature cited)\b", re.IGNORECASE
+)
 _NUM_RE = re.compile(r"\d+(?:[.,]\d+)*")
 # 全角数字・全角ピリオド/カンマ を半角へ(§12 の「全角→半角正規化」)。全角文字は意図的。
 _FULLWIDTH: dict[int, int] = {ord("０") + i: ord("0") + i for i in range(10)}  # noqa: RUF001
@@ -109,7 +112,11 @@ def _is_appendix_heading(number: str | None, title: str | None) -> bool:
 
 def _is_reference_section(section: Section) -> bool:
     """reference_entry のみを含むセクション(§2.1-2)。"""
-    return bool(section.blocks) and all(b.type == "reference_entry" for b in section.blocks)
+    title = (section.heading.title or "").strip()
+    if section.id == "sec-refs" or _REFERENCE_TITLE_RE.search(title):
+        return True
+    blocks = [b for b in section.blocks if b.type != "heading"]
+    return bool(blocks) and all(b.type == "reference_entry" for b in blocks)
 
 
 def _as_content(content: DocumentContent | dict[str, Any]) -> DocumentContent:
@@ -701,6 +708,38 @@ async def translate_batch(
     return [results[it.encoded.block_id] for it in items]
 
 
+async def _retry_blocking_units(
+    router: LLMRouter,
+    items: list[BlockToTranslate],
+    ctx: TranslationContext,
+    units: list[TranslatedUnit],
+    *,
+    user_id: str | None,
+    library_item_id: str | None,
+    job_id: str | None,
+) -> list[TranslatedUnit]:
+    """ブロッキング失敗だけを追加で再送する。retry_failed ジョブでは再帰しない。"""
+    if ctx.reason == "retry_failed":
+        return units
+    failed = {u.block_id for u in units if set(u.quality_flags) & BLOCKING_FLAGS}
+    if not failed:
+        return units
+    retry_items = [item for item in items if item.encoded.block_id in failed]
+    retry_ctx = replace(ctx, reason="retry_failed", task="translation_retry")
+    retry_units = await translate_batch(
+        router,
+        retry_items,
+        retry_ctx,
+        user_id=user_id,
+        library_item_id=library_item_id,
+        job_id=job_id,
+    )
+    by_id = {u.block_id: u for u in units}
+    for retry_unit in retry_units:
+        by_id[retry_unit.block_id] = retry_unit
+    return [by_id[item.encoded.block_id] for item in items]
+
+
 async def translate_block(
     block: dict[str, Any] | Block,
     router: LLMRouter,
@@ -983,7 +1022,8 @@ async def translate_section(
             if ex.state in ("edited", "protected"):
                 skipped += 1
                 continue
-            if ex.state == "machine" and ex.source_hash == encoded.source_hash:
+            blocking = bool(set(ex.quality_flags or []) & BLOCKING_FLAGS)
+            if ex.state == "machine" and ex.source_hash == encoded.source_hash and not blocking:
                 skipped += 1
                 continue
         items.append(BlockToTranslate(encoded=encoded, block_type=blocks_by_id[bid].type))
@@ -1029,6 +1069,15 @@ async def translate_section(
             router,
             batch,
             ctx,
+            user_id=user_id,
+            library_item_id=library_item_id,
+            job_id=job_id,
+        )
+        units = await _retry_blocking_units(
+            router,
+            batch,
+            ctx,
+            units,
             user_id=user_id,
             library_item_id=library_item_id,
             job_id=job_id,

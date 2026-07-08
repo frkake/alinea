@@ -241,6 +241,15 @@ class SectionTranslateResponse(BaseModel):
     job_id: str
 
 
+class RetryFailedTranslationsRequest(BaseModel):
+    section_id: str | None = None
+
+
+class RetryFailedTranslationsResponse(BaseModel):
+    job_ids: list[str]
+    block_count: int
+
+
 class RetranslateRequest(BaseModel):
     instruction: str | None = None
     discard_edit: bool | None = None

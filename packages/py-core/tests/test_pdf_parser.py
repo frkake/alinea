@@ -16,6 +16,8 @@ from yakudoku_core.parsing.pdf_parser import (
     PARSER_VERSION,
     ParsedPdfDocument,
     PdfParseError,
+    _heading_info,
+    _Line,
     check_text_layer,
     parse_pdf,
 )
@@ -190,6 +192,20 @@ def test_reference_entries_split_by_bracket_marker() -> None:
     for entry in entries:
         assert entry.page is not None
         assert entry.bbox is not None
+
+
+def test_fixed_references_heading_detected_without_font_emphasis() -> None:
+    line = _Line(
+        page=1,
+        text="References",
+        x0=72,
+        y0=120,
+        x1=150,
+        y1=132,
+        size=10.0,
+        bold=False,
+    )
+    assert _heading_info(line, body_size=10.0) == ("", "References")
 
 
 # ============================ 表(§6.7) ============================

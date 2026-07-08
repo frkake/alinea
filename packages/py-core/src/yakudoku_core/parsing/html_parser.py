@@ -287,8 +287,13 @@ class _ArxivHtmlParser:
         if tag == "math":
             return [Inline(t="math_inline", v=_math_latex(node))]
         if tag == "cite" or "ltx_cite" in cls:
+            visible = _collapse(node.text())
             cites = [
-                Inline(t="citation", ref=(a.attributes.get("href") or "")[1:])
+                Inline(
+                    t="citation",
+                    ref=(a.attributes.get("href") or "")[1:],
+                    v=_collapse(a.text()) or visible,
+                )
                 for a in node.css("a")
                 if (a.attributes.get("href") or "").startswith("#")
             ]
@@ -318,7 +323,7 @@ class _ArxivHtmlParser:
         href = node.attributes.get("href") or ""
         txt = _collapse(node.text())
         if href.startswith("#bib"):
-            return [Inline(t="citation", ref=href[1:])]
+            return [Inline(t="citation", ref=href[1:], v=txt)]
         if href.startswith("#"):
             target = href[1:]
             return [Inline(t="ref", kind=_ref_kind(target), ref=target, v=txt)]

@@ -22,6 +22,10 @@ import { useIsMobile } from "@/hooks/useMediaQuery";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
 import { FigureTableBlock } from "@/components/viewer/FigureTableBlock";
+import {
+  FailedTranslationRetryBanner,
+  useFailedTranslationRetry,
+} from "@/components/viewer/FailedTranslationRetry";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 import { ResumeBanner } from "@/components/viewer/ResumeBanner";
 import { SectionHeading } from "@/components/viewer/SectionHeading";
@@ -29,6 +33,7 @@ import { SelectionMenu } from "@/components/viewer/SelectionMenu";
 import { SummaryCard } from "@/components/viewer/SummaryCard";
 import { TranslatedParagraph, type PlacedHighlight } from "@/components/viewer/TranslatedParagraph";
 import { buildReferenceTargetMap, resolveReferenceTarget } from "@/components/viewer/reference-targets";
+import { sectionHeadingBlock } from "@/components/viewer/section-heading-block";
 import { SOURCE_TEXT_ATTR, textOffsetWithin } from "@/components/viewer/text-offset";
 import { TranslationInlineContent } from "@/components/viewer/translation-content";
 import { extractVocabContext } from "@/components/viewer/vocab-context";
@@ -46,6 +51,7 @@ export interface TranslationPaneProps {
   itemId: string;
   revisionId: string;
   style: TranslationStyle;
+  translationSetId: string | null;
   toc: TocNode[];
   summaryLines: string[] | null;
   lastPosition: LastPosition | null;
@@ -104,6 +110,7 @@ export function TranslationPane({
   itemId,
   revisionId,
   style,
+  translationSetId,
   toc,
   summaryLines,
   lastPosition,
@@ -238,6 +245,12 @@ export function TranslationPane({
     },
   });
 
+  const failedRetry = useFailedTranslationRetry({
+    itemId,
+    revisionId,
+    translationSetId,
+    unitMap,
+  });
   const tocMap = useMemo(() => buildTocMap(toc), [toc]);
   const blockSectionMap = useMemo(
     () => buildBlockSectionMap(doc?.sections ?? []),
@@ -600,6 +613,11 @@ export function TranslationPane({
             fontFamily: "var(--pr-jp)",
           }}
         >
+          <FailedTranslationRetryBanner
+            failedCount={failedRetry.failedCount}
+            retrying={failedRetry.retrying}
+            onRetry={() => void failedRetry.retryFailed(true)}
+          />
           {content}
         </div>
       </div>
@@ -667,6 +685,7 @@ function SectionView({
   const titleEn = section.heading?.title ?? "";
   const titleJa = meta?.titleJa ?? null;
   const isAbstract = !number;
+  const headingBlock = sectionHeadingBlock(section);
 
   // セクション内 paragraph の 1 始まり序数(対訳ラベル用)。
   let paraOrdinal = 0;
@@ -675,15 +694,17 @@ function SectionView({
   return (
     <section data-section-id={section.id}>
       {titleEn ? (
-        <SectionHeading
-          number={number}
-          titleJa={titleJa}
-          titleEn={titleEn}
-          variant={isAbstract ? "label" : "heading"}
-        />
+        <div data-block-id={headingBlock?.id}>
+          <SectionHeading
+            number={number}
+            titleJa={titleJa}
+            titleEn={titleEn}
+            variant={isAbstract ? "label" : "heading"}
+          />
+        </div>
       ) : null}
       {summary}
-      {(section.blocks ?? []).map((block) => {
+      {(section.blocks ?? []).filter((block) => block.id !== headingBlock?.id).map((block) => {
         if (block.type === "paragraph") {
           paraOrdinal += 1;
           const label = `¶${paraOrdinal} / ${sectionLabel}`;

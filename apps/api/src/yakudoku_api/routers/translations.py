@@ -54,6 +54,8 @@ from yakudoku_api.schemas.viewer import (
     PrioritizeResponse,
     RetranslateRequest,
     RetranslateResponse,
+    RetryFailedTranslationsRequest,
+    RetryFailedTranslationsResponse,
     SectionTranslateRequest,
     SectionTranslateResponse,
     TranslationSetItem,
@@ -498,6 +500,78 @@ async def section_translate(
 def _blocks_hash(block_ids: list[str]) -> str:
     payload = ",".join(sorted(block_ids))
     return hashlib.blake2b(payload.encode("utf-8"), digest_size=8).hexdigest()
+
+
+@router.post(
+    "/api/translation-sets/{set_id}/retry-failed",
+    response_model=RetryFailedTranslationsResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="translations_retry_failed",
+)
+async def retry_failed_translations(
+    set_id: str,
+    body: RetryFailedTranslationsRequest,
+    user: CurrentUser,
+    db: DbDep,
+    wakeup: TranslationsJobWakeupDep,
+) -> RetryFailedTranslationsResponse:
+    tset, revision, paper = await _set_with_access(db, set_id, user)
+    content = _as_content(revision)
+
+    section_filter: set[str] | None = None
+    if body.section_id is not None:
+        section = _find_section(content, body.section_id)
+        if section is None:
+            raise ProblemException("not_found")
+        section_filter = {b.id for b in section.blocks}
+
+    rows = (
+        await db.execute(select(TranslationUnit).where(TranslationUnit.set_id == tset.id))
+    ).scalars().all()
+    failed_block_ids = {
+        unit.block_id
+        for unit in rows
+        if unit.state == "machine"
+        and set(unit.quality_flags or []) & BLOCKING_FLAGS
+        and (section_filter is None or unit.block_id in section_filter)
+    }
+    if not failed_block_ids:
+        return RetryFailedTranslationsResponse(job_ids=[], block_count=0)
+
+    blocks_by_section: dict[str, list[str]] = {}
+    for sec in content.sections:
+        stack = [sec]
+        while stack:
+            cur = stack.pop(0)
+            stack[0:0] = list(cur.sections)
+            for block in cur.blocks:
+                if block.id in failed_block_ids:
+                    blocks_by_section.setdefault(cur.id, []).append(block.id)
+
+    store = JobStore(db)
+    job_ids: list[str] = []
+    library_item_id = await _user_library_item_id(db, user, str(paper.id))
+    for section_id, block_ids in blocks_by_section.items():
+        job_id = await store.enqueue(
+            kind="translation",
+            priority=_ON_DEMAND_PRIORITY,
+            user_id=str(user.id),
+            paper_id=str(paper.id),
+            library_item_id=library_item_id,
+            idempotency_key=f"retry_failed:{tset.id}:{section_id}:{_blocks_hash(block_ids)}",
+            payload={
+                "set_id": str(tset.id),
+                "section_id": section_id,
+                "block_ids": block_ids,
+                "reason": "retry_failed",
+                "table_block_id": None,
+            },
+        )
+        job_ids.append(job_id)
+
+    for job_id in job_ids:
+        await wakeup(job_id, _queue_for_priority(_ON_DEMAND_PRIORITY))
+    return RetryFailedTranslationsResponse(job_ids=job_ids, block_count=len(failed_block_ids))
 
 
 @router.post(

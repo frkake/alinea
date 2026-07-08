@@ -216,6 +216,66 @@ async def test_references(auth_client: AsyncClient, seeded: Seeded) -> None:
     assert items[0]["title"]
 
 
+async def test_references_fallback_and_document_ref_labels(
+    auth_client: AsyncClient, seeded: Seeded, db_session: AsyncSession
+) -> None:
+    revision = await db_session.get(DocumentRevision, seeded.revision_id)
+    assert revision is not None
+    revision.content = {
+        "quality_level": "A",
+        "sections": [
+            {
+                "id": "sec-1",
+                "heading": {"number": "1", "title": "Introduction"},
+                "blocks": [
+                    {
+                        "id": "blk-p1",
+                        "type": "paragraph",
+                        "inlines": [
+                            {"t": "text", "v": "See "},
+                            {"t": "citation", "ref": "ref-1"},
+                            {"t": "text", "v": " and "},
+                            {"t": "ref", "ref": "fig:main", "kind": "figure"},
+                            {"t": "text", "v": "."},
+                        ],
+                    },
+                    {
+                        "id": "blk-fig1",
+                        "type": "figure",
+                        "label": "fig:main",
+                        "caption": [{"t": "text", "v": "Overview."}],
+                    },
+                ],
+                "sections": [],
+            },
+            {
+                "id": "sec-refs-fallback",
+                "heading": {"number": "", "title": "References"},
+                "blocks": [
+                    {"id": "blk-refs-heading", "type": "heading", "level": 1, "title": "References"},
+                    {
+                        "id": "blk-refs-raw",
+                        "type": "paragraph",
+                        "inlines": [
+                            {"t": "text", "v": "[1] Wang, A., Liu, B. A useful method. 2024."}
+                        ],
+                    },
+                ],
+                "sections": [],
+            },
+        ],
+    }
+    await db_session.commit()
+
+    refs = await auth_client.get(f"/api/revisions/{seeded.revision_id}/references")
+    assert refs.status_code == 200, refs.text
+    assert refs.json()["items"][0]["authors"] == "Wang, A., Liu, B"
+    doc = await auth_client.get(f"/api/revisions/{seeded.revision_id}/document")
+    para = doc.json()["sections"][0]["blocks"][0]
+    assert para["inlines"][1]["v"] == "Wang et al. (2024)"
+    assert para["inlines"][3]["v"] == "Fig. 1"
+
+
 # ---------------------------------------------------------------------------
 # §7.1 翻訳セット一覧 / §7.2 ユニット
 # ---------------------------------------------------------------------------
@@ -345,6 +405,61 @@ async def test_section_translate_creates_job(
     assert row[0] == "translation"
     assert row[1] == "on_demand"
     assert row[2] == "queued"
+
+
+async def test_retry_failed_translations_creates_section_job(
+    auth_client: AsyncClient, seeded: Seeded, db_session: AsyncSession
+) -> None:
+    from yakudoku_core.document.blocks import DocumentContent
+
+    set_id = await _shared_set_id(db_session, seeded.revision_id, "natural")
+    revision = await db_session.get(DocumentRevision, seeded.revision_id)
+    assert revision is not None
+    content = DocumentContent.model_validate(revision.content)
+    section_id, block_id = next(
+        (sec.id, blk.id)
+        for sec, blk in content.iter_blocks()
+        if sec.id == "sec-3" and blk.type == "paragraph"
+    )
+    unit = await db_session.scalar(
+        select(TranslationUnit).where(
+            TranslationUnit.set_id == set_id,
+            TranslationUnit.block_id == block_id,
+        )
+    )
+    if unit is None:
+        db_session.add(
+            TranslationUnit(
+                set_id=set_id,
+                block_id=block_id,
+                source_hash="stale",
+                content_ja=[],
+                text_ja="",
+                state="machine",
+                quality_flags=["placeholder_mismatch"],
+            )
+        )
+    else:
+        unit.quality_flags = ["placeholder_mismatch"]
+        unit.text_ja = ""
+        unit.content_ja = []
+    await db_session.commit()
+
+    r = await auth_client.post(f"/api/translation-sets/{set_id}/retry-failed", json={"section_id": section_id})
+    assert r.status_code == 202, r.text
+    assert r.json()["block_count"] >= 1
+    job_id = r.json()["job_ids"][0]
+    await db_session.rollback()
+    row = (
+        await db_session.execute(
+            text("SELECT payload->>'reason', payload->>'section_id', payload->'block_ids' FROM jobs WHERE id = :j"),
+            {"j": job_id},
+        )
+    ).first()
+    assert row is not None
+    assert row[0] == "retry_failed"
+    assert row[1] == section_id
+    assert block_id in row[2]
 
 
 # PY-TR-08: 直訳(literal)オンデマンド — 初回 202+ジョブ、同一要求は同じジョブ

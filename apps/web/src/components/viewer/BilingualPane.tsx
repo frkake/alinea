@@ -15,22 +15,28 @@ import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import { useViewerChatStore } from "@/stores/viewer-chat-store";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
 import { FigureTableBlock } from "@/components/viewer/FigureTableBlock";
+import {
+  FailedTranslationRetryBanner,
+  useFailedTranslationRetry,
+} from "@/components/viewer/FailedTranslationRetry";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 import { ResumeBanner } from "@/components/viewer/ResumeBanner";
 import { SectionHeading } from "@/components/viewer/SectionHeading";
 import { TranslationColumnHeader } from "@/components/viewer/TranslationColumnHeader";
 import { type PlacedHighlight } from "@/components/viewer/highlight-render";
 import { buildReferenceTargetMap, resolveReferenceTarget } from "@/components/viewer/reference-targets";
+import { sectionHeadingBlock } from "@/components/viewer/section-heading-block";
 import { TranslationInlineContent, hasTranslatedText } from "@/components/viewer/translation-content";
 import type { DocBlock, DocSection, DocumentResponse } from "@/components/viewer/document-types";
 
 /** text_ja が null で返る翻訳失敗系フラグ(plans/06 §12)。 */
-const FAILURE_FLAGS = new Set(["placeholder_mismatch", "provider_refusal", "untranslated"]);
+const FAILURE_FLAGS = new Set(["placeholder_mismatch", "provider_refusal", "context_overflow", "untranslated"]);
 
 export interface BilingualPaneProps {
   itemId: string;
   revisionId: string;
   style: TranslationStyle;
+  translationSetId: string | null;
   toc: TocNode[];
   lastPosition: LastPosition | null;
   /** 「✦ この式を説明」→ 引用を積んでチャットタブへ(1a §5.2)。 */
@@ -89,6 +95,7 @@ export function BilingualPane({
   itemId,
   revisionId,
   style,
+  translationSetId,
   toc,
   lastPosition,
   onExplainEquation,
@@ -192,6 +199,12 @@ export function BilingualPane({
     },
   });
 
+  const failedRetry = useFailedTranslationRetry({
+    itemId,
+    revisionId,
+    translationSetId,
+    unitMap,
+  });
   const tocMap = useMemo(() => buildTocMap(toc), [toc]);
   const blockSectionMap = useMemo(() => buildBlockSectionMap(doc?.sections ?? []), [doc]);
   const refTargets = useMemo(() => buildReferenceTargetMap(doc?.sections ?? []), [doc]);
@@ -310,6 +323,11 @@ export function BilingualPane({
         style={{ flex: 1, overflowY: "auto", display: "flex", justifyContent: "center" }}
       >
         <div style={{ width: "100%", maxWidth: 1120, padding: "18px 34px 120px" }}>
+          <FailedTranslationRetryBanner
+            failedCount={failedRetry.failedCount}
+            retrying={failedRetry.retrying}
+            onRetry={() => void failedRetry.retryFailed(true)}
+          />
           <TranslationColumnHeader
             style={style}
             pairSync={pairSync}
@@ -357,11 +375,14 @@ function SectionColumns({
   const number = meta?.number ?? section.heading?.number ?? null;
   const titleEn = section.heading?.title ?? "";
   const titleJa = meta?.titleJa ?? null;
+  const headingBlock = sectionHeadingBlock(section);
 
   return (
     <section data-section-id={section.id}>
       {titleEn ? (
-        <SectionHeading number={number} titleJa={titleJa} titleEn={titleEn} variant={number ? "heading" : "label"} />
+        <div data-block-id={headingBlock?.id}>
+          <SectionHeading number={number} titleJa={titleJa} titleEn={titleEn} variant={number ? "heading" : "label"} />
+        </div>
       ) : null}
       <div
         style={{
@@ -372,7 +393,7 @@ function SectionColumns({
           alignItems: "start",
         }}
       >
-        {(section.blocks ?? []).map((block) => {
+        {(section.blocks ?? []).filter((block) => block.id !== headingBlock?.id).map((block) => {
           if (block.type === "paragraph") {
             return (
               <BilingualParagraph

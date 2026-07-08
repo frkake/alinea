@@ -448,6 +448,52 @@ def test_bibliography_resolved_from_bbl_file() -> None:
     assert citation.ref == "ext2021"
 
 
+def test_bibliography_resolved_from_bib_file_and_multi_optional_cite() -> None:
+    doc = parse_latex_source(
+        "main.tex",
+        {
+            "main.tex": (
+                "\\documentclass{article}\\begin{document}\\section{M}"
+                "See \\citep[see][Sec.~2]{zhao2026towards} for details."
+                "\\bibliography{refs}\\end{document}"
+            ),
+            "refs.bib": """
+                @inproceedings{zhao2026towards,
+                  author = {Zhao, Alice and Smith, Bob},
+                  title = {Towards Better Reference Extraction},
+                  booktitle = {Proceedings of Tests},
+                  year = {2026},
+                  eprint = {2601.01234},
+                  archivePrefix = {arXiv}
+                }
+            """,
+        },
+    )
+    refs = {b.label: b for b in doc.references}
+    assert "zhao2026towards" in refs
+    assert "Towards Better Reference Extraction" in (refs["zhao2026towards"].raw or "")
+    para = next(b for b in doc.blocks if b.type == "paragraph")
+    citation = next(il for il in para.inlines if il.t == "citation")
+    assert citation.ref == "zhao2026towards"
+
+
+def test_inline_parser_treats_latex_linebreak_and_control_space_as_space() -> None:
+    doc = parse_latex_source(
+        "main.tex",
+        {
+            "main.tex": (
+                "\\documentclass{article}\\begin{document}\\section{Prompt}"
+                r"Please describe this video in detail. Include: \ 1. The main subject \\ 2. The environment."
+                "\\end{document}"
+            )
+        },
+    )
+    para = next(b for b in doc.blocks if b.type == "paragraph")
+    text = block_to_plain(para)
+    assert "\\" not in text
+    assert "Include: 1. The main subject 2. The environment." in text
+
+
 # ============================ carryover(既存基盤の再利用確認) ============================
 
 

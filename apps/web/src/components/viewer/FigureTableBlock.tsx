@@ -54,14 +54,43 @@ function unwrapLatexCommands(value: string): string {
   let next = value;
   for (let i = 0; i < 4; i += 1) {
     const prev = next;
-    next = next.replace(/\\(?:textbf|textit|emph|mathrm|mathbf|mathit|operatorname)\{([^{}]*)\}/g, "$1");
+    next = next.replace(
+      /\\(?:textbf|textit|emph|mathrm|mathbf|mathit|operatorname|textsuperscript|textsubscript)\{([^{}]*)\}/g,
+      "$1",
+    );
     if (next === prev) break;
   }
   return next;
 }
 
+function replaceLatexSymbols(value: string): string {
+  return value
+    .replace(/\\pm\b/g, "±")
+    .replace(/\\mp\b/g, "∓")
+    .replace(/\\times\b/g, "×")
+    .replace(/\\cdot\b/g, "·")
+    .replace(/\\leq?\b/g, "≤")
+    .replace(/\\geq?\b/g, "≥")
+    .replace(/\\neq\b/g, "≠")
+    .replace(/\\approx\b/g, "≈")
+    .replace(/\\infty\b/g, "∞")
+    .replace(/\\uparrow\b/g, "↑")
+    .replace(/\\downarrow\b/g, "↓")
+    .replace(/\\rightarrow\b|\\to\b/g, "→")
+    .replace(/\\leftarrow\b/g, "←")
+    .replace(/\\alpha\b/g, "α")
+    .replace(/\\beta\b/g, "β")
+    .replace(/\\gamma\b/g, "γ")
+    .replace(/\\delta\b/g, "δ")
+    .replace(/\\lambda\b/g, "λ")
+    .replace(/\\mu\b/g, "μ")
+    .replace(/\\pi\b/g, "π")
+    .replace(/\\sigma\b/g, "σ")
+    .replace(/\\theta\b/g, "θ");
+}
+
 function cleanLatexCell(value: string): string {
-  return unwrapLatexCommands(value)
+  return replaceLatexSymbols(unwrapLatexCommands(value))
     .replace(/\\(?:multicolumn|multirow)\{[^{}]*\}\{[^{}]*\}\{([^{}]*)\}/g, "$1")
     .replace(/\\(?:hline|toprule|midrule|bottomrule|cmidrule)(?:\([^)]*\))?(?:\{[^{}]*\})?/g, "")
     .replace(/\\(?:addlinespace|smallskip|medskip|bigskip)\b/g, "")
@@ -112,7 +141,17 @@ function renderableFigureHtml(raw: string | null | undefined): string | null {
   return raw;
 }
 
+function looksLikeUndelimitedMath(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (/\\[A-Za-z]+|[{}]/.test(trimmed)) return true;
+  return /[_^]/.test(trimmed) && /^[A-Za-z0-9_^{}/+=().,\-\s]+$/.test(trimmed);
+}
+
 function renderCellText(text: string): ReactNode {
+  if (looksLikeUndelimitedMath(text)) {
+    return <span dangerouslySetInnerHTML={{ __html: renderInlineMath(text) }} />;
+  }
   const parts: ReactNode[] = [];
   let index = 0;
   const math = /(\$[^$]+\$|\\\([^]*?\\\))/g;

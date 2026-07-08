@@ -333,7 +333,13 @@ export function PdfPane({
         onSelectBlock={(hit) => selectBlock(hit?.blockId ?? null)}
         onOpenInTranslation={onOpenInTranslation}
         onPageStep={stepPage}
-        onWheelZoom={(delta) => (delta > 0 ? zoomIn() : zoomOut())}
+        onWheelZoom={(delta) => {
+          const previousScale = resolvedScale;
+          if (delta > 0) zoomIn();
+          else zoomOut();
+          const nextZoom = usePdfViewStore.getState().zoom;
+          return nextZoom !== previousScale;
+        }}
         onVisiblePageChange={(visiblePage) => {
           if (visiblePage !== page) setPage(visiblePage);
         }}

@@ -157,6 +157,28 @@ function TocPane({
           />
         ))}
 
+        {onDemand.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => onDemand.forEach((node) => onTranslateAppendix(node.section_id))}
+            style={{
+              margin: "8px 6px 0",
+              border: "1px solid var(--pr-border-control)",
+              borderRadius: 6,
+              padding: "7px 9px",
+              background: "var(--pr-bg-inset)",
+              color: "var(--pr-acc)",
+              cursor: "pointer",
+              fontFamily: "var(--pr-font-ui)",
+              fontSize: 11.5,
+              fontWeight: 600,
+              textAlign: "left",
+            }}
+          >
+            付録を一括翻訳
+          </button>
+        ) : null}
+
         {onDemand.map((node) => (
           <div
             key={node.section_id}

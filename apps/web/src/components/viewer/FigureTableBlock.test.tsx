@@ -33,6 +33,20 @@ describe("FigureTableBlock", () => {
     expect(screen.getByText("Scores.")).toBeInTheDocument();
   });
 
+  test("cleans common LaTeX commands inside table cells", () => {
+    const block: DocBlock = {
+      id: "blk-table",
+      type: "table",
+      number: "2",
+      raw: "\\begin{tabular}{ll} Metric & Value \\\\ Acc & 1.2 \\pm 0.1 \\\\ State & x_i \\\\ \\end{tabular}",
+      caption: [{ t: "text", v: "Scores." }],
+    };
+    const { container } = render(<FigureTableBlock block={block} />);
+    expect(screen.getByText("1.2 ± 0.1")).toBeInTheDocument();
+    expect(container.textContent).not.toContain("\\pm");
+    expect(container.querySelector(".katex")).not.toBeNull();
+  });
+
   test("renders inline SVG figure raw content when no asset URL exists", () => {
     const block: DocBlock = {
       id: "blk-svg",
