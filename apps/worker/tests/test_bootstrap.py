@@ -139,9 +139,18 @@ def test_build_fake_router_is_usable() -> None:
     assert isinstance(router, LLMRouter)
 
 
+class _StubSettings:
+    """operator_api_keys だけを差し替えるスタブ(実 .env の値に依存しないため)。"""
+
+    def __init__(self, keys: dict[str, str]) -> None:
+        self.operator_api_keys = keys
+
+
 def test_operator_keys_from_env_reads_configured_providers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # CoreSettings 基底を空に固定し、os.environ の上書き分だけを検証する。
+    monkeypatch.setattr("yakudoku_worker.bootstrap.get_settings", lambda: _StubSettings({}))
     for env in (
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
@@ -154,6 +163,30 @@ def test_operator_keys_from_env_reads_configured_providers(
     monkeypatch.setenv("OPENAI_API_KEY", "")  # 空は除外
     keys = operator_keys_from_env()
     assert keys == {"deepseek": "sk-deepseek"}
+
+
+def test_operator_keys_fall_back_to_env_file_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pnpm dev のように環境変数が export されなくても .env(CoreSettings)から読める。
+
+    environ の明示値は .env 由来の値より優先される。
+    """
+    monkeypatch.setattr(
+        "yakudoku_worker.bootstrap.get_settings",
+        lambda: _StubSettings({"anthropic": "sk-from-envfile", "deepseek": "sk-old"}),
+    )
+    for env in (
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "XAI_API_KEY",
+    ):
+        monkeypatch.delenv(env, raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-override")
+    keys = operator_keys_from_env()
+    assert keys == {"anthropic": "sk-from-envfile", "deepseek": "sk-deepseek-override"}
 
 
 # =========================================================================== #

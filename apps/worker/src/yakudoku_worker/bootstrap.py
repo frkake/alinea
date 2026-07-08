@@ -95,8 +95,13 @@ async def _publish_event(
 
 
 def operator_keys_from_env() -> dict[str, str]:
-    """環境変数から運営 API キーを読む(provider 名 → キー。空は除外)。"""
-    keys: dict[str, str] = {}
+    """運営 API キーを読む(provider 名 → キー。空は除外)。
+
+    CoreSettings(.env を上方向探索して読む)を基底とし、os.environ の明示値で
+    上書きする。pnpm dev はシェルへ export しないため、環境変数のみを見ると
+    .env に書いたキーが worker から見えず api 側とだけ挙動が食い違っていた。
+    """
+    keys: dict[str, str] = dict(get_settings().operator_api_keys)
     for provider, env_names in _OPERATOR_KEY_ENV.items():
         for env_name in env_names:
             value = os.environ.get(env_name, "").strip()

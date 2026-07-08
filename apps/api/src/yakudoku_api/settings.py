@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import AliasChoices, Field
 from yakudoku_core.settings import CoreSettings
 
 
@@ -29,32 +28,11 @@ class ApiSettings(CoreSettings):
     oauth_github_client_id: str = ""
     oauth_github_client_secret: str = ""
 
-    # LLM 運営キー(plans/04 §11.1-2・§16。未設定プロバイダはチェーンから除外)。
-    # google は plans/04 §16(GEMINI_API_KEY)と plans/01 §8.4 / .env.example
-    # (GOOGLE_API_KEY)が食い違うため両方受理する(GEMINI が優先)。
-    openai_api_key: str = ""
-    anthropic_api_key: str = ""
-    gemini_api_key: str = Field(
-        default="",
-        validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY", "gemini_api_key"),
-    )
-    deepseek_api_key: str = ""
-    xai_api_key: str = ""
+    # LLM 運営キー(openai_api_key 等)と operator_api_keys は CoreSettings へ移動
+    # (worker も .env から読めるようにするため。yakudoku_core.settings 参照)。
 
     # ルート解決の Redis キャッシュ TTL(秒。plans/04 §15・§16。既定 60)。
     yakudoku_llm_route_cache_ttl_s: int = 60
-
-    @property
-    def operator_api_keys(self) -> dict[str, str]:
-        """provider 名 → 設定済み運営キー(空文字は除外。plans/04 §11.1-2)。"""
-        raw = {
-            "openai": self.openai_api_key,
-            "anthropic": self.anthropic_api_key,
-            "google": self.gemini_api_key,
-            "deepseek": self.deepseek_api_key,
-            "xai": self.xai_api_key,
-        }
-        return {provider: key for provider, key in raw.items() if key}
 
     @property
     def is_production(self) -> bool:

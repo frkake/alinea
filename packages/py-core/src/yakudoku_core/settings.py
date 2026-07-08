@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,6 +56,32 @@ class CoreSettings(BaseSettings):
 
     # 外部
     arxiv_user_agent: str = "yakudoku/1.0 (contact: admin@yakudoku.app)"
+
+    # LLM 運営キー(plans/04 §11.1-2・§16。未設定プロバイダはチェーンから除外)。
+    # api と worker の両方が使うため CoreSettings に置く(worker は os.environ だけでなく
+    # .env からも読めることが dev 起動の前提 — pnpm dev はシェルへ export しない)。
+    # google は plans/04 §16(GEMINI_API_KEY)と plans/01 §8.4 / .env.example
+    # (GOOGLE_API_KEY)が食い違うため両方受理する(GEMINI が優先)。
+    openai_api_key: str = ""
+    anthropic_api_key: str = ""
+    gemini_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY", "gemini_api_key"),
+    )
+    deepseek_api_key: str = ""
+    xai_api_key: str = ""
+
+    @property
+    def operator_api_keys(self) -> dict[str, str]:
+        """provider 名 → 設定済み運営キー(空文字は除外。plans/04 §11.1-2)。"""
+        raw = {
+            "openai": self.openai_api_key,
+            "anthropic": self.anthropic_api_key,
+            "google": self.gemini_api_key,
+            "deepseek": self.deepseek_api_key,
+            "xai": self.xai_api_key,
+        }
+        return {provider: key for provider, key in raw.items() if key}
 
     # LLM ベース URL 上書き(E2E/CI モック差し替え)
     yakudoku_openai_base_url: str = ""
