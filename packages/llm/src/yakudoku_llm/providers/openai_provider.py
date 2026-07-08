@@ -27,7 +27,7 @@ from yakudoku_llm.structured import attach_parsed
 from yakudoku_llm.tokens import estimate_tokens_o200k
 from yakudoku_llm.types import LLMRequest, LLMResponse, StopReason, StreamEvent, Usage
 
-_EFFORT = {"none": "minimal", "low": "low", "medium": "medium", "high": "high"}
+_EFFORT = {"none": "none", "low": "low", "medium": "medium", "high": "high"}
 
 
 class OpenAIProvider:
@@ -46,8 +46,8 @@ class OpenAIProvider:
             "reasoning": {"effort": _EFFORT[req.effort]},
             "timeout": req.timeout_s,
         }
-        if req.prompt_cache_key:
-            kw["prompt_cache_key"] = req.prompt_cache_key
+        # prompt_cache_key は openai==1.93.0 の Responses API signature に無い。
+        # raw body に混ぜると API 側の invalid_request になり得るため、機能より成功を優先して省く。
         if req.json_schema:
             kw["text"] = {
                 "format": {

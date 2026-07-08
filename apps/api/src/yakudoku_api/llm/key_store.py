@@ -31,7 +31,13 @@ def _build_fernet(secret: str) -> MultiFernet:
         raise RuntimeError(
             "YAKUDOKU_KEY_ENCRYPTION_SECRET が未設定です(BYOK 暗号化に必須。plans/04 §11.2)"
         )
-    return MultiFernet([Fernet(k.encode("ascii")) for k in keys])
+    try:
+        return MultiFernet([Fernet(k.encode("ascii")) for k in keys])
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise RuntimeError(
+            "YAKUDOKU_KEY_ENCRYPTION_SECRET は Fernet.generate_key() で生成した "
+            "32 url-safe base64 bytes の鍵を指定してください"
+        ) from exc
 
 
 def _hint(plaintext: str) -> str:
@@ -44,13 +50,19 @@ class DbKeyStore:
     def __init__(self, session: AsyncSession, settings: ApiSettings | None = None) -> None:
         self._session = session
         self._settings = settings or get_api_settings()
-        self._fernet = _build_fernet(self._settings.yakudoku_key_encryption_secret)
+        self._fernet: MultiFernet | None = None
+
+    @property
+    def _cipher(self) -> MultiFernet:
+        if self._fernet is None:
+            self._fernet = _build_fernet(self._settings.yakudoku_key_encryption_secret)
+        return self._fernet
 
     # -- BYOK 書き込み/表示(設定 4f「アカウント」・plans/04 §11.3) -----------------
 
     async def put(self, user_id: str, provider: str, plaintext: str) -> None:
         """暗号化して upsert(再入力=上書き)。status は 'untested' に戻す(§11.3 PUT)。"""
-        token = self._fernet.encrypt(plaintext.encode("utf-8"))
+        token = self._cipher.encrypt(plaintext.encode("utf-8"))
         await self._session.execute(
             text(
                 "INSERT INTO byok_api_keys "
@@ -85,7 +97,7 @@ class DbKeyStore:
         if row is None:
             return None
         token = bytes(row[0])
-        return self._fernet.decrypt(token).decode("utf-8")
+        return self._cipher.decrypt(token).decode("utf-8")
 
     async def mask(self, user_id: str, provider: str) -> str | None:
         """ "sk-…"+末尾4文字のマスク表示(平文は返さない。§11.3)。未登録は None。"""
@@ -152,7 +164,7 @@ class DbKeyStore:
                 )
             ).first()
             if row is not None:
-                api_key = self._fernet.decrypt(bytes(row[0])).decode("utf-8")
+                api_key = self._cipher.decrypt(bytes(row[0])).decode("utf-8")
                 return ResolvedKey(provider=provider, api_key=api_key, source="user")
         operator = self._settings.operator_api_keys.get(provider)
         if operator:

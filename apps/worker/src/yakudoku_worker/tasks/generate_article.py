@@ -254,9 +254,9 @@ async def _call_structured(
         model="",
         system=[ContentPart.from_text(system, cache_hint=True)],
         messages=[Message(role="user", parts=[ContentPart.from_text(user_text)])],
-        max_output_tokens=32000,
-        effort="high",
-        timeout_s=300.0,
+        max_output_tokens=12000,
+        effort="medium",
+        timeout_s=120.0,
         metadata={"task": task},
     )
     resp = await router.complete(

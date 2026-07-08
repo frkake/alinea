@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 import redis.asyncio as redis
@@ -44,10 +44,18 @@ from yakudoku_worker.settings import redis_settings
 
 log = structlog.get_logger("yakudoku.worker")
 
-# ワーカーが LLM ルータを構築する際の既定タスク。worker の主タスクは翻訳のため
-# ``translation`` チェーンでルータを 1 本構築し、要約など従属タスクも同一ルータで実行する
-# (LLMRouter は task をルーティングに使わず計測メタにのみ使う。plans/04 §9)。
+# ワーカーが未知タスクのルータを参照した時の診断用既定タスク。
 DEFAULT_ROUTER_TASK = "translation"
+
+# worker が text LLM に投げるタスク。explainer_image は ImageRouter 側で扱う。
+TEXT_ROUTER_TASKS: tuple[str, ...] = (
+    "translation",
+    "retranslation_escalation",
+    "summary",
+    "article",
+    "overview_figure_dsl",
+    "vocab",
+)
 
 # 運営キーの環境変数名(plans/04 §16・apps/api ApiSettings.operator_api_keys と同一マッピング)。
 # provider 名 → env 変数名(先頭が優先)。空文字は「未設定」として除外する。
@@ -113,6 +121,34 @@ def operator_keys_from_env() -> dict[str, str]:
 
 def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+class TaskAwareLLMRouter:
+    """DB の task route ごとに構築した LLMRouter へ委譲する worker 用ルータ。
+
+    LLMRouter 自体は渡された chain を順番に試すだけで、``task`` 文字列では route を
+    切り替えない。worker は translation / summary / article など複数タスクを同じ
+    ``ctx["router"]`` から呼ぶため、ここで task 別 chain を選ぶ。
+    """
+
+    def __init__(self, routers: dict[str, LLMRouter]) -> None:
+        self._routers = routers
+
+    @property
+    def tasks(self) -> tuple[str, ...]:
+        return tuple(sorted(self._routers))
+
+    def _router_for(self, task: str) -> LLMRouter:
+        try:
+            return self._routers[task]
+        except KeyError:
+            raise RuntimeError(f"no LLM route configured for task={task}") from None
+
+    async def complete(self, task: str, *args: Any, **kwargs: Any) -> Any:
+        return await self._router_for(task).complete(task, *args, **kwargs)
+
+    async def count_tokens(self, task: str, *args: Any, **kwargs: Any) -> int:
+        return await self._router_for(task).count_tokens(task, *args, **kwargs)
 
 
 async def _resolve_chain(session: AsyncSession, task: str) -> list[tuple[str, str]]:
@@ -206,6 +242,34 @@ async def build_router(
     return LLMRouter(chain)
 
 
+async def build_task_router(
+    session: AsyncSession,
+    *,
+    tasks: Sequence[str] = TEXT_ROUTER_TASKS,
+    operator_keys: dict[str, str] | None = None,
+    provider_factory: Callable[[str, str], Any] = build_provider,
+) -> TaskAwareLLMRouter | None:
+    """task ごとの DB chain を保持する worker 用 LLM ルータを構築する。"""
+    keys = operator_keys if operator_keys is not None else operator_keys_from_env()
+    if not keys:
+        return None
+
+    routers: dict[str, LLMRouter] = {}
+    for task in tasks:
+        router = await build_router(
+            session,
+            task=task,
+            operator_keys=keys,
+            provider_factory=provider_factory,
+        )
+        if router is not None:
+            routers[task] = router
+
+    if not routers:
+        return None
+    return TaskAwareLLMRouter(routers)
+
+
 # --------------------------------------------------------------------------- #
 # publish コールバック(pipeline / translate_section が await する)
 # --------------------------------------------------------------------------- #
@@ -276,11 +340,11 @@ async def on_startup(ctx: dict[str, Any]) -> None:
 
     fake_llm = _env_truthy("YAKUDOKU_FAKE_LLM")
     if fake_llm:
-        router: LLMRouter | None = build_fake_router()
+        router: Any | None = build_fake_router()
         image_router: ImageRouter | None = build_fake_image_router()
     else:
         async with maker() as session:
-            router = await build_router(session)
+            router = await build_task_router(session)
             image_router = await build_image_router(session)
 
     ctx["settings"] = settings
@@ -296,6 +360,7 @@ async def on_startup(ctx: dict[str, Any]) -> None:
     await log.ainfo(
         "worker_startup",
         router_configured=router is not None,
+        router_tasks=getattr(router, "tasks", (DEFAULT_ROUTER_TASK,)) if router is not None else (),
         fake_llm=fake_llm,
         operator_providers=sorted(operator_keys_from_env()),
         redis_url=settings.redis_url,
@@ -327,8 +392,10 @@ async def on_shutdown(ctx: dict[str, Any]) -> None:
 __all__ = [
     "DEFAULT_ROUTER_TASK",
     "Publish",
+    "TaskAwareLLMRouter",
     "build_fake_router",
     "build_router",
+    "build_task_router",
     "channel_key",
     "make_publish",
     "on_shutdown",

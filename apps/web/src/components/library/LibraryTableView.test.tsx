@@ -180,6 +180,26 @@ describe("LibraryTableView interactive StatusPill (1e §4.7 / M1 統合ポリッ
     expect(onOpenRow).not.toHaveBeenCalled();
   });
 
+  test("clicking a processing row opens the reader without forcing PDF mode", () => {
+    const onOpenRow = vi.fn();
+    renderWithClient(
+      <LibraryTableView
+        items={[
+          makeItem({
+            pipeline: { job_id: "job_1", stage: "structuring", status: "running", progress_pct: 35 },
+          }),
+        ]}
+        sort={{ key: "updated_at", dir: "desc" }}
+        onSortChange={() => {}}
+        onOpenRow={onOpenRow}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Rectified Flow"));
+
+    expect(onOpenRow).toHaveBeenCalledWith("li_1");
+  });
+
   test("changing to a non-done status does not open the finish-reading dialog", async () => {
     const updated = makeItem({ status: "on_hold" });
     vi.mocked(libraryItemsUpdate).mockResolvedValue({ data: updated } as never);

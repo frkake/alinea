@@ -34,7 +34,16 @@ _EVIDENCE_PATTERN = r"^(blk|sec)-[A-Za-z0-9-]+$"
 ARTICLE_BLOCK_ITEM_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["type"],
+    "required": [
+        "type",
+        "heading",
+        "markdown",
+        "quote",
+        "figure",
+        "explainer",
+        "discussion",
+        "evidence",
+    ],
     "properties": {
         "type": {
             "enum": [
@@ -47,64 +56,91 @@ ARTICLE_BLOCK_ITEM_SCHEMA: dict[str, Any] = {
             ]
         },
         "heading": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["level", "text"],
-            "properties": {
-                "level": {"enum": [2, 3]},
-                "text": {"type": "string", "maxLength": 60},
-            },
+            "anyOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["level", "text"],
+                    "properties": {
+                        "level": {"enum": [2, 3]},
+                        "text": {"type": "string", "maxLength": 60},
+                    },
+                },
+                {"type": "null"},
+            ]
         },
-        "markdown": {"type": "string", "maxLength": 4000},
+        "markdown": {"anyOf": [{"type": "string", "maxLength": 4000}, {"type": "null"}]},
         "quote": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["block_id", "text_en"],
-            "properties": {
-                "block_id": {"type": "string", "pattern": "^blk-"},
-                "text_en": {"type": "string", "maxLength": 400},
-            },
+            "anyOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["block_id", "text_en"],
+                    "properties": {
+                        "block_id": {"type": "string", "pattern": "^blk-"},
+                        "text_en": {"type": "string", "maxLength": 400},
+                    },
+                },
+                {"type": "null"},
+            ]
         },
         "figure": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["block_id", "caption_ja"],
-            "properties": {
-                "block_id": {"type": "string", "pattern": "^blk-"},
-                "caption_ja": {"type": "string", "maxLength": 300},
-            },
+            "anyOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["block_id", "caption_ja"],
+                    "properties": {
+                        "block_id": {"type": "string", "pattern": "^blk-"},
+                        "caption_ja": {"type": "string", "maxLength": 300},
+                    },
+                },
+                {"type": "null"},
+            ]
         },
         "explainer": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["slot", "image_brief_en", "caption_ja"],
-            "properties": {
-                "slot": {"enum": [0, 1]},
-                "image_brief_en": {"type": "string", "maxLength": 500},
-                "caption_ja": {"type": "string", "maxLength": 300},
-            },
+            "anyOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["slot", "image_brief_en", "caption_ja"],
+                    "properties": {
+                        "slot": {"enum": [0, 1]},
+                        "image_brief_en": {"type": "string", "maxLength": 500},
+                        "caption_ja": {"type": "string", "maxLength": 300},
+                    },
+                },
+                {"type": "null"},
+            ]
         },
         "discussion": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["items"],
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "minItems": 2,
-                    "maxItems": 6,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["text", "origin"],
-                        "properties": {
-                            "text": {"type": "string", "maxLength": 200},
-                            "origin": {"enum": ["ai", "user_highlight"]},
-                            "annotation_id": {"type": "string"},
+            "anyOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["items"],
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "minItems": 2,
+                            "maxItems": 6,
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["text", "origin", "annotation_id"],
+                                "properties": {
+                                    "text": {"type": "string", "maxLength": 200},
+                                    "origin": {"enum": ["ai", "user_highlight"]},
+                                    "annotation_id": {
+                                        "anyOf": [{"type": "string"}, {"type": "null"}]
+                                    },
+                                },
+                            },
                         },
                     },
-                }
-            },
+                },
+                {"type": "null"},
+            ]
         },
         "evidence": {
             "type": "array",

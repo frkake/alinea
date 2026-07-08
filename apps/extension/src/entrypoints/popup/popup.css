@@ -452,6 +452,17 @@ body {
   line-height: 1.6;
 }
 
+.ext-link-cancel {
+  align-self: flex-end;
+  margin-top: 2px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 9.5px;
+  color: var(--ext-muted);
+  cursor: pointer;
+}
+
 /* ── 状態3: 既にライブラリ ───────────────────── */
 .ext-existing-info {
   display: flex;

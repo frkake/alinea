@@ -1,7 +1,7 @@
 // 状態2: 保存直後(3a §4.5・§5.3)。パイプライン進捗行 + プログレスバー + ボタン行。
 // ヘッダ/フッタは App が描画する。進捗ポーリングは App が 2,000ms 間隔で行う。
 import { PopupButtonRow } from "@/components/PopupButtonRow";
-import { pipelineRows, type PipelineTone } from "@/lib/pipeline";
+import { isProcessingStage, pipelineRows, type PipelineTone } from "@/lib/pipeline";
 
 export interface SavedProps {
   title: string;
@@ -11,6 +11,8 @@ export interface SavedProps {
   /** 「サイトで開く ↗」/失敗時「サイトで確認 ↗」。 */
   onOpen: () => void;
   onClose: () => void;
+  /** 取り込みキャンセル(docs/08 §2.2)。処理中(isProcessingStage)の間のみ表示。 */
+  onCancel: () => void;
 }
 
 const TONE_CLASS: Record<PipelineTone, string> = {
@@ -20,7 +22,15 @@ const TONE_CLASS: Record<PipelineTone, string> = {
   warn: "ext-pl-warn",
 };
 
-export function Saved({ title, stage, progressPct, failedReason, onOpen, onClose }: SavedProps) {
+export function Saved({
+  title,
+  stage,
+  progressPct,
+  failedReason,
+  onOpen,
+  onClose,
+  onCancel,
+}: SavedProps) {
   const failed = stage === "failed";
   const rows = pipelineRows(stage, progressPct, failedReason);
 
@@ -43,6 +53,11 @@ export function Saved({ title, stage, progressPct, failedReason, onOpen, onClose
               style={{ width: `${Math.max(0, Math.min(100, progressPct))}%` }}
             />
           </div>
+          {isProcessingStage(stage) ? (
+            <button type="button" className="ext-link-cancel" onClick={onCancel}>
+              取り込みを中止
+            </button>
+          ) : null}
         </div>
       </div>
 

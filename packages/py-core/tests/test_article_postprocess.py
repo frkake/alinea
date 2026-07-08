@@ -23,6 +23,7 @@ from yakudoku_core.article.postprocess import (
     normalize_rewritten_block,
     verify_quote,
 )
+from yakudoku_core.article.schema import ARTICLE_V1_JSON_SCHEMA
 from yakudoku_core.article.sources import AnnotationRef, ArticleSources, FigureInfo
 from yakudoku_core.db.models import DocumentRevision, LibraryItem, Paper
 from yakudoku_core.document.blocks import DocumentContent
@@ -39,6 +40,25 @@ LICENSE_MATRIX_ROWS: list[tuple[str, str]] = [
     ("arxiv-nonexclusive", "link_card"),
     ("unknown", "link_card"),
 ]
+
+
+def _assert_openai_strict_objects(schema: dict[str, Any]) -> None:
+    if schema.get("type") == "object":
+        properties = schema.get("properties", {})
+        assert set(schema.get("required", [])) == set(properties)
+        for child in properties.values():
+            if isinstance(child, dict):
+                _assert_openai_strict_objects(child)
+    for child in schema.get("anyOf", []):
+        if isinstance(child, dict):
+            _assert_openai_strict_objects(child)
+    items = schema.get("items")
+    if isinstance(items, dict):
+        _assert_openai_strict_objects(items)
+
+
+def test_article_schema_is_openai_strict_compatible() -> None:
+    _assert_openai_strict_objects(ARTICLE_V1_JSON_SCHEMA)
 
 
 def _sources_for(license_id: str) -> ArticleSources:

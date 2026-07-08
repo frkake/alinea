@@ -1,6 +1,6 @@
 "use client";
 
-import type { CSSProperties, KeyboardEvent } from "react";
+import { useState, type CSSProperties, type KeyboardEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { libraryItemsUpdate, type LibraryItemSummary } from "@yakudoku/api-client";
 import type { ReadingStatus } from "@yakudoku/tokens";
@@ -14,11 +14,13 @@ import { AiMark } from "@/components/ui/AIBadge";
 import { useToast } from "@/components/ui/Toast";
 import { cardBibLine, formatShortDate, toPriority, toQuality, toReadingStatus } from "@/components/library/format";
 import { useFinishReadingStore } from "@/components/library/finishReadingStore";
+import { CancelIngestConfirmModal } from "@/components/library/CancelIngestConfirmModal";
+import { useCancelIngest } from "@/hooks/useCancelIngest";
 
 /**
  * 論文カード(4a §4.7)。M0 スコープ:
  * - ✦ 3 行要約(summary_3line)
- * - パイプライン進捗(処理中は ProgressBar + 「読み始める →」= 部分読書導線 / readable-first)
+ * - パイプライン進捗(処理中は ProgressBar + readable-first)
  * - タグ提案チップ(suggested_tags、AI 生成マーク付き)
  * - フッタのステータス・締切・右端メタ(§4.8)
  * カード全体がリーダーへの導線(role="link")。
@@ -72,10 +74,20 @@ export function LibraryCard({ item, onOpen }: LibraryCardProps) {
   const showProgress = processing || status === "reading";
   const qc = useQueryClient();
   const toast = useToast();
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
+  const cancelIngest = useCancelIngest(
+    () => {
+      void qc.invalidateQueries({ queryKey: ["library"] });
+      void qc.invalidateQueries({ queryKey: ["dashboard"] });
+      toast({ kind: "success", message: "取り込みをキャンセルしました" });
+    },
+    () => {
+      setCancelConfirmOpen(false);
+      toast({ kind: "error", message: "キャンセルできませんでした" });
+    },
+  );
 
-  const open = () => {
-    onOpen(item.id);
-  };
+  const open = () => onOpen(item.id);
   const onKey = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
@@ -215,26 +227,45 @@ export function LibraryCard({ item, onOpen }: LibraryCardProps) {
             ) : null}
 
             {processing ? (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  open();
-                }}
-                style={{
-                  marginLeft: "auto",
-                  border: "none",
-                  background: "transparent",
-                  padding: 0,
-                  fontSize: 10.5,
-                  fontWeight: 600,
-                  color: "var(--pr-acc)",
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                }}
-              >
-                読み始める →
-              </button>
+              <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCancelConfirmOpen(true);
+                  }}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    padding: 0,
+                    fontSize: 10.5,
+                    color: "var(--pr-text-muted)",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  中止
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    open();
+                  }}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    padding: 0,
+                    fontSize: 10.5,
+                    fontWeight: 600,
+                    color: "var(--pr-acc)",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  読み始める →
+                </button>
+              </div>
             ) : meta ? (
               <span
                 style={{
@@ -253,6 +284,12 @@ export function LibraryCard({ item, onOpen }: LibraryCardProps) {
           </div>
         </div>
       </div>
+      <CancelIngestConfirmModal
+        open={cancelConfirmOpen}
+        pending={cancelIngest.isPending}
+        onCancel={() => setCancelConfirmOpen(false)}
+        onConfirm={() => cancelIngest.mutate(item.id)}
+      />
     </Card>
   );
 }

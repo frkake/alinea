@@ -1,6 +1,6 @@
 "use client";
 
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { papersReingest, type LibraryItemSummary, type PipelineState } from "@yakudoku/api-client";
 import { Card } from "@/components/ui/Card";
@@ -11,6 +11,8 @@ import { TagChip } from "@/components/ui/TagChip";
 import { AiMark } from "@/components/ui/AIBadge";
 import { useToast } from "@/components/ui/Toast";
 import { cardBibLine, toQuality } from "@/components/library/format";
+import { CancelIngestConfirmModal } from "@/components/library/CancelIngestConfirmModal";
+import { useCancelIngest } from "@/hooks/useCancelIngest";
 
 /** `GET /api/dashboard` と同一のキー(構造比較のため配列リテラルで揃える。1d 専用の簡易キー)。 */
 const DASHBOARD_QUERY_KEY = ["dashboard"] as const;
@@ -224,6 +226,20 @@ function ProcessingBody({
   item: LibraryItemSummary;
   onOpen: (id: string) => void;
 }) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const cancelIngest = useCancelIngest(
+    () => {
+      void queryClient.invalidateQueries({ queryKey: DASHBOARD_QUERY_KEY });
+      toast({ kind: "success", message: "取り込みをキャンセルしました" });
+    },
+    () => {
+      setConfirmOpen(false);
+      toast({ kind: "error", message: "キャンセルできませんでした" });
+    },
+  );
+
   const pipeline = item.pipeline as PipelineState;
   const bibDone = stageAtLeast(pipeline.stage, "structuring");
   const abstractDone = stageAtLeast(pipeline.stage, "readable");
@@ -250,33 +266,104 @@ function ProcessingBody({
             <span style={{ fontSize: 10, color: "var(--pr-text-muted)" }}>
               {pipeline.readable_upto} まで読めます · 開いたセクションを優先翻訳
             </span>
-            <button
-              type="button"
-              onClick={() => {
-                onOpen(item.id);
-              }}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                height: 24,
-                padding: "0 12px",
-                borderRadius: 6,
-                border: "none",
-                background: "var(--pr-acc)",
-                color: "#FFFFFF",
-                fontSize: 11,
-                fontWeight: 600,
-                cursor: "pointer",
-                fontFamily: "inherit",
-              }}
-            >
-              読み始める
-            </button>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setConfirmOpen(true);
+                }}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  padding: 0,
+                  fontSize: 10.5,
+                  color: "var(--pr-text-muted)",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                中止
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onOpen(item.id);
+                }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  height: 24,
+                  padding: "0 12px",
+                  borderRadius: 6,
+                  border: "none",
+                  background: "var(--pr-acc)",
+                  color: "#FFFFFF",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                読み始める
+              </button>
+            </div>
           </>
         ) : (
-          <span style={{ fontSize: 10, color: "var(--pr-text-muted)" }}>解析中です</span>
+          <>
+            <span style={{ fontSize: 10, color: "var(--pr-text-muted)" }}>解析中です</span>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setConfirmOpen(true);
+                }}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  padding: 0,
+                  fontSize: 10.5,
+                  color: "var(--pr-text-muted)",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                中止
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpen(item.id);
+                }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  height: 24,
+                  padding: "0 12px",
+                  borderRadius: 6,
+                  border: "none",
+                  background: "var(--pr-acc)",
+                  color: "#FFFFFF",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                読み始める
+              </button>
+            </div>
+          </>
         )}
       </div>
+      <CancelIngestConfirmModal
+        open={confirmOpen}
+        pending={cancelIngest.isPending}
+        onCancel={() => setConfirmOpen(false)}
+        onConfirm={() => cancelIngest.mutate(item.id)}
+      />
     </div>
   );
 }

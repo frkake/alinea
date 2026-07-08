@@ -2,7 +2,7 @@
 
 - ``POST /api/papers/{paper_id}/reingest``            再取り込み(202・実行中は 409 conflict)。
 - ``GET  /api/papers/{paper_id}/ingest-log``          処理ログ(at 昇順・ページングなし)。
-- ``GET  /api/papers/{paper_id}/pdf``                 原本 PDF(302 署名付き URL、10 分)。
+- ``GET  /api/papers/{paper_id}/pdf``                 原本 PDF(同一オリジンで bytes 配信)。
 - ``POST /api/library-items/{id}/adopt-revision``     新リビジョンへの切替+リアンカー(§6.8。
   M1-22。新しいバージョンのバナー・B→A 昇格提案の適用の両方から使う共通経路)。自動切替はしない
   (P6)。本エンドポイントがユーザー操作の唯一の適用経路。
@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import RedirectResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -172,7 +172,7 @@ async def ingest_log(paper_id: str, user: CurrentUser, db: DbDep) -> PapersInges
 @router.get("/api/papers/{paper_id}/pdf", operation_id="papers_pdf")
 async def paper_pdf(
     paper_id: str, user: CurrentUser, db: DbDep, storage: StorageDep
-) -> RedirectResponse:
+) -> Response:
     paper = await db.get(Paper, paper_id)
     if paper is None:
         raise ProblemException("not_found")
@@ -193,8 +193,15 @@ async def paper_pdf(
     if asset is None:
         raise ProblemException("not_found")
 
-    url = await storage.presign_get(storage.sources_bucket, asset.storage_key, expires_in=600)
-    return RedirectResponse(url, status_code=302)
+    data = await storage.get(storage.sources_bucket, asset.storage_key)
+    return Response(
+        content=data,
+        media_type=asset.content_type or "application/pdf",
+        headers={
+            "Cache-Control": "private, max-age=600",
+            "Content-Disposition": 'inline; filename="paper.pdf"',
+        },
+    )
 
 
 # --- POST /api/library-items/{id}/adopt-revision(§6.8) -----------------------------

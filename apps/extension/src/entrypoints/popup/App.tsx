@@ -13,6 +13,7 @@ import type {
 import { FailedQueueBanner, type FailedQueueEntry } from "@/components/FailedQueueBanner";
 import { PopupHeader, type HeaderBadge } from "@/components/PopupHeader";
 import {
+  apiCancelIngest,
   apiCheck,
   apiGetJob,
   apiGetRecent,
@@ -255,15 +256,28 @@ export function App() {
             if (evicted) notifyEviction(evicted.title);
             setSaveError("送信できませんでした。あとで再試行できます(失敗キューに保存しました)。");
           } else {
-            setSaveError("送信に失敗しました。しばらくしてからもう一度お試しください。");
+            setSaveError(
+              outcome.message || "送信に失敗しました。しばらくしてからもう一度お試しください。",
+            );
           }
           break;
         default:
-          setSaveError("送信に失敗しました");
+          setSaveError(outcome.message);
       }
     },
     [tabInfo, check, refreshQueue, notifyEviction],
   );
+
+  // 取り込みキャンセル(docs/08 §2.2)。ライブラリ項目ごと削除して保存前フォームへ戻す。
+  const handleCancelIngest = useCallback(async () => {
+    if (!savedView) return;
+    const ok = await apiCancelIngest(savedView.libraryItemId);
+    if (!ok) return;
+    await removeActiveJob(savedView.jobId);
+    setJob(null);
+    setSavedView(null);
+    setReloadKey((k) => k + 1);
+  }, [savedView]);
 
   const handleChangeStatus = useCallback(
     (itemId: string) => (status: Status) => apiPatchStatus(itemId, status),
@@ -501,6 +515,7 @@ export function App() {
         failedReason={typeof job?.error?.detail === "string" ? job.error.detail : null}
         onOpen={() => openTab(siteUrl(`/papers/${savedView.libraryItemId}`))}
         onClose={() => window.close()}
+        onCancel={handleCancelIngest}
       />,
       true,
       { settings: true },

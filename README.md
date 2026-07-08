@@ -19,6 +19,20 @@ pnpm turbo build --filter=@yakudoku/tokens --filter=@yakudoku/api-client   # 生
 pnpm dev                                   # web:3000 / api:8000 / arq worker / 拡張(wxt dev)
 ```
 
+ローカル開発データを全削除して空の環境に戻す場合:
+
+```bash
+docker compose down -v --remove-orphans    # DB/Redis/MinIO の Docker volume を削除
+docker compose up -d --wait
+(cd apps/api && uv run alembic upgrade head)
+```
+
+サンプル論文も入れ直す場合:
+
+```bash
+uv run python -m yakudoku_api.seed --sample rectified-flow
+```
+
 動作確認: `http://localhost:3000/login` でメール入力 → Mailpit(`http://localhost:8025`)のリンクを開く → 拡張で `https://arxiv.org/abs/2209.03003` を保存。検証は `pnpm turbo build lint typecheck test` と `uv run pytest`、E2E は `pnpm --filter @yakudoku/web e2e`。
 
 ## 1. ビジョン

@@ -19,7 +19,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.services.session_service import create_session
+from yakudoku_api.services.session_service import create_extension_token, create_session
 from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
 from yakudoku_core.db.models import DocumentRevision, LibraryItem, Paper
 
@@ -369,6 +369,24 @@ async def test_delete_removes_item_and_private_paper(
     assert r.status_code == 204
     gone = await client.get(f"/api/library-items/{item_id}")
     assert gone.status_code == 404
+
+
+async def test_delete_allows_extension_token(
+    auth: tuple[AsyncClient, str],
+    bare_client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+) -> None:
+    """取り込みキャンセル(docs/08)は拡張ポップアップから呼ぶため拡張トークンで通す。"""
+    _client, uid = auth
+    item_id = await _mk_item(db_session, uid)
+    await db_session.commit()
+    token, _expires = await create_extension_token(redis_client, uid)
+
+    r = await bare_client.delete(
+        f"/api/library-items/{item_id}", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status_code == 204
 
 
 async def test_reject_tag_suggestion(

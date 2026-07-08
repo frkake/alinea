@@ -12,6 +12,7 @@ arq へは起床通知(``run_job``)を best-effort で投げる(plans/01 §4)。
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import hashlib
 import json
@@ -24,8 +25,8 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from yakudoku_core.arxiv.fetch import FetchError, probe_latex_available
-from yakudoku_core.arxiv.ids import ArxivId, parse_arxiv_url
+from yakudoku_core.arxiv.fetch import FetchError, fetch_pdf, probe_latex_available
+from yakudoku_core.arxiv.ids import ArxivId, parse_arxiv_url, pdf_url
 from yakudoku_core.arxiv.metadata import ArxivMeta, fetch_metadata
 from yakudoku_core.db.models import (
     BlockSearchIndex,
@@ -37,10 +38,12 @@ from yakudoku_core.db.models import (
     Paper,
     SourceAsset,
 )
+from yakudoku_core.document.blocks import DocumentContent
 from yakudoku_core.ingest import joblog
 from yakudoku_core.ingest.dedupe import detect_duplicate
 from yakudoku_core.jobs.store import JobStore
 from yakudoku_core.parsing.pdf_parser import PdfParseError, check_text_layer
+from yakudoku_core.settings import CoreSettings
 from yakudoku_core.storage.s3 import S3Storage, StorageKeys
 
 from yakudoku_api.deps import CurrentUserOrExt, DbDep, SettingsDep
@@ -70,6 +73,19 @@ BULK_QUEUE = "yk:bulk"
 _VALID_STATUSES = frozenset({"planned", "up_next", "reading", "done", "reread", "on_hold"})
 _ACTIVE_JOB_STATUSES = ("queued", "running", "waiting_quota")
 
+_MAX_PDF_BYTES = 50 * 1024 * 1024  # 50MB(plans/03 §3.3・plans/05 §9.1-1)
+_PDF_MAGIC = b"%PDF-"
+_READ_CHUNK_BYTES = 1024 * 1024
+_PDF_PLACEHOLDER_PARSER_VERSION = "pdf-placeholder-1.0.0"
+_ARXIV_PDF_PREFETCH_TIMEOUT_SECONDS = 8.0
+
+
+def get_pdf_storage() -> S3Storage:
+    return S3Storage()
+
+
+PdfStorageDep = Annotated[S3Storage, Depends(get_pdf_storage)]
+
 
 # --- 依存(テストで差し替え可能) ---------------------------------------------------
 
@@ -82,6 +98,9 @@ class ArxivGateway:
 
     async def probe_latex_available(self, ref: ArxivId) -> bool:
         return await probe_latex_available(ref)
+
+    async def fetch_pdf(self, ref: ArxivId, settings: CoreSettings) -> bytes:
+        return await fetch_pdf(ref, settings=settings, max_bytes=_MAX_PDF_BYTES)
 
 
 def get_arxiv_gateway() -> ArxivGateway:
@@ -356,6 +375,9 @@ async def ingest_arxiv(
     user: CurrentUserOrExt,
     db: DbDep,
     wakeup: JobWakeupDep,
+    gateway: ArxivGatewayDep,
+    storage: PdfStorageDep,
+    settings: SettingsDep,
     body: IngestArxivRequest,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> IngestArxivResponse | JSONResponse:
@@ -408,6 +430,9 @@ async def ingest_arxiv(
         await db.flush()
     paper_id = str(paper.id)
 
+    source_version = ref.version_suffix or "latest"
+    await _ensure_arxiv_pdf_available(db, paper, ref, source_version, gateway, storage, settings)
+
     item = LibraryItem(
         user_id=str(user.id),
         paper_id=paper_id,
@@ -457,6 +482,123 @@ async def ingest_arxiv(
         await wakeup(job_id)
 
     return IngestArxivResponse(paper_id=paper_id, library_item_id=library_item_id, job_id=job_id)
+
+
+async def _ensure_arxiv_pdf_available(
+    db: DbDep,
+    paper: Paper,
+    ref: ArxivId,
+    source_version: str,
+    gateway: ArxivGateway,
+    storage: S3Storage,
+    settings: CoreSettings,
+) -> None:
+    """arXiv 取り込み開始時に原文 PDF を同期保存し、解析前の PDF 表示を可能にする。
+
+    PDF の事前取得はビューアの PDF タブを早く有効にするための補助処理で、取り込み本体は
+    worker の fetching 段で LaTeX/HTML/PDF を改めて取得する。arXiv 側の一時失敗で保存
+    要求全体を 502 にしないよう、取得失敗は警告ログに留めて続行する。
+    """
+
+    paper_id = str(paper.id)
+    existing_pdf = (
+        await db.execute(
+            select(SourceAsset.id)
+            .where(SourceAsset.paper_id == paper_id, SourceAsset.kind == "pdf")
+            .limit(1)
+        )
+    ).first()
+
+    if existing_pdf is None:
+        try:
+            data = await asyncio.wait_for(
+                gateway.fetch_pdf(ref, settings), timeout=_ARXIV_PDF_PREFETCH_TIMEOUT_SECONDS
+            )
+            storage_key = StorageKeys.original_pdf(paper_id, source_version)
+            sha256 = hashlib.sha256(data).hexdigest()
+            await storage.put(
+                storage.sources_bucket,
+                storage_key,
+                data,
+                content_type="application/pdf",
+            )
+        except FetchError as exc:
+            log.warning(
+                "arxiv_pdf_prefetch_failed",
+                arxiv_id=ref.id,
+                version=ref.version_suffix or "latest",
+                kind=exc.kind,
+                error=str(exc),
+            )
+        except TimeoutError:
+            log.warning(
+                "arxiv_pdf_prefetch_timeout",
+                arxiv_id=ref.id,
+                version=ref.version_suffix or "latest",
+                timeout_seconds=_ARXIV_PDF_PREFETCH_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            raise ProblemException(
+                "provider_error", detail="PDF 原本の保存に失敗しました"
+            ) from exc
+        else:
+            db.add(
+                SourceAsset(
+                    paper_id=paper_id,
+                    kind="pdf",
+                    source_url=pdf_url(ref, settings.yakudoku_arxiv_base_url or None),
+                    source_version=source_version,
+                    storage_key=storage_key,
+                    content_type="application/pdf",
+                    byte_size=len(data),
+                    sha256=sha256,
+                )
+            )
+
+    await _ensure_pdf_placeholder_revision(db, paper, source_version)
+
+
+async def _ensure_pdf_placeholder_revision(
+    db: DbDep, paper: Paper, source_version: str
+) -> None:
+    """構造化前でも PDF モードを開くための空リビジョンを用意する。"""
+
+    if paper.latest_revision_id:
+        revision = await db.get(DocumentRevision, paper.latest_revision_id)
+        if revision is not None:
+            return
+
+    paper_id = str(paper.id)
+    existing = (
+        (
+            await db.execute(
+                select(DocumentRevision).where(
+                    DocumentRevision.paper_id == paper_id,
+                    DocumentRevision.source_version == source_version,
+                    DocumentRevision.parser_version == _PDF_PLACEHOLDER_PARSER_VERSION,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if existing is not None:
+        paper.latest_revision_id = existing.id
+        return
+
+    content = DocumentContent(quality_level="B", sections=[])
+    revision = DocumentRevision(
+        paper_id=paper_id,
+        source_version=source_version,
+        parser_version=_PDF_PLACEHOLDER_PARSER_VERSION,
+        quality_level="B",
+        source_format="pdf",
+        content=content.model_dump(),
+        stats={"pages": None, "figures": 0, "tables": 0, "blocks": 0, "translatable_blocks": 0},
+    )
+    db.add(revision)
+    await db.flush()
+    paper.latest_revision_id = revision.id
 
 
 async def _add_to_collection(
@@ -519,18 +661,6 @@ async def _duplicate_response(
 
 
 # --- POST /api/ingest/pdf(§3.3) ------------------------------------------------------
-
-_MAX_PDF_BYTES = 50 * 1024 * 1024  # 50MB(plans/03 §3.3・plans/05 §9.1-1)
-_PDF_MAGIC = b"%PDF-"
-_READ_CHUNK_BYTES = 1024 * 1024
-
-
-def get_pdf_storage() -> S3Storage:
-    return S3Storage()
-
-
-PdfStorageDep = Annotated[S3Storage, Depends(get_pdf_storage)]
-
 
 def _parse_pdf_meta(raw: str) -> IngestPdfMeta:
     try:
@@ -684,6 +814,7 @@ async def ingest_pdf(
             sha256=sha256,
         )
     )
+    await _ensure_pdf_placeholder_revision(db, paper, "v1")
 
     item = LibraryItem(
         user_id=str(user.id),

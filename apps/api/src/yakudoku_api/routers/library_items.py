@@ -670,10 +670,14 @@ async def patch_item(
 
 
 # ============================================================================
-# 削除(§5.5)
+# 削除(§5.5)。取り込み中(queued/waiting_quota/running)の項目に対する呼び出しは
+# 取り込みキャンセルとして扱う(docs/08 §2.2 拡張ポップアップ・Web 進捗表示の「キャンセル」)。
+# 未着手(queued/waiting_quota)のジョブは行ごと消えるため claim() が確実に空振りする
+# (main.py run_job の claim=None 経路)。running は次回 DB 書き込みで LookupError となり
+# ベストエフォートで中断(main.py の job_gone_after_cancel 経路)。
 # ============================================================================
 @router.delete("/api/library-items/{item_id}", status_code=204, operation_id="libraryItems_delete")
-async def delete_item(item_id: str, user: CurrentUser, db: DbDep) -> Response:
+async def delete_item(item_id: str, user: CurrentUserOrExt, db: DbDep) -> Response:
     item = await _get_owned(db, user.id, item_id)
     paper_id = item.paper_id
     await db.delete(item)  # 配下は FK ON DELETE CASCADE で消える

@@ -110,7 +110,11 @@ async def job_events(
         # 取りこぼし再送(この job のイベントのみ)。
         for event_id, event_type, data in await read_events_since(r, user_id, last_event_id):
             if data.get("job_id") == job_id:
-                yield sse_json_frame(data, event=_translate_event(event_type), event_id=event_id)
+                frame, terminal = await _job_event_frame(db, job_id, event_type, data, event_id)
+                if frame is not None:
+                    yield frame
+                if terminal:
+                    return
         pubsub = r.pubsub()
         await pubsub.subscribe(channel_key(user_id))
         try:
@@ -126,20 +130,17 @@ async def job_events(
                 envelope = _parse_envelope(message.get("data"))
                 if envelope is None or envelope["data"].get("job_id") != job_id:
                     continue
-                yield sse_json_frame(
+                frame, terminal = await _job_event_frame(
+                    db,
+                    job_id,
+                    envelope["event"],
                     envelope["data"],
-                    event=_translate_event(envelope["event"]),
-                    event_id=envelope["id"],
+                    envelope["id"],
                 )
-                # 終了イベントなら DB を確認して done/error を送り閉じる。
-                fresh = await db.get(Job, job_id)
-                if fresh is not None:
-                    await db.refresh(fresh)
-                    if fresh.status in ("succeeded", "failed"):
-                        done = _job_state_frame(fresh)
-                        if done is not None:
-                            yield done
-                        break
+                if frame is not None:
+                    yield frame
+                if terminal:
+                    break
         finally:
             await pubsub.unsubscribe(channel_key(user_id))
             await pubsub.aclose()  # type: ignore[no-untyped-call]  # redis-py pubsub untyped
@@ -166,11 +167,34 @@ def _translate_event(user_event: str) -> str:
     return "progress"
 
 
-def _job_state_frame(job: Job) -> str | None:
+async def _job_event_frame(
+    db: Any,
+    job_id: str,
+    event_type: str,
+    data: dict[str, Any],
+    event_id: str | None,
+) -> tuple[str | None, bool]:
+    """user event を job SSE フレームへ変換する。
+
+    ``job.updated`` は軽量な起床通知なので、DB の最新状態を読み直して progress/done/error に
+    展開する。translation の詳細 progress など payload 完結イベントはそのまま流す。
+    """
+    if event_type != "job.updated":
+        return sse_json_frame(data, event=_translate_event(event_type), event_id=event_id), False
+
+    fresh = await db.get(Job, job_id)
+    if fresh is None:
+        return None, True
+    await db.refresh(fresh)
+    return _job_state_frame(fresh, event_id=event_id), fresh.status in ("succeeded", "failed")
+
+
+def _job_state_frame(job: Job, *, event_id: str | None = None) -> str | None:
     if job.status == "succeeded":
         return sse_json_frame(
             {"job_id": str(job.id), "status": "succeeded", "result": job.result or {}},
             event="done",
+            event_id=event_id,
         )
     if job.status == "failed":
         problem = build_problem(
@@ -179,7 +203,7 @@ def _job_state_frame(job: Job) -> str | None:
             title="ジョブに失敗しました",
             detail=job.error,
         )
-        return sse_json_frame(problem.model_dump(mode="json"), event="error")
+        return sse_json_frame(problem.model_dump(mode="json"), event="error", event_id=event_id)
     return sse_json_frame(
         {
             "job_id": str(job.id),
@@ -188,4 +212,5 @@ def _job_state_frame(job: Job) -> str | None:
             "progress_pct": job.progress,
         },
         event="progress",
+        event_id=event_id,
     )

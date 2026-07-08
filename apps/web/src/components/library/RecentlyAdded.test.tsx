@@ -1,10 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { describe, expect, test, vi } from "vitest";
-import type { LibraryItemSummary } from "@yakudoku/api-client";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import { libraryItemsDelete, type LibraryItemSummary } from "@yakudoku/api-client";
 import { RecentlyAdded, formatAddedAt } from "@/components/library/RecentlyAdded";
+
+vi.mock("@yakudoku/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+  return { ...actual, libraryItemsDelete: vi.fn() };
+});
 
 const NOW = new Date("2026-07-08T12:00:00");
 
@@ -66,7 +71,9 @@ describe("RecentlyAdded variants", () => {
     expect(screen.getByText("提案: cs.CV +")).toBeInTheDocument();
   });
 
-  test("processing card: shows stage checklist and hides start-reading button before readable", () => {
+  test("processing card before readable opens the reader without forcing PDF mode", async () => {
+    const user = userEvent.setup();
+    const onOpen = vi.fn();
     renderWithClient(
       <RecentlyAdded
         weekCount={1}
@@ -81,14 +88,15 @@ describe("RecentlyAdded variants", () => {
             },
           }),
         ]}
-        onOpen={() => {}}
+        onOpen={onOpen}
         now={NOW}
       />,
     );
     expect(screen.getByText("✓ 書誌")).toBeInTheDocument();
     expect(screen.getByText("解析中…")).toBeInTheDocument();
     expect(screen.getByText("解析中です")).toBeInTheDocument();
-    expect(screen.queryByText("読み始める")).not.toBeInTheDocument();
+    await user.click(screen.getByText("読み始める"));
+    expect(onOpen).toHaveBeenCalledWith("li_1");
   });
 
   test("processing card at translating_body with readable_upto: shows start-reading button", async () => {
@@ -203,6 +211,44 @@ describe("RecentlyAdded variants", () => {
     expect(container.querySelector('[style*="grid-template-columns"]')).toHaveStyle({
       gridTemplateColumns: "1fr",
     });
+  });
+});
+
+// 取り込みキャンセル(docs/08 §2.2)。
+describe("RecentlyAdded cancel-ingest wiring", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  test("中止 opens a confirm modal before an active ingest is deleted", async () => {
+    const user = userEvent.setup();
+    renderWithClient(
+      <RecentlyAdded
+        weekCount={1}
+        items={[
+          makeItem({
+            pipeline: {
+              job_id: "job_1",
+              stage: "structuring",
+              status: "running",
+              progress_pct: 35,
+              readable_upto: null,
+            },
+          }),
+        ]}
+        onOpen={() => {}}
+        now={NOW}
+      />,
+    );
+
+    await user.click(screen.getByText("中止"));
+    expect(screen.getByText("取り込みをキャンセルしますか?")).toBeInTheDocument();
+    expect(libraryItemsDelete).not.toHaveBeenCalled();
+
+    await user.click(screen.getByText("取り込みをキャンセル"));
+    await waitFor(() =>
+      expect(libraryItemsDelete).toHaveBeenCalledWith({ path: { item_id: "li_1" }, throwOnError: true }),
+    );
   });
 });
 

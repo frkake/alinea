@@ -82,6 +82,7 @@ async def test_chain_exhausted_when_all_fail() -> None:
     with pytest.raises(ProviderChainExhausted) as exc:
         await router.complete(task="chat", prompt="hi")
     assert len(exc.value.errors) == 2
+    assert str(exc.value) == "all providers failed for task=chat; last_error=fake/m2 billing"
 
 
 # --- PY-LLM-03: structured output(Pydantic/jsonschema 検証済み parsed) -----

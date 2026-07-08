@@ -18,6 +18,7 @@ from yakudoku_llm.errors import (
     ProviderError,
     SchemaValidationFailed,
 )
+from yakudoku_llm.providers.openai_provider import OpenAIProvider
 from yakudoku_llm.registry import ModelRegistry
 from yakudoku_llm.router import ImageRouter, LLMRouter
 from yakudoku_llm.routing import RetryConfig
@@ -56,6 +57,20 @@ def test_caching_helpers() -> None:
     assert translation_cache_key("rev1", "natural", "g1") == "tr:rev1:natural:g1"
     assert min_cache_tokens_for("claude-3-5-haiku") == MIN_CACHE_TOKENS["haiku"]
     assert min_cache_tokens_for("claude-opus-4-8") == MIN_CACHE_TOKENS["opus"]
+
+
+def test_openai_prompt_cache_key_is_omitted_when_sdk_does_not_support_it() -> None:
+    provider = OpenAIProvider(api_key="sk-test", base_url="http://localhost")
+    req = _user_req("hello").model_copy(update={"prompt_cache_key": "tr:rev:natural:g1"})
+    kwargs = provider._kwargs(req)
+    assert "prompt_cache_key" not in kwargs
+    assert "extra_body" not in kwargs
+
+
+def test_openai_none_effort_is_sent_as_none() -> None:
+    provider = OpenAIProvider(api_key="sk-test", base_url="http://localhost")
+    kwargs = provider._kwargs(_user_req("hello"))
+    assert kwargs["reasoning"] == {"effort": "none"}
 
 
 def test_token_estimate_and_budget() -> None:

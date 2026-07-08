@@ -15,7 +15,7 @@ from typing import Protocol, runtime_checkable
 
 import httpx
 
-from yakudoku_core.arxiv.ids import ArxivId, eprint_url
+from yakudoku_core.arxiv.ids import ArxivId, eprint_url, pdf_url
 from yakudoku_core.settings import CoreSettings, get_settings
 
 _THROTTLE_KEY = "arxiv:throttle"
@@ -91,6 +91,42 @@ async def _head_eprint(http: httpx.AsyncClient, ref: ArxivId, base_url: str | No
     resp = await http.head(eprint_url(ref, base_url), follow_redirects=True, timeout=6.0)
     content_type = resp.headers.get("content-type", "")
     return resp.status_code == 200 and "application/pdf" not in content_type
+
+
+async def fetch_pdf(
+    ref: ArxivId,
+    *,
+    http: httpx.AsyncClient | None = None,
+    settings: CoreSettings | None = None,
+    max_bytes: int = 50 * 1024 * 1024,
+) -> bytes:
+    """arXiv の PDF を取得する。解析とは独立した即時表示用にも使う。"""
+    s = settings or get_settings()
+    base_url = s.yakudoku_arxiv_base_url or None
+    url = pdf_url(ref, base_url)
+    owns_http = http is None
+    if http is None:
+        http = make_arxiv_client(s)
+    try:
+        try:
+            resp = await http.get(url, timeout=httpx.Timeout(120.0, connect=5.0))
+        except httpx.HTTPError as exc:
+            raise FetchError("network_error", f"arxiv pdf fetch failed: {exc}") from exc
+        if resp.status_code == 404:
+            raise FetchError("source_not_found", f"arxiv pdf 404: {url}")
+        if resp.status_code >= 500:
+            raise FetchError("upstream_5xx", f"arxiv pdf {resp.status_code}")
+        if resp.status_code != 200:
+            raise FetchError("source_not_found", f"arxiv pdf {resp.status_code}: {url}")
+        data = resp.content
+        if len(data) > max_bytes:
+            raise FetchError("payload_too_large", "arxiv pdf exceeds size limit")
+        if not data.startswith(b"%PDF-"):
+            raise FetchError("source_not_found", "arxiv pdf response is not a PDF")
+        return data
+    finally:
+        if owns_http:
+            await http.aclose()
 
 
 async def probe_latex_available(

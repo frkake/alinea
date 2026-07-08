@@ -10,6 +10,7 @@ DB は実 PostgreSQL(シード済み llm ルート)、Redis は実サービス(�
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import uuid
@@ -24,8 +25,10 @@ from yakudoku_core.db.models import LibraryItem, Paper, User
 from yakudoku_llm.router import LLMRouter
 from yakudoku_llm.testing.fake_provider import FakeLLMProvider
 from yakudoku_worker.bootstrap import (
+    TaskAwareLLMRouter,
     build_fake_router,
     build_router,
+    build_task_router,
     channel_key,
     make_publish,
     on_shutdown,
@@ -132,6 +135,29 @@ async def test_build_router_returns_none_when_key_provider_not_in_chain(
         )
     assert router is None
     assert calls == []
+
+
+async def test_build_task_router_uses_task_specific_chains(
+    maker: async_sessionmaker[AsyncSession],
+) -> None:
+    def factory(provider: str, _key: str) -> Any:
+        return FakeLLMProvider(name=provider)
+
+    async with maker() as session:
+        router = await build_task_router(
+            session,
+            tasks=("translation", "article"),
+            operator_keys={"openai": "sk-openai"},
+            provider_factory=factory,
+        )
+
+    assert isinstance(router, TaskAwareLLMRouter)
+    translation = await router.complete("translation", prompt="translate")
+    article = await router.complete("article", prompt="article")
+    assert translation.provider == "openai"
+    assert translation.model == "gpt-5.4-mini"
+    assert article.provider == "openai"
+    assert article.model == "gpt-5.5"
 
 
 def test_build_fake_router_is_usable() -> None:
@@ -330,3 +356,68 @@ async def test_run_job_fails_visibly_when_router_missing() -> None:
         assert job.status in ("queued", "failed")
         messages = [e.get("message", "") for e in job.log if isinstance(e, dict)]
         assert any("API キーが未設定" in m for m in messages)
+
+
+async def test_run_job_schedules_retry_wakeup_when_retrying(
+    monkeypatch: pytest.MonkeyPatch,
+    maker: async_sessionmaker[AsyncSession],
+) -> None:
+    from yakudoku_core.jobs.store import JobStore
+    from yakudoku_worker import main as worker_main
+
+    class ArqPoolStub:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+        async def enqueue_job(self, function: str, *args: Any, **kwargs: Any) -> None:
+            self.calls.append((function, args, kwargs))
+
+    monkeypatch.setattr(worker_main, "get_sessionmaker", lambda: maker)
+    async with maker() as session:
+        store = JobStore(session)
+        job_id = await store.enqueue(
+            kind="translation",
+            payload={"reason": "initial", "set_id": str(uuid.uuid4()), "section_id": "S1"},
+            priority="bulk",
+        )
+
+    pool = ArqPoolStub()
+    await worker_main.run_job({"arq_pool": pool}, job_id)
+
+    assert len(pool.calls) == 1
+    function, args, kwargs = pool.calls[0]
+    assert function == "run_job"
+    assert args == (job_id,)
+    assert kwargs["_queue_name"] == "yk:bulk"
+    assert kwargs["_defer_until"] is not None
+
+
+async def test_run_job_counts_cancelled_job_as_retryable_failure(
+    monkeypatch: pytest.MonkeyPatch, maker: async_sessionmaker[AsyncSession]
+) -> None:
+    from yakudoku_core.db.models import Job
+    from yakudoku_core.jobs.store import JobStore
+    from yakudoku_worker import main as worker_main
+
+    async def _cancel(_ctx: dict[str, Any], _store: JobStore, _job: Job) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(worker_main, "get_sessionmaker", lambda: maker)
+    monkeypatch.setitem(worker_main.HANDLERS, "resource_meta", _cancel)
+
+    async with maker() as session:
+        store = JobStore(session)
+        job_id = await store.enqueue(kind="resource_meta", payload={})
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker_main.run_job({}, job_id)
+
+    async with maker() as session:
+        store = JobStore(session)
+        job = await store.get(job_id)
+        assert job is not None
+        assert job.status == "queued"
+        assert job.attempt == 1
+        assert job.next_retry_at is not None
+        errors = [e.get("error", {}) for e in job.log if e.get("level") == "error"]
+        assert any("cancelled or timed out" in e.get("message", "") for e in errors)

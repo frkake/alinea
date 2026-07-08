@@ -21,14 +21,20 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from yakudoku_api.main import app
-from yakudoku_api.routers.ingest import ArxivGateway, get_arxiv_gateway, get_job_wakeup
+from yakudoku_api.routers.ingest import (
+    ArxivGateway,
+    get_arxiv_gateway,
+    get_job_wakeup,
+    get_pdf_storage,
+)
 from yakudoku_api.routers.papers import get_storage
 from yakudoku_api.schemas.assets import encode_asset_id
 from yakudoku_api.services.session_service import create_session
 from yakudoku_api.services.user_service import upsert_user_by_email
+from yakudoku_core.arxiv.fetch import FetchError
 from yakudoku_core.arxiv.ids import ArxivId
 from yakudoku_core.arxiv.metadata import ArxivMeta
 from yakudoku_core.db.models import (
@@ -40,6 +46,8 @@ from yakudoku_core.db.models import (
     SourceAsset,
     User,
 )
+
+_MINIMAL_PDF = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +100,9 @@ class _FakeGateway(ArxivGateway):
     async def probe_latex_available(self, ref: ArxivId) -> bool:
         return True
 
+    async def fetch_pdf(self, ref: ArxivId, settings: Any) -> bytes:
+        return _MINIMAL_PDF
+
 
 @pytest.fixture
 def seed_arxiv_mock() -> Iterator[None]:
@@ -101,17 +112,37 @@ def seed_arxiv_mock() -> Iterator[None]:
 
 
 @pytest.fixture
-def fake_storage() -> Iterator[None]:
+def fake_storage() -> Iterator[Any]:
     class _FakeStorage:
         sources_bucket = "sources"
         assets_bucket = "assets"
 
+        def __init__(self) -> None:
+            self.puts: list[tuple[str, str, bytes, str]] = []
+
+        async def put(
+            self,
+            bucket: str,
+            key: str,
+            body: bytes,
+            *,
+            content_type: str = "application/octet-stream",
+            metadata: dict[str, str] | None = None,
+        ) -> None:
+            self.puts.append((bucket, key, body, content_type))
+
         async def presign_get(self, bucket: str, key: str, expires_in: int = 600) -> str:
             return f"https://signed.example/{bucket}/{key}?exp={expires_in}"
 
-    app.dependency_overrides[get_storage] = lambda: _FakeStorage()
-    yield
+        async def get(self, bucket: str, key: str) -> bytes:
+            return _MINIMAL_PDF
+
+    storage = _FakeStorage()
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_pdf_storage] = lambda: storage
+    yield storage
     app.dependency_overrides.pop(get_storage, None)
+    app.dependency_overrides.pop(get_pdf_storage, None)
 
 
 @pytest_asyncio.fixture
@@ -380,6 +411,8 @@ async def test_arxiv_ingest_creates_job(
     unique_email: str,
     created_papers: list[str],
     wakeups: list[str],
+    seed_arxiv_mock: None,
+    fake_storage: Any,
 ) -> None:
     await _login(client, db_session, redis_client, unique_email)
     aid = _rand_arxiv()
@@ -398,6 +431,90 @@ async def test_arxiv_ingest_creates_job(
     assert job.payload["mode"] == "initial"
     paper = await db_session.get(Paper, body["paper_id"])
     assert paper is not None and paper.arxiv_id == aid and paper.visibility == "public"
+    assert paper.latest_revision_id is not None
+
+    asset = (
+        (
+            await db_session.execute(
+                select(SourceAsset).where(
+                    SourceAsset.paper_id == body["paper_id"], SourceAsset.kind == "pdf"
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert asset.storage_key == f"sources/{body['paper_id']}/v1/original.pdf"
+    assert asset.content_type == "application/pdf"
+
+    revision = await db_session.get(DocumentRevision, paper.latest_revision_id)
+    assert revision is not None
+    assert revision.source_format == "pdf"
+    assert revision.quality_level == "B"
+    assert revision.parser_version == "pdf-placeholder-1.0.0"
+
+    viewer = await client.get(f"/api/library-items/{body['library_item_id']}/viewer")
+    assert viewer.status_code == 200
+    assert viewer.json()["revision"]["id"] == str(revision.id)
+
+    assert fake_storage.puts == [
+        ("sources", f"sources/{body['paper_id']}/v1/original.pdf", _MINIMAL_PDF, "application/pdf")
+    ]
+
+
+async def test_arxiv_ingest_continues_when_pdf_prefetch_fails(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+    wakeups: list[str],
+    fake_storage: Any,
+) -> None:
+    class _PdfFailGateway(_FakeGateway):
+        async def fetch_pdf(self, ref: ArxivId, settings: Any) -> bytes:
+            raise FetchError("network_error", "temporary arxiv outage")
+
+    app.dependency_overrides[get_arxiv_gateway] = lambda: _PdfFailGateway()
+    try:
+        await _login(client, db_session, redis_client, unique_email)
+        aid = _rand_arxiv()
+        r = await client.post("/api/ingest/arxiv", json={"url": f"https://arxiv.org/abs/{aid}"})
+    finally:
+        app.dependency_overrides.pop(get_arxiv_gateway, None)
+
+    assert r.status_code == 202
+    body = r.json()
+    created_papers.append(body["paper_id"])
+    assert body["job_id"] in wakeups
+    assert fake_storage.puts == []
+
+    paper = await db_session.get(Paper, body["paper_id"])
+    assert paper is not None
+    assert paper.latest_revision_id is not None
+
+    revision = await db_session.get(DocumentRevision, paper.latest_revision_id)
+    assert revision is not None
+    assert revision.source_format == "pdf"
+    assert revision.quality_level == "B"
+    assert revision.parser_version == "pdf-placeholder-1.0.0"
+
+    viewer = await client.get(f"/api/library-items/{body['library_item_id']}/viewer")
+    assert viewer.status_code == 200
+    assert viewer.json()["revision"]["id"] == str(revision.id)
+
+    asset = (
+        (
+            await db_session.execute(
+                select(SourceAsset).where(
+                    SourceAsset.paper_id == body["paper_id"], SourceAsset.kind == "pdf"
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert asset is None
 
 
 async def test_arxiv_ingest_idempotency_replays(
@@ -406,6 +523,8 @@ async def test_arxiv_ingest_idempotency_replays(
     redis_client: Any,
     unique_email: str,
     created_papers: list[str],
+    seed_arxiv_mock: None,
+    fake_storage: Any,
 ) -> None:
     user = await _login(client, db_session, redis_client, unique_email)
     aid = _rand_arxiv()
@@ -431,6 +550,7 @@ async def test_arxiv_ingest_idempotency_replays(
         {"u": user.id, "p": first.json()["paper_id"]},
     )
     assert count == 1
+    assert len(fake_storage.puts) == 1
 
 
 async def test_arxiv_ingest_duplicate_conflict(
@@ -439,6 +559,8 @@ async def test_arxiv_ingest_duplicate_conflict(
     redis_client: Any,
     unique_email: str,
     created_papers: list[str],
+    seed_arxiv_mock: None,
+    fake_storage: Any,
 ) -> None:
     await _login(client, db_session, redis_client, unique_email)
     aid = _rand_arxiv()
@@ -454,6 +576,7 @@ async def test_arxiv_ingest_duplicate_conflict(
     assert body["code"] == "duplicate"
     assert body["existing"]["library_item_id"] == li
     assert body["existing"]["status"]
+    assert len(fake_storage.puts) == 1
 
 
 async def test_arxiv_ingest_rejects_non_arxiv(
@@ -474,6 +597,8 @@ async def test_recent_lists_ingested(
     redis_client: Any,
     unique_email: str,
     created_papers: list[str],
+    seed_arxiv_mock: None,
+    fake_storage: Any,
 ) -> None:
     await _login(client, db_session, redis_client, unique_email)
     aid = _rand_arxiv()
@@ -531,15 +656,15 @@ async def test_reingest_missing_paper_404(
 
 
 # ---------------------------------------------------------------------------
-# GET /api/papers/{id}/pdf(302)
+# GET /api/papers/{id}/pdf(200)
 # ---------------------------------------------------------------------------
-async def test_paper_pdf_redirects(
+async def test_paper_pdf_streams_bytes(
     client: AsyncClient,
     db_session: AsyncSession,
     redis_client: Any,
     unique_email: str,
     created_papers: list[str],
-    fake_storage: None,
+    fake_storage: Any,
 ) -> None:
     user = await _login(client, db_session, redis_client, unique_email)
     paper = Paper(arxiv_id=_rand_arxiv(), title="PDF Paper", visibility="public")
@@ -561,8 +686,10 @@ async def test_paper_pdf_redirects(
     await db_session.commit()
 
     r = await client.get(f"/api/papers/{paper.id}/pdf", follow_redirects=False)
-    assert r.status_code == 302
-    assert r.headers["location"].startswith(f"https://signed.example/sources/{key}")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/pdf")
+    assert r.headers["cache-control"] == "private, max-age=600"
+    assert r.content == _MINIMAL_PDF
 
 
 async def test_paper_pdf_missing_asset_404(

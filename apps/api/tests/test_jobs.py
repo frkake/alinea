@@ -19,7 +19,12 @@ import factories
 import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.routers.jobs import _job_state_frame, _parse_envelope, _translate_event
+from yakudoku_api.routers.jobs import (
+    _job_event_frame,
+    _job_state_frame,
+    _parse_envelope,
+    _translate_event,
+)
 from yakudoku_api.schemas.common import sse_json_frame
 from yakudoku_api.services.events import publish_event, read_events_since, stream_key
 from yakudoku_api.services.session_service import create_session
@@ -328,6 +333,52 @@ def test_job_state_frame_succeeded_failed_and_in_progress() -> None:
     assert "event: progress" in frame
     assert '"stage":"parsing"' in frame
     assert '"progress_pct":40' in frame
+
+
+async def test_job_updated_event_frame_reads_latest_db_state(db_session: AsyncSession) -> None:
+    user = await factories.make_user(db_session)
+    job = await factories.make_job(
+        db_session,
+        kind="article",
+        stage="generating",
+        status="queued",
+        progress=40,
+        user=user,
+    )
+    await db_session.commit()
+    try:
+        frame, terminal = await _job_event_frame(
+            db_session,
+            str(job.id),
+            "job.updated",
+            {"job_id": str(job.id)},
+            "1-0",
+        )
+        assert terminal is False
+        assert frame is not None
+        assert "id: 1-0" in frame
+        assert "event: progress" in frame
+        assert '"stage":"generating"' in frame
+        assert '"progress_pct":40' in frame
+
+        job.status = "failed"
+        job.error = "provider failed"
+        await db_session.commit()
+        frame, terminal = await _job_event_frame(
+            db_session,
+            str(job.id),
+            "job.updated",
+            {"job_id": str(job.id)},
+            "2-0",
+        )
+        assert terminal is True
+        assert frame is not None
+        assert "id: 2-0" in frame
+        assert "event: error" in frame
+        assert '"detail":"provider failed"' in frame
+    finally:
+        await purge_user(db_session, str(user.id))
+        await db_session.commit()
 
 
 def _k() -> str:

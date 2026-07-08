@@ -50,6 +50,7 @@ from yakudoku_core.translation import (
 )
 from yakudoku_core.translation.pipeline import BlockToTranslate, strip_tokens
 from yakudoku_core.translation.placeholder import TOKEN_RE
+from yakudoku_core.translation.prompts.templates import TranslationBatchOut
 from yakudoku_llm.router import LLMRouter
 from yakudoku_llm.types import LLMRequest, LLMResponse, StreamEvent
 
@@ -58,6 +59,15 @@ from yakudoku_llm.types import LLMRequest, LLMResponse, StreamEvent
 # ---------------------------------------------------------------------------
 
 _TARGET_RE = re.compile(r"^\[([^\]]+)\] \(([^)]+)\) (.*)$", re.MULTILINE)
+
+
+def test_translation_batch_schema_is_openai_strict_compatible() -> None:
+    schema = TranslationBatchOut.model_json_schema()
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == {"translations"}
+    translated_block = schema["$defs"]["TranslatedBlock"]
+    assert translated_block["additionalProperties"] is False
+    assert set(translated_block["required"]) == {"id", "ja"}
 
 
 def _echo_translate(encoded_text: str) -> str:

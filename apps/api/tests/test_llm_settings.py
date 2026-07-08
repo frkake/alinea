@@ -125,6 +125,17 @@ async def test_get_and_mask_absent_key_returns_none(db_session: AsyncSession) ->
     assert await ks.mask(user_id, "xai") is None
 
 
+async def test_quota_check_without_byok_does_not_require_fernet_secret(
+    db_session: AsyncSession,
+) -> None:
+    user_id = await _new_user(db_session)
+    settings = _settings(
+        yakudoku_key_encryption_secret="not-a-fernet-key",
+        openai_api_key="sk-operator",
+    )
+    await check_quota(db_session, user_id, "article", settings=settings)
+
+
 # ---------------------------------------------------------------------------
 # PY-SET-04: DB ルート解決
 # ---------------------------------------------------------------------------

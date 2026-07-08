@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from yakudoku_core.translation.prompts.examples import (
     BAD_EXAMPLES,
@@ -206,9 +206,13 @@ def build_user_message(
 
 
 class TranslatedBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str  # 入力の block_id をそのまま返す
     ja: str  # プレースホルダ入り訳文
 
 
 class TranslationBatchOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     translations: list[TranslatedBlock]

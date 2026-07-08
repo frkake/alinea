@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   papersReingest,
@@ -14,6 +15,8 @@ import {
 import { useToast } from "@/components/ui/Toast";
 import { IngestLogModal } from "@/components/viewer/IngestLogModal";
 import { ReingestConfirmModal } from "@/components/viewer/ReingestConfirmModal";
+import { CancelIngestConfirmModal } from "@/components/library/CancelIngestConfirmModal";
+import { useCancelIngest } from "@/hooks/useCancelIngest";
 
 export interface InfoPanelProps {
   paper: PaperBib;
@@ -119,11 +122,27 @@ export function InfoPanel({
 
   const toast = useToast();
   const queryClient = useQueryClient();
+  const router = useRouter();
 
   const [reingestConfirmOpen, setReingestConfirmOpen] = useState(false);
   const [ingestLogOpen, setIngestLogOpen] = useState(false);
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
   const [reingestJobId, setReingestJobId] = useState<string | null>(null);
   const [jobProgress, setJobProgress] = useState<JobProgress | null>(null);
+
+  const cancelIngest = useCancelIngest(
+    () => {
+      void queryClient.invalidateQueries({ queryKey: ["library"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      toast({ kind: "success", message: "取り込みをキャンセルしました" });
+      setReingestJobId(null);
+      router.push("/library");
+    },
+    () => {
+      setCancelConfirmOpen(false);
+      toast({ kind: "error", message: "キャンセルできませんでした" });
+    },
+  );
 
   const reingestMutation = useMutation({
     mutationFn: async () => {
@@ -312,7 +331,22 @@ export function InfoPanel({
             </div>
           ) : null}
           <div style={{ display: "flex", gap: 12, paddingLeft: 3 }}>
-            {readOnly ? null : (
+            {readOnly ? null : reingestJobId ? (
+              <button
+                type="button"
+                onClick={() => setCancelConfirmOpen(true)}
+                disabled={cancelIngest.isPending}
+                style={{
+                  ...actionLinkStyle,
+                  color: "var(--pr-warn)",
+                  fontWeight: 600,
+                  opacity: cancelIngest.isPending ? 0.6 : 1,
+                  cursor: cancelIngest.isPending ? "default" : "pointer",
+                }}
+              >
+                取り込みを中止
+              </button>
+            ) : (
               <button
                 type="button"
                 onClick={() => setReingestConfirmOpen(true)}
@@ -401,6 +435,12 @@ export function InfoPanel({
         onConfirm={() => reingestMutation.mutate()}
       />
       <IngestLogModal open={ingestLogOpen} paperId={paper.id} onClose={() => setIngestLogOpen(false)} />
+      <CancelIngestConfirmModal
+        open={cancelConfirmOpen}
+        pending={cancelIngest.isPending}
+        onCancel={() => setCancelConfirmOpen(false)}
+        onConfirm={() => cancelIngest.mutate(itemId)}
+      />
     </div>
   );
 }

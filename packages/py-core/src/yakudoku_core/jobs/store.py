@@ -189,6 +189,21 @@ class JobStore:
         await self.session.commit()
         return True
 
+    async def release_for_retry(self, job_id: str, error: dict[str, Any]) -> None:
+        """実行中ジョブを再 claim 可能な queued 状態へ戻す。
+
+        worker shutdown / arq cancellation はジョブ本体の失敗ではないため、
+        attempt 上限や指数 backoff は進めず、arq 側の再投入と DB の claim 条件を同期させる。
+        """
+        job = await self._require(job_id)
+        if job.status not in {"running", "waiting_quota"}:
+            return
+        job.error = json.dumps(error, ensure_ascii=False)
+        job.log = [*job.log, {"level": "warning", "error": error}]
+        job.status = "queued"
+        job.next_retry_at = None
+        await self.session.commit()
+
     async def _require(self, job_id: str) -> Job:
         job = await self.session.get(Job, job_id, populate_existing=True)
         if job is None:

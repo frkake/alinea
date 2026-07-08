@@ -25,7 +25,7 @@ from yakudoku_api.main import app
 from yakudoku_api.routers.ingest import get_job_wakeup, get_pdf_storage
 from yakudoku_api.services.session_service import create_session
 from yakudoku_api.services.user_service import upsert_user_by_email
-from yakudoku_core.db.models import Job, LibraryItem, Paper, User
+from yakudoku_core.db.models import DocumentRevision, Job, LibraryItem, Paper, User
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +171,13 @@ async def test_pdf_ingest_creates_private_paper_and_job(
     assert paper.license == "unknown"
     assert paper.title == "My Uploaded Paper"
     assert paper.pdf_sha256 is not None and len(paper.pdf_sha256) == 64
+    assert paper.latest_revision_id is not None
+
+    revision = await db_session.get(DocumentRevision, paper.latest_revision_id)
+    assert revision is not None
+    assert revision.source_format == "pdf"
+    assert revision.parser_version == "pdf-placeholder-1.0.0"
+    assert revision.quality_level == "B"
 
     item = await db_session.get(LibraryItem, body["library_item_id"])
     assert item is not None

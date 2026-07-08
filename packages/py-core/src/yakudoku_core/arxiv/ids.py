@@ -119,3 +119,9 @@ def eprint_url(ref: ArxivId, base_url: str | None = None) -> str:
     """e-print(LaTeX ソース有無判定)の URL(§3.4)。"""
     export, _www = _hosts(base_url)
     return f"{export}/e-print/{ref.versioned}"
+
+
+def pdf_url(ref: ArxivId, base_url: str | None = None) -> str:
+    """PDF の URL。base_url override 時はローカル arXiv スタブにも向ける。"""
+    _export, www = _hosts(base_url)
+    return f"{www}/pdf/{ref.versioned}"

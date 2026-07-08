@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
+  libraryItemsDelete,
   papersIngestLog,
   papersReingest,
   settingsGet,
@@ -22,8 +23,14 @@ vi.mock("@yakudoku/api-client", async (importOriginal) => {
     papersReingest: vi.fn(),
     papersIngestLog: vi.fn(),
     settingsGet: vi.fn(),
+    libraryItemsDelete: vi.fn(),
   };
 });
+
+const routerPush = vi.fn();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: routerPush, replace: vi.fn() }),
+}));
 
 /** テスト用の EventSource スタブ(jsdom には未実装。§2.3 のジョブ SSE を模擬)。 */
 class MockEventSource {
@@ -338,5 +345,35 @@ describe("InfoPanel (M1-21)", () => {
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "再取り込み" }));
 
     expect(await screen.findByText("再取り込みは既に実行中です")).toBeInTheDocument();
+  });
+
+  // 取り込みキャンセル(docs/08 §2.2)。再取り込みも同じジョブ機構を使うため同じ経路で中止できる。
+  test("cancel-ingest: while a reingest job is running, 取り込みを中止 deletes the item and navigates to /library", async () => {
+    vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
+    const user = userEvent.setup();
+    vi.mocked(papersReingest).mockResolvedValue({ data: { job_id: "job_9" } } as never);
+    vi.mocked(libraryItemsDelete).mockResolvedValue({} as never);
+
+    renderWithClient(
+      <InfoPanel paper={paper()} revision={revision()} licenseCard={license()} ingestTimeline={TIMELINE} itemId="li_1" />,
+    );
+
+    await user.click(screen.getByText("再取り込み"));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "再取り込み" }));
+    await waitFor(() => expect(papersReingest).toHaveBeenCalledTimes(1));
+
+    expect(screen.queryByText("再取り込み")).not.toBeInTheDocument();
+    await user.click(screen.getByText("取り込みを中止"));
+    expect(screen.getByText("取り込みをキャンセルしますか?")).toBeInTheDocument();
+    expect(libraryItemsDelete).not.toHaveBeenCalled();
+
+    await user.click(screen.getByText("取り込みをキャンセル"));
+
+    await waitFor(() =>
+      expect(libraryItemsDelete).toHaveBeenCalledWith({ path: { item_id: "li_1" }, throwOnError: true }),
+    );
+    await waitFor(() => expect(routerPush).toHaveBeenCalledWith("/library"));
+    expect(await screen.findByText("取り込みをキャンセルしました")).toBeInTheDocument();
+    expect(MockEventSource.instances[0]?.closed).toBe(true);
   });
 });

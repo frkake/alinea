@@ -2,13 +2,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { libraryItemsUpdate, type LibraryItemSummary } from "@yakudoku/api-client";
+import {
+  libraryItemsDelete,
+  libraryItemsUpdate,
+  type LibraryItemSummary,
+} from "@yakudoku/api-client";
 import { LibraryCard } from "@/components/library/LibraryCard";
 import { useFinishReadingStore } from "@/components/library/finishReadingStore";
 
 vi.mock("@yakudoku/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
-  return { ...actual, libraryItemsUpdate: vi.fn() };
+  return { ...actual, libraryItemsUpdate: vi.fn(), libraryItemsDelete: vi.fn() };
 });
 
 function makeItem(overrides: Partial<LibraryItemSummary> = {}): LibraryItemSummary {
@@ -104,5 +108,55 @@ describe("LibraryCard status change wiring (M1-06)", () => {
 
     await waitFor(() => expect(libraryItemsUpdate).toHaveBeenCalledTimes(1));
     expect(useFinishReadingStore.getState().item).toBeNull();
+  });
+});
+
+// 取り込みキャンセル(docs/08 §2.2)。
+describe("LibraryCard cancel-ingest wiring", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function processingItem(): LibraryItemSummary {
+    return makeItem({
+      pipeline: { job_id: "job_1", stage: "structuring", status: "running", progress_pct: 30 },
+    });
+  }
+
+  test("中止 opens a confirm modal and does not call the API until confirmed", async () => {
+    const user = userEvent.setup();
+    renderCard(processingItem());
+
+    await user.click(screen.getByText("中止"));
+    expect(screen.getByText("取り込みをキャンセルしますか?")).toBeInTheDocument();
+    expect(libraryItemsDelete).not.toHaveBeenCalled();
+
+    await user.click(screen.getByText("戻る"));
+    expect(libraryItemsDelete).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.queryByText("取り込みをキャンセルしますか?")).not.toBeInTheDocument(),
+    );
+  });
+
+  test("confirming calls DELETE /api/library-items/{id} for the processing item", async () => {
+    const user = userEvent.setup();
+    vi.mocked(libraryItemsDelete).mockResolvedValue({} as never);
+    renderCard(processingItem());
+
+    await user.click(screen.getByText("中止"));
+    await user.click(screen.getByText("取り込みをキャンセル"));
+
+    await waitFor(() =>
+      expect(libraryItemsDelete).toHaveBeenCalledWith({ path: { item_id: "li_1" }, throwOnError: true }),
+    );
+  });
+
+  test("processing card opens the reader without forcing PDF mode", async () => {
+    const user = userEvent.setup();
+    const { onOpen } = renderCard(processingItem());
+
+    await user.click(screen.getByText("読み始める →"));
+
+    expect(onOpen).toHaveBeenCalledWith("li_1");
   });
 });

@@ -10,6 +10,7 @@ import {
   ingestPdf,
   ingestRecent,
   jobsGet,
+  libraryItemsDelete,
   libraryItemsUpdate,
   type CollectionListItem,
   type IngestArxivRequest,
@@ -55,9 +56,9 @@ export type SaveOutcome =
   | { kind: "accepted"; data: IngestArxivResponse }
   | { kind: "duplicate" }
   // ネットワーク/5xx/429: 再試行対象(3a §5.1)。
-  | { kind: "retryable"; status: number }
+  | { kind: "retryable"; status: number; message?: string }
   // 422 等の恒久エラー: 再送しても直らない。
-  | { kind: "permanent"; status: number };
+  | { kind: "permanent"; status: number; message: string };
 
 /**
  * POST /api/ingest/arxiv。Idempotency-Key を付与(二重登録防止・plans/03 §3.2)。
@@ -77,8 +78,10 @@ export async function apiSaveArxiv(
     if (res.data) {
       return res.data.duplicate ? { kind: "duplicate" } : { kind: "accepted", data: res.data };
     }
-    if (status === 429 || status >= 500) return { kind: "retryable", status };
-    return { kind: "permanent", status };
+    if (status === 429 || status >= 500) {
+      return { kind: "retryable", status, message: readProblemMessage(res.error, "") };
+    }
+    return { kind: "permanent", status, message: readProblemMessage(res.error, "送信に失敗しました") };
   } catch {
     // fetch reject(ネットワーク不通)は再試行対象。
     return { kind: "retryable", status: 0 };
@@ -120,6 +123,19 @@ export async function apiPatchStatus(itemId: string, status: Status): Promise<bo
   try {
     const res = await libraryItemsUpdate({ path: { item_id: itemId }, body: { status } });
     return Boolean(res.data);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * DELETE /api/library-items/{id} で取り込みをキャンセル(docs/08 §2.2)。
+ * ライブラリ項目ごと削除する(取り込み中の部分データも含めて消える)。成功で true。
+ */
+export async function apiCancelIngest(itemId: string): Promise<boolean> {
+  try {
+    const res = await libraryItemsDelete({ path: { item_id: itemId } });
+    return res.response.status === 204;
   } catch {
     return false;
   }

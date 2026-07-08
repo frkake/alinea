@@ -7,8 +7,9 @@
     "node": "24.4.0"
   },
   "scripts": {
-    "predev": "docker compose up -d && docker compose up -d --wait db redis minio mailpit",
+    "predev": "docker compose up -d && docker compose up -d --wait db redis minio mailpit && pnpm --dir apps/api db:migrate",
     "dev": "turbo dev",
+    "dev:clean": "bash scripts/dev-clean.sh",
     "dev:down": "docker compose stop",
     "build": "turbo build",
     "lint": "turbo lint",

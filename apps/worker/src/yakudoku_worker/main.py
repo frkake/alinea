@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
 
@@ -35,6 +36,16 @@ _NO_ROUTER_MESSAGE = (
     "LLM プロバイダの API キーが未設定です(運営キー/BYOK いずれも無し)。"
     "設定後に再試行してください。"
 )
+_JOB_QUEUE_BY_KIND = {
+    "article": INTERACTIVE_QUEUE,
+    "figure": INTERACTIVE_QUEUE,
+    "vocab": INTERACTIVE_QUEUE,
+    "resource_meta": INTERACTIVE_QUEUE,
+    "ingest": BULK_QUEUE,
+    "translation": BULK_QUEUE,
+    "export": BULK_QUEUE,
+    "account_delete": BULK_QUEUE,
+}
 
 
 async def run_job(ctx: dict[str, Any], job_id: str) -> None:
@@ -57,10 +68,41 @@ async def run_job(ctx: dict[str, Any], job_id: str) -> None:
                 await joblog.log(session, job, job.stage, "error", _NO_ROUTER_MESSAGE)
                 raise RuntimeError("no LLM provider configured (ctx['router'] is None)")
             await handler(ctx, store, job)
+        except asyncio.CancelledError:
+            try:
+                retrying = await store.fail_with_retry(
+                    job_id,
+                    {
+                        "stage": job.stage,
+                        "message": "job cancelled or timed out; queued for retry",
+                    },
+                )
+            except LookupError:
+                await log.ainfo("job_gone_after_cancel", job_id=job_id)
+            else:
+                if retrying:
+                    await _schedule_retry(ctx, store, job_id)
+                await _notify_job_updated(ctx, job)
+                await log.ainfo(
+                    "job_cancelled_for_retry",
+                    job_id=job_id,
+                    stage=job.stage,
+                    retrying=retrying,
+                )
+            raise
         except Exception as exc:
-            retrying = await store.fail_with_retry(
-                job_id, {"stage": job.stage, "message": str(exc)}
-            )
+            try:
+                retrying = await store.fail_with_retry(
+                    job_id, {"stage": job.stage, "message": str(exc)}
+                )
+            except LookupError:
+                # ユーザーが取り込みをキャンセル(=ライブラリ項目削除。§cancel-ingest)した後に
+                # running だったジョブが書き込みへ失敗したケース。job 行は既に無いので
+                # リトライ記録は不要(P3: エラーではなく想定内の中断)。
+                await log.ainfo("job_gone_after_cancel", job_id=job_id)
+                return
+            if retrying:
+                await _schedule_retry(ctx, store, job_id)
             await log.aerror("job_failed", job_id=job_id, retrying=retrying)
         # SSE 起床通知(plans/03 §21.2)。translate.py/pipeline.py は自前で `ctx['publish']` に
         # 詳細な進捗を発行するが、article/figure/vocab/resource_meta/export 等は
@@ -89,6 +131,31 @@ async def _notify_job_updated(ctx: dict[str, Any], job: Job) -> None:
         await log.awarning("job_updated_notify_failed", job_id=str(job.id), error=str(exc))
 
 
+async def _schedule_retry(ctx: dict[str, Any], store: JobStore, job_id: str) -> None:
+    """DB retry 状態に合わせて arq へ次回 run_job を遅延投入する。"""
+    arq_pool = ctx.get("arq_pool")
+    if arq_pool is None:
+        return
+    job = await store.get(job_id)
+    if job is None:
+        return
+    queue_name = _JOB_QUEUE_BY_KIND.get(job.kind, BULK_QUEUE)
+    try:
+        await arq_pool.enqueue_job(
+            "run_job",
+            job_id,
+            _queue_name=queue_name,
+            _defer_until=job.next_retry_at,
+        )
+    except Exception as exc:
+        await log.awarning(
+            "job_retry_schedule_failed",
+            job_id=job_id,
+            queue_name=queue_name,
+            error=str(exc),
+        )
+
+
 class InteractiveWorker:
     """対話的優先キュー(記事・図・語彙・再翻訳など、ユーザー待ちの短いジョブ)。"""
 
@@ -96,7 +163,7 @@ class InteractiveWorker:
     queue_name = INTERACTIVE_QUEUE
     redis_settings = redis_settings()
     max_jobs = 20
-    job_timeout = 300
+    job_timeout = 420
     on_startup = staticmethod(on_startup)
     on_shutdown = staticmethod(on_shutdown)
 
