@@ -71,10 +71,11 @@ jobs:
       - run: uv run python tools/traceability/check.py
       # pytest + カバレッジ(総合 80%)。実プロバイダ SDK アダプタは CI が実 LLM に
       # 接続しない(plans/12 §16)ため到達不能。tools/coverage/coveragerc で omit する。
+      # yakudoku_figures(M2-05/M2-06 の SVG/画像プロンプト実装)を分母に追加(M2-16)。
       - run: >-
           uv run pytest
           --cov-config=tools/coverage/coveragerc
-          --cov=yakudoku_core --cov=yakudoku_llm --cov=yakudoku_api --cov=yakudoku_worker
+          --cov=yakudoku_core --cov=yakudoku_llm --cov=yakudoku_api --cov=yakudoku_worker --cov=yakudoku_figures
           --cov-report=term-missing --cov-fail-under=80
       # 重点モジュール placeholder.py は行カバレッジ 100% を要求(plans/12 §2.1)
       - run: >-

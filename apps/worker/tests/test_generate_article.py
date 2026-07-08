@@ -19,8 +19,10 @@ import json
 import uuid
 from typing import Any
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from yakudoku_core.article.prompts import PRESET_INCLUDE_MATH_DEFAULT, PRESET_OUTLINES
 from yakudoku_core.db.models import (
     Annotation,
     Article,
@@ -273,11 +275,14 @@ class ArticleScriptProvider:
             overview_payload if overview_payload is not None else _default_overview_dsl_payload()
         )
         self.calls = 0
+        self.last_system: str | None = None
 
     async def generate_structured(self, req: LLMRequest) -> LLMResponse:
         self.calls += 1
         spec = req.json_schema
         assert spec is not None
+        if spec.name == "article_v1" and req.system:
+            self.last_system = req.system[0].text
         if spec.name == "article_v1":
             data = self.article_payload
         elif spec.name == "article_block_v1":
@@ -404,6 +409,32 @@ async def test_generate_respects_implementer_include_math_default(
     article = await db_session.get(Article, job.result["article_id"])
     assert article is not None
     assert article.include_math is True  # implementer 既定(plans/07 §4.1)
+
+
+@pytest.mark.parametrize("preset", ["beginner", "implementer", "researcher", "reading_group"])
+async def test_generate_uses_preset_specific_outline_for_all_four_presets(
+    db_session: AsyncSession, preset: str
+) -> None:
+    """PY-ART-01: 構成プリセット 4 種(docs/07 §2.6)すべてで生成が成功し、preset ごとの
+    章立て骨子(PRESET_OUTLINES)が実際のシステムプロンプトに使われ、include_math 既定
+    (PRESET_INCLUDE_MATH_DEFAULT)が article に反映される。
+    """
+    ctx_data = await _seed(db_session)
+    provider = ArticleScriptProvider()
+    job_id = await _enqueue_generate(db_session, ctx_data=ctx_data, preset=preset)
+    store = JobStore(db_session)
+    job = await store.claim(job_id)
+    assert job is not None
+    await run_article_job({"router": _router(provider)}, store, job)
+
+    job = await store.get(job_id)
+    assert job is not None and job.status == "succeeded", job.error if job else None
+    article = await db_session.get(Article, job.result["article_id"])
+    assert article is not None
+    assert article.preset == preset
+    assert article.include_math is PRESET_INCLUDE_MATH_DEFAULT[preset]
+    assert provider.last_system is not None
+    assert PRESET_OUTLINES[preset] in provider.last_system  # preset 別の章立て骨子が使われた
 
 
 async def test_generate_conflict_free_regenerate_bumps_version_and_history(

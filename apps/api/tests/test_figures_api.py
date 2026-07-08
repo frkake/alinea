@@ -274,7 +274,7 @@ async def test_rewrite_overview_figure_404_when_not_generated(
 
 
 # --------------------------------------------------------------------------- #
-# POST restore(新行を作らない)
+# POST restore(新行を作らない)。PY-FIG-03: 旧版への restore 復帰(API 経路)。
 # --------------------------------------------------------------------------- #
 async def test_restore_version_flips_is_current_without_new_row(
     auth: tuple[AsyncClient, str], db_session: AsyncSession, factories: Any

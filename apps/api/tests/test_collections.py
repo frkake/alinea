@@ -1,8 +1,10 @@
 """collections API テスト(M2-09 / plans/03 §13・docs/06 §4)。
 
 PY-COL-01: コレクション CRUD・entries の position 並べ替え・締切残日数・進捗集計
-(done/total)・担当(assignee/assignee_is_self)・発表時間・予備注記・共有リンクの発行/
-無効化/再発行・重複追加 409・並べ替え不足 422 を検証する。
+(done/total)・担当(assignee/assignee_is_self)・発表時間・予備注記・重複追加 409・
+並べ替え不足 422 を検証する。
+PY-COL-02: 共有リンクの発行(base62 8 文字)/無効化/再発行(新 token)・発行済みでの
+再発行 409・include_notes トグルを検証する。
 
 DB は実 PostgreSQL。認証はセッション直発行 + cookie(test_library_api.py と同じ方式)。
 他タスクの WIP ルータを巻き込まないよう、本タスク所有のルータ(collections)のみを
@@ -359,7 +361,8 @@ async def test_reorder_entries_updates_order_and_rejects_incomplete_ids(
 
 
 # ---------------------------------------------------------------------------
-# 共有リンク(§13.3)
+# 共有リンク(§13.3)。PY-COL-02: 発行(base62 8 文字)→無効化→再発行(新 token)。
+# 発行済みでの再発行は 409。include_notes トグル。
 # ---------------------------------------------------------------------------
 async def test_share_issue_patch_revoke_and_reissue_gets_new_token(
     auth: tuple[AsyncClient, str], factories: Any, db_session: AsyncSession

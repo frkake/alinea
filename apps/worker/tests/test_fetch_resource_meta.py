@@ -66,6 +66,7 @@ class _FakeResponse:
 class _FakeAsyncClient:
     def __init__(self, responses: dict[str, _FakeResponse | Exception]) -> None:
         self._responses = responses
+        self.calls: list[tuple[str, dict[str, Any]]] = []
 
     async def __aenter__(self) -> _FakeAsyncClient:
         return self
@@ -73,7 +74,8 @@ class _FakeAsyncClient:
     async def __aexit__(self, *exc: Any) -> None:
         return None
 
-    async def get(self, url: str, **_kwargs: Any) -> _FakeResponse:
+    async def get(self, url: str, **kwargs: Any) -> _FakeResponse:
+        self.calls.append((url, kwargs))
         key = url.split("?", 1)[0]
         if key not in self._responses:
             raise httpx.ConnectError(f"no fake response registered for {url}")
@@ -85,8 +87,11 @@ class _FakeAsyncClient:
 
 def _patch_http(
     monkeypatch: pytest.MonkeyPatch, responses: dict[str, _FakeResponse | Exception] | None = None
-) -> None:
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *_a, **_kw: _FakeAsyncClient(responses or {}))
+) -> _FakeAsyncClient:
+    """httpx.AsyncClient を差し替え、生成したフェイククライアント(呼び出し記録つき)を返す。"""
+    client = _FakeAsyncClient(responses or {})
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *_a, **_kw: client)
+    return client
 
 
 def _pdf_bytes(*, title: str | None = None) -> bytes:
@@ -280,3 +285,169 @@ async def test_missing_resource_link_skips_gracefully(db_session: AsyncSession) 
     assert finished is not None
     assert finished.status == "succeeded"
     assert finished.result.get("skipped") is True
+
+
+# ===========================================================================
+# classify_kind / youtube_video_id の追加分岐(apps/api 側の複製規則と同一。§2)
+# ===========================================================================
+def test_classify_kind_strips_git_suffix() -> None:
+    assert classify_kind("https://github.com/foo/bar.git") == ("github", ("foo", "bar"))
+
+
+def test_youtube_video_id_live_path_and_non_youtube_host() -> None:
+    assert youtube_video_id("https://youtube.com/live/xyz789") == "xyz789"
+    assert youtube_video_id("https://example.com/watch?v=abc") is None
+
+
+# ===========================================================================
+# article: og タグ抽出・title タグフォールバック・読了目安(§3.2 の実処理)
+# ===========================================================================
+async def test_article_job_extracts_og_tags_and_estimates_reading_minutes_for_japanese(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    link = await _seed_resource_link(
+        db_session, url="https://example.com/article-ja", kind="article"
+    )
+    html = (
+        "<html><head>"
+        '<meta property="og:title" content="日本語の記事タイトル">'
+        '<meta property="og:image" content="https://example.com/thumb.jpg">'
+        '<meta property="og:site_name" content="Example Blog">'
+        "</head><body>"
+        + "整流フローの解説と実験結果について詳しく説明します。" * 40
+        + "</body></html>"
+    )
+    _patch_http(monkeypatch, {"https://example.com/article-ja": _FakeResponse(text_data=html)})
+    await _run_job_for(db_session, link)
+    await db_session.refresh(link)
+    assert link.fetch_status == "ok"
+    assert link.title == "日本語の記事タイトル"
+    assert link.thumbnail_url == "https://example.com/thumb.jpg"
+    assert link.source_domain == "Example Blog"
+    assert link.meta == {"reading_minutes": 2}  # CJK 密度 >30% → 文字数/600(§3.2)
+
+
+async def test_article_job_falls_back_to_title_tag_and_word_count_for_english(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    link = await _seed_resource_link(
+        db_session, url="https://blog.example.com/post123", kind="article"
+    )
+    html = (
+        "<html><head><title>My Article Title</title></head><body>"
+        + "word " * 300
+        + "</body></html>"
+    )
+    _patch_http(monkeypatch, {"https://blog.example.com/post123": _FakeResponse(text_data=html)})
+    await _run_job_for(db_session, link)
+    await db_session.refresh(link)
+    assert link.fetch_status == "ok"
+    assert link.title == "My Article Title"  # og:title 不在 → <title> フォールバック
+    assert link.thumbnail_url is None
+    assert link.source_domain == "blog.example.com"  # og:site_name 不在 → ドメインフォールバック
+    assert link.meta == {"reading_minutes": 2}  # 英語(CJK 非優勢)→ 語数/250(§3.2)
+
+
+# ===========================================================================
+# github: GITHUB_API_TOKEN 設定時に Authorization ヘッダを付与する(§3.2)
+# ===========================================================================
+async def test_github_job_with_api_token_sets_authorization_header(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_API_TOKEN", "tok123")
+    link = await _seed_resource_link(db_session, url="https://github.com/foo/bar", kind="github")
+    client = _patch_http(
+        monkeypatch,
+        {
+            "https://api.github.com/repos/foo/bar": _FakeResponse(
+                json_data={"language": "Python", "stargazers_count": 5, "pushed_at": None}
+            )
+        },
+    )
+    await _run_job_for(db_session, link)
+    assert client.calls[0][1]["headers"]["Authorization"] == "Bearer tok123"
+
+
+# ===========================================================================
+# youtube: YOUTUBE_API_KEY 設定時の再生時間取得(成功/空/欠損の 3 分岐。§3.2)
+# ===========================================================================
+async def test_youtube_job_with_api_key_fetches_duration_from_content_details(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("YOUTUBE_API_KEY", "key123")
+    link = await _seed_resource_link(db_session, url="https://youtu.be/abc123", kind="youtube")
+    _patch_http(
+        monkeypatch,
+        {
+            "https://www.youtube.com/oembed": _FakeResponse(
+                json_data={"title": "Talk", "thumbnail_url": "https://i.ytimg.com/x.jpg"}
+            ),
+            "https://www.googleapis.com/youtube/v3/videos": _FakeResponse(
+                json_data={"items": [{"contentDetails": {"duration": "PT1H2M10S"}}]}
+            ),
+        },
+    )
+    await _run_job_for(db_session, link)
+    await db_session.refresh(link)
+    assert link.meta == {"duration_seconds": 3730}  # 1h2m10s
+
+
+async def test_youtube_job_with_api_key_but_no_items_keeps_duration_none(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("YOUTUBE_API_KEY", "key123")
+    link = await _seed_resource_link(db_session, url="https://youtu.be/abc123", kind="youtube")
+    _patch_http(
+        monkeypatch,
+        {
+            "https://www.youtube.com/oembed": _FakeResponse(
+                json_data={"title": "Talk", "thumbnail_url": None}
+            ),
+            "https://www.googleapis.com/youtube/v3/videos": _FakeResponse(json_data={"items": []}),
+        },
+    )
+    await _run_job_for(db_session, link)
+    await db_session.refresh(link)
+    assert link.meta == {"duration_seconds": None}
+
+
+async def test_youtube_job_with_api_key_malformed_response_falls_back_to_none_duration(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``contentDetails.duration`` 欠損(KeyError)は握って None にする(§3.2)。"""
+    monkeypatch.setenv("YOUTUBE_API_KEY", "key123")
+    link = await _seed_resource_link(db_session, url="https://youtu.be/abc123", kind="youtube")
+    _patch_http(
+        monkeypatch,
+        {
+            "https://www.youtube.com/oembed": _FakeResponse(
+                json_data={"title": "Talk", "thumbnail_url": None}
+            ),
+            "https://www.googleapis.com/youtube/v3/videos": _FakeResponse(
+                json_data={"items": [{"contentDetails": {}}]}
+            ),
+        },
+    )
+    await _run_job_for(db_session, link)
+    await db_session.refresh(link)
+    assert link.meta == {"duration_seconds": None}
+
+
+# ===========================================================================
+# slides: 破損 PDF は例外を握ってページ数 None・ファイル名フォールバック(§3.2)
+# ===========================================================================
+async def test_slides_job_with_corrupt_pdf_bytes_returns_none_pages(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    link = await _seed_resource_link(
+        db_session, url="https://iclr.cc/slides/deck.pdf", kind="slides"
+    )
+    _patch_http(
+        monkeypatch,
+        {"https://iclr.cc/slides/deck.pdf": _FakeResponse(content=b"not a real pdf")},
+    )
+    await _run_job_for(db_session, link)
+    await db_session.refresh(link)
+    assert link.fetch_status == "ok"  # HTTP 取得自体は成功(PDF 解析失敗と取得失敗は別。P3)
+    assert link.meta == {"format": "pdf", "pages": None}
+    assert link.title == "deck.pdf"  # PDF メタタイトル不在 → ファイル名フォールバック
