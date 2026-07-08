@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-from typing import Any, Literal
+from collections.abc import Awaitable, Callable
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Response, status
+import structlog
+from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel
 from sqlalchemy import or_, select, text
 from sqlalchemy.exc import IntegrityError
@@ -39,7 +41,7 @@ from yakudoku_core.translation.pipeline import (
 )
 from yakudoku_core.translation.placeholder import encode_block
 
-from yakudoku_api.deps import CurrentUser, DbDep
+from yakudoku_api.deps import CurrentUser, DbDep, SettingsDep
 from yakudoku_api.errors import ProblemException
 from yakudoku_api.routers.viewer import (
     resolve_accessible_revision,
@@ -61,9 +63,56 @@ from yakudoku_api.schemas.viewer import (
     UnitsResponse,
 )
 
+log = structlog.get_logger("yakudoku.api.translations")
+
 router = APIRouter(tags=["translations"])
 
 _ON_DEMAND_PRIORITY = 100  # plans/06 §3.1: オンデマンド系は作成時 priority=100(yk:interactive)
+_INTERACTIVE_QUEUE = "yk:interactive"
+_BULK_QUEUE = "yk:bulk"
+
+
+# ---------------------------------------------------------------------------
+# 起床通知(テストで差し替え可能。apps/api/routers/ingest.py の get_job_wakeup と同方針)
+#
+# 決定(M2-17 followup): 本ファイルはこれまで `JobStore.enqueue` のみを呼び、arq への起床
+# 通知(wakeup)を一切行っていなかった実装バグだった(`enqueue` は PostgreSQL の `jobs` 行を
+# 作るだけで、`pool.enqueue_job` を呼ぶ wakeup が無いと worker には一切見えない — 手動の
+# `python -m yakudoku_core.jobs.requeue` を実行するまで `status='queued'` のまま無限に
+# 止まる)。PW-07(直訳オンデマンド生成)がこの経路で実際に止まることを確認し、他ルータ
+# (ingest.py 等)と同じ規約で追加する(deviations 参照)。
+# ---------------------------------------------------------------------------
+JobWakeup = Callable[[str, str], Awaitable[None]]
+
+
+async def _default_wakeup(redis_url: str, job_id: str, queue_name: str) -> None:
+    from arq import create_pool
+    from arq.connections import RedisSettings
+
+    pool = await create_pool(RedisSettings.from_dsn(redis_url))
+    try:
+        await pool.enqueue_job("run_job", job_id, _queue_name=queue_name)
+    finally:
+        await pool.aclose()
+
+
+def get_translations_job_wakeup(settings: SettingsDep) -> JobWakeup:
+    """arq への起床通知を返す。失敗しても翻訳ジョブの作成自体は成功させる(DB が真実)。"""
+
+    async def wakeup(job_id: str, queue_name: str) -> None:
+        try:
+            await _default_wakeup(settings.redis_url, job_id, queue_name)
+        except Exception:
+            await log.awarning("translations_wakeup_failed", job_id=job_id)
+
+    return wakeup
+
+
+TranslationsJobWakeupDep = Annotated[JobWakeup, Depends(get_translations_job_wakeup)]
+
+
+def _queue_for_priority(priority: int) -> str:
+    return _INTERACTIVE_QUEUE if priority >= _ON_DEMAND_PRIORITY else _BULK_QUEUE
 
 
 # --- 解決ヘルパ ---------------------------------------------------------------------
@@ -300,6 +349,7 @@ async def start_literal_translation(
     user: CurrentUser,
     db: DbDep,
     response: Response,
+    wakeup: TranslationsJobWakeupDep,
 ) -> LiteralTranslationResponse:
     revision, paper = await resolve_accessible_revision(db, revision_id, user)
 
@@ -317,6 +367,7 @@ async def start_literal_translation(
 
     store = JobStore(db)
     job_ids: dict[str, str] = {}
+    priorities: dict[str, int] = {}
     for sec in scope.sections:
         section_id = str(sec["section_id"])
         block_ids = list(sec["block_ids"])
@@ -337,6 +388,11 @@ async def start_literal_translation(
                 "table_block_id": None,
             },
         )
+        priorities[section_id] = priority
+
+    # 起床通知(§4.5 と同じ理由: enqueue だけでは worker に見えない。deviations 参照)。
+    for section_id, jid in job_ids.items():
+        await wakeup(jid, _queue_for_priority(priorities[section_id]))
 
     representative = (
         job_ids.get(body.priority_section_id) if body.priority_section_id else None
@@ -397,6 +453,7 @@ async def section_translate(
     body: SectionTranslateRequest,
     user: CurrentUser,
     db: DbDep,
+    wakeup: TranslationsJobWakeupDep,
 ) -> SectionTranslateResponse:
     tset, revision, paper = await _set_with_access(db, set_id, user)
     content = _as_content(revision)
@@ -430,6 +487,7 @@ async def section_translate(
             "table_block_id": table_block_id,
         },
     )
+    await wakeup(job_id, _queue_for_priority(_ON_DEMAND_PRIORITY))
     return SectionTranslateResponse(job_id=job_id)
 
 
@@ -448,7 +506,11 @@ def _blocks_hash(block_ids: list[str]) -> str:
     operation_id="translations_retranslate",
 )
 async def retranslate(
-    unit_id: str, body: RetranslateRequest, user: CurrentUser, db: DbDep
+    unit_id: str,
+    body: RetranslateRequest,
+    user: CurrentUser,
+    db: DbDep,
+    wakeup: TranslationsJobWakeupDep,
 ) -> RetranslateResponse:
     try:
         unit = await db.get(TranslationUnit, int(unit_id))
@@ -489,6 +551,7 @@ async def retranslate(
             "instruction": instruction,
         },
     )
+    await wakeup(job_id, _queue_for_priority(_ON_DEMAND_PRIORITY))
     return RetranslateResponse(job_id=job_id)
 
 

@@ -264,7 +264,7 @@ export function ViewerShell({
           </>
         ) : (
           <SidePanel
-            milestone="M1"
+            milestone="M2"
             counts={{ annotations: viewer.counts.annotations, resources: viewer.counts.resources }}
             renderTab={(tab) => {
               if (tab === "chat") return <ChatPanel itemId={itemId} />;

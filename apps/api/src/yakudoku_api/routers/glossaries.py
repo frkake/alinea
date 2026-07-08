@@ -10,16 +10,18 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Awaitable, Callable
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Response, status
+import structlog
+from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from yakudoku_core.db.models import Glossary, GlossaryTerm, LibraryItem, User
 from yakudoku_core.jobs.store import JobStore
 from yakudoku_core.translation import glossary as glossary_core
 from yakudoku_core.translation.pipeline import resolve_display_units
 
-from yakudoku_api.deps import CurrentUser, DbDep
+from yakudoku_api.deps import CurrentUser, DbDep, SettingsDep
 from yakudoku_api.errors import ProblemException
 from yakudoku_api.schemas.glossaries import (
     GlossaryDryRunResponse,
@@ -31,9 +33,46 @@ from yakudoku_api.schemas.glossaries import (
     GlossaryTermsListResponse,
 )
 
+log = structlog.get_logger("yakudoku.api.glossaries")
+
 router = APIRouter(tags=["glossaries"])
 
 _ON_DEMAND_PRIORITY = 100  # plans/06 §3.1: 訳語変更起因の再翻訳は yk:interactive 相当
+_INTERACTIVE_QUEUE = "yk:interactive"
+
+
+# ---------------------------------------------------------------------------
+# 起床通知(M2-17 followup: apps/api/routers/translations.py と同一の実装バグ修正。
+# `JobStore.enqueue` だけでは arq worker に見えず、wakeup が無いと `status='queued'` のまま
+# 止まる。deviations 参照)。
+# ---------------------------------------------------------------------------
+JobWakeup = Callable[[str], Awaitable[None]]
+
+
+async def _default_wakeup(redis_url: str, job_id: str) -> None:
+    from arq import create_pool
+    from arq.connections import RedisSettings
+
+    pool = await create_pool(RedisSettings.from_dsn(redis_url))
+    try:
+        await pool.enqueue_job("run_job", job_id, _queue_name=_INTERACTIVE_QUEUE)
+    finally:
+        await pool.aclose()
+
+
+def get_glossaries_job_wakeup(settings: SettingsDep) -> JobWakeup:
+    """arq への起床通知を返す。失敗しても訳語変更自体は成功させる(DB が真実)。"""
+
+    async def wakeup(job_id: str) -> None:
+        try:
+            await _default_wakeup(settings.redis_url, job_id)
+        except Exception:
+            await log.awarning("glossaries_wakeup_failed", job_id=job_id)
+
+    return wakeup
+
+
+GlossariesJobWakeupDep = Annotated[JobWakeup, Depends(get_glossaries_job_wakeup)]
 
 
 def _to_item(term: GlossaryTerm, glossary: Glossary) -> GlossaryTermItem:
@@ -185,6 +224,7 @@ async def patch_term(
     user: CurrentUser,
     db: DbDep,
     response: Response,
+    wakeup: GlossariesJobWakeupDep,
     dry_run: bool = False,
 ) -> GlossaryDryRunResponse | GlossaryPatchResponse:
     term, glossary = await _resolve_term_or_404(db, term_id)
@@ -210,6 +250,7 @@ async def patch_term(
     )
 
     job_id: str | None = None
+    all_job_ids: list[str] = []
     store = JobStore(db)
     for revision_id, (block_ids, ctx) in affected.items():
         personal = await glossary_core.resolve_or_create_personal_set(
@@ -234,10 +275,14 @@ async def patch_term(
                 "term_id": str(term.id),
             },
         )
+        all_job_ids.append(jid)
         if job_id is None:
             job_id = jid
 
     await db.commit()
+    # 起床通知はコミット後(worker が別コネクションから即 claim できるようにする)。
+    for jid in all_job_ids:
+        await wakeup(jid)
     return GlossaryPatchResponse(
         term=_to_item(term, glossary),
         affected_block_count=total_affected,

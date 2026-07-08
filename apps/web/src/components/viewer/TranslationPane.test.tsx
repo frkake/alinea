@@ -7,6 +7,7 @@ import {
   annotationsList,
   translationsListUnits,
   viewerGetDocument,
+  vocabCreate,
 } from "@yakudoku/api-client";
 import { SummaryCard } from "@/components/viewer/SummaryCard";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
@@ -22,8 +23,15 @@ vi.mock("@yakudoku/api-client", async (importOriginal) => {
     translationsListUnits: vi.fn(),
     annotationsList: vi.fn(),
     annotationsCreate: vi.fn(),
+    vocabCreate: vi.fn(),
   };
 });
+
+// 「語彙に追加」(M2-17 wiring)は router.push で /vocab/{id} へ遷移する(next/navigation App
+// Router コンテキストはこのユニットテストの render 対象外のため mock する)。
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }),
+}));
 
 // jsdom は IntersectionObserver を実装しない(先頭可視ブロック追従用)。
 class FakeIntersectionObserver {
@@ -192,6 +200,62 @@ describe("TranslationPane M1 wiring (1b §5.5 / §5.6)", () => {
       }),
     );
     // メニューは作成操作後に閉じる。
+    expect(useViewerStore.getState().selection).toBeNull();
+  });
+
+  test("「語彙に追加」(side=source)で文脈センテンスを抽出し POST /api/vocab して /vocab/{id} へ遷移する (M2-17)", async () => {
+    vi.mocked(vocabCreate).mockResolvedValue({
+      data: { entry: { id: "vocab_1" }, generation_job_id: "job_1" },
+      response: { status: 201 },
+    } as never);
+
+    renderWithClient(
+      <TranslationPane
+        itemId="li_1"
+        revisionId="rev_1"
+        style="natural"
+        toc={[]}
+        summaryLines={null}
+        lastPosition={null}
+      />,
+    );
+    await screen.findByText("整流フローは常微分方程式である。");
+
+    act(() => {
+      useViewerStore.setState({
+        selection: {
+          blockId: "blk-1",
+          side: "source",
+          quote: "ODE",
+          start: 25,
+          end: 28,
+          rect: { top: 10, left: 10, bottom: 20, right: 40 },
+          sourceFullText: "The rectified flow is an ODE. It transports two distributions.",
+        },
+      });
+    });
+
+    const menu = await screen.findByRole("menu", { name: "選択メニュー" });
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "語彙に追加" }));
+
+    await waitFor(() =>
+      expect(vocabCreate).toHaveBeenCalledWith({
+        body: {
+          library_item_id: "li_1",
+          term: "ODE",
+          anchor: {
+            revision_id: "rev_1",
+            block_id: "blk-1",
+            start: 25,
+            end: 28,
+            quote: "ODE",
+            side: "source",
+          },
+          context_sentence: "The rectified flow is an ODE.",
+          highlight: { start: 25, end: 28 },
+        },
+      }),
+    );
     expect(useViewerStore.getState().selection).toBeNull();
   });
 
