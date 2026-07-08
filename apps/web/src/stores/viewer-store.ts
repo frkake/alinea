@@ -82,6 +82,8 @@ interface ViewerStoreState {
   // 検索ヒット遷移(plans/11 §7)の一発消費ターゲット。対象タブが消費して null に戻す。
   pendingAnnotationId: string | null;
   pendingNoteId: string | null;
+  /** 引用クリックから参考文献タブ内の該当行を展開する一発消費ターゲット。 */
+  pendingReferenceId: string | null;
   /** `?hl=` の値。遷移先ブロック内だけをマークする一発消費クエリ。 */
   pendingHighlightQuery: string | null;
   /**
@@ -115,6 +117,8 @@ interface ViewerStoreState {
   consumeAnnotationFocus(): void;
   requestNoteFocus(noteId: string): void;
   consumeNoteFocus(): void;
+  requestReferenceFocus(refId: string): void;
+  consumeReferenceFocus(): void;
   setPendingHighlightQuery(query: string | null): void;
   requestChatFocus(target: { threadId?: string | null; messageId?: string | null }): void;
   consumeChatFocus(): void;
@@ -192,6 +196,7 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
   selection: null,
   pendingAnnotationId: null,
   pendingNoteId: null,
+  pendingReferenceId: null,
   pendingHighlightQuery: null,
   pendingChatThreadId: null,
   pendingChatMessageId: null,
@@ -312,6 +317,14 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
 
   consumeNoteFocus() {
     set({ pendingNoteId: null });
+  },
+
+  requestReferenceFocus(refId) {
+    set({ pendingReferenceId: refId });
+  },
+
+  consumeReferenceFocus() {
+    set({ pendingReferenceId: null });
   },
 
   setPendingHighlightQuery(query) {

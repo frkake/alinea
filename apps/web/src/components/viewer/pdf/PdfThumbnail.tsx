@@ -91,11 +91,11 @@ export function PdfThumbnail({ pageNumber, selected, onClick, getPage, scrollRoo
           overflow: "hidden",
         }}
       >
-        {rendered ? (
-          <canvas ref={canvasRef} style={{ width: "100%", height: "auto" }} />
-        ) : (
-          <ThumbnailSkeleton selected={selected} />
-        )}
+        <canvas
+          ref={canvasRef}
+          style={{ width: "100%", height: "auto", display: rendered ? "block" : "none" }}
+        />
+        {rendered ? null : <ThumbnailSkeleton selected={selected} />}
       </button>
       {selected ? (
         <span

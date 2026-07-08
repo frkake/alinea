@@ -42,6 +42,7 @@ export function FigureRefPopover({
   onExplain,
   onRetry,
 }: FigureRefPopoverProps) {
+  const targetName = figure?.display ?? "図表";
   return (
     <div
       role="dialog"
@@ -91,6 +92,11 @@ export function FigureRefPopover({
           </>
         ) : (
           <>
+            {figure.caption_ja ? (
+              <div style={{ fontFamily: "var(--pr-jp)", fontSize: 12, lineHeight: 1.8, color: "var(--pr-text-body)" }}>
+                {figure.caption_ja}
+              </div>
+            ) : null}
             <div
               style={{
                 fontFamily: "var(--pr-font-en)",
@@ -102,18 +108,13 @@ export function FigureRefPopover({
             >
               {figure.caption_en}
             </div>
-            {figure.caption_ja ? (
-              <div style={{ fontFamily: "var(--pr-jp)", fontSize: 12, lineHeight: 1.8, color: "var(--pr-text-body)" }}>
-                {figure.caption_ja}
-              </div>
-            ) : null}
             <div style={{ display: "flex", gap: 6, paddingTop: 2 }}>
               <button
                 type="button"
                 style={{ ...btnBase, background: "var(--pr-acc)", color: "var(--pr-bg-app)", fontWeight: 700 }}
                 onClick={() => onJumpToFigure?.(figure.block_id)}
               >
-                図の位置へ移動 →
+                {targetName}の位置へ移動 →
               </button>
               <button
                 type="button"

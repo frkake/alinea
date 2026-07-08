@@ -1,6 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type WheelEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+  type PointerEvent,
+  type ReactNode,
+  type WheelEvent,
+} from "react";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { loadPdfjs } from "@/lib/pdfjs";
 import { bboxToViewportRect, viewportToTopDownPt, type PdfViewportLike } from "./geometry";
@@ -22,6 +32,9 @@ export function spreadPages(page: number, numPages: number | null, spread: boole
 
 export interface PdfCanvasProps {
   displayPages: (number | null)[];
+  /** 複数ページ/見開きを縦に並べる場合のページ行。未指定時は displayPages を 1 行として扱う。 */
+  pageGroups?: (number | null)[][];
+  activePage?: number;
   scale: number;
   getPage: (pageNumber: number) => Promise<PdfPageLike>;
   syncMap: PdfSyncMap;
@@ -29,8 +42,11 @@ export interface PdfCanvasProps {
   onSelectBlock: (hit: SyncBlockHit | null) => void;
   onOpenInTranslation: (blockId: string) => void;
   onPageStep?: (delta: number) => void;
+  onVisiblePageChange?: (page: number) => void;
   /** フィットモード時、実測ページ寸法(pt, scale=1)を親へ返す(ズーム%表示・再計算に使う)。 */
   onPageSizeResolved?: (sizePt: { width: number; height: number }) => void;
+  /** 見開きで空きページスロットを保持するための現在ページ寸法(css px)。 */
+  pageSlotSize?: { width: number; height: number };
   loading: boolean;
   error: boolean;
   onRetry: () => void;
@@ -42,9 +58,14 @@ export interface PdfCanvasProps {
  * 実測が異なるため component 内定数で保持。2a §4)。
  */
 const CANVAS_BG_CLASS = "yk-pdf-canvas-bg";
+export const PDF_PAGE_GAP_PX = 16;
+const PDF_CANVAS_PADDING_X_PX = 16;
+const PDF_CANVAS_PADDING_Y_PX = 20;
 
 export function PdfCanvas({
   displayPages,
+  pageGroups,
+  activePage,
   scale,
   getPage,
   syncMap,
@@ -52,7 +73,9 @@ export function PdfCanvas({
   onSelectBlock,
   onOpenInTranslation,
   onPageStep,
+  onVisiblePageChange,
   onPageSizeResolved,
+  pageSlotSize,
   loading,
   error,
   onRetry,
@@ -60,6 +83,10 @@ export function PdfCanvas({
 }: PdfCanvasProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const wheelStepAtRef = useRef(0);
+  const rafRef = useRef<number | null>(null);
+  const suppressVisibleUntilRef = useRef(0);
+  const groups = pageGroups ?? [displayPages];
+  const groupsKey = groups.map((row) => row.map((p) => p ?? "_").join(",")).join("|");
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -73,6 +100,49 @@ export function PdfCanvas({
     onResize({ width: el.clientWidth, height: el.clientHeight });
     return () => ro.disconnect();
   }, [onResize]);
+
+  useEffect(() => {
+    if (!activePage) return;
+    const root = scrollRef.current;
+    const pageEl = root?.querySelector<HTMLElement>(`[data-pdf-page="${activePage}"]`);
+    suppressVisibleUntilRef.current = Date.now() + 450;
+    if (typeof pageEl?.scrollIntoView === "function") {
+      pageEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [activePage, groupsKey]);
+
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || !onVisiblePageChange) return;
+
+    const updateVisiblePage = () => {
+      rafRef.current = null;
+      if (Date.now() < suppressVisibleUntilRef.current) return;
+      const rootRect = root.getBoundingClientRect();
+      const centerY = rootRect.top + rootRect.height * 0.45;
+      let best: { page: number; distance: number } | null = null;
+      for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-pdf-page]"))) {
+        const page = Number.parseInt(el.dataset.pdfPage ?? "", 10);
+        if (!Number.isFinite(page)) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.bottom < rootRect.top || rect.top > rootRect.bottom) continue;
+        const distance = Math.abs(rect.top + rect.height / 2 - centerY);
+        if (!best || distance < best.distance) best = { page, distance };
+      }
+      if (best) onVisiblePageChange(best.page);
+    };
+
+    const schedule = () => {
+      if (rafRef.current != null) return;
+      rafRef.current = window.requestAnimationFrame(updateVisiblePage);
+    };
+    root.addEventListener("scroll", schedule, { passive: true });
+    return () => {
+      root.removeEventListener("scroll", schedule);
+      if (rafRef.current != null) window.cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    };
+  }, [onVisiblePageChange, groupsKey]);
 
   if (error) {
     return (
@@ -109,34 +179,61 @@ export function PdfCanvas({
       style={{
         flex: 1,
         overflow: "auto",
-        display: "flex",
-        justifyContent: "center",
-        alignItems: "flex-start",
-        paddingTop: 20,
-        paddingBottom: 20,
+        padding: `${PDF_CANVAS_PADDING_Y_PX}px ${PDF_CANVAS_PADDING_X_PX}px`,
       }}
     >
       {loading ? (
         <LoadingPagePlaceholder />
       ) : (
-        <div style={{ display: "flex", gap: 16 }}>
-          {displayPages.map((p, idx) =>
-            p == null ? (
-              <div key={`empty-${idx}`} aria-hidden />
-            ) : (
-              <PdfPageLayer
-                key={p}
-                pageNumber={p}
-                scale={scale}
-                getPage={getPage}
-                syncMap={syncMap}
-                selectedBlockId={selectedBlockId}
-                onSelectBlock={onSelectBlock}
-                onOpenInTranslation={onOpenInTranslation}
-                onPageSizeResolved={onPageSizeResolved}
-              />
-            ),
-          )}
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 18,
+            alignItems: "center",
+            width: "max-content",
+            minWidth: "100%",
+            margin: "0 auto",
+          }}
+        >
+          {groups.map((row, rowIndex) => (
+            <div
+              key={`${row.map((p) => p ?? "_").join(",")}-${rowIndex}`}
+              style={{
+                display: "flex",
+                gap: PDF_PAGE_GAP_PX,
+                justifyContent: "center",
+                alignItems: "flex-start",
+                width: "max-content",
+              }}
+            >
+              {row.map((p, idx) =>
+                p == null ? (
+                  <div
+                    key={`empty-${rowIndex}-${idx}`}
+                    aria-hidden
+                    style={{
+                      width: pageSlotSize?.width ?? 0,
+                      height: pageSlotSize?.height ?? 0,
+                      flex: "none",
+                    }}
+                  />
+                ) : (
+                  <PdfPageLayer
+                    key={p}
+                    pageNumber={p}
+                    scale={scale}
+                    getPage={getPage}
+                    syncMap={syncMap}
+                    selectedBlockId={selectedBlockId}
+                    onSelectBlock={onSelectBlock}
+                    onOpenInTranslation={onOpenInTranslation}
+                    onPageSizeResolved={onPageSizeResolved}
+                  />
+                ),
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -174,6 +271,12 @@ interface PdfPageLayerProps {
   onPageSizeResolved?: (sizePt: { width: number; height: number }) => void;
 }
 
+interface PdfAnnotationLinkItem {
+  ann: PdfAnnotationLike;
+  href: string;
+  rect: { left: number; top: number; width: number; height: number };
+}
+
 /** PDF ページ 1 枚(2a §4.2.4)。canvas 描画 + bbox オーバーレイ層。 */
 function PdfPageLayer({
   pageNumber,
@@ -188,10 +291,15 @@ function PdfPageLayer({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const pointerRef = useRef<{ x: number; y: number; dragging: boolean }>({ x: 0, y: 0, dragging: false });
   const [viewport, setViewport] = useState<PdfViewportLike | null>(null);
   const [annotations, setAnnotations] = useState<PdfAnnotationLike[]>([]);
   const renderTaskRef = useRef<{ cancel(): void } | null>(null);
   const textLayerTaskRef = useRef<{ cancel(): void } | null>(null);
+  const annotationLinks = useMemo(
+    () => (viewport ? buildAnnotationLinkItems(viewport, annotations) : []),
+    [annotations, viewport],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -206,10 +314,18 @@ function PdfPageLayer({
         const renderVp = page.getViewport({ scale: scale * dpr });
         const canvas = canvasRef.current;
         if (!canvas) return;
+        const cssWidth = vp.width;
+        const cssHeight = vp.height;
+        const wrap = wrapRef.current;
+        if (wrap) {
+          wrap.style.width = `${cssWidth}px`;
+          wrap.style.height = `${cssHeight}px`;
+          wrap.style.setProperty("--scale-factor", String(scale));
+        }
         canvas.width = Math.ceil(renderVp.width);
         canvas.height = Math.ceil(renderVp.height);
-        canvas.style.width = `${Math.ceil(vp.width)}px`;
-        canvas.style.height = `${Math.ceil(vp.height)}px`;
+        canvas.style.width = `${cssWidth}px`;
+        canvas.style.height = `${cssHeight}px`;
         canvas.style.display = "block";
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
@@ -225,6 +341,7 @@ function PdfPageLayer({
         textLayerTaskRef.current = null;
         if (textLayerEl && page.getTextContent) {
           textLayerEl.replaceChildren();
+          textLayerEl.style.setProperty("--scale-factor", String(scale));
           const textContent = await page.getTextContent({ includeMarkedContent: true });
           if (!cancelled) {
             const pdfjs = await loadPdfjs();
@@ -257,11 +374,35 @@ function PdfPageLayer({
     };
   }, [pageNumber, scale, getPage, onPageSizeResolved]);
 
+  const onDragStart = (e: MouseEvent<HTMLDivElement> | PointerEvent<HTMLDivElement>) => {
+    if (typeof e.button === "number" && e.button !== 0) return;
+    pointerRef.current = { x: e.clientX, y: e.clientY, dragging: false };
+  };
+
+  const onDragMove = (e: MouseEvent<HTMLDivElement> | PointerEvent<HTMLDivElement>) => {
+    const state = pointerRef.current;
+    if (state.dragging) return;
+    if (Math.abs(e.clientX - state.x) > 4 || Math.abs(e.clientY - state.y) > 4) {
+      state.dragging = true;
+    }
+  };
+
   const onCanvasClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (pointerRef.current.dragging) {
+      pointerRef.current.dragging = false;
+      return;
+    }
+    const selectedText = window.getSelection()?.toString().trim();
+    if (selectedText) return;
     if (!viewport || !wrapRef.current) return;
     const rect = wrapRef.current.getBoundingClientRect();
     const cssX = e.clientX - rect.left;
     const cssY = e.clientY - rect.top;
+    const link = annotationLinks.find((item) => pointInRect(item.rect, cssX, cssY));
+    if (link) {
+      openAnnotationHref(link.href, link.ann);
+      return;
+    }
     const [xPt, yPt] = viewportToTopDownPt(viewport, cssX, cssY);
     const hit = syncMap.blockAtPoint(pageNumber, xPt, yPt);
     onSelectBlock(hit);
@@ -276,19 +417,24 @@ function PdfPageLayer({
   return (
     <div
       ref={wrapRef}
+      className="yk-pdf-page-layer"
       data-pdf-page={pageNumber}
+      onPointerDown={onDragStart}
+      onPointerMove={onDragMove}
+      onMouseDown={onDragStart}
+      onMouseMove={onDragMove}
       onClick={onCanvasClick}
       style={{
         position: "relative",
         flex: "none",
         background: "var(--pr-bg-card)",
         boxShadow: "0 6px 28px rgba(28,30,34,0.22)",
-        cursor: viewport ? "pointer" : "default",
+        cursor: viewport ? "text" : "default",
       }}
     >
       <canvas ref={canvasRef} />
       <div ref={textLayerRef} className="textLayer yk-pdf-text-layer" aria-hidden />
-      {viewport ? <PdfAnnotationLinks viewport={viewport} annotations={annotations} /> : null}
+      {annotationLinks.length > 0 ? <PdfAnnotationLinks links={annotationLinks} /> : null}
       {viewport && selectedHit && selectedDisplay ? (
         <PdfBboxHighlight viewport={viewport} bbox={selectedHit.bbox}>
           <PdfSyncChip
@@ -327,21 +473,37 @@ function annotationRectToViewportRect(viewport: PdfViewportLike, rect: readonly 
   };
 }
 
-function PdfAnnotationLinks({
-  viewport,
-  annotations,
-}: {
-  viewport: PdfViewportLike;
-  annotations: PdfAnnotationLike[];
-}) {
-  const links = useMemo(
-    () =>
-      annotations
-        .filter((ann) => ann.subtype === "Link" && ann.rect && annotationHref(ann))
-        .map((ann) => ({ ann, href: annotationHref(ann), rect: annotationRectToViewportRect(viewport, ann.rect ?? []) }))
-        .filter((item) => item.href && item.rect.width > 0 && item.rect.height > 0),
-    [annotations, viewport],
-  );
+function buildAnnotationLinkItems(
+  viewport: PdfViewportLike,
+  annotations: PdfAnnotationLike[],
+): PdfAnnotationLinkItem[] {
+  return annotations
+    .filter((ann) => ann.subtype === "Link" && ann.rect && annotationHref(ann))
+    .map((ann) => ({
+      ann,
+      href: annotationHref(ann) ?? "",
+      rect: annotationRectToViewportRect(viewport, ann.rect ?? []),
+    }))
+    .filter((item) => item.href && item.rect.width > 0 && item.rect.height > 0);
+}
+
+function pointInRect(
+  rect: PdfAnnotationLinkItem["rect"],
+  x: number,
+  y: number,
+): boolean {
+  return x >= rect.left && x <= rect.left + rect.width && y >= rect.top && y <= rect.top + rect.height;
+}
+
+function openAnnotationHref(href: string, annotation: PdfAnnotationLike) {
+  if (annotation.newWindow === false) {
+    window.location.assign(href);
+    return;
+  }
+  window.open(href, "_blank", "noopener,noreferrer");
+}
+
+function PdfAnnotationLinks({ links }: { links: PdfAnnotationLinkItem[] }) {
   if (links.length === 0) return null;
   return (
     <div className="yk-pdf-link-layer" aria-label="PDF リンク">

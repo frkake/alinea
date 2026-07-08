@@ -100,9 +100,14 @@ describe("computeFitScale", () => {
     expect(computeFitScale("actual", 1000, 800, 612, 792)).toBe(1);
   });
 
-  test("fit-width uses (container-166)/pageWidth", () => {
+  test("fit-width uses available width after the viewer padding", () => {
     const scale = computeFitScale("fit-width", 866, 800, 700, 906);
-    expect(scale).toBeCloseTo(1.0, 2); // (866-166)/700 = 1.0
+    expect(scale).toBeCloseTo((866 - 32) / 700, 2);
+  });
+
+  test("fit-width subtracts fixed page gaps before scaling", () => {
+    const scale = computeFitScale("fit-width", 1260, 800, 1224, 792, { fixedWidthPx: 16 });
+    expect(scale).toBeCloseTo((1260 - 32 - 16) / 1224, 2);
   });
 
   test("fit-page takes the smaller of width/height fit", () => {

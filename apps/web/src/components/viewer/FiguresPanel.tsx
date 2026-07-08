@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -20,12 +20,31 @@ export interface FiguresPanelProps {
   revisionId: string;
 }
 
+function normalizeReferenceKey(value: string | null | undefined): string | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  return raw
+    .replace(/^#/, "")
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .toLowerCase()
+    .replace(/[.:_\s]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function referenceAliases(ref: ReferenceItem): string[] {
+  return [ref.ref_id, ref.number, ...(ref.aliases ?? [])];
+}
+
 /** 図表タブ本体(1c §4.6)。図表一覧+参考文献一覧。 */
 export function FiguresPanel({ revisionId }: FiguresPanelProps) {
   const router = useRouter();
   const toast = useToast();
   const qc = useQueryClient();
   const requestScroll = useViewerStore((s) => s.requestScroll);
+  const pendingReferenceId = useViewerStore((s) => s.pendingReferenceId);
+  const consumeReferenceFocus = useViewerStore((s) => s.consumeReferenceFocus);
 
   const [activeFigureBlockId, setActiveFigureBlockId] = useState<string | null>(null);
   const [expandedRefId, setExpandedRefId] = useState<string | null>(null);
@@ -73,7 +92,26 @@ export function FiguresPanel({ revisionId }: FiguresPanelProps) {
   );
 
   const figures = figuresQuery.data?.items ?? [];
-  const references = referencesQuery.data?.items ?? [];
+  const references = useMemo(() => referencesQuery.data?.items ?? [], [referencesQuery.data?.items]);
+
+  const resolveReferenceId = useCallback((target: string, refs: ReferenceItem[]): string | null => {
+    const wanted = normalizeReferenceKey(target);
+    if (!wanted) return null;
+    for (const ref of refs) {
+      const aliases = referenceAliases(ref);
+      if (aliases.some((alias) => normalizeReferenceKey(alias) === wanted)) return ref.ref_id;
+    }
+    return null;
+  }, []);
+
+  // 引用クリックから来た場合は該当参考文献を展開する。データ到着後にも解決できるよう
+  // pendingReferenceId と references の両方を依存に入れる。
+  useEffect(() => {
+    if (!pendingReferenceId || references.length === 0) return;
+    const refId = resolveReferenceId(pendingReferenceId, references);
+    if (refId) setExpandedRefId(refId);
+    consumeReferenceFocus();
+  }, [pendingReferenceId, references, resolveReferenceId, consumeReferenceFocus]);
 
   return (
     <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -179,6 +217,9 @@ function FigureCard({ figure, selected, onClick }: { figure: FigureItem; selecte
         )}
       </div>
       <div style={{ overflow: "hidden" }}>
+        <div style={{ fontSize: 9.5, fontWeight: 700, color: "var(--pr-acc)", lineHeight: 1.3 }}>
+          {figure.display}
+        </div>
         <div
           style={{
             fontSize: 11,

@@ -46,6 +46,18 @@ function inlineOffsetLength(inline: Inline): number {
   }
 }
 
+function displayRefLabel(inline: Inline): string {
+  if (inline.v) return inline.v;
+  const ref = inline.ref ?? "";
+  const kind = inline.kind ?? "";
+  const number = ref.match(/(\d+(?:\.\d+)*)$/)?.[1] ?? ref;
+  if (kind === "figure") return `図${number}`;
+  if (kind === "table") return `表${number}`;
+  if (kind === "equation") return `式${number.startsWith("(") ? number : `(${number})`}`;
+  if (kind === "section") return `§${number}`;
+  return ref;
+}
+
 /** インライン列(原文)を描画(1b §5.3。数式=KaTeX、引用/参照=アクセント)。 */
 export function InlineRenderer({
   inlines,
@@ -144,7 +156,7 @@ export function InlineRenderer({
         );
       }
       case "ref": {
-        const label = inline.v || inline.ref || "";
+        const label = displayRefLabel(inline);
         if (inline.ref && onRefClick) {
           return (
             <button

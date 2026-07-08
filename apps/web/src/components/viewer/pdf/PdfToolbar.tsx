@@ -44,7 +44,9 @@ const iconBtn: CSSProperties = {
 const outlineBtn: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
+  justifyContent: "center",
   height: 24,
+  minWidth: 0,
   padding: "0 9px",
   border: "1px solid var(--pr-border-control)",
   borderRadius: 6,
@@ -52,6 +54,9 @@ const outlineBtn: CSSProperties = {
   background: "transparent",
   cursor: "pointer",
   fontFamily: "inherit",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
 };
 
 /** PDF ツールバー(2a §4.2.3, h=38px)。 */
@@ -97,18 +102,29 @@ export function PdfToolbar({
   return (
     <div
       style={{
-        height: 38,
+        minHeight: 38,
         flex: "none",
         background: "var(--pr-bg-card)",
         borderBottom: "1px solid var(--pr-border-header)",
         display: "flex",
         alignItems: "center",
-        gap: 10,
-        padding: "0 14px",
+        flexWrap: "wrap",
+        gap: "6px 10px",
+        padding: "6px 10px",
         fontFamily: "var(--pr-font-ui)",
+        overflow: "hidden",
       }}
     >
-      <div style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 11.5, color: "var(--pr-text-mid)" }}>
+      <div
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 7,
+          fontSize: 11.5,
+          color: "var(--pr-text-mid)",
+          flex: "none",
+        }}
+      >
         <button
           type="button"
           aria-label="先頭ページ"
@@ -150,7 +166,7 @@ export function PdfToolbar({
             color: "var(--pr-text)",
           }}
         />
-        <span>/ {pageCount ?? "…"}</span>
+        <span style={{ whiteSpace: "nowrap" }}>/ {pageCount ?? "…"}</span>
         <button
           type="button"
           aria-label="次のページ"
@@ -173,7 +189,16 @@ export function PdfToolbar({
 
       <span style={{ width: 1, height: 16, background: "var(--pr-border-card)", flex: "none" }} />
 
-      <div style={{ display: "inline-flex", alignItems: "center", gap: 9, fontSize: 11.5, color: "var(--pr-text-mid)" }}>
+      <div
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 9,
+          fontSize: 11.5,
+          color: "var(--pr-text-mid)",
+          flex: "none",
+        }}
+      >
         <button type="button" aria-label="縮小" style={iconBtn} onClick={onZoomOut}>
           −
         </button>
@@ -188,7 +213,7 @@ export function PdfToolbar({
         type="button"
         aria-haspopup="menu"
         aria-expanded={fitOpen}
-        style={{ ...outlineBtn, gap: 5, color: "var(--pr-text-mid)" }}
+        style={{ ...outlineBtn, gap: 5, color: "var(--pr-text-mid)", maxWidth: 142 }}
         onClick={() => setFitOpen((v) => !v)}
       >
         {fitMode ? FIT_LABELS[fitMode] : "幅に合わせる"}
@@ -238,9 +263,20 @@ export function PdfToolbar({
         見開き
       </button>
 
-      <div style={{ flex: 1 }} />
+      <div style={{ flex: "1 1 24px", minWidth: 0 }} />
 
-      <span style={{ fontSize: 11, color: "var(--pr-text-muted)" }}>
+      <span
+        title={syncDisplay ? `同期: ${syncDisplay}` : "同期: —"}
+        style={{
+          fontSize: 11,
+          color: "var(--pr-text-muted)",
+          minWidth: 0,
+          maxWidth: 170,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
         同期:{" "}
         {syncDisplay ? <b style={{ color: "var(--pr-text-mid)", fontWeight: 600 }}>{syncDisplay}</b> : "—"}
       </span>
@@ -256,6 +292,8 @@ export function PdfToolbar({
           background: "var(--pr-acc-s)",
           fontWeight: 600,
           opacity: loading ? 0.5 : 1,
+          maxWidth: 180,
+          flex: "0 1 auto",
         }}
       >
         この位置を訳文で開く →

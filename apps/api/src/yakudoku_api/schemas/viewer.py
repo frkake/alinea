@@ -153,6 +153,7 @@ class ReferenceInLibrary(BaseModel):
 
 class ReferenceItem(BaseModel):
     ref_id: str
+    aliases: list[str] = Field(default_factory=list)
     number: str
     authors: str | None
     title: str | None

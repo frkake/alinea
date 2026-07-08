@@ -61,10 +61,13 @@ export function SegmentedControl<T extends string>({
       className={cn(className)}
       style={{
         display: "inline-flex",
+        flexWrap: "wrap",
         gap: 2,
         padding: 2,
         borderRadius: 7,
         background: "var(--pr-bg-muted)",
+        maxWidth: "100%",
+        minWidth: 0,
       }}
     >
       {options.map((opt, index) => {
@@ -75,6 +78,7 @@ export function SegmentedControl<T extends string>({
           alignItems: "center",
           justifyContent: "center",
           height: dims.height,
+          minWidth: 0,
           padding: dims.padding,
           fontSize: dims.fontSize,
           borderRadius: 5,
@@ -86,6 +90,7 @@ export function SegmentedControl<T extends string>({
           fontWeight: selected ? 600 : 400,
           boxShadow: selected ? "var(--pr-shadow-seg)" : undefined,
           fontFamily: "inherit",
+          whiteSpace: "nowrap",
         };
         return (
           <button

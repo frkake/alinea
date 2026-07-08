@@ -36,6 +36,7 @@ export default function ViewerPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const setPanel = useViewerStore((s) => s.setPanel);
+  const requestReferenceFocus = useViewerStore((s) => s.requestReferenceFocus);
   const requestScroll = useViewerStore((s) => s.requestScroll);
   const style = useViewerStore((s) => s.style);
   const requestAnnotationFocus = useViewerStore((s) => s.requestAnnotationFocus);
@@ -143,7 +144,10 @@ export default function ViewerPage() {
   };
 
   // 引用 [n] クリック: 図表タブ(参考文献)へ切替(1a §5.2)。
-  const onCitationClick = () => setPanel(true, "figures");
+  const onCitationClick = (refId: string) => {
+    requestReferenceFocus(refId);
+    setPanel(true, "figures");
+  };
 
   // モバイル縮退(mobile.md §4.1): mode を translation に固定して描画する。URL(`?mode=`)は
   // 書き換えない(デスクトップに戻れば元モードで開けるため。ViewerShell 側も同じ判定で
@@ -162,6 +166,7 @@ export default function ViewerPage() {
         lastPosition={viewer.last_position}
         onDetailedSummary={() => setPanel(true, "chat")}
         onAskAI={() => setPanel(true, "chat")}
+        onCitationClick={onCitationClick}
       />
     );
   } else if (effectiveMode === "parallel") {

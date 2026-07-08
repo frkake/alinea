@@ -190,6 +190,7 @@ export function FigureTableBlock({
   const figureHtml = block.type === "figure" && !block.asset_url ? renderableFigureHtml(block.raw) : null;
   const hasCaption = (block.caption ?? []).length > 0;
   const hasTranslation = showTranslatedCaption && hasTranslatedText(unit);
+  const captionLabel = mediaLabel(block);
 
   return (
     <figure
@@ -233,24 +234,36 @@ export function FigureTableBlock({
         />
       ) : null}
       {rows ? <TableView rows={rows} /> : null}
-      <figcaption style={{ fontSize: 12.5, lineHeight: 1.75 }}>
-        <div>
-          <span style={{ fontWeight: 700, color: "var(--pr-text-body)" }}>{mediaLabel(block)}</span>
-          {hasCaption ? (
-            <span>
-              {" "}
-              <InlineRenderer
-                inlines={block.caption ?? []}
-                onCitationClick={onCitationClick}
-                onRefClick={onRefClick}
-              />
-            </span>
-          ) : null}
-        </div>
+      <figcaption style={{ fontSize: 12.5, lineHeight: 1.75, overflowWrap: "anywhere" }}>
         {hasTranslation ? (
-          <div style={{ marginTop: 4, color: "var(--pr-text-body)", fontFamily: "var(--pr-jp)" }}>
+          <div style={{ color: "var(--pr-text-body)", fontFamily: "var(--pr-jp)" }}>
+            <span style={{ fontWeight: 700 }}>{captionLabel}</span>{" "}
             <TranslationInlineContent
               unit={unit}
+              onCitationClick={onCitationClick}
+              onRefClick={onRefClick}
+            />
+          </div>
+        ) : (
+          <div>
+            <span style={{ fontWeight: 700, color: "var(--pr-text-body)" }}>{captionLabel}</span>
+            {hasCaption ? (
+              <span>
+                {" "}
+                <InlineRenderer
+                  inlines={block.caption ?? []}
+                  onCitationClick={onCitationClick}
+                  onRefClick={onRefClick}
+                />
+              </span>
+            ) : null}
+          </div>
+        )}
+        {hasTranslation && hasCaption ? (
+          <div style={{ marginTop: 4, color: "var(--pr-text-muted)", fontFamily: "var(--pr-font-en)" }}>
+            Original:{" "}
+            <InlineRenderer
+              inlines={block.caption ?? []}
               onCitationClick={onCitationClick}
               onRefClick={onRefClick}
             />

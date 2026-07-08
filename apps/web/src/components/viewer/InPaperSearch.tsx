@@ -103,7 +103,7 @@ export function InPaperSearch({ revisionId: revisionIdProp }: InPaperSearchProps
   return (
     <div
       ref={containerRef}
-      style={{ position: "relative" }}
+      style={{ position: "relative", minWidth: 0, flex: "0 1 150px" }}
       onKeyDown={(e) => {
         if (!dropdownOpen) return;
         if (e.key === "ArrowDown") {

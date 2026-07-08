@@ -137,8 +137,10 @@ export function ViewerHeader({
   const controlBtn: CSSProperties = {
     display: "inline-flex",
     alignItems: "center",
+    justifyContent: "center",
     gap: 5,
     height: 26,
+    minWidth: 0,
     padding: "0 10px",
     border: "1px solid var(--pr-border-control)",
     borderRadius: 6,
@@ -147,6 +149,9 @@ export function ViewerHeader({
     background: "transparent",
     cursor: "pointer",
     fontFamily: "inherit",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
   };
 
   // モバイル縮退(mobile.md §4.2): 戻る/目次/タイトル/ステータスピル/訳文バッジの 5 要素のみ。
@@ -164,6 +169,7 @@ export function ViewerHeader({
           gap: 8,
           padding: "0 12px",
           fontFamily: "var(--pr-font-ui)",
+          minWidth: 0,
         }}
       >
         <button
@@ -172,6 +178,7 @@ export function ViewerHeader({
           onClick={onBack}
           style={{
             width: 20,
+            flex: "none",
             textAlign: "center",
             fontSize: 16,
             color: "var(--pr-text-icon)",
@@ -189,6 +196,7 @@ export function ViewerHeader({
           onClick={onOpenToc}
           style={{
             width: 20,
+            flex: "none",
             fontSize: 14,
             color: "var(--pr-text-icon)",
             border: "none",
@@ -240,15 +248,18 @@ export function ViewerHeader({
   return (
     <header
       style={{
-        height: 52,
+        minHeight: 52,
         flex: "none",
         background: "var(--pr-bg-card)",
         borderBottom: "1px solid var(--pr-border-header)",
         display: "flex",
         alignItems: "center",
-        gap: 10,
-        padding: "0 16px",
+        flexWrap: "wrap",
+        gap: "6px 10px",
+        padding: "7px 12px",
         fontFamily: "var(--pr-font-ui)",
+        minWidth: 0,
+        overflow: "hidden",
       }}
     >
       <button
@@ -257,6 +268,7 @@ export function ViewerHeader({
         onClick={onBack}
         style={{
           width: 20,
+          flex: "none",
           textAlign: "center",
           fontSize: 16,
           color: "var(--pr-text-icon)",
@@ -273,6 +285,8 @@ export function ViewerHeader({
         style={{
           fontSize: 13,
           fontWeight: 600,
+          flex: "1 1 180px",
+          minWidth: 90,
           maxWidth: 330,
           whiteSpace: "nowrap",
           overflow: "hidden",
@@ -287,7 +301,7 @@ export function ViewerHeader({
 
       <StatusPill status={status} size="md" interactive onChange={onStatusChange} />
 
-      <div style={{ flex: 1 }} />
+      <div style={{ flex: "1 1 24px", minWidth: 0 }} />
 
       <SegmentedControl
         options={MODE_OPTIONS.map((opt) =>
@@ -312,7 +326,8 @@ export function ViewerHeader({
             type="button"
             aria-haspopup="menu"
             aria-expanded={styleOpen}
-            style={controlBtn}
+            title={`スタイル: ${STYLE_LABELS[style]}${style === "literal" && literalStatus === "generating" ? "(生成中…)" : ""}`}
+            style={{ ...controlBtn, maxWidth: 190, flex: "0 1 auto" }}
             onClick={() => setStyleOpen((v) => !v)}
           >
             スタイル: {STYLE_LABELS[style]}
@@ -369,6 +384,7 @@ export function ViewerHeader({
         aria-expanded={overflowOpen}
         onClick={() => setOverflowOpen((v) => !v)}
         style={{
+          flex: "none",
           fontSize: 15,
           color: "var(--pr-text-sub)",
           letterSpacing: 1,

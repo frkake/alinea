@@ -643,7 +643,16 @@ async def list_references(revision_id: str, user: CurrentUser, db: DbDep) -> Ref
         arxiv_id = _extract_arxiv_id(url if isinstance(url, str) else None)
         if arxiv_id:
             arxiv_ids.append(arxiv_id)
-        parsed.append({"structured": structured, "url": url, "arxiv_id": arxiv_id, "raw": blk.raw})
+        parsed.append(
+            {
+                "block_id": blk.id,
+                "label": blk.label,
+                "structured": structured,
+                "url": url,
+                "arxiv_id": arxiv_id,
+                "raw": blk.raw,
+            }
+        )
 
     in_library_map: dict[str, str] = {}
     if arxiv_ids:
@@ -677,9 +686,18 @@ async def list_references(revision_id: str, user: CurrentUser, db: DbDep) -> Ref
             if arxiv_id and arxiv_id in in_library_map
             else None
         )
+        fallback_id = f"ref-{idx}"
+        label = p["label"] if isinstance(p["label"], str) and p["label"] else None
+        ref_id = label or fallback_id
+        aliases = [fallback_id, f"bib-{idx}", f"bib.{idx}"]
+        if label:
+            aliases.extend([label, f"#{label}"])
+        if isinstance(p["block_id"], str):
+            aliases.append(p["block_id"])
         items.append(
             ReferenceItem(
-                ref_id=f"ref-{idx}",
+                ref_id=ref_id,
+                aliases=sorted(set(aliases)),
                 number=f"[{idx}]",
                 authors=authors,
                 title=structured.get("title"),

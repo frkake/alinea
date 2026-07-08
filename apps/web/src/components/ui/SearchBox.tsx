@@ -48,6 +48,7 @@ export function SearchBox({
         alignItems: "center",
         gap: 6,
         width: 150,
+        maxWidth: "100%",
         height: 26,
         borderRadius: 6,
         padding: "0 10px",

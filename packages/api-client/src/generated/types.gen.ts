@@ -1244,6 +1244,14 @@ export type FigureContentOut = {
      * License Badge
      */
     license_badge: string;
+    /**
+     * Caption Separated
+     */
+    caption_separated?: boolean;
+    /**
+     * Share Alike
+     */
+    share_alike?: boolean;
 };
 
 /**
@@ -2862,6 +2870,10 @@ export type ReferenceItem = {
      * Ref Id
      */
     ref_id: string;
+    /**
+     * Aliases
+     */
+    aliases?: Array<string>;
     /**
      * Number
      */

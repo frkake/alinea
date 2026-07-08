@@ -53,6 +53,8 @@ export interface TranslationPaneProps {
   onDetailedSummary?: () => void;
   /** ✦AIに質問 / ✦この式を説明 → チャットタブ導線。 */
   onAskAI?: (quote: string) => void;
+  /** 引用 [n] クリック → 図表タブ参考文献展開。 */
+  onCitationClick?: (refId: string) => void;
 }
 
 /** section_id → { number, title_ja } を toc(2 階層)から引く。 */
@@ -107,6 +109,7 @@ export function TranslationPane({
   lastPosition,
   onDetailedSummary,
   onAskAI,
+  onCitationClick,
 }: TranslationPaneProps) {
   // 読書位置保存は ViewerShell の useReadingPosition が担う(itemId は注釈・ブックマーク用)。
   const toast = useToast();
@@ -552,6 +555,7 @@ export function TranslationPane({
         onExplainEquation={(latex) => onAskAI?.(latex)}
         highlightsByBlock={highlightsByBlock}
         onAnnotationClick={onAnnotationClick}
+        onCitationClick={onCitationClick}
         onRefClick={onRefClick}
         hlBlockId={hlBlockId}
         pendingHighlightQuery={pendingHighlightQuery}
@@ -632,6 +636,7 @@ interface SectionViewProps {
   /** ブロック単位の注釈ハイライト(1b §4.5-5)。 */
   highlightsByBlock: Map<string, PlacedHighlight[]>;
   onAnnotationClick: (annotationId: string) => void;
+  onCitationClick?: (refId: string) => void;
   onRefClick?: (ref: string, kind?: string | null) => void;
   /** `hl` を一発マークする対象ブロック(plans/11 §7)。 */
   hlBlockId: string | null;
@@ -651,6 +656,7 @@ function SectionView({
   onExplainEquation,
   highlightsByBlock,
   onAnnotationClick,
+  onCitationClick,
   onRefClick,
   hlBlockId,
   pendingHighlightQuery,
@@ -691,6 +697,7 @@ function SectionView({
               onTogglePop={() => onTogglePop(block.id)}
               highlights={highlightsByBlock.get(block.id) ?? []}
               onAnnotationClick={onAnnotationClick}
+              onCitationClick={onCitationClick}
               onRefClick={onRefClick}
               searchHighlight={hlBlockId === block.id ? pendingHighlightQuery : null}
               isMobile={isMobile}
@@ -703,6 +710,7 @@ function SectionView({
             block={block}
             unit={unitMap.get(block.id) ?? null}
             onExplainEquation={onExplainEquation}
+            onCitationClick={onCitationClick}
             onRefClick={onRefClick}
           />
         );
@@ -720,6 +728,7 @@ function SectionView({
           onExplainEquation={onExplainEquation}
           highlightsByBlock={highlightsByBlock}
           onAnnotationClick={onAnnotationClick}
+          onCitationClick={onCitationClick}
           onRefClick={onRefClick}
           hlBlockId={hlBlockId}
           pendingHighlightQuery={pendingHighlightQuery}
@@ -735,11 +744,13 @@ function BlockView({
   block,
   unit,
   onExplainEquation,
+  onCitationClick,
   onRefClick,
 }: {
   block: DocBlock;
   unit: TranslationUnitItem | null;
   onExplainEquation: (latex: string) => void;
+  onCitationClick?: (refId: string) => void;
   onRefClick?: (ref: string, kind?: string | null) => void;
 }) {
   switch (block.type) {
@@ -763,7 +774,12 @@ function BlockView({
     case "figure":
     case "table": {
       return (
-        <FigureTableBlock block={block} unit={unit} onRefClick={onRefClick} />
+        <FigureTableBlock
+          block={block}
+          unit={unit}
+          onCitationClick={onCitationClick}
+          onRefClick={onRefClick}
+        />
       );
     }
     case "code":
@@ -797,9 +813,17 @@ function BlockView({
           }}
         >
           {text != null ? (
-            <TranslationInlineContent unit={unit} onRefClick={onRefClick} />
+            <TranslationInlineContent
+              unit={unit}
+              onCitationClick={onCitationClick}
+              onRefClick={onRefClick}
+            />
           ) : (
-            <InlineRenderer inlines={inlines} onRefClick={onRefClick} />
+            <InlineRenderer
+              inlines={inlines}
+              onCitationClick={onCitationClick}
+              onRefClick={onRefClick}
+            />
           )}
         </p>
       );

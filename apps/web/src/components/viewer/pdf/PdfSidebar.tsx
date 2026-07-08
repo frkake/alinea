@@ -166,15 +166,21 @@ export function PdfSidebar({
           borderTop: "1px solid var(--pr-border-pane)",
           display: "flex",
           alignItems: "center",
+          gap: 8,
           justifyContent: "space-between",
           fontSize: 10.5,
           color: "var(--pr-text-muted)",
+          minWidth: 0,
         }}
       >
-        <span>
+        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {pageCount ?? "…"} ページ · {pdf.fileSizeMb != null ? `${pdf.fileSizeMb} MB` : "…"}
         </span>
-        <a href={pdfDownloadHref} download style={{ color: "var(--pr-text-muted)", textDecoration: "none" }}>
+        <a
+          href={pdfDownloadHref}
+          download
+          style={{ color: "var(--pr-text-muted)", textDecoration: "none", flex: "none", whiteSpace: "nowrap" }}
+        >
           ⤓ 原文PDF
         </a>
       </div>

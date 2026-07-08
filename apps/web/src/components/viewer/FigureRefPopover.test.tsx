@@ -23,7 +23,7 @@ describe("FigureRefPopover (VT-VIEW-06)", () => {
     render(<FigureRefPopover figure={figure()} />);
     expect(screen.getByText("図2: 整流フローの軌道。")).toBeInTheDocument();
     expect(screen.getByText("Figure 2: Trajectories of rectified flows.")).toBeInTheDocument();
-    expect(screen.getByText("図の位置へ移動 →")).toBeInTheDocument();
+    expect(screen.getByText("図2の位置へ移動 →")).toBeInTheDocument();
     expect(screen.getByText("拡大")).toBeInTheDocument();
     expect(screen.getByText("この図を説明")).toBeInTheDocument();
   });
@@ -34,7 +34,7 @@ describe("FigureRefPopover (VT-VIEW-06)", () => {
     const onExplain = vi.fn();
     const fig = figure();
     render(<FigureRefPopover figure={fig} onJumpToFigure={onJump} onZoom={onZoom} onExplain={onExplain} />);
-    fireEvent.click(screen.getByText("図の位置へ移動 →"));
+    fireEvent.click(screen.getByText("図2の位置へ移動 →"));
     expect(onJump).toHaveBeenCalledWith("blk-fig2");
     fireEvent.click(screen.getByText("拡大"));
     expect(onZoom).toHaveBeenCalledWith(fig);

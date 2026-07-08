@@ -40,6 +40,20 @@ function fakePage(width: number, height: number): PdfPageLike {
   };
 }
 
+function fakePageWithLink(width: number, height: number): PdfPageLike {
+  return {
+    ...fakePage(width, height),
+    getAnnotations: () =>
+      Promise.resolve([
+        {
+          subtype: "Link",
+          url: "https://example.com/paper",
+          rect: [90, 622, 130, 662],
+        },
+      ]),
+  };
+}
+
 const doc: DocumentResponse = {
   revision_id: "rev-1",
   quality_level: "B",
@@ -111,6 +125,21 @@ describe("PdfCanvas (2a §4.2.4)", () => {
     );
   });
 
+  test("syncs the page wrapper, canvas css size, and pdf.js scale factor", async () => {
+    const { container } = render(<PdfCanvas {...baseProps({ scale: 1.25 })} />);
+    const pageEl = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('[data-pdf-page="5"]');
+      if (!el) throw new Error("page layer not rendered yet");
+      return el;
+    });
+    await waitFor(() => expect(pageEl.style.width).toBe("765px"));
+    const canvas = pageEl.querySelector("canvas");
+    expect(pageEl.style.height).toBe("990px");
+    expect(pageEl.style.getPropertyValue("--scale-factor")).toBe("1.25");
+    expect(canvas?.style.width).toBe("765px");
+    expect(canvas?.style.height).toBe("990px");
+  });
+
   test("clicking outside any bbox reports null (deselect)", async () => {
     const onSelectBlock = vi.fn();
     const { container } = render(<PdfCanvas {...baseProps({ onSelectBlock })} />);
@@ -132,6 +161,65 @@ describe("PdfCanvas (2a §4.2.4)", () => {
     });
     fireEvent.click(pageEl, { clientX: 5, clientY: 5 });
     await waitFor(() => expect(onSelectBlock).toHaveBeenCalledWith(null));
+  });
+
+  test("clicking a PDF link opens the href without using the transparent overlay for pointer events", async () => {
+    const onSelectBlock = vi.fn();
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const { container } = render(
+      <PdfCanvas
+        {...baseProps({
+          getPage: () => Promise.resolve(fakePageWithLink(612, 792)),
+          onSelectBlock,
+        })}
+      />,
+    );
+    const pageEl = await waitFor(() => {
+      const el = container.querySelector('[data-pdf-page="5"]');
+      if (!el) throw new Error("page layer not rendered yet");
+      return el;
+    });
+    vi.spyOn(pageEl, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 612,
+      bottom: 792,
+      width: 612,
+      height: 792,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    await waitFor(() => expect(container.querySelector(".yk-pdf-link-layer a")).toBeInTheDocument());
+    fireEvent.click(pageEl, { clientX: 100, clientY: 150 });
+    expect(open).toHaveBeenCalledWith("https://example.com/paper", "_blank", "noopener,noreferrer");
+    expect(onSelectBlock).not.toHaveBeenCalled();
+    open.mockRestore();
+  });
+
+  test("dragging text selection does not trigger bbox selection on the trailing click", async () => {
+    const onSelectBlock = vi.fn();
+    const { container } = render(<PdfCanvas {...baseProps({ onSelectBlock })} />);
+    const pageEl = await waitFor(() => {
+      const el = container.querySelector('[data-pdf-page="5"]');
+      if (!el) throw new Error("page layer not rendered yet");
+      return el;
+    });
+    vi.spyOn(pageEl, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 612,
+      bottom: 792,
+      width: 612,
+      height: 792,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    fireEvent.mouseDown(pageEl, { button: 0, clientX: 100, clientY: 150 });
+    fireEvent.mouseMove(pageEl, { clientX: 145, clientY: 150 });
+    fireEvent.click(pageEl, { clientX: 145, clientY: 150 });
+    expect(onSelectBlock).not.toHaveBeenCalled();
   });
 
   test("selecting a block shows the highlight + sync chip, and clicking the chip opens translation", async () => {

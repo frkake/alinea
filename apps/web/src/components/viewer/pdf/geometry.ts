@@ -101,9 +101,20 @@ export function clampZoom(zoom: number): number {
   return Math.round(clamped * 100) / 100;
 }
 
+export interface FitScaleOptions {
+  /** スクロール領域の左右余白や安全マージン。 */
+  horizontalPaddingPx?: number;
+  /** スクロール領域の上下余白や安全マージン。 */
+  verticalPaddingPx?: number;
+  /** 見開きのページ間 gap など、scale で変化しない横幅。 */
+  fixedWidthPx?: number;
+  /** scale で変化しない縦幅。 */
+  fixedHeightPx?: number;
+}
+
 /**
- * フィット倍率(2a §5.5)。`fit-width` = (中央列幅−166px)/ページ幅@scale1。
- * `fit-page` = 高さも収まる方の倍率。`actual` = 1.0。
+ * フィット倍率(2a §5.5)。`fit-width` はページ内容を利用可能幅へ合わせる。
+ * 見開き gap など CSS px 固定寸法は `fixedWidthPx` で控除してから倍率を出す。
  */
 export function computeFitScale(
   mode: "fit-width" | "fit-page" | "actual",
@@ -111,10 +122,17 @@ export function computeFitScale(
   containerHeight: number,
   pageWidthPt: number,
   pageHeightPt: number,
+  options: FitScaleOptions = {},
 ): number {
   if (mode === "actual") return 1;
-  const widthScale = Math.max(0.01, (containerWidth - 166) / pageWidthPt);
+  const horizontalPaddingPx = options.horizontalPaddingPx ?? 32;
+  const verticalPaddingPx = options.verticalPaddingPx ?? 40;
+  const fixedWidthPx = options.fixedWidthPx ?? 0;
+  const fixedHeightPx = options.fixedHeightPx ?? 0;
+  const availableWidth = containerWidth - horizontalPaddingPx - fixedWidthPx;
+  const availableHeight = containerHeight - verticalPaddingPx - fixedHeightPx;
+  const widthScale = Math.max(0.01, availableWidth / pageWidthPt);
   if (mode === "fit-width") return clampZoom(widthScale);
-  const heightScale = Math.max(0.01, (containerHeight - 40) / pageHeightPt);
+  const heightScale = Math.max(0.01, availableHeight / pageHeightPt);
   return clampZoom(Math.min(widthScale, heightScale));
 }

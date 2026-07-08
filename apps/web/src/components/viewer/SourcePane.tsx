@@ -393,6 +393,7 @@ function SourceBlock({
         lineHeight: 1.8,
         color: "var(--pr-text-en)",
         margin: "0 0 20px",
+        overflowWrap: "anywhere",
       }}
     >
       <InlineRenderer
