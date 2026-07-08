@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import httpx
+import structlog
 from fastapi import APIRouter, Query, Response
 from fastapi.responses import RedirectResponse
 from yakudoku_core.jobs.store import JobStore
@@ -36,6 +37,8 @@ from yakudoku_api.services.oauth import (
 from yakudoku_api.settings import ApiSettings
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+log = structlog.get_logger("yakudoku.auth")
 
 
 def _safe_next(value: str | None) -> str:
@@ -138,6 +141,11 @@ async def request_email_link(
     token = await session_service.create_email_link_token(r, body.email, next_path)
     link = f"{settings.app_base_url.rstrip('/')}/api/auth/email/verify?token={token}"
     await send_login_link(settings, to=body.email, link=link)
+    if not settings.is_production:
+        # 開発体験: メールは Mailpit に捕獲され実受信箱には届かないため、pnpm dev の
+        # ターミナルからそのままコピーしてログインできるようリンクを出力する
+        # (development のみ。トークンは短命・ローカル限定)。
+        await log.ainfo("email_login_link", to=body.email, url=link)
     return EmailRequestResponse(sent=True)
 
 
