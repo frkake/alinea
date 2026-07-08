@@ -120,4 +120,19 @@ describe("PdfSidebar (2a §4.2.2)", () => {
     expect(screen.getByText(/^12 ページ ·/)).toBeInTheDocument();
     pdfContext.numPages = 24;
   });
+
+  test("collapsed rail can reopen the PDF sidebar", () => {
+    const onToggle = vi.fn();
+    render(<PdfSidebar {...baseProps()} open={false} onToggle={onToggle} />);
+    expect(screen.getByLabelText("PDFサイドバーを開く")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("PDFサイドバーを開く"));
+    expect(onToggle).toHaveBeenCalledWith(true);
+  });
+
+  test("collapse button closes the PDF sidebar", () => {
+    const onToggle = vi.fn();
+    render(<PdfSidebar {...baseProps()} onToggle={onToggle} />);
+    fireEvent.click(screen.getByLabelText("PDFサイドバーを折りたたむ"));
+    expect(onToggle).toHaveBeenCalledWith(false);
+  });
 });

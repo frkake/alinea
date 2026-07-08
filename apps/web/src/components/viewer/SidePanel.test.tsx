@@ -85,6 +85,31 @@ describe("SidePanel tabs milestone=M1", () => {
     fireEvent.click(screen.getByRole("tab", { name: "チャット" }));
     expect(useViewerStore.getState().panelOpen).toBe(false);
   });
+
+  test("collapse button closes the open panel without relying on tab reclick", () => {
+    useViewerStore.setState({ activeTab: "figures" });
+    renderWithClient(<SidePanel milestone="M1" />);
+    fireEvent.click(screen.getByLabelText("サイドパネルを折りたたむ"));
+    expect(useViewerStore.getState().panelOpen).toBe(false);
+    expect(useViewerStore.getState().activeTab).toBe("figures");
+  });
+
+  test("closed panel keeps a rail that can reopen the active tab", () => {
+    useViewerStore.setState({ panelOpen: false, activeTab: "figures" });
+    renderWithClient(<SidePanel milestone="M1" />);
+    expect(screen.getByLabelText("サイドパネルを開く")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("サイドパネルを開く"));
+    expect(useViewerStore.getState().panelOpen).toBe(true);
+    expect(useViewerStore.getState().activeTab).toBe("figures");
+  });
+
+  test("closed rail opens a requested tab directly", () => {
+    useViewerStore.setState({ panelOpen: false, activeTab: "chat" });
+    renderWithClient(<SidePanel milestone="M1" />);
+    fireEvent.click(screen.getByLabelText("注釈を開く"));
+    expect(useViewerStore.getState().panelOpen).toBe(true);
+    expect(useViewerStore.getState().activeTab).toBe("annotations");
+  });
 });
 
 describe("SidePanel default milestone stays M0 (backward compatibility)", () => {

@@ -29,10 +29,19 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable;
 }
 
-function pageGroupsAround(page: number, pageCount: number | null, spread: boolean): (number | null)[][] {
+function pageGroupsForDocument(page: number, pageCount: number | null, spread: boolean): (number | null)[][] {
+  if (pageCount != null && pageCount > 0) {
+    if (!spread) return Array.from({ length: pageCount }, (_, i) => [i + 1]);
+    const groups: (number | null)[][] = [spreadPages(1, pageCount, true)];
+    for (let left = 2; left <= pageCount; left += 2) {
+      groups.push(spreadPages(left, pageCount, true));
+    }
+    return groups;
+  }
+
   if (!spread) {
     const start = Math.max(1, page - 1);
-    const end = pageCount == null ? page + 1 : Math.min(pageCount, page + 1);
+    const end = page + 1;
     const groups: (number | null)[][] = [];
     for (let p = start; p <= end; p += 1) groups.push([p]);
     return groups;
@@ -41,9 +50,7 @@ function pageGroupsAround(page: number, pageCount: number | null, spread: boolea
   const currentLeft = page <= 1 ? 1 : page % 2 === 0 ? page : page - 1;
   const previousLeft = currentLeft === 2 ? 1 : currentLeft - 2;
   const starts = [previousLeft, currentLeft, currentLeft + 2].filter((p) => p >= 1);
-  return starts
-    .filter((p) => pageCount == null || p <= pageCount)
-    .map((p) => spreadPages(p, pageCount, true));
+  return starts.map((p) => spreadPages(p, null, true));
 }
 
 /** PDF モード本文ペイン(2a §3.1・§5)。ツールバー+キャンバスを統括する。 */
@@ -165,16 +172,9 @@ export function PdfPane({
     if (fitMode) usePdfViewStore.setState({ zoom: resolvedScale });
   }, [fitMode, resolvedScale]);
 
-  const pageGroups = useMemo(() => pageGroupsAround(page, pdf.numPages, spread), [page, pdf.numPages, spread]);
+  const pageGroups = useMemo(() => pageGroupsForDocument(page, pdf.numPages, spread), [page, pdf.numPages, spread]);
   const sync = syncMap.pageToSection(page);
   const getPdfPage = pdf.getPage;
-
-  useEffect(() => {
-    for (const p of pageGroups.flat()) {
-      if (p == null || p === page) continue;
-      void getPdfPage(p).catch(() => undefined);
-    }
-  }, [pageGroups, page, getPdfPage]);
 
   const handleOpenInTranslation = () => {
     const target = selectedBlockId ?? syncMap.firstBlockOnPage(page);

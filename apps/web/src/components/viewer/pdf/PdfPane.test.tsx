@@ -115,6 +115,12 @@ describe("PdfPane (2a §5)", () => {
     expect(await screen.findByText("§2.2 Reflow")).toBeInTheDocument();
   });
 
+  test("renders all PDF page slots in the main viewer instead of only the current neighborhood", async () => {
+    const { container } = renderPane();
+    await screen.findByText("§2.2 Reflow");
+    expect(container.querySelectorAll("[data-pdf-page]")).toHaveLength(24);
+  });
+
   test("page navigation via the toolbar updates the store and replaces the URL with the new page", async () => {
     renderPane();
     await screen.findByText("§2.2 Reflow");

@@ -33,20 +33,38 @@ export function ResumeBanner({ sectionDisplay, savedAt, onResume, onDismiss }: R
       style={{
         position: "absolute",
         top: 14,
-        left: "50%",
-        transform: "translateX(-50%)",
+        left: 12,
+        right: 12,
+        maxWidth: 720,
+        margin: "0 auto",
         zIndex: "var(--z-banner)" as unknown as number,
         display: "flex",
+        flexWrap: "wrap",
         alignItems: "center",
-        gap: 12,
+        justifyContent: "center",
+        gap: "6px 8px",
+        minWidth: 0,
         background: "var(--pr-bg-card)",
         border: "1px solid var(--pr-border-control)",
-        borderRadius: 999,
+        borderRadius: 14,
         padding: "7px 8px 7px 16px",
         boxShadow: "var(--pr-shadow-banner)",
+        overflow: "hidden",
       }}
     >
-      <span style={{ fontSize: 12, color: "var(--pr-text-mid)" }}>
+      <span
+        title={`前回はここまで: ${sectionDisplay} · ${formatRelativeDay(savedAt)}`}
+        style={{
+          flex: "1 1 220px",
+          minWidth: 0,
+          maxWidth: "100%",
+          fontSize: 12,
+          color: "var(--pr-text-mid)",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
         前回はここまで: <b>{sectionDisplay}</b>
         <span style={{ color: "var(--pr-text-muted)" }}> · {formatRelativeDay(savedAt)}</span>
       </span>
@@ -56,7 +74,10 @@ export function ResumeBanner({ sectionDisplay, savedAt, onResume, onDismiss }: R
         style={{
           display: "inline-flex",
           alignItems: "center",
+          justifyContent: "center",
           height: 24,
+          maxWidth: "100%",
+          minWidth: 0,
           padding: "0 12px",
           borderRadius: 999,
           border: "none",
@@ -66,6 +87,10 @@ export function ResumeBanner({ sectionDisplay, savedAt, onResume, onDismiss }: R
           fontWeight: 600,
           fontFamily: "inherit",
           cursor: "pointer",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          flex: "0 1 auto",
         }}
       >
         続きから ↓
@@ -81,6 +106,7 @@ export function ResumeBanner({ sectionDisplay, savedAt, onResume, onDismiss }: R
           color: "var(--pr-text-muted)",
           padding: "0 6px",
           cursor: "pointer",
+          flex: "none",
         }}
       >
         ×

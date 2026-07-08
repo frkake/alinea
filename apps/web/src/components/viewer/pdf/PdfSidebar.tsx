@@ -21,6 +21,8 @@ export interface PdfSidebarProps {
   /** pdf.js 解決前のプレースホルダ(`viewer.revision.page_count`。2a §2.1 決定)。 */
   pageCountFallback: number | null;
   pdfDownloadHref: string;
+  open?: boolean;
+  onToggle?: (open: boolean) => void;
 }
 
 /**
@@ -35,6 +37,8 @@ export function PdfSidebar({
   onTranslateAppendix,
   pageCountFallback,
   pdfDownloadHref,
+  open = true,
+  onToggle,
 }: PdfSidebarProps) {
   const tab = usePdfViewStore((s) => s.sidebarTab);
   const setTab = usePdfViewStore((s) => s.setSidebarTab);
@@ -55,6 +59,19 @@ export function PdfSidebar({
   const regular = toc.filter((n) => !n.on_demand);
   const onDemand = toc.filter((n) => n.on_demand);
 
+  if (!open) {
+    return (
+      <PdfSidebarRail
+        tab={tab}
+        currentPage={currentPage}
+        onOpen={(nextTab) => {
+          setTab(nextTab);
+          onToggle?.(true);
+        }}
+      />
+    );
+  }
+
   return (
     <nav
       aria-label="PDF サイドバー"
@@ -70,13 +87,37 @@ export function PdfSidebar({
       }}
     >
       <div style={{ margin: "0 6px 10px" }}>
-        <SegmentedControl
-          options={SIDEBAR_TAB_OPTIONS}
-          value={tab}
-          onChange={setTab}
-          size="sm"
-          ariaLabel="目次/ページ"
-        />
+        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <SegmentedControl
+              options={SIDEBAR_TAB_OPTIONS}
+              value={tab}
+              onChange={setTab}
+              size="sm"
+              ariaLabel="目次/ページ"
+            />
+          </div>
+          <button
+            type="button"
+            aria-label="PDFサイドバーを折りたたむ"
+            title="PDFサイドバーを折りたたむ"
+            onClick={() => onToggle?.(false)}
+            style={{
+              width: 24,
+              height: 24,
+              flex: "none",
+              border: "none",
+              background: "transparent",
+              color: "var(--pr-text-faint)",
+              cursor: onToggle ? "pointer" : "default",
+              opacity: onToggle ? 1 : 0.35,
+              fontFamily: "inherit",
+              fontSize: 12,
+            }}
+          >
+            ⟨
+          </button>
+        </div>
       </div>
 
       {tab === "toc" ? (
@@ -184,6 +225,97 @@ export function PdfSidebar({
           ⤓ 原文PDF
         </a>
       </div>
+    </nav>
+  );
+}
+
+function PdfSidebarRail({
+  tab,
+  currentPage,
+  onOpen,
+}: {
+  tab: "toc" | "pages";
+  currentPage: number;
+  onOpen: (tab: "toc" | "pages") => void;
+}) {
+  return (
+    <nav
+      aria-label="PDF サイドバー"
+      style={{
+        width: 44,
+        flex: "none",
+        background: "var(--pr-bg-pane)",
+        borderRight: "1px solid var(--pr-border-pane)",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        padding: "10px 0",
+        gap: 8,
+      }}
+    >
+      <button
+        type="button"
+        aria-label="PDFサイドバーを開く"
+        title="PDFサイドバーを開く"
+        onClick={() => onOpen(tab)}
+        style={{
+          width: 28,
+          height: 28,
+          borderRadius: 6,
+          border: "1px solid var(--pr-border-control)",
+          background: "var(--pr-bg-inset)",
+          color: "var(--pr-text-sub)",
+          cursor: "pointer",
+          fontFamily: "inherit",
+          fontSize: 13,
+        }}
+      >
+        ⟩
+      </button>
+      <button
+        type="button"
+        aria-label="ページサムネイルを開く"
+        title="ページサムネイル"
+        onClick={() => onOpen("pages")}
+        style={{
+          width: 30,
+          minHeight: 28,
+          borderRadius: 6,
+          border: "none",
+          background: tab === "pages" ? "var(--pr-acc-s)" : "transparent",
+          color: tab === "pages" ? "var(--pr-acc)" : "var(--pr-text-sub2)",
+          boxShadow: tab === "pages" ? "inset 2px 0 var(--pr-acc)" : undefined,
+          cursor: "pointer",
+          fontFamily: "inherit",
+          fontSize: 10.5,
+          fontWeight: 700,
+          padding: "4px 0",
+          lineHeight: 1.1,
+        }}
+      >
+        {currentPage}
+      </button>
+      <button
+        type="button"
+        aria-label="PDF目次を開く"
+        title="PDF目次"
+        onClick={() => onOpen("toc")}
+        style={{
+          width: 30,
+          height: 28,
+          borderRadius: 6,
+          border: "none",
+          background: tab === "toc" ? "var(--pr-acc-s)" : "transparent",
+          color: tab === "toc" ? "var(--pr-acc)" : "var(--pr-text-sub2)",
+          boxShadow: tab === "toc" ? "inset 2px 0 var(--pr-acc)" : undefined,
+          cursor: "pointer",
+          fontFamily: "inherit",
+          fontSize: 11,
+          fontWeight: 700,
+        }}
+      >
+        目
+      </button>
     </nav>
   );
 }

@@ -207,6 +207,8 @@ export function ViewerShell({
               onTranslateAppendix={onTranslateAppendix}
               pageCountFallback={viewer.revision.page_count}
               pdfDownloadHref={`/api/papers/${paperId}/pdf`}
+              open={tocOpen}
+              onToggle={setTocOpen}
             />
             <PdfPane
               itemId={itemId}

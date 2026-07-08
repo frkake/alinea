@@ -194,13 +194,21 @@ function TocPane({
           padding: "8px 8px 2px",
           borderTop: "1px solid var(--pr-border-pane)",
           display: "flex",
+          gap: 8,
           justifyContent: "space-between",
           fontSize: 10.5,
           color: "var(--pr-text-muted)",
+          minWidth: 0,
         }}
       >
-        {trackReadingTime ? <span>今日の読書 {todayReadingMinutes}分</span> : <span />}
-        <span>位置は自動保存</span>
+        {trackReadingTime ? (
+          <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            今日の読書 {todayReadingMinutes}分
+          </span>
+        ) : (
+          <span />
+        )}
+        <span style={{ flex: "none", whiteSpace: "nowrap" }}>位置は自動保存</span>
       </div>
     </nav>
   );

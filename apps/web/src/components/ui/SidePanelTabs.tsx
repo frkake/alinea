@@ -30,16 +30,19 @@ export interface SidePanelTabsProps {
   onChange: (tab: SidePanelTabId) => void;
   /** 表示するタブ(既定は 6 タブ全て)。M0 は消費側が chat/figures/info の 3 タブに絞る。 */
   tabs?: readonly SidePanelTabId[];
+  /** 親コンテナ側で罫線を持つ場合は false。 */
+  borderBottom?: boolean;
 }
 
-export function SidePanelTabs({ active, counts, onChange, tabs = ALL_TABS }: SidePanelTabsProps) {
+export function SidePanelTabs({ active, counts, onChange, tabs = ALL_TABS, borderBottom = true }: SidePanelTabsProps) {
   return (
     <div
       role="tablist"
       style={{
         display: "flex",
-        borderBottom: "1px solid var(--pr-border-soft)",
+        borderBottom: borderBottom ? "1px solid var(--pr-border-soft)" : undefined,
         padding: "0 6px",
+        minWidth: 0,
       }}
     >
       {tabs.map((tab) => {
