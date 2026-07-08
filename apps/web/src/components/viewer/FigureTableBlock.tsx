@@ -107,6 +107,11 @@ function parseTable(raw: string | null | undefined): TableRows | null {
   return parseHtmlTable(raw) ?? parseLatexTable(raw);
 }
 
+function renderableFigureHtml(raw: string | null | undefined): string | null {
+  if (!raw || !/<svg[\s>]/i.test(raw)) return null;
+  return raw;
+}
+
 function renderCellText(text: string): ReactNode {
   const parts: ReactNode[] = [];
   let index = 0;
@@ -182,6 +187,7 @@ export function FigureTableBlock({
   onRefClick,
 }: FigureTableBlockProps) {
   const rows = block.type === "table" ? parseTable(block.raw) : null;
+  const figureHtml = block.type === "figure" && !block.asset_url ? renderableFigureHtml(block.raw) : null;
   const hasCaption = (block.caption ?? []).length > 0;
   const hasTranslation = showTranslatedCaption && hasTranslatedText(unit);
 
@@ -209,6 +215,21 @@ export function FigureTableBlock({
             objectFit: "contain",
             margin: "0 auto 10px",
           }}
+        />
+      ) : null}
+      {figureHtml ? (
+        <div
+          aria-label={mediaLabel(block)}
+          role="img"
+          style={{
+            display: "block",
+            maxWidth: "100%",
+            maxHeight: 540,
+            overflow: "auto",
+            margin: "0 auto 10px",
+            textAlign: "center",
+          }}
+          dangerouslySetInnerHTML={{ __html: figureHtml }}
         />
       ) : null}
       {rows ? <TableView rows={rows} /> : null}

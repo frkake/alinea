@@ -713,9 +713,9 @@ async def test_paper_pdf_missing_asset_404(
 
 
 # ---------------------------------------------------------------------------
-# GET /api/assets/{asset_id}(302)
+# GET /api/assets/{asset_id}
 # ---------------------------------------------------------------------------
-async def test_asset_redirects_for_owner(
+async def test_asset_serves_for_owner(
     client: AsyncClient,
     db_session: AsyncSession,
     redis_client: Any,
@@ -734,8 +734,52 @@ async def test_asset_redirects_for_owner(
     key = f"figures/{paper.id}/rev-1/blk-2-1-fig1.png"
     asset_id = encode_asset_id(key)
     r = await client.get(f"/api/assets/{asset_id}", follow_redirects=False)
-    assert r.status_code == 302
-    assert r.headers["location"].startswith(f"https://signed.example/assets/{key}")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("image/png")
+    assert r.headers["content-disposition"] == 'inline; filename="blk-2-1-fig1.png"'
+    assert r.content == _MINIMAL_PDF
+
+
+async def test_legacy_asset_key_serves_when_referenced_by_revision(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+    fake_storage: None,
+) -> None:
+    user = await _login(client, db_session, redis_client, unique_email)
+    paper = Paper(arxiv_id=_rand_arxiv(), title="Legacy Asset Paper", visibility="public")
+    db_session.add(paper)
+    await db_session.flush()
+    created_papers.append(paper.id)
+    key = "figures/fig-1.png"
+    db_session.add(LibraryItem(user_id=user.id, paper_id=paper.id, status="reading"))
+    db_session.add(
+        DocumentRevision(
+            paper_id=paper.id,
+            source_version="v1",
+            quality_level="A",
+            source_format="latex",
+            parser_version="test",
+            content={
+                "quality_level": "A",
+                "sections": [
+                    {
+                        "id": "sec-1",
+                        "blocks": [{"id": "blk-fig1", "type": "figure", "asset_key": key}],
+                    }
+                ],
+            },
+        )
+    )
+    await db_session.commit()
+
+    r = await client.get(f"/api/assets/{encode_asset_id(key)}", follow_redirects=False)
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("image/png")
+    assert r.headers["content-disposition"] == 'inline; filename="fig-1.png"'
+    assert r.content == _MINIMAL_PDF
 
 
 async def test_asset_bad_id_404(

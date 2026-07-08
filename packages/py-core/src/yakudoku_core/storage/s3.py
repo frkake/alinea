@@ -1,13 +1,15 @@
 """aioboto3 による S3 互換ストレージのラッパとキー設計。
 
 バケットは 2 つ(plans/00 §3 決定):
-- sources: SourceAsset 原本(LaTeX tar・PDF・HTML・metadata)。削除不可・再処理原資。
+- sources: SourceAsset 原本(LaTeX tar・PDF・HTML・metadata)。
+  Paper 削除時以外は再処理原資として保持。
 - assets: 派生物(図・サムネ・概要図 SVG・解説図ラスター・エクスポート)。再生成可。
 キー設計は plans/01 §7.1 に準拠。全オブジェクト非公開。配信は API の署名付き URL(§7.3)。
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 import aioboto3
@@ -100,6 +102,20 @@ class S3Storage:
             async with resp["Body"] as stream:
                 data: bytes = await stream.read()
                 return data
+
+    async def delete_many(self, bucket: str, keys: Iterable[str]) -> None:
+        unique_keys = [key for key in dict.fromkeys(keys) if key]
+        if not unique_keys:
+            return
+        async with self._client_ctx() as client:
+            for i in range(0, len(unique_keys), 1000):
+                await client.delete_objects(
+                    Bucket=bucket,
+                    Delete={
+                        "Objects": [{"Key": key} for key in unique_keys[i : i + 1000]],
+                        "Quiet": True,
+                    },
+                )
 
     async def presign_get(self, bucket: str, key: str, expires_in: int = 600) -> str:
         """署名付き GET URL を発行する(既定 600 秒。plans/03 §22.1)。

@@ -15,6 +15,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -30,17 +31,50 @@ from yakudoku_core.db.models import (
     ChatThread,
     CollectionEntry,
     DocumentRevision,
+    ExplainerFigure,
     Glossary,
     GlossaryTerm,
     Job,
     LibraryItem,
     Note,
+    Notification,
+    OverviewFigure,
     Paper,
     ReadingSession,
     ResourceLink,
+    SourceAsset,
     User,
     VocabEntry,
 )
+
+
+class _RecordingStorage:
+    sources_bucket = "sources"
+    assets_bucket = "assets"
+
+    def __init__(self) -> None:
+        self.deleted: list[tuple[str, str]] = []
+
+    async def delete_many(self, bucket: str, keys: Any) -> None:
+        key_list = list(keys)
+        if key_list and _storage_failure is not None:
+            raise _storage_failure
+        self.deleted.extend((bucket, key) for key in key_list)
+
+
+_last_storage: _RecordingStorage | None = None
+_storage_failure: Exception | None = None
+
+
+def _storage_override() -> _RecordingStorage:
+    global _last_storage
+    _last_storage = _RecordingStorage()
+    return _last_storage
+
+
+def _storage_deleted() -> set[tuple[str, str]]:
+    assert _last_storage is not None
+    return set(_last_storage.deleted)
 
 
 def _build_app() -> FastAPI:
@@ -62,6 +96,7 @@ def _build_app() -> FastAPI:
     app.add_middleware(OriginCsrfMiddleware, settings=s)
     app.add_middleware(RateLimitMiddleware, redis_factory=get_redis)
     app.add_middleware(RequestIdMiddleware)
+    app.dependency_overrides[library_items.get_storage] = _storage_override
     app.include_router(library_items.router)
     app.include_router(settings_router.router)
     app.include_router(llm_settings.router)
@@ -395,6 +430,155 @@ async def test_delete_removes_item_and_private_paper(
     assert gone.status_code == 404
 
 
+async def test_delete_removes_unreferenced_public_paper_and_storage_objects(
+    auth: tuple[AsyncClient, str], db_session: AsyncSession, factories: Any
+) -> None:
+    client, uid = auth
+    item_id = await _mk_item(db_session, uid)
+    item = await db_session.get(LibraryItem, item_id)
+    assert item is not None
+    paper = await db_session.get(Paper, item.paper_id)
+    assert paper is not None
+    revision = await db_session.get(DocumentRevision, paper.latest_revision_id)
+    assert revision is not None
+
+    paper.visibility = "public"
+    paper.owner_user_id = None
+    paper_id = str(paper.id)
+    revision_id = str(revision.id)
+    paper_thumbnail_key = f"thumbnails/{paper_id}/card.webp"
+    retina_thumbnail_key = f"thumbnails/{paper_id}/card@2x.webp"
+    item_thumbnail_key = f"thumbnails/{paper_id}/item.webp"
+    figure_key = f"figures/{paper_id}/{revision_id}/fig-1.png"
+    source_key = f"sources/{paper_id}/v1/original.pdf"
+    overview_svg_key = f"renders/overview/{item_id}/v1.svg"
+    overview_image_key = f"renders/overview/{item_id}/v1.png"
+    explainer_image_key = f"renders/explainer/{item_id}/v1.png"
+
+    paper.thumbnail_key = paper_thumbnail_key
+    item.thumbnail_key = item_thumbnail_key
+    revision.content = {
+        "quality_level": "A",
+        "sections": [
+            {
+                "id": "sec-1",
+                "title": "Section",
+                "blocks": [{"id": "fig-1", "type": "figure", "asset_key": figure_key}],
+            }
+        ],
+    }
+    db_session.add(
+        SourceAsset(
+            paper_id=paper_id,
+            kind="pdf",
+            source_version="v1",
+            storage_key=source_key,
+            content_type="application/pdf",
+            byte_size=10,
+        )
+    )
+    article = await factories.make_article(
+        db_session, library_item=item, with_overview_figure=False
+    )
+    db_session.add(
+        OverviewFigure(
+            id=str(uuid.uuid4()),
+            article_id=str(article.id),
+            version=1,
+            is_current=True,
+            render_mode="svg",
+            dsl={"cards": [], "connectors": [], "footer": {"summary": ""}},
+            svg_storage_key=overview_svg_key,
+            image_storage_key=overview_image_key,
+        )
+    )
+    db_session.add(
+        ExplainerFigure(
+            id=str(uuid.uuid4()),
+            article_id=str(article.id),
+            slot=0,
+            version=1,
+            is_current=True,
+            provider="google",
+            model="gemini-3.1-flash-image",
+            prompt="",
+            image_storage_key=explainer_image_key,
+        )
+    )
+    await db_session.commit()
+
+    r = await client.delete(f"/api/library-items/{item_id}")
+
+    assert r.status_code == 204
+    assert await _count(db_session, Paper, Paper.id == paper_id) == 0
+    assert await _count(db_session, SourceAsset, SourceAsset.paper_id == paper_id) == 0
+    assert {
+        ("sources", source_key),
+        ("assets", paper_thumbnail_key),
+        ("assets", retina_thumbnail_key),
+        ("assets", item_thumbnail_key),
+        ("assets", figure_key),
+        ("assets", overview_svg_key),
+        ("assets", overview_image_key),
+        ("assets", explainer_image_key),
+    } <= _storage_deleted()
+
+
+async def test_delete_keeps_public_paper_referenced_by_other_item(
+    auth: tuple[AsyncClient, str], db_session: AsyncSession
+) -> None:
+    client, uid = auth
+    item_id = await _mk_item(db_session, uid)
+    item = await db_session.get(LibraryItem, item_id)
+    assert item is not None
+    paper = await db_session.get(Paper, item.paper_id)
+    assert paper is not None
+    paper.visibility = "public"
+    paper.owner_user_id = None
+    other = await upsert_user_by_email(
+        db_session, f"shared-{uuid.uuid4().hex}@example.com", provider="email"
+    )
+    other_item = LibraryItem(user_id=other.id, paper_id=paper.id, status="planned")
+    db_session.add(other_item)
+    await db_session.flush()
+    other_item_id = str(other_item.id)
+    paper_id = str(paper.id)
+    await db_session.commit()
+
+    r = await client.delete(f"/api/library-items/{item_id}")
+
+    assert r.status_code == 204
+    assert await _count(db_session, LibraryItem, LibraryItem.id == item_id) == 0
+    assert await _count(db_session, LibraryItem, LibraryItem.id == other_item_id) == 1
+    assert await _count(db_session, Paper, Paper.id == paper_id) == 1
+
+
+async def test_delete_rolls_back_when_storage_delete_fails(
+    auth: tuple[AsyncClient, str], db_session: AsyncSession
+) -> None:
+    client, uid = auth
+    item_id = await _mk_item(db_session, uid)
+    item = await db_session.get(LibraryItem, item_id)
+    assert item is not None
+    paper = await db_session.get(Paper, item.paper_id)
+    assert paper is not None
+    paper_id = str(paper.id)
+    paper.thumbnail_key = f"thumbnails/{paper_id}/card.webp"
+    await db_session.commit()
+
+    global _storage_failure
+    _storage_failure = RuntimeError("s3 down")
+    try:
+        with pytest.raises(RuntimeError, match="s3 down"):
+            await client.delete(f"/api/library-items/{item_id}")
+    finally:
+        _storage_failure = None
+
+    await db_session.rollback()
+    assert await _count(db_session, LibraryItem, LibraryItem.id == item_id) == 1
+    assert await _count(db_session, Paper, Paper.id == paper_id) == 1
+
+
 async def test_delete_cascades_related_personal_data(
     auth: tuple[AsyncClient, str], db_session: AsyncSession, factories: Any
 ) -> None:
@@ -443,6 +627,13 @@ async def test_delete_cascades_related_personal_data(
     thread_id = str(thread.id)
     article_id = str(article.id)
     glossary_id = str(glossary.id)
+    db_session.add(
+        Notification(
+            user_id=uid,
+            kind="translation_complete",
+            payload={"library_item_id": item_id, "paper_title": paper.title},
+        )
+    )
     await db_session.commit()
 
     r = await client.delete(f"/api/library-items/{item_id}")
@@ -464,6 +655,14 @@ async def test_delete_cascades_related_personal_data(
     assert await _count(db_session, Job, Job.library_item_id == item_id) == 0
     assert await _count(db_session, Glossary, Glossary.id == glossary_id) == 0
     assert await _count(db_session, GlossaryTerm, GlossaryTerm.glossary_id == glossary_id) == 0
+    assert (
+        await _count(
+            db_session,
+            Notification,
+            Notification.payload["library_item_id"].astext == item_id,
+        )
+        == 0
+    )
 
 
 async def test_delete_allows_extension_token(

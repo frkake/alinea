@@ -188,6 +188,26 @@ async def _insert_source_assets(session: AsyncSession, storage: S3Storage, paper
     thumb_key = StorageKeys.thumbnail(paper_id)
     await _upload_best_effort(storage, storage.assets_bucket, thumb_key, thumb, "image/png")
 
+    # 本文・記事フィクスチャが参照する図アセット(legacy key)。既存 document.json は
+    # `figures/fig-1.png` 形式を持つため、同じキーに実体を補填する。
+    for path in sorted((FIXTURE_DIR / "assets").glob("fig-*.png")):
+        await _upload_best_effort(
+            storage,
+            storage.assets_bucket,
+            f"figures/{path.name}",
+            path.read_bytes(),
+            "image/png",
+        )
+    explainer = FIXTURE_DIR / "assets" / "explainer-0.png"
+    if explainer.exists():
+        await _upload_best_effort(
+            storage,
+            storage.assets_bucket,
+            "renders/explainer/seed/v1.png",
+            explainer.read_bytes(),
+            "image/png",
+        )
+
 
 # --- translation sets / units ------------------------------------------------------
 def _glossary_snapshot() -> list[dict[str, Any]]:

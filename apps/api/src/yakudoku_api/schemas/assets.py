@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import uuid
 
 
 def encode_asset_id(storage_key: str) -> str:
@@ -39,5 +40,10 @@ def paper_id_from_key(storage_key: str) -> str | None:
     """assets キー(``figures/{pid}/…`` / ``thumbnails/{pid}/…``)から paper_id を取り出す。"""
     parts = storage_key.split("/")
     if len(parts) >= 2 and parts[0] in {"figures", "thumbnails"}:
-        return parts[1] or None
+        candidate = parts[1]
+        try:
+            uuid.UUID(candidate)
+        except ValueError:
+            return None
+        return candidate
     return None

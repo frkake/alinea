@@ -31,4 +31,17 @@ describe("FigureTableBlock", () => {
     expect(screen.getByText("Ours")).toBeInTheDocument();
     expect(screen.getByText("Scores.")).toBeInTheDocument();
   });
+
+  test("renders inline SVG figure raw content when no asset URL exists", () => {
+    const block: DocBlock = {
+      id: "blk-svg",
+      type: "figure",
+      number: "3",
+      raw: '<div class="ltx_flex_figure"><svg width="40" height="20"><title>chart</title></svg></div>',
+      caption: [{ t: "text", v: "Inline chart." }],
+    };
+    render(<FigureTableBlock block={block} />);
+    expect(screen.getByRole("img", { name: "図3" })).toContainHTML("<svg");
+    expect(screen.getByText("Inline chart.")).toBeInTheDocument();
+  });
 });

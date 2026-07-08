@@ -13,24 +13,31 @@ API 列挙と一致するため、ルータ層での変換は不要(plans/11 §8
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import Integer, and_, case, cast, delete, extract, func, or_, select, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.sql.elements import ColumnElement
 from yakudoku_core.db.models import (
+    Article,
     Collection,
     CollectionEntry,
     DocumentRevision,
+    ExplainerFigure,
     Glossary,
     LibraryItem,
+    Notification,
+    OverviewFigure,
     Paper,
     SavedFilter,
+    SourceAsset,
 )
 from yakudoku_core.document.blocks import DocumentContent
+from yakudoku_core.storage.s3 import S3Storage, StorageKeys
 
 from yakudoku_api.deps import CurrentUser, CurrentUserOrExt, DbDep, RedisDep
 from yakudoku_api.errors import ProblemException
@@ -67,8 +74,112 @@ from yakudoku_api.services.reading_sessions import (
     ReadingHeartbeatResponse,
     record_heartbeat,
 )
+from yakudoku_api.settings import get_api_settings
 
 router = APIRouter(tags=["library-items"])
+logger = logging.getLogger(__name__)
+
+
+def get_storage() -> S3Storage:
+    return S3Storage(get_api_settings())
+
+
+StorageDep = Annotated[S3Storage, Depends(get_storage)]
+_ASSET_STORAGE_PREFIXES = ("figures/", "renders/", "thumbnails/")
+_ASSET_KEY_FIELDS = {"asset_key", "storage_key", "image_storage_key", "svg_storage_key"}
+
+
+def _add_storage_key(keys: set[str], key: str | None) -> None:
+    if key:
+        keys.add(key)
+
+
+def _asset_keys_from_json(value: Any) -> set[str]:
+    keys: set[str] = set()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for name, child in node.items():
+                if (
+                    name in _ASSET_KEY_FIELDS
+                    and isinstance(child, str)
+                    and child.startswith(_ASSET_STORAGE_PREFIXES)
+                ):
+                    keys.add(child)
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(value)
+    return keys
+
+
+async def _article_asset_keys(db: DbDep, library_item_id: str) -> set[str]:
+    rows = await db.execute(select(Article.id).where(Article.library_item_id == library_item_id))
+    article_ids = list(rows.scalars())
+    if not article_ids:
+        return set()
+
+    keys: set[str] = set()
+    overview_rows = await db.execute(
+        select(OverviewFigure.svg_storage_key, OverviewFigure.image_storage_key).where(
+            OverviewFigure.article_id.in_(article_ids)
+        )
+    )
+    for svg_key, image_key in overview_rows.all():
+        _add_storage_key(keys, svg_key)
+        _add_storage_key(keys, image_key)
+
+    explainer_rows = await db.execute(
+        select(ExplainerFigure.image_storage_key).where(
+            ExplainerFigure.article_id.in_(article_ids)
+        )
+    )
+    for image_key in explainer_rows.scalars():
+        _add_storage_key(keys, image_key)
+    return keys
+
+
+async def _paper_storage_keys(db: DbDep, paper: Paper) -> tuple[set[str], set[str]]:
+    source_keys: set[str] = set()
+    asset_keys: set[str] = set()
+
+    source_rows = await db.execute(
+        select(SourceAsset.storage_key).where(SourceAsset.paper_id == paper.id)
+    )
+    for key in source_rows.scalars():
+        _add_storage_key(source_keys, key)
+
+    revision_rows = await db.execute(
+        select(DocumentRevision.content).where(DocumentRevision.paper_id == paper.id)
+    )
+    for content in revision_rows.scalars():
+        asset_keys.update(_asset_keys_from_json(content))
+
+    if paper.thumbnail_key:
+        _add_storage_key(asset_keys, paper.thumbnail_key)
+        _add_storage_key(asset_keys, StorageKeys.thumbnail(str(paper.id)))
+        _add_storage_key(asset_keys, StorageKeys.thumbnail(str(paper.id), retina=True))
+    return source_keys, asset_keys
+
+
+def _is_paper_scoped_thumbnail(key: str, paper_id: str, paper: Paper | None) -> bool:
+    return key == (paper.thumbnail_key if paper is not None else None) or key.startswith(
+        f"thumbnails/{paper_id}/"
+    )
+
+
+async def _delete_storage_objects(
+    storage: S3Storage, *, source_keys: Iterable[str], asset_keys: Iterable[str]
+) -> None:
+    try:
+        await storage.delete_many(storage.sources_bucket, source_keys)
+        await storage.delete_many(storage.assets_bucket, asset_keys)
+    except Exception:
+        logger.warning("failed to delete library item storage objects", exc_info=True)
+        raise
+
 
 # --- 列挙・クイックフィルタ合成(docs/06 §1・plans/03 §1.6) --------------------------
 STATUSES = ("planned", "up_next", "reading", "done", "reread", "on_hold")
@@ -678,24 +789,44 @@ async def patch_item(
 # ベストエフォートで中断(main.py の job_gone_after_cancel 経路)。
 # ============================================================================
 @router.delete("/api/library-items/{item_id}", status_code=204, operation_id="libraryItems_delete")
-async def delete_item(item_id: str, user: CurrentUserOrExt, db: DbDep) -> Response:
+async def delete_item(
+    item_id: str, user: CurrentUserOrExt, db: DbDep, storage: StorageDep
+) -> Response:
     item = await _get_owned(db, user.id, item_id)
-    paper_id = item.paper_id
-    await db.execute(delete(Glossary).where(Glossary.library_item_id == item_id))
-    await db.delete(item)  # 配下は FK ON DELETE CASCADE で消える
-    await db.flush()
-    # private Paper で他参照が無ければ Paper ごと削除(§5.5・docs/01 §13)。
+    paper_id = str(item.paper_id)
     paper = await db.get(Paper, paper_id)
-    if paper is not None and paper.visibility == "private":
-        remaining = (
-            await db.execute(
-                select(func.count())
-                .select_from(LibraryItem)
-                .where(LibraryItem.paper_id == paper_id)
-            )
-        ).scalar_one()
-        if remaining == 0:
-            await db.delete(paper)
+    remaining = (
+        await db.execute(
+            select(func.count())
+            .select_from(LibraryItem)
+            .where(LibraryItem.paper_id == paper_id, LibraryItem.id != item_id)
+        )
+    ).scalar_one()
+    delete_paper = int(remaining) == 0
+
+    source_keys: set[str] = set()
+    asset_keys = await _article_asset_keys(db, item_id)
+    if delete_paper:
+        if paper is not None:
+            paper_source_keys, paper_asset_keys = await _paper_storage_keys(db, paper)
+            source_keys.update(paper_source_keys)
+            asset_keys.update(paper_asset_keys)
+        _add_storage_key(asset_keys, item.thumbnail_key)
+    elif item.thumbnail_key and not _is_paper_scoped_thumbnail(item.thumbnail_key, paper_id, paper):
+        _add_storage_key(asset_keys, item.thumbnail_key)
+
+    await db.execute(delete(Glossary).where(Glossary.library_item_id == item_id))
+    await db.execute(
+        delete(Notification).where(
+            Notification.user_id == user.id,
+            Notification.payload["library_item_id"].astext == item_id,
+        )
+    )
+    await db.delete(item)  # 配下は FK ON DELETE CASCADE で消える
+    if delete_paper and paper is not None:
+        await db.delete(paper)
+    await db.flush()
+    await _delete_storage_objects(storage, source_keys=source_keys, asset_keys=asset_keys)
     await db.commit()
     return Response(status_code=204)
 

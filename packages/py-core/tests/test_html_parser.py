@@ -229,6 +229,32 @@ def test_parser_version_and_quality() -> None:
     assert doc.source_format == "arxiv_html"
 
 
+def test_inline_svg_figure_raw_is_preserved() -> None:
+    doc = parse_arxiv_html(
+        """
+        <article class="ltx_document">
+          <section class="ltx_section">
+            <h2 class="ltx_title">Results</h2>
+            <figure id="S1.F1" class="ltx_figure">
+              <div class="ltx_flex_figure">
+                <svg id="chart" width="120" height="60"><path d="M0 50 L100 10"></path></svg>
+              </div>
+              <figcaption class="ltx_caption">
+                <span class="ltx_tag ltx_tag_figure">Figure 1: </span>Inline SVG chart.
+              </figcaption>
+            </figure>
+          </section>
+        </article>
+        """
+    )
+    fig = next(b for b in doc.blocks if b.type == "figure")
+
+    assert fig.asset_key is None
+    assert fig.raw is not None
+    assert "<svg" in fig.raw
+    assert "chart" in fig.raw
+
+
 def test_to_document_content_roundtrip() -> None:
     doc = _doc()
     content = doc.to_document_content()

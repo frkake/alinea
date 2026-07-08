@@ -24,6 +24,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
+import fitz
 import httpx
 import pytest
 import pytest_asyncio
@@ -34,12 +35,14 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 from yakudoku_core.arxiv.fetch import RedisLike
+from yakudoku_core.arxiv.ids import normalize_arxiv_id
 from yakudoku_core.db.models import DocumentRevision, SourceAsset
 from yakudoku_core.document.blocks import DocumentContent
 from yakudoku_core.ingest import build_timeline
 from yakudoku_core.jobs.store import JobStore
 from yakudoku_core.settings import CoreSettings
 from yakudoku_llm.router import LLMRouter
+from yakudoku_worker.pipeline import _html_figure_asset_url
 from yakudoku_worker.tasks.ingest import ingest_paper
 
 # --------------------------------------------------------------------------- #
@@ -57,7 +60,7 @@ _LATEX_MAIN_TEX = (
     "E = mc^2\n"
     "\\end{equation}\n"
     "\\begin{figure}\n"
-    "\\includegraphics{mock-figure.png}\n"
+    "\\includegraphics{mock-figure.pdf}\n"
     "\\caption{A mock figure for asset persistence.}\n"
     "\\label{fig:mock}\n"
     "\\end{figure}\n"
@@ -65,6 +68,15 @@ _LATEX_MAIN_TEX = (
     "The method section describes the approach in detail for testing purposes here.\n"
     "\\end{document}\n"
 )
+
+
+def _tiny_pdf_figure() -> bytes:
+    doc = fitz.open()
+    page = doc.new_page(width=90, height=45)
+    page.insert_text((10, 25), "figure")
+    data = doc.tobytes()
+    doc.close()
+    return data
 
 
 def _build_latex_archive() -> bytes:
@@ -75,6 +87,11 @@ def _build_latex_archive() -> bytes:
         info.size = len(data)
         info.mtime = 0
         tar.addfile(info, io.BytesIO(data))
+        fig = _tiny_pdf_figure()
+        fig_info = tarfile.TarInfo(name="mock-figure.pdf")
+        fig_info.size = len(fig)
+        fig_info.mtime = 0
+        tar.addfile(fig_info, io.BytesIO(fig))
     return gzip.compress(buf.getvalue(), mtime=0)
 
 
@@ -211,6 +228,15 @@ async def _source_asset_kinds(db: AsyncSession, paper_id: str) -> set[str]:
 
 
 # ============================ LaTeX 優先経路(成功時) ============================
+
+
+def test_html_figure_asset_url_does_not_duplicate_version_prefix() -> None:
+    ref = normalize_arxiv_id("2607.02963v1")
+    settings = CoreSettings(yakudoku_arxiv_base_url="https://arxiv.org")
+
+    url = _html_figure_asset_url(settings, ref, "2607.02963v1/x1.png")
+
+    assert url == "https://arxiv.org/html/2607.02963v1/x1.png"
 
 
 async def test_ingest_prefers_latex_source_when_available(

@@ -43,6 +43,11 @@ _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 # 見出しタグ番号から除く前置ラベル語(付録は番号 "A" に正規化。plans/05 §4.2)。
 _LABEL_WORD = re.compile(r"^(?:appendix|appendices|section|chapter|part)\s+", re.IGNORECASE)
 _PATH_UNSAFE = re.compile(r"[^0-9A-Za-z-]")
+_SCRIPT_TAG = re.compile(r"<script\b[^>]*>.*?</script>", re.IGNORECASE | re.DOTALL)
+_EVENT_HANDLER_ATTR = re.compile(r"\s+on[a-zA-Z]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)")
+_JS_URL_ATTR = re.compile(
+    r"\s+(?:href|xlink:href)\s*=\s*(['\"])\s*javascript:[\s\S]*?\1", re.IGNORECASE
+)
 
 # reference_entry 構造化(plans/05 §4.2.1)。
 _ARXIV_RE = re.compile(
@@ -112,6 +117,16 @@ def _classes(node: LexborNode) -> frozenset[str]:
     if not cls:
         return frozenset()
     return frozenset(str(cls).split())
+
+
+def _safe_inline_figure_html(html: str | None) -> str | None:
+    """arXiv HTML 内の inline SVG 図を本文表示用に最小限サニタイズして保持する。"""
+    if not html or "<svg" not in html.lower():
+        return None
+    cleaned = _SCRIPT_TAG.sub("", html)
+    cleaned = _EVENT_HANDLER_ATTR.sub("", cleaned)
+    cleaned = _JS_URL_ATTR.sub("", cleaned)
+    return cleaned
 
 
 def _element_children(node: LexborNode) -> list[LexborNode]:
@@ -392,11 +407,16 @@ class _ArxivHtmlParser:
     def _figure(self, node: LexborNode) -> Block:
         img = node.css_first("img.ltx_graphics") or node.css_first("img")
         src = (img.attributes.get("src") if img is not None else None) or None
+        raw = None
+        if src is None:
+            visual = node.css_first(".ltx_flex_figure") or node.css_first("svg")
+            raw = _safe_inline_figure_html(visual.html if visual is not None else None)
         caption, number = self._caption(node)
         return Block(
             id="",
             type="figure",
             asset_key=src,
+            raw=raw,
             caption=caption,
             number=number,
             label=node.attributes.get("id") or None,

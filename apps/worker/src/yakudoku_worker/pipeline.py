@@ -17,10 +17,12 @@ ID を文字列で保持し、読み書きの直前に ``session.get`` で都度
 from __future__ import annotations
 
 import datetime as dt
+import posixpath
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urljoin
 
+import fitz  # PyMuPDF
 import httpx
 import structlog
 from pydantic import BaseModel
@@ -66,7 +68,10 @@ from yakudoku_core.parsing.latex_parser import (
 )
 from yakudoku_core.parsing.latex_parser import (
     LatexParseError,
+    extract_latex_archive,
     parse_arxiv_latex,
+    parse_latex_source,
+    select_main_tex,
 )
 from yakudoku_core.parsing.pdf_parser import (
     PARSER_VERSION as PDF_PARSER_VERSION,
@@ -126,6 +131,23 @@ _MAX_SUGGESTED_TAGS = 5
 
 log = structlog.get_logger("yakudoku.worker.pipeline")
 
+_LATEX_FIGURE_EXTS = (".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".eps", ".ps")
+_IMAGE_CONTENT_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".svg": "image/svg+xml",
+}
+
+
+@dataclass(frozen=True)
+class FigureAssetPayload:
+    content: bytes
+    ext: str
+    content_type: str
+
 
 class IngestJobPayload(BaseModel):
     """ingest ジョブの payload(plans/05 §2.7)。"""
@@ -178,6 +200,21 @@ def _www_base(settings: CoreSettings) -> str:
     return (settings.yakudoku_arxiv_base_url or "https://arxiv.org").rstrip("/")
 
 
+def _html_figure_asset_url(settings: CoreSettings, ref: ArxivId, asset_key: str) -> str:
+    source = asset_key.strip()
+    base = _www_base(settings)
+    if source.startswith(("http://", "https://")):
+        return source
+    if source.startswith("//"):
+        return f"https:{source}"
+    if source.startswith("/"):
+        return urljoin(f"{base}/", source.lstrip("/"))
+    html_root = f"{base}/html/"
+    if source.startswith(f"{ref.versioned}/"):
+        return urljoin(html_root, source)
+    return urljoin(f"{html_root}{ref.versioned}/", source)
+
+
 def _to_date(value: str | None) -> dt.date | None:
     if not value:
         return None
@@ -185,6 +222,108 @@ def _to_date(value: str | None) -> dt.date | None:
         return dt.date.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _clean_latex_asset_path(value: str) -> str:
+    path = value.strip().strip("{}").replace("\\", "/")
+    path = path.split("#", 1)[0].split("?", 1)[0].strip()
+    return path.lstrip("/")
+
+
+def _safe_posix_norm(path: str) -> str | None:
+    norm = posixpath.normpath(path).removeprefix("./")
+    if norm in {"", "."} or norm == ".." or norm.startswith("../"):
+        return None
+    return norm
+
+
+def _latex_asset_candidates(asset_key: str, main_tex_name: str | None) -> list[str]:
+    raw = _clean_latex_asset_path(asset_key)
+    if not raw:
+        return []
+    main_dir = ""
+    if main_tex_name:
+        main_norm = _safe_posix_norm(_clean_latex_asset_path(main_tex_name))
+        if main_norm:
+            main_dir = posixpath.dirname(main_norm)
+    bases = ["", main_dir] if main_dir else [""]
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for base in bases:
+        norm = _safe_posix_norm(posixpath.join(base, raw))
+        if norm is None:
+            continue
+        variants = [norm]
+        if not posixpath.splitext(norm)[1]:
+            variants.extend(f"{norm}{ext}" for ext in _LATEX_FIGURE_EXTS)
+        for item in variants:
+            if item not in seen:
+                seen.add(item)
+                candidates.append(item)
+    return candidates
+
+
+def _find_latex_binary_asset(
+    binary_files: dict[str, bytes], asset_key: str, main_tex_name: str | None
+) -> tuple[str, bytes] | None:
+    by_norm = {
+        (norm.lower() if (norm := _safe_posix_norm(_clean_latex_asset_path(name))) else ""): name
+        for name in binary_files
+    }
+    by_norm.pop("", None)
+    for candidate in _latex_asset_candidates(asset_key, main_tex_name):
+        name = by_norm.get(candidate.lower())
+        if name is not None:
+            return name, binary_files[name]
+    return None
+
+
+def _render_first_page(data: bytes, filetype: str) -> bytes:
+    with fitz.open(stream=data, filetype=filetype) as doc:
+        if doc.page_count < 1:
+            raise FetchError("unsupported_figure_format", "figure document has no pages")
+        page = doc.load_page(0)
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+        return pix.tobytes("png")
+
+
+def _figure_asset_payload(
+    data: bytes, source_name: str, content_type: str | None = None
+) -> FigureAssetPayload:
+    content_type = (content_type or "").split(";", 1)[0].strip().lower()
+    ext = posixpath.splitext(source_name)[1].lower()
+    if ext == ".pdf" or content_type == "application/pdf" or data.startswith(b"%PDF"):
+        return FigureAssetPayload(_render_first_page(data, "pdf"), "png", "image/png")
+    if ext in {".eps", ".ps"}:
+        return FigureAssetPayload(
+            _render_first_page(data, ext.removeprefix(".")), "png", "image/png"
+        )
+    if ext in _IMAGE_CONTENT_TYPES:
+        return FigureAssetPayload(data, ext.removeprefix("."), _IMAGE_CONTENT_TYPES[ext])
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return FigureAssetPayload(data, "png", "image/png")
+    if data.startswith(b"\xff\xd8\xff"):
+        return FigureAssetPayload(data, "jpg", "image/jpeg")
+    if data[:12].startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return FigureAssetPayload(data, "webp", "image/webp")
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return FigureAssetPayload(data, "gif", "image/gif")
+    if b"<svg" in data[:512].lower():
+        return FigureAssetPayload(data, "svg", "image/svg+xml")
+    raise FetchError(
+        "unsupported_figure_format",
+        f"unsupported figure format: {source_name or content_type or 'unknown'}",
+    )
+
+
+def latex_figure_asset_payload(
+    binary_files: dict[str, bytes], asset_key: str, main_tex_name: str | None
+) -> tuple[str, FigureAssetPayload] | None:
+    found = _find_latex_binary_asset(binary_files, asset_key, main_tex_name)
+    if found is None:
+        return None
+    source_name, data = found
+    return source_name, _figure_asset_payload(data, source_name)
 
 
 class IngestRun:
@@ -215,6 +354,8 @@ class IngestRun:
         self.content: DocumentContent | None = None
         self.parsed: ParsedDocument | None = None
         self.parsed_pdf: ParsedPdfDocument | None = None
+        self.latex_binary_files: dict[str, bytes] = {}
+        self.latex_main_tex_name: str | None = None
         self._pdf_bytes: bytes | None = None
         self.style: str = "natural"
         self._settings_obj: TranslationSettings | None = None
@@ -651,10 +792,15 @@ class IngestRun:
                 StorageKeys.latex_tar(self.paper_id, self.source_version),
             )
             try:
-                self.parsed = parse_arxiv_latex(raw)
+                extracted = extract_latex_archive(raw)
+                self.latex_binary_files = extracted.binary_files
+                self.latex_main_tex_name, _ = select_main_tex(extracted.text_files)
+                self.parsed = parse_latex_source(self.latex_main_tex_name, extracted.text_files)
             except LatexParseError as exc:
                 raise FetchError("parse_error", f"latex parse failed: {exc}") from exc
         else:
+            self.latex_binary_files = {}
+            self.latex_main_tex_name = None
             raw = await self.deps.s3.get(
                 self.deps.s3.sources_bucket,
                 StorageKeys.arxiv_html(self.paper_id, self.source_version),
@@ -731,29 +877,48 @@ class IngestRun:
         """図アセットを S3 に保存する(best-effort。失敗は warn で続行。§2.4)。"""
         out: dict[str, bytes] = {}
         warnings: list[str] = []
-        if self.parsed is None or self.deps.http is None or self.paper_id is None:
+        if self.parsed is None or self.paper_id is None:
             return out, warnings
-        assert self.ref is not None
-        base = f"{_www_base(self.deps.settings)}/html/{self.ref.versioned}/"
+        base = None
+        if self.deps.http is not None and self.ref is not None:
+            base = f"{_www_base(self.deps.settings)}/html/{self.ref.versioned}/"
         for fig in self.parsed.figures:
             if not fig.asset_key:
                 continue
             try:
-                await self._throttle()
-                resp = await self.deps.http.get(urljoin(base, fig.asset_key), timeout=30.0)
-                if resp.status_code != 200:
-                    raise FetchError("source_not_found", f"figure {resp.status_code}")
-                ext = "svg" if fig.asset_key.endswith(".svg") else "png"
-                key = StorageKeys.figure(self.paper_id, revision_id, fig.id, ext)
+                payload: FigureAssetPayload | None = None
+                if self.source_format == "latex":
+                    local = latex_figure_asset_payload(
+                        self.latex_binary_files, fig.asset_key, self.latex_main_tex_name
+                    )
+                    if local is not None:
+                        _source_name, payload = local
+                if payload is None:
+                    if self.deps.http is None or base is None:
+                        raise FetchError("source_not_found", "figure source is not available")
+                    await self._throttle()
+                    assert self.ref is not None
+                    resp = await self.deps.http.get(
+                        _html_figure_asset_url(self.deps.settings, self.ref, fig.asset_key),
+                        timeout=30.0,
+                    )
+                    if resp.status_code != 200:
+                        raise FetchError("source_not_found", f"figure {resp.status_code}")
+                    payload = _figure_asset_payload(
+                        resp.content, fig.asset_key, resp.headers.get("content-type")
+                    )
+                key = StorageKeys.figure(self.paper_id, revision_id, fig.id, payload.ext)
                 await self.deps.s3.put(
                     self.deps.s3.assets_bucket,
                     key,
-                    resp.content,
-                    content_type=resp.headers.get("content-type", "image/png"),
+                    payload.content,
+                    content_type=payload.content_type,
                 )
                 fig.asset_key = key
-                out[fig.id] = resp.content
-            except (httpx.HTTPError, FetchError) as exc:
+                out[fig.id] = payload.content
+            except (httpx.HTTPError, FetchError, RuntimeError, ValueError) as exc:
+                warnings.append(f"図の切り出しに失敗(続行): {fig.label or fig.id} — {exc}")
+            except Exception as exc:
                 warnings.append(f"図の切り出しに失敗(続行): {fig.label or fig.id} — {exc}")
         return out, warnings
 
