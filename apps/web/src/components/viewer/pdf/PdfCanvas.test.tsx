@@ -190,7 +190,9 @@ describe("PdfCanvas (2a §4.2.4)", () => {
       y: 0,
       toJSON: () => ({}),
     });
-    await waitFor(() => expect(container.querySelector(".yk-pdf-link-layer a")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(container.querySelector(".yk-pdf-link-layer a")).toBeInTheDocument(),
+    );
     fireEvent.click(pageEl, { clientX: 100, clientY: 150 });
     expect(open).toHaveBeenCalledWith("https://example.com/paper", "_blank", "noopener,noreferrer");
     expect(onSelectBlock).not.toHaveBeenCalled();
@@ -222,11 +224,98 @@ describe("PdfCanvas (2a §4.2.4)", () => {
     expect(onSelectBlock).not.toHaveBeenCalled();
   });
 
+  test("does not auto-scroll again when the active page changed from local scrolling", async () => {
+    const onVisiblePageChange = vi.fn();
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    const originalRaf = window.requestAnimationFrame;
+    const originalCancelRaf = window.cancelAnimationFrame;
+    const now = vi.spyOn(Date, "now").mockReturnValue(1000);
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    window.requestAnimationFrame = (cb: FrameRequestCallback) => {
+      cb(0);
+      return 1;
+    };
+    window.cancelAnimationFrame = vi.fn();
+
+    try {
+      const props = baseProps({
+        displayPages: [1],
+        pageGroups: [[1], [2]],
+        activePage: 1,
+        onVisiblePageChange,
+      });
+      const { container, rerender } = render(<PdfCanvas {...props} />);
+      const page1 = await waitFor(() => {
+        const el = container.querySelector<HTMLElement>('[data-pdf-page="1"]');
+        if (!el) throw new Error("page 1 missing");
+        return el;
+      });
+      const page2 = await waitFor(() => {
+        const el = container.querySelector<HTMLElement>('[data-pdf-page="2"]');
+        if (!el) throw new Error("page 2 missing");
+        return el;
+      });
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+      scrollIntoView.mockClear();
+      now.mockReturnValue(2000);
+
+      const root = container.querySelector<HTMLElement>(".yk-pdf-canvas-bg");
+      if (!root) throw new Error("root missing");
+      vi.spyOn(root, "getBoundingClientRect").mockReturnValue({
+        left: 0,
+        top: 0,
+        right: 700,
+        bottom: 800,
+        width: 700,
+        height: 800,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      });
+      vi.spyOn(page1, "getBoundingClientRect").mockReturnValue({
+        left: 0,
+        top: -700,
+        right: 612,
+        bottom: 92,
+        width: 612,
+        height: 792,
+        x: 0,
+        y: -700,
+        toJSON: () => ({}),
+      });
+      vi.spyOn(page2, "getBoundingClientRect").mockReturnValue({
+        left: 0,
+        top: 110,
+        right: 612,
+        bottom: 902,
+        width: 612,
+        height: 792,
+        x: 0,
+        y: 110,
+        toJSON: () => ({}),
+      });
+
+      fireEvent.scroll(root);
+      await waitFor(() => expect(onVisiblePageChange).toHaveBeenCalledWith(2));
+      rerender(<PdfCanvas {...props} activePage={2} />);
+      await Promise.resolve();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      now.mockRestore();
+      if (originalScrollIntoView) {
+        HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+      }
+      window.requestAnimationFrame = originalRaf;
+      window.cancelAnimationFrame = originalCancelRaf;
+    }
+  });
+
   test("selecting a block shows the highlight + sync chip, and clicking the chip opens translation", async () => {
     const onOpenInTranslation = vi.fn();
-    render(
-      <PdfCanvas {...baseProps({ selectedBlockId: "blk-2-2-p1", onOpenInTranslation })} />,
-    );
+    render(<PdfCanvas {...baseProps({ selectedBlockId: "blk-2-2-p1", onOpenInTranslation })} />);
     const chip = await screen.findByText("≒ §2.2 Reflow ¶1 — 訳文で見る →");
     expect(screen.getByTestId("pdf-bbox-highlight")).toBeInTheDocument();
     fireEvent.click(chip);
@@ -250,5 +339,11 @@ describe("spreadPages (2a §4.2.4 見開き決定)", () => {
 
   test("a trailing single page (even total) sits alone on the left", () => {
     expect(spreadPages(24, 24, true)).toEqual([24, null]);
+  });
+
+  test("can place page 1 on the left for odd/even spread pairing", () => {
+    expect(spreadPages(1, 24, true, "left")).toEqual([1, 2]);
+    expect(spreadPages(2, 24, true, "left")).toEqual([1, 2]);
+    expect(spreadPages(3, 24, true, "left")).toEqual([3, 4]);
   });
 });

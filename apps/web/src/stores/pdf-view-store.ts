@@ -5,6 +5,7 @@ import { clampZoom } from "@/components/viewer/pdf/geometry";
 
 /** 幅に合わせる / ページ全体 / 実寸(2a §3.2)。 */
 export type PdfFitMode = "fit-width" | "fit-page" | "actual";
+export type PdfSpreadFirstPageSide = "left" | "right";
 
 export interface PdfViewState {
   /** リセット対象キー(libraryItemId)。異なる論文に切り替わったら state を初期化する。 */
@@ -13,6 +14,7 @@ export interface PdfViewState {
   zoom: number; // pdf.js scale
   fitMode: PdfFitMode | null; // null=手動ズーム中
   spread: boolean;
+  spreadFirstPageSide: PdfSpreadFirstPageSide;
   selectedBlockId: string | null;
   sidebarTab: "toc" | "pages"; // 既定 'pages'
 
@@ -22,6 +24,7 @@ export interface PdfViewState {
   zoomOut(): void;
   setFitMode(mode: PdfFitMode): void;
   toggleSpread(): void;
+  setSpreadFirstPageSide(side: PdfSpreadFirstPageSide): void;
   selectBlock(id: string | null): void;
   setSidebarTab(tab: "toc" | "pages"): void;
 }
@@ -36,6 +39,7 @@ export const usePdfViewStore = create<PdfViewState>((set, get) => ({
   zoom: 1,
   fitMode: "fit-width",
   spread: false,
+  spreadFirstPageSide: "right",
   selectedBlockId: null,
   sidebarTab: "pages",
 
@@ -47,6 +51,7 @@ export const usePdfViewStore = create<PdfViewState>((set, get) => ({
       zoom: 1,
       fitMode: "fit-width",
       spread: false,
+      spreadFirstPageSide: "right",
       selectedBlockId: null,
       sidebarTab: "pages",
     });
@@ -70,6 +75,10 @@ export const usePdfViewStore = create<PdfViewState>((set, get) => ({
 
   toggleSpread() {
     set((s) => ({ spread: !s.spread }));
+  },
+
+  setSpreadFirstPageSide(side) {
+    set({ spreadFirstPageSide: side });
   },
 
   selectBlock(id) {

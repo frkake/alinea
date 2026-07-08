@@ -34,7 +34,21 @@ function normalizeReferenceKey(value: string | null | undefined): string | null 
 }
 
 function referenceAliases(ref: ReferenceItem): string[] {
-  return [ref.ref_id, ref.number, ...(ref.aliases ?? [])];
+  const aliases = [ref.ref_id, ref.number, ...(ref.aliases ?? [])];
+  const numeric = ref.number.match(/\d+/)?.[0] ?? null;
+  if (numeric) {
+    aliases.push(
+      numeric,
+      `[${numeric}]`,
+      `ref-${numeric}`,
+      `ref.${numeric}`,
+      `ref${numeric}`,
+      `bib-${numeric}`,
+      `bib.${numeric}`,
+      `bib${numeric}`,
+    );
+  }
+  return aliases;
 }
 
 /** 図表タブ本体(1c §4.6)。図表一覧+参考文献一覧。 */
@@ -48,6 +62,7 @@ export function FiguresPanel({ revisionId }: FiguresPanelProps) {
 
   const [activeFigureBlockId, setActiveFigureBlockId] = useState<string | null>(null);
   const [expandedRefId, setExpandedRefId] = useState<string | null>(null);
+  const [unresolvedReferenceId, setUnresolvedReferenceId] = useState<string | null>(null);
   const [importStates, setImportStates] = useState<Record<string, ReferenceImportState>>({});
 
   const figuresQuery = useQuery({
@@ -92,7 +107,10 @@ export function FiguresPanel({ revisionId }: FiguresPanelProps) {
   );
 
   const figures = figuresQuery.data?.items ?? [];
-  const references = useMemo(() => referencesQuery.data?.items ?? [], [referencesQuery.data?.items]);
+  const references = useMemo(
+    () => referencesQuery.data?.items ?? [],
+    [referencesQuery.data?.items],
+  );
 
   const resolveReferenceId = useCallback((target: string, refs: ReferenceItem[]): string | null => {
     const wanted = normalizeReferenceKey(target);
@@ -107,21 +125,38 @@ export function FiguresPanel({ revisionId }: FiguresPanelProps) {
   // 引用クリックから来た場合は該当参考文献を展開する。データ到着後にも解決できるよう
   // pendingReferenceId と references の両方を依存に入れる。
   useEffect(() => {
-    if (!pendingReferenceId || references.length === 0) return;
+    if (!pendingReferenceId || referencesQuery.isLoading) return;
     const refId = resolveReferenceId(pendingReferenceId, references);
-    if (refId) setExpandedRefId(refId);
+    if (refId) {
+      setExpandedRefId(refId);
+      setUnresolvedReferenceId(null);
+    } else {
+      setUnresolvedReferenceId(pendingReferenceId);
+    }
     consumeReferenceFocus();
-  }, [pendingReferenceId, references, resolveReferenceId, consumeReferenceFocus]);
+  }, [
+    pendingReferenceId,
+    references,
+    referencesQuery.isLoading,
+    resolveReferenceId,
+    consumeReferenceFocus,
+  ]);
 
   return (
     <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
       <PanelSectionHeading label="図表一覧" />
       {figuresQuery.isError ? (
-        <EmptyState title="読み込みに失敗しました" action={{ label: "再試行", onClick: () => void figuresQuery.refetch() }} />
+        <EmptyState
+          title="読み込みに失敗しました"
+          action={{ label: "再試行", onClick: () => void figuresQuery.refetch() }}
+        />
       ) : figuresQuery.isLoading ? (
         <FigureSkeleton />
       ) : figures.length === 0 ? (
-        <EmptyState title="図表がありません" description="この論文からは図表を抽出できませんでした。" />
+        <EmptyState
+          title="図表がありません"
+          description="この論文からは図表を抽出できませんでした。"
+        />
       ) : (
         figures.map((fig) => (
           <FigureCard
@@ -136,12 +171,33 @@ export function FiguresPanel({ revisionId }: FiguresPanelProps) {
       <div style={{ height: 1, background: "var(--pr-border-soft)", margin: "6px 0" }} />
 
       <PanelSectionHeading label="参考文献" />
+      {unresolvedReferenceId ? (
+        <div
+          role="status"
+          style={{
+            padding: "6px 8px",
+            borderRadius: 6,
+            background: "var(--pr-bg-inset)",
+            color: "var(--pr-text-muted)",
+            fontSize: 10.5,
+            overflowWrap: "anywhere",
+          }}
+        >
+          引用 {unresolvedReferenceId} に対応する参考文献が見つかりません。
+        </div>
+      ) : null}
       {referencesQuery.isError ? (
-        <EmptyState title="読み込みに失敗しました" action={{ label: "再試行", onClick: () => void referencesQuery.refetch() }} />
+        <EmptyState
+          title="読み込みに失敗しました"
+          action={{ label: "再試行", onClick: () => void referencesQuery.refetch() }}
+        />
       ) : referencesQuery.isLoading ? (
         <ReferenceSkeleton />
       ) : references.length === 0 ? (
-        <EmptyState title="参考文献がありません" description="参考文献リストを抽出できませんでした。" />
+        <EmptyState
+          title="参考文献がありません"
+          description="参考文献リストを抽出できませんでした。"
+        />
       ) : (
         <ReferencesList
           references={references}
@@ -158,7 +214,14 @@ export function FiguresPanel({ revisionId }: FiguresPanelProps) {
 
 function PanelSectionHeading({ label }: { label: string }) {
   return (
-    <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: "0.4px", color: "var(--pr-text-muted)" }}>
+    <div
+      style={{
+        fontSize: 10.5,
+        fontWeight: 600,
+        letterSpacing: "0.4px",
+        color: "var(--pr-text-muted)",
+      }}
+    >
       {label}
     </div>
   );
@@ -180,7 +243,15 @@ const thumbStyle: CSSProperties = {
 };
 
 /** 図表カード(1c §4.6・§5.4)。選択中はアクセント面+「(表示中)」付記。 */
-function FigureCard({ figure, selected, onClick }: { figure: FigureItem; selected: boolean; onClick: () => void }) {
+function FigureCard({
+  figure,
+  selected,
+  onClick,
+}: {
+  figure: FigureItem;
+  selected: boolean;
+  onClick: () => void;
+}) {
   const caption = figure.caption_ja ?? figure.caption_en;
   const captionText = selected ? `${caption}(表示中)` : caption;
   const sub =
@@ -211,7 +282,11 @@ function FigureCard({ figure, selected, onClick }: { figure: FigureItem; selecte
     >
       <div style={thumbStyle}>
         {figure.image_url ? (
-          <img src={figure.image_url} alt={figure.display} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          <img
+            src={figure.image_url}
+            alt={figure.display}
+            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          />
         ) : (
           figure.display
         )}
@@ -245,9 +320,33 @@ function FigureSkeleton() {
       {[0, 1, 2].map((i) => (
         <div key={i} style={{ display: "flex", gap: 10, padding: 8 }}>
           <div style={{ ...thumbStyle, animation: "yk-pulse 1.2s ease-in-out infinite" }} />
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6, justifyContent: "center" }}>
-            <div style={{ height: 10, width: "88%", borderRadius: 3, background: "var(--pr-bg-thumb)", animation: "yk-pulse 1.2s ease-in-out infinite" }} />
-            <div style={{ height: 10, width: "40%", borderRadius: 3, background: "var(--pr-bg-thumb)", animation: "yk-pulse 1.2s ease-in-out infinite" }} />
+          <div
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              justifyContent: "center",
+            }}
+          >
+            <div
+              style={{
+                height: 10,
+                width: "88%",
+                borderRadius: 3,
+                background: "var(--pr-bg-thumb)",
+                animation: "yk-pulse 1.2s ease-in-out infinite",
+              }}
+            />
+            <div
+              style={{
+                height: 10,
+                width: "40%",
+                borderRadius: 3,
+                background: "var(--pr-bg-thumb)",
+                animation: "yk-pulse 1.2s ease-in-out infinite",
+              }}
+            />
           </div>
         </div>
       ))}
@@ -259,7 +358,16 @@ function ReferenceSkeleton() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       {["96%", "92%", "88%", "90%"].map((w, i) => (
-        <div key={i} style={{ height: 12, width: w, borderRadius: 3, background: "var(--pr-bg-thumb)", animation: "yk-pulse 1.2s ease-in-out infinite" }} />
+        <div
+          key={i}
+          style={{
+            height: 12,
+            width: w,
+            borderRadius: 3,
+            background: "var(--pr-bg-thumb)",
+            animation: "yk-pulse 1.2s ease-in-out infinite",
+          }}
+        />
       ))}
     </div>
   );

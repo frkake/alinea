@@ -699,6 +699,7 @@ async def list_references(revision_id: str, user: CurrentUser, db: DbDep) -> Ref
                 ref_id=ref_id,
                 aliases=sorted(set(aliases)),
                 number=f"[{idx}]",
+                raw=p["raw"] if isinstance(p["raw"], str) and p["raw"] else None,
                 authors=authors,
                 title=structured.get("title"),
                 venue_year=venue_year,

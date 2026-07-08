@@ -2879,6 +2879,10 @@ export type ReferenceItem = {
      */
     number: string;
     /**
+     * Raw
+     */
+    raw: string | null;
+    /**
      * Authors
      */
     authors: string | null;

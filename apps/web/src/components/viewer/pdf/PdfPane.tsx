@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { viewerGetDocument } from "@yakudoku/api-client";
 import { useViewerStore } from "@/stores/viewer-store";
-import { usePdfViewStore } from "@/stores/pdf-view-store";
+import { usePdfViewStore, type PdfSpreadFirstPageSide } from "@/stores/pdf-view-store";
 import type { DocumentResponse } from "@/components/viewer/document-types";
 import { PdfToolbar } from "./PdfToolbar";
 import { PDF_PAGE_GAP_PX, PdfCanvas, spreadPages } from "./PdfCanvas";
@@ -29,12 +29,24 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable;
 }
 
-function pageGroupsForDocument(page: number, pageCount: number | null, spread: boolean): (number | null)[][] {
+function pageGroupsForDocument(
+  page: number,
+  pageCount: number | null,
+  spread: boolean,
+  firstPageSide: PdfSpreadFirstPageSide,
+): (number | null)[][] {
   if (pageCount != null && pageCount > 0) {
     if (!spread) return Array.from({ length: pageCount }, (_, i) => [i + 1]);
-    const groups: (number | null)[][] = [spreadPages(1, pageCount, true)];
-    for (let left = 2; left <= pageCount; left += 2) {
-      groups.push(spreadPages(left, pageCount, true));
+    const groups: (number | null)[][] = [];
+    if (firstPageSide === "right") {
+      groups.push(spreadPages(1, pageCount, true, firstPageSide));
+      for (let left = 2; left <= pageCount; left += 2) {
+        groups.push(spreadPages(left, pageCount, true, firstPageSide));
+      }
+    } else {
+      for (let left = 1; left <= pageCount; left += 2) {
+        groups.push(spreadPages(left, pageCount, true, firstPageSide));
+      }
     }
     return groups;
   }
@@ -47,10 +59,19 @@ function pageGroupsForDocument(page: number, pageCount: number | null, spread: b
     return groups;
   }
 
-  const currentLeft = page <= 1 ? 1 : page % 2 === 0 ? page : page - 1;
-  const previousLeft = currentLeft === 2 ? 1 : currentLeft - 2;
+  const currentLeft =
+    firstPageSide === "right"
+      ? page <= 1
+        ? 1
+        : page % 2 === 0
+          ? page
+          : page - 1
+      : page % 2 === 1
+        ? page
+        : page - 1;
+  const previousLeft = firstPageSide === "right" && currentLeft === 2 ? 1 : currentLeft - 2;
   const starts = [previousLeft, currentLeft, currentLeft + 2].filter((p) => p >= 1);
-  return starts.map((p) => spreadPages(p, null, true));
+  return starts.map((p) => spreadPages(p, null, true, firstPageSide));
 }
 
 /** PDF モード本文ペイン(2a §3.1・§5)。ツールバー+キャンバスを統括する。 */
@@ -72,6 +93,7 @@ export function PdfPane({
   const zoom = usePdfViewStore((s) => s.zoom);
   const fitMode = usePdfViewStore((s) => s.fitMode);
   const spread = usePdfViewStore((s) => s.spread);
+  const spreadFirstPageSide = usePdfViewStore((s) => s.spreadFirstPageSide);
   const selectedBlockId = usePdfViewStore((s) => s.selectedBlockId);
   const resetForItem = usePdfViewStore((s) => s.resetForItem);
   const setPage = usePdfViewStore((s) => s.setPage);
@@ -79,6 +101,7 @@ export function PdfPane({
   const zoomOut = usePdfViewStore((s) => s.zoomOut);
   const setFitMode = usePdfViewStore((s) => s.setFitMode);
   const toggleSpread = usePdfViewStore((s) => s.toggleSpread);
+  const setSpreadFirstPageSide = usePdfViewStore((s) => s.setSpreadFirstPageSide);
   const selectBlock = usePdfViewStore((s) => s.selectBlock);
 
   const setCurrentBlock = useViewerStore((s) => s.setCurrentBlock);
@@ -157,14 +180,21 @@ export function PdfPane({
   const [containerSize, setContainerSize] = useState({ width: 866, height: 800 });
   const [pageSizePt, setPageSizePt] = useState({ width: 612, height: 792 });
 
-  const displayPages = spreadPages(page, pdf.numPages, spread);
+  const displayPages = spreadPages(page, pdf.numPages, spread, spreadFirstPageSide);
   const visibleSlots = spread ? displayPages.length : 1;
   const fitContentWidthPt = pageSizePt.width * visibleSlots;
   const fitFixedWidthPx = PDF_PAGE_GAP_PX * Math.max(0, visibleSlots - 1);
   const resolvedScale = fitMode
-    ? computeFitScale(fitMode, containerSize.width, containerSize.height, fitContentWidthPt, pageSizePt.height, {
-        fixedWidthPx: fitFixedWidthPx,
-      })
+    ? computeFitScale(
+        fitMode,
+        containerSize.width,
+        containerSize.height,
+        fitContentWidthPt,
+        pageSizePt.height,
+        {
+          fixedWidthPx: fitFixedWidthPx,
+        },
+      )
     : zoom;
 
   // フィット中は zoom フィールドを鏡映しておく(手動ズームへ移る時に現在の見た目から継続する)。
@@ -172,7 +202,10 @@ export function PdfPane({
     if (fitMode) usePdfViewStore.setState({ zoom: resolvedScale });
   }, [fitMode, resolvedScale]);
 
-  const pageGroups = useMemo(() => pageGroupsForDocument(page, pdf.numPages, spread), [page, pdf.numPages, spread]);
+  const pageGroups = useMemo(
+    () => pageGroupsForDocument(page, pdf.numPages, spread, spreadFirstPageSide),
+    [page, pdf.numPages, spread, spreadFirstPageSide],
+  );
   const sync = syncMap.pageToSection(page);
   const getPdfPage = pdf.getPage;
 
@@ -240,13 +273,16 @@ export function PdfPane({
   }, [page, spread, pdf.numPages, selectedBlockId, setPage, selectBlock]);
 
   return (
-    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div
+      style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}
+    >
       <PdfToolbar
         page={page}
         pageCount={pdf.numPages}
         zoomPct={pdf.loading ? null : Math.round(resolvedScale * 100)}
         fitMode={fitMode}
         spread={spread}
+        spreadFirstPageSide={spreadFirstPageSide}
         syncDisplay={sync?.display ?? null}
         loading={pdf.loading || !docQuery.data}
         onPageChange={setPage}
@@ -254,6 +290,7 @@ export function PdfPane({
         onZoomOut={zoomOut}
         onFitModeChange={setFitMode}
         onToggleSpread={toggleSpread}
+        onSpreadFirstPageSideChange={setSpreadFirstPageSide}
         onOpenInTranslation={handleOpenInTranslation}
       />
       <PdfCanvas
@@ -271,7 +308,10 @@ export function PdfPane({
           if (visiblePage !== page) setPage(visiblePage);
         }}
         onPageSizeResolved={setPageSizePt}
-        pageSlotSize={{ width: pageSizePt.width * resolvedScale, height: pageSizePt.height * resolvedScale }}
+        pageSlotSize={{
+          width: pageSizePt.width * resolvedScale,
+          height: pageSizePt.height * resolvedScale,
+        }}
         onResize={setContainerSize}
         loading={pdf.loading || !docQuery.data}
         error={pdf.error}

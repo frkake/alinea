@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { Popover } from "@/components/ui/Popover";
-import type { PdfFitMode } from "@/stores/pdf-view-store";
+import type { PdfFitMode, PdfSpreadFirstPageSide } from "@/stores/pdf-view-store";
 
 const FIT_LABELS: Record<PdfFitMode, string> = {
   "fit-width": "幅に合わせる",
@@ -19,6 +19,7 @@ export interface PdfToolbarProps {
   zoomPct: number | null;
   fitMode: PdfFitMode | null;
   spread: boolean;
+  spreadFirstPageSide: PdfSpreadFirstPageSide;
   /** null = 同期不能(「同期: —」)。 */
   syncDisplay: string | null;
   /** document/pdf 未解決(§5.2)。ページ入力・相互リンクを disabled にする。 */
@@ -28,6 +29,7 @@ export interface PdfToolbarProps {
   onZoomOut: () => void;
   onFitModeChange: (mode: PdfFitMode) => void;
   onToggleSpread: () => void;
+  onSpreadFirstPageSideChange: (side: PdfSpreadFirstPageSide) => void;
   onOpenInTranslation: () => void;
 }
 
@@ -66,6 +68,7 @@ export function PdfToolbar({
   zoomPct,
   fitMode,
   spread,
+  spreadFirstPageSide,
   syncDisplay,
   loading,
   onPageChange,
@@ -73,6 +76,7 @@ export function PdfToolbar({
   onZoomOut,
   onFitModeChange,
   onToggleSpread,
+  onSpreadFirstPageSideChange,
   onOpenInTranslation,
 }: PdfToolbarProps) {
   const [pageInput, setPageInput] = useState(String(page));
@@ -219,7 +223,14 @@ export function PdfToolbar({
         {fitMode ? FIT_LABELS[fitMode] : "幅に合わせる"}
         <span style={{ color: "var(--pr-text-muted)", fontSize: 8.5 }}>▾</span>
       </button>
-      <Popover open={fitOpen} onClose={() => setFitOpen(false)} anchorRef={fitAnchor} width={180} placement="bottom-start" caret={false}>
+      <Popover
+        open={fitOpen}
+        onClose={() => setFitOpen(false)}
+        anchorRef={fitAnchor}
+        width={180}
+        placement="bottom-start"
+        caret={false}
+      >
         {FIT_OPTIONS.map((m) => (
           <button
             key={m}
@@ -263,6 +274,45 @@ export function PdfToolbar({
         見開き
       </button>
 
+      {spread ? (
+        <div
+          role="group"
+          aria-label="見開きの1ページ目の位置"
+          title="見開きで1ページ目を置く位置"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            minWidth: 0,
+            flex: "0 1 auto",
+          }}
+        >
+          {(["left", "right"] as const).map((side) => {
+            const active = spreadFirstPageSide === side;
+            return (
+              <button
+                key={side}
+                type="button"
+                aria-pressed={active}
+                onClick={() => onSpreadFirstPageSideChange(side)}
+                style={{
+                  ...outlineBtn,
+                  height: 24,
+                  padding: "0 7px",
+                  borderRadius: side === "left" ? "6px 0 0 6px" : "0 6px 6px 0",
+                  borderLeftWidth: side === "right" ? 0 : 1,
+                  color: active ? "var(--pr-acc)" : "var(--pr-text-sub)",
+                  borderColor: active ? "var(--pr-acc-m)" : "var(--pr-border-control)",
+                  background: active ? "var(--pr-acc-s)" : "transparent",
+                  fontWeight: active ? 700 : 500,
+                }}
+              >
+                1P {side === "left" ? "左" : "右"}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
       <div style={{ flex: "1 1 24px", minWidth: 0 }} />
 
       <span
@@ -278,7 +328,11 @@ export function PdfToolbar({
         }}
       >
         同期:{" "}
-        {syncDisplay ? <b style={{ color: "var(--pr-text-mid)", fontWeight: 600 }}>{syncDisplay}</b> : "—"}
+        {syncDisplay ? (
+          <b style={{ color: "var(--pr-text-mid)", fontWeight: 600 }}>{syncDisplay}</b>
+        ) : (
+          "—"
+        )}
       </span>
 
       <button

@@ -65,7 +65,14 @@ const doc: DocumentResponse = {
       id: "sec-2-2",
       heading: { number: "2.2", title: "Reflow: Straightening the Flow" },
       blocks: [
-        { id: "blk-2-2-h", type: "heading", number: "2.2", title: "Reflow", page: 5, bbox: [50, 60, 300, 90] },
+        {
+          id: "blk-2-2-h",
+          type: "heading",
+          number: "2.2",
+          title: "Reflow",
+          page: 5,
+          bbox: [50, 60, 300, 90],
+        },
         { id: "blk-2-2-p1", type: "paragraph", page: 5, bbox: [50, 100, 550, 300] },
       ],
     },
@@ -103,6 +110,7 @@ describe("PdfPane (2a §5)", () => {
       zoom: 1,
       fitMode: "actual",
       spread: false,
+      spreadFirstPageSide: "right",
       selectedBlockId: null,
       sidebarTab: "pages",
     });
@@ -132,6 +140,21 @@ describe("PdfPane (2a §5)", () => {
         expect.objectContaining({ scroll: false }),
       ),
     );
+  });
+
+  test("spread first-page side control updates the PDF view store", async () => {
+    const { container } = renderPane();
+    await screen.findByText("§2.2 Reflow");
+    fireEvent.click(screen.getByText("見開き"));
+    fireEvent.click(await screen.findByText("1P 左"));
+    expect(usePdfViewStore.getState().spread).toBe(true);
+    expect(usePdfViewStore.getState().spreadFirstPageSide).toBe("left");
+    await waitFor(() => {
+      const page24Canvas = container.querySelector<HTMLCanvasElement>(
+        '[data-pdf-page="24"] canvas',
+      );
+      expect(page24Canvas?.width).toBeGreaterThan(0);
+    });
   });
 
   test("clicking a synced bbox then the chip calls onOpenInTranslation with the block id", async () => {

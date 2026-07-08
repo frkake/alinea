@@ -9,6 +9,7 @@ function baseProps(overrides: Partial<PdfToolbarProps> = {}): PdfToolbarProps {
     zoomPct: 128,
     fitMode: "fit-width",
     spread: false,
+    spreadFirstPageSide: "right",
     syncDisplay: "§2.2 Reflow",
     loading: false,
     onPageChange: vi.fn(),
@@ -16,6 +17,7 @@ function baseProps(overrides: Partial<PdfToolbarProps> = {}): PdfToolbarProps {
     onZoomOut: vi.fn(),
     onFitModeChange: vi.fn(),
     onToggleSpread: vi.fn(),
+    onSpreadFirstPageSideChange: vi.fn(),
     onOpenInTranslation: vi.fn(),
     ...overrides,
   };
@@ -74,6 +76,24 @@ describe("PdfToolbar (2a §4.2.3)", () => {
     expect(onZoomIn).toHaveBeenCalledTimes(1);
     expect(onZoomOut).toHaveBeenCalledTimes(1);
     expect(onToggleSpread).toHaveBeenCalledTimes(1);
+  });
+
+  test("spread first-page side control is shown only in spread mode", () => {
+    const onSpreadFirstPageSideChange = vi.fn();
+    const { rerender } = render(<PdfToolbar {...baseProps({ onSpreadFirstPageSideChange })} />);
+    expect(screen.queryByText("1P 左")).toBeNull();
+
+    rerender(
+      <PdfToolbar
+        {...baseProps({
+          spread: true,
+          spreadFirstPageSide: "right",
+          onSpreadFirstPageSideChange,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByText("1P 左"));
+    expect(onSpreadFirstPageSideChange).toHaveBeenCalledWith("left");
   });
 
   test("fit selector opens a popover with the 3 decided options and applies a choice", () => {

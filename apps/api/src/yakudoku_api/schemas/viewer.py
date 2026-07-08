@@ -155,6 +155,7 @@ class ReferenceItem(BaseModel):
     ref_id: str
     aliases: list[str] = Field(default_factory=list)
     number: str
+    raw: str | None
     authors: str | None
     title: str | None
     venue_year: str | None

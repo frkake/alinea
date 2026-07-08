@@ -1,6 +1,6 @@
 "use client";
 
-import type { CSSProperties } from "react";
+import { useEffect, useRef, type CSSProperties } from "react";
 import type { ReferenceItem } from "@yakudoku/api-client";
 
 export type ReferenceImportState = "idle" | "importing" | "imported";
@@ -21,7 +21,8 @@ function referenceLine(ref: ReferenceItem): { number: string; head: string; venu
   const parts: string[] = [];
   if (ref.authors) parts.push(ref.authors);
   if (ref.title) parts.push(ref.title);
-  const head = parts.length ? `${parts.join(". ")}.` : "";
+  const raw = ref.raw?.trim() ?? "";
+  const head = parts.length ? `${parts.join(". ")}.` : raw;
   return { number: ref.number, head, venue: ref.venue_year };
 }
 
@@ -45,8 +46,20 @@ export function ReferencesList({
   onImport,
   onOpenInLibrary,
 }: ReferencesListProps) {
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+
+  useEffect(() => {
+    if (!expandedRefId) return;
+    const row = rowRefs.current.get(expandedRefId);
+    if (typeof row?.scrollIntoView === "function") {
+      row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [expandedRefId, references]);
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 2, fontSize: 11, lineHeight: 1.55 }}>
+    <div
+      style={{ display: "flex", flexDirection: "column", gap: 2, fontSize: 11, lineHeight: 1.55 }}
+    >
       {references.map((ref) => {
         const { number, head, venue } = referenceLine(ref);
         const expanded = expandedRefId === ref.ref_id;
@@ -56,6 +69,11 @@ export function ReferencesList({
         return (
           <div
             key={ref.ref_id}
+            ref={(node) => {
+              if (node) rowRefs.current.set(ref.ref_id, node);
+              else rowRefs.current.delete(ref.ref_id);
+            }}
+            data-reference-row={ref.ref_id}
             style={{
               padding: "6px 8px",
               borderRadius: 6,
@@ -77,11 +95,12 @@ export function ReferencesList({
                   onToggle(ref.ref_id);
                 }
               }}
-              style={{ cursor: "pointer" }}
+              style={{ cursor: "pointer", overflowWrap: "anywhere" }}
             >
-              <span style={{ color: "var(--pr-text-muted)", fontFamily: "var(--pr-font-mono)" }}>{number}</span>{" "}
-              {head}{" "}
-              {venue ? <i style={{ color: "var(--pr-text-sub2)" }}>{venue}</i> : null}
+              <span style={{ color: "var(--pr-text-muted)", fontFamily: "var(--pr-font-mono)" }}>
+                {number}
+              </span>{" "}
+              {head} {venue ? <i style={{ color: "var(--pr-text-sub2)" }}>{venue}</i> : null}
               {expanded && ref.arxiv_id ? (
                 <>
                   {" · "}
@@ -99,11 +118,16 @@ export function ReferencesList({
             </div>
 
             {expanded ? (
-              <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 {inLibrary ? (
                   <button
                     type="button"
-                    style={{ ...rowBtn, border: "1px solid var(--pr-border-pop)", color: "var(--pr-text-sub)", background: "transparent" }}
+                    style={{
+                      ...rowBtn,
+                      border: "1px solid var(--pr-border-pop)",
+                      color: "var(--pr-text-sub)",
+                      background: "transparent",
+                    }}
                     onClick={() => onOpenInLibrary(inLibrary.library_item_id)}
                   >
                     ライブラリに有り ✓
@@ -123,6 +147,36 @@ export function ReferencesList({
                   >
                     {importState === "importing" ? "取り込み中…" : "+ この論文も取り込む"}
                   </button>
+                ) : null}
+                {ref.doi ? (
+                  <a
+                    href={`https://doi.org/${ref.doi}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      ...rowBtn,
+                      border: "1px solid var(--pr-border-pop)",
+                      color: "var(--pr-acc)",
+                      textDecoration: "none",
+                    }}
+                  >
+                    DOI
+                  </a>
+                ) : null}
+                {ref.url ? (
+                  <a
+                    href={ref.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      ...rowBtn,
+                      border: "1px solid var(--pr-border-pop)",
+                      color: "var(--pr-acc)",
+                      textDecoration: "none",
+                    }}
+                  >
+                    外部リンク
+                  </a>
                 ) : null}
               </div>
             ) : null}
