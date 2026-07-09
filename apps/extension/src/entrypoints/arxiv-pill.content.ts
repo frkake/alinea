@@ -1,11 +1,11 @@
-// arXiv ページ内「訳 保存」ピル(オプトイン・既定オフ。plans/10 §10.3・docs/08 §5)。
+// arXiv ページ内「A 保存」ピル(オプトイン・既定オフ。plans/10 §10.3・docs/08 §5)。
 // abs ページのタイトル末尾に注入する。Shadow DOM でホスト CSS から隔離し、API 呼び出しは
 // すべて background に委譲する(same-site クッキー送信は拡張コンテキスト発が条件のため)。
 import { defineContentScript } from "wxt/utils/define-content-script";
 import { createShadowRootUi } from "wxt/utils/content-script-ui/shadow-root";
 import { browser } from "wxt/browser";
 
-import { accentVars, DEFAULT_ACCENT, type AccentKey } from "@yakudoku/tokens";
+import { accentVars, DEFAULT_ACCENT, type AccentKey } from "@alinea/tokens";
 
 import type { PillMessage, PillResult } from "@/lib/pill-protocol";
 
@@ -17,10 +17,10 @@ const SAVED_LABEL = "保存済み";
 const ERROR_LABEL = "保存できませんでした";
 
 function renderPillContents(pill: HTMLButtonElement, state: PillResult["state"] | "saving"): void {
-  pill.classList.toggle("yk-pill-saved", state === "saved");
+  pill.classList.toggle("alinea-pill-saved", state === "saved");
   pill.style.opacity = state === "saving" ? "0.7" : "1";
   pill.disabled = state === "saved" || state === "saving";
-  const logo = state === "saved" ? "✓" : "訳";
+  const logo = state === "saved" ? "✓" : "A";
   const label =
     state === "saved"
       ? SAVED_LABEL
@@ -31,10 +31,10 @@ function renderPillContents(pill: HTMLButtonElement, state: PillResult["state"] 
           : SAVE_LABEL;
   pill.replaceChildren();
   const logoEl = document.createElement("span");
-  logoEl.className = "yk-pill-logo";
+  logoEl.className = "alinea-pill-logo";
   logoEl.textContent = logo;
   const labelEl = document.createElement("span");
-  labelEl.className = "yk-pill-label";
+  labelEl.className = "alinea-pill-label";
   labelEl.textContent = label;
   pill.append(logoEl, labelEl);
 }
@@ -75,7 +75,7 @@ export default defineContentScript({
     }
 
     const ui = await createShadowRootUi(ctx, {
-      name: "yakudoku-pill",
+      name: "alinea-pill",
       position: "inline",
       anchor: titleEl,
       append: "last",
@@ -83,7 +83,7 @@ export default defineContentScript({
       onMount(container) {
         const pill = document.createElement("button");
         pill.type = "button";
-        pill.className = "yk-pill";
+        pill.className = "alinea-pill";
         pill.addEventListener("click", () => {
           if (currentState !== "idle") return;
           setState("saving");

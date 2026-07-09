@@ -1,6 +1,6 @@
 "use client";
 
-import type { TranslationUnitItem } from "@yakudoku/api-client";
+import type { TranslationUnitItem } from "@alinea/api-client";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 import { ParallelPopover } from "@/components/viewer/ParallelPopover";
 import { type PlacedHighlight } from "@/components/viewer/highlight-render";
@@ -62,11 +62,11 @@ export function TranslatedParagraph({
     !hasTranslation && (unit?.quality_flags ?? []).some((f) => FAILURE_FLAGS.has(f));
 
   return (
-    <div className="yk-paragraph" data-block-id={block.id} style={{ position: "relative" }}>
+    <div className="alinea-paragraph" data-block-id={block.id} style={{ position: "relative" }}>
       {isMobile ? null : (
         <button
           type="button"
-          className="yk-parallel-toggle"
+          className="alinea-parallel-toggle"
           aria-label="対訳を表示"
           aria-pressed={popOpen}
           onClick={onTogglePop}

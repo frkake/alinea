@@ -8,15 +8,15 @@ import {
   translationsListUnits,
   viewerGetDocument,
   vocabCreate,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 import { SummaryCard } from "@/components/viewer/SummaryCard";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
 import { SelectionMenu } from "@/components/viewer/SelectionMenu";
 import { TranslationPane } from "@/components/viewer/TranslationPane";
 import { useViewerStore } from "@/stores/viewer-store";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return {
     ...actual,
     viewerGetDocument: vi.fn(),

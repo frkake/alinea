@@ -2,7 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { vocabList } from "@yakudoku/api-client";
+import { vocabList } from "@alinea/api-client";
 import { SidebarNav, type SidebarNavItem } from "@/components/ui/SidebarNav";
 import { vocabCountsQueryKey } from "@/components/vocab/queryKeys";
 import { useSavedFilterSection } from "@/components/library/SavedFilterList";

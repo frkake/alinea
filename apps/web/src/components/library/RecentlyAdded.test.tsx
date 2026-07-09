@@ -3,11 +3,11 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { libraryItemsDelete, type LibraryItemSummary } from "@yakudoku/api-client";
+import { libraryItemsDelete, type LibraryItemSummary } from "@alinea/api-client";
 import { RecentlyAdded, formatAddedAt } from "@/components/library/RecentlyAdded";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return { ...actual, libraryItemsDelete: vi.fn() };
 });
 

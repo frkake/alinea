@@ -1,4 +1,4 @@
-# 訳読 / YAKUDOKU — ローカル完全実装 実行設計
+# Alinea — ローカル完全実装 実行設計
 
 > 本書は**実行設計(execution design)**である。プロダクト仕様は docs/00〜12、実装計画は plans/00〜13、見た目の正は確定デザイン16画面(`論文読解システム デザイン.dc.html`)であり、それらは既に確定済み。本書はそれらを**実際にビルド・起動・テストまで通してローカルで完璧に動く状態**へ到達させるための順序・検証ゲート・並列化戦略・完成判定を確定する。
 >
@@ -28,12 +28,12 @@
 1. `docker compose up -d --wait` — db(PGroonga)/redis/minio/mailpit が healthy。
 2. `uv sync --all-packages` / `pnpm install` が成功。
 3. `alembic upgrade head`(M0 は全DDL一括、以後は逸脱修正のみ)。
-4. `python -m yakudoku_api.seed --sample rectified-flow` が投入成功。
+4. `python -m alinea_api.seed --sample rectified-flow` が投入成功。
 5. `pnpm turbo build lint typecheck` が green(tokens/api-client 生成含む)。
 6. `pnpm dev` で web(3000)+api(8000)+worker(arq)が起動しヘルスチェック通過。
 7. そのマイルストーンの **pytest / Vitest スイートが green**。
 8. そのマイルストーンの **Playwright E2E が green**(LLM はスタブ、Chromium 1440×900)。
-9. 拡張: `pnpm --filter @yakudoku/extension build` 成功 + unpacked ロードで手動シナリオ通過(M0)。
+9. 拡張: `pnpm --filter @alinea/extension build` 成功 + unpacked ロードで手動シナリオ通過(M0)。
 
 **マイルストーン別 DoD**(docs/10 §2〜4・plans/13):
 
@@ -83,8 +83,8 @@ arXiv 解決(M0-14) → HTML パーサ(M0-15) → プレースホルダ(M0-16)
 
 plans/04・plans/12 の設計をそのまま使う:
 
-- `yakudoku_llm` に 5社テキスト(OpenAI/Anthropic/Google/DeepSeek/xAI)+3社画像(OpenAI/Google/xAI)アダプタを**全実装**。ルーティング・フォールバック・structured output・count_tokens・BYOK(Fernet)・クォータ計測まで。
-- `FakeLLMProvider` / `FakeImageProvider` と `mock_server.py`(5社+arXiv+GitHub/YouTube 相当、ポート8090)を実装。`YAKUDOKU_*_BASE_URL` 環境変数で実エンドポイントを差し替え、**キー無しの CI・ローカルテストが決定的に green** になる。
+- `alinea_llm` に 5社テキスト(OpenAI/Anthropic/Google/DeepSeek/xAI)+3社画像(OpenAI/Google/xAI)アダプタを**全実装**。ルーティング・フォールバック・structured output・count_tokens・BYOK(Fernet)・クォータ計測まで。
+- `FakeLLMProvider` / `FakeImageProvider` と `mock_server.py`(5社+arXiv+GitHub/YouTube 相当、ポート8090)を実装。`ALINEA_*_BASE_URL` 環境変数で実エンドポイントを差し替え、**キー無しの CI・ローカルテストが決定的に green** になる。
 - 既定ルーティングは実プロバイダ(plans/01 §8.4 のシード表)。運用キー or BYOK が無いプロバイダは**ルーティング対象から自動除外**(plans/04 §8)。全プロバイダ未設定時は翻訳/チャットが可視的に失敗し原文フォールバック(P3)。
 
 ## 7. ホスティング手順書(今回の成果物)
@@ -95,7 +95,7 @@ plans/04・plans/12 の設計をそのまま使う:
 - 環境変数チェックリスト(.env.production)、R2 設定、OAuth リダイレクト URI 登録、SMTP(SES)設定。
 - `alembic upgrade head`(one-shot)→ イメージ push(GHCR)→ `docker compose pull && up -d` の順序。
 - pg_dump 日次バックアップ / リストア手順。
-- 拡張のストア申請手順(Chrome Web Store / Edge Add-ons、zip ビルド `pnpm --filter @yakudoku/extension zip[:edge]`、掲載文・スクショ・プライバシー記載)。
+- 拡張のストア申請手順(Chrome Web Store / Edge Add-ons、zip ビルド `pnpm --filter @alinea/extension zip[:edge]`、掲載文・スクショ・プライバシー記載)。
 
 ## 8. スコープと正直な見積もり
 

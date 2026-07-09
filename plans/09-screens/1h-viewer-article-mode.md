@@ -1,6 +1,6 @@
 # 画面 1h: ビューア 記事モード+概要図
 
-> 対象読者と前提: 本書は「訳読 / YAKUDOKU — 論文読解ワークベンチ」のビューア「記事」表示モード(確定デザイン 1h)を実装するフロントエンドエンジニア向けの完全仕様である。機能仕様の正は docs/04(ビューア)§6 と docs/07(概要図と記事モード)、ピクセル仕様の正は抽出ファイル extract/1h.md(本書 §4 に全量取り込み済み)。共通コンポーネント名は plans/08-design-system.md、API 名は plans/03-api.md、データは plans/02-data-model.md に従う。ビューア共通骨格(ヘッダ・目次レール/ペイン・サイドパネル枠・URL 契約・キーマップ・論文内検索・読書位置/時間フック・viewer-store)は plans/09-screens/viewer-shell.md が実装・仕様の正であり、本書での再掲はピクセル照合用の転記である(値が食い違う場合は viewer-shell.md を正とし本書を改訂する)。本書が所有するのは viewer-shell §11 の「1h」行 — `ArticlePane`(記事ブロック・概要図・ホバーツールバー・出典ブロック)と `ArticleRegenerateButton` — である。技術スタック: Next.js 15(App Router)+ React 19 + TypeScript 5 + Tailwind CSS v4 + TanStack Query v5 + Zustand。基準ビューポート 1440×900px(plans/08 §7)。
+> 対象読者と前提: 本書は「Alinea — 論文読解ワークベンチ」のビューア「記事」表示モード(確定デザイン 1h)を実装するフロントエンドエンジニア向けの完全仕様である。機能仕様の正は docs/04(ビューア)§6 と docs/07(概要図と記事モード)、ピクセル仕様の正は抽出ファイル extract/1h.md(本書 §4 に全量取り込み済み)。共通コンポーネント名は plans/08-design-system.md、API 名は plans/03-api.md、データは plans/02-data-model.md に従う。ビューア共通骨格(ヘッダ・目次レール/ペイン・サイドパネル枠・URL 契約・キーマップ・論文内検索・読書位置/時間フック・viewer-store)は plans/09-screens/viewer-shell.md が実装・仕様の正であり、本書での再掲はピクセル照合用の転記である(値が食い違う場合は viewer-shell.md を正とし本書を改訂する)。本書が所有するのは viewer-shell §11 の「1h」行 — `ArticlePane`(記事ブロック・概要図・ホバーツールバー・出典ブロック)と `ArticleRegenerateButton` — である。技術スタック: Next.js 15(App Router)+ React 19 + TypeScript 5 + Tailwind CSS v4 + TanStack Query v5 + Zustand。基準ビューポート 1440×900px(plans/08 §7)。
 
 ## 1. 概要とルート
 
@@ -116,7 +116,7 @@ PapersPage (app/(app)/papers/[libraryItemId]/page.tsx) ◆
 
 ```ts
 // apps/web/src/components/viewer/article/types.ts
-import type { Article, ArticleBlock, OverviewFigureRef, Preset, ReadingStatus } from '@yakudoku/api-client';
+import type { Article, ArticleBlock, OverviewFigureRef, Preset, ReadingStatus } from '@alinea/api-client';
 
 interface ArticlePaneProps {
   libraryItemId: string;
@@ -314,7 +314,7 @@ display:flex、align-items:center、gap:8px、font-size:11px、color:#9A9EA4(--p
 
 フッタ行: display:flex、align-items:center、gap:8px、padding:7px 12px、border-top:1px solid #F0EDE4(--pr-border-hair)、背景 #FBFAF7(--pr-bg-app)。
 
-- 「✦ AI 生成 · 訳読 · 2026-07-06」: font-size:9.5px、color:#9A9EA4(--pr-text-muted)。データ: `figure.dsl.footer`。
+- 「✦ AI 生成 · Alinea · 2026-07-06」: font-size:9.5px、color:#9A9EA4(--pr-text-muted)。データ: `figure.dsl.footer`。
 - スペーサー(flex:1)。
 - 「根拠:」: font-size:9.5px、color:#9A9EA4。
 - 根拠チップ×3(「§1」「§2.2」「表1」)= EvidenceChip の概要図フッタ変種: inline-flex、height:15px、padding:0 6px、border:1px solid var(--pr-am)、color:var(--pr-a)、border-radius:3px、font-size:9px、font-weight:600。決定: EvidenceChip に `size='figure-footer'`(h15px/9px/radius 3px、bg なし)を追加する(plans/08 §5.18 の inline/header と寸法が異なる 1h 実測値のため)。データ: `figure.evidence[]`。
@@ -386,7 +386,7 @@ border:1px solid #E2DFD5(--pr-border-card)、border-radius:8px、背景 #F1EFE9(
 
 左レール: `☰`(+ブックマークアイコン、虫眼鏡アイコン)
 
-本文: `Rectified Flow を読む: 生成経路を「直線」にして 1 ステップ生成へ` / `AI生成` / `訳文・メモ・チャット履歴から自動構成 · 2026-07-06 · 元の論文とは別物です — 根拠チップから原文へ` / `✦ 全体概要図` / `AI生成 · 版 2` / `✦ 書き直し指示` / `SVG ⤓` / `課題` / `拡散モデルの生成経路は曲がっている` / `SDE/ODE の数値解法に数十〜数百ステップが必要で、生成が遅い` / `→` / `提案 — RECTIFIED FLOW` / `直線補間の向きを回帰し、ODE を学習` / `v ← (X₁−X₀) の最小二乗回帰(式5)。reflow の反復で経路を再直線化` / `→` / `結果` / `1 ステップ生成で FID 4.85` / `CIFAR-10。蒸留と併用で従来の拡散 ODE 蒸留を上回る` / `✦ AI 生成 · 訳読 · 2026-07-06` / `根拠:` / `§1` / `§2.2` / `表1` / `なぜ「直線」なのか` / `✦ 書き直し指示` / `再生成` / `根拠を表示` / `直線の経路は 1 回のオイラーステップで厳密にシミュレートできる。つまり「経路をどれだけ直線に近づけられるか」が、そのまま推論コストの削減につながる。Rectified Flow はこの一点に賭けた設計である。` / `"Straight paths are computationally attractive: they can be simulated exactly with a single Euler step."` / `原文引用` / `§2.2 ¶3` / `原文で見る →` / `図2(原論文の画像)` / `図2: reflow の反復で軌道が直線化していく様子。交差する経路が「平均の向き」に置き換わるため、軌道は交わらない。` / `出典: Liu et al., Flow Straight and Fast (arXiv:2209.03003) · ` / `CC BY 4.0 — 転載可` / `クレジット自動付記` / `議論したい点` / `✦ AI構成` / `1.` / `reflow を重ねると周辺分布の誤差は蓄積しないか(§2.2 の仮定の妥当性)` / `あなたの疑問ハイライトから` / `2.` / `Flow Matching(Lipman+ 2023)との理論的な差分はどこか` / `3.` / `蒸留を reflow 後に行う場合、教師の品質劣化はどう影響するか` / `出典: Xingchao Liu, Chengyue Gong, Qiang Liu. "Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow." ICLR 2023. arXiv:2209.03003 · ライセンス CC BY 4.0` / `自動挿入 · 削除不可`
+本文: `Rectified Flow を読む: 生成経路を「直線」にして 1 ステップ生成へ` / `AI生成` / `訳文・メモ・チャット履歴から自動構成 · 2026-07-06 · 元の論文とは別物です — 根拠チップから原文へ` / `✦ 全体概要図` / `AI生成 · 版 2` / `✦ 書き直し指示` / `SVG ⤓` / `課題` / `拡散モデルの生成経路は曲がっている` / `SDE/ODE の数値解法に数十〜数百ステップが必要で、生成が遅い` / `→` / `提案 — RECTIFIED FLOW` / `直線補間の向きを回帰し、ODE を学習` / `v ← (X₁−X₀) の最小二乗回帰(式5)。reflow の反復で経路を再直線化` / `→` / `結果` / `1 ステップ生成で FID 4.85` / `CIFAR-10。蒸留と併用で従来の拡散 ODE 蒸留を上回る` / `✦ AI 生成 · Alinea · 2026-07-06` / `根拠:` / `§1` / `§2.2` / `表1` / `なぜ「直線」なのか` / `✦ 書き直し指示` / `再生成` / `根拠を表示` / `直線の経路は 1 回のオイラーステップで厳密にシミュレートできる。つまり「経路をどれだけ直線に近づけられるか」が、そのまま推論コストの削減につながる。Rectified Flow はこの一点に賭けた設計である。` / `"Straight paths are computationally attractive: they can be simulated exactly with a single Euler step."` / `原文引用` / `§2.2 ¶3` / `原文で見る →` / `図2(原論文の画像)` / `図2: reflow の反復で軌道が直線化していく様子。交差する経路が「平均の向き」に置き換わるため、軌道は交わらない。` / `出典: Liu et al., Flow Straight and Fast (arXiv:2209.03003) · ` / `CC BY 4.0 — 転載可` / `クレジット自動付記` / `議論したい点` / `✦ AI構成` / `1.` / `reflow を重ねると周辺分布の誤差は蓄積しないか(§2.2 の仮定の妥当性)` / `あなたの疑問ハイライトから` / `2.` / `Flow Matching(Lipman+ 2023)との理論的な差分はどこか` / `3.` / `蒸留を reflow 後に行う場合、教師の品質劣化はどう影響するか` / `出典: Xingchao Liu, Chengyue Gong, Qiang Liu. "Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow." ICLR 2023. arXiv:2209.03003 · ライセンス CC BY 4.0` / `自動挿入 · 削除不可`
 
 ※上記のうち論文固有の値(タイトル・本文・出典等)はシードデータ(Rectified Flow, arXiv:2209.03003 — spec-decisions C10)での期待値であり、固定文言は「原文引用」「原文で見る →」「クレジット自動付記」「根拠:」「✦ 全体概要図」「✦ 書き直し指示」「SVG ⤓」「✦ AI構成」「あなたの疑問ハイライトから」「自動挿入 · 削除不可」「✦ 指示つき再生成」「この論文内を検索」の 12 個+モードタブ 5 個。
 

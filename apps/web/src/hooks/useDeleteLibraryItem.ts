@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { libraryItemsDelete } from "@yakudoku/api-client";
+import { libraryItemsDelete } from "@alinea/api-client";
 import { useToast } from "@/components/ui/Toast";
 
 export interface DeleteLibraryItemInput {

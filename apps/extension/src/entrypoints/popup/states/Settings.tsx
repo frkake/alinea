@@ -80,15 +80,15 @@ export function Settings({ version, onOpenSiteSettings }: SettingsProps) {
           <span className="ext-toggle-label">arXiv ページに保存ボタンを表示</span>
         </button>
         <p className="ext-settings-desc">
-          arxiv.org の論文ページに「訳 保存」ボタンを追加します。有効化時に arxiv.org へのアクセス権限を求めます。
+          arxiv.org の論文ページに「A 保存」ボタンを追加します。有効化時に arxiv.org へのアクセス権限を求めます。
         </p>
       </div>
 
       <button type="button" className="ext-settings-link" onClick={onOpenSiteSettings}>
-        訳読の設定を開く ↗
+        Alineaの設定を開く ↗
       </button>
 
-      <div className="ext-settings-version">訳読拡張 v{version}</div>
+      <div className="ext-settings-version">Alinea拡張 v{version}</div>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import type { LibraryItemSummary } from "@yakudoku/api-client";
+import type { LibraryItemSummary } from "@alinea/api-client";
 import type { LibraryTableRow } from "@/components/ui/LibraryTable";
 import {
   formatReadingHours,

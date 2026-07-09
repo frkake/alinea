@@ -1,4 +1,4 @@
-import type { HeadingContentOut } from "@yakudoku/api-client";
+import type { HeadingContentOut } from "@alinea/api-client";
 
 /** 見出しブロック(1h §4.7)。level 2 = 19px、level 3 = 15.5px(デザイン未描画分の決定)。 */
 export function HeadingBlock({ heading }: { heading: HeadingContentOut }) {

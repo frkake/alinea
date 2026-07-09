@@ -42,7 +42,7 @@ test.describe("PW-22 モバイル(390×844)", () => {
     await expect(page.getByRole("button", { name: "目次を開く" })).toBeVisible();
     // モード切替タブは非描画(mobile.md §4.2)。常に訳文表示に強制。
     await expect(page.getByRole("radiogroup", { name: "表示モード" })).toHaveCount(0);
-    await expect(page.locator(".yk-paragraph[data-block-id]").first()).toBeVisible();
+    await expect(page.locator(".alinea-paragraph[data-block-id]").first()).toBeVisible();
 
     // 取り込みUI非存在(ビューア側)。
     await expect(page.getByRole("button", { name: INGEST_ACTION_RE })).toHaveCount(0);

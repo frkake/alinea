@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any
 
 from _data import GOLDEN_DIR, load_fixture
-from yakudoku_figures.dsl import OverviewFigureDsl
-from yakudoku_figures.overview_svg import (
+from alinea_figures.dsl import OverviewFigureDsl
+from alinea_figures.overview_svg import (
     ARROW_ZONE_W,
     BODY_FS,
     BODY_MAX_LINES,
@@ -31,7 +31,7 @@ from yakudoku_figures.overview_svg import (
     PAD_X,
     render_overview_svg,
 )
-from yakudoku_figures.wrap import wrap_text
+from alinea_figures.wrap import wrap_text
 
 SVG_NS = "{http://www.w3.org/2000/svg}"
 _HERE = Path(__file__).parent
@@ -120,8 +120,8 @@ def test_py_fig_02b_process_independent_rendering() -> None:
     script = (
         f"import json, sys; "
         f"sys.path.insert(0, {str(src_dir)!r}); "
-        f"from yakudoku_figures.dsl import OverviewFigureDsl; "
-        f"from yakudoku_figures.overview_svg import render_overview_svg; "
+        f"from alinea_figures.dsl import OverviewFigureDsl; "
+        f"from alinea_figures.overview_svg import render_overview_svg; "
         f"data = json.load(open({str(fixture_path)!r}, encoding='utf-8')); "
         f"dsl = OverviewFigureDsl.model_validate(data['dsl']); "
         f"sys.stdout.buffer.write(render_overview_svg(dsl, evidence_chips=data['evidence_chips']))"

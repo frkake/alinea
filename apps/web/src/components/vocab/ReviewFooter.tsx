@@ -1,6 +1,6 @@
 "use client";
 
-import type { VocabSrs } from "@yakudoku/api-client";
+import type { VocabSrs } from "@alinea/api-client";
 import { formatNextReviewDisplay } from "@/components/vocab/format";
 import type { ReviewResult } from "@/components/vocab/types";
 

@@ -1,6 +1,6 @@
 "use client";
 
-import type { QuickFacet } from "@yakudoku/api-client";
+import type { QuickFacet } from "@alinea/api-client";
 import { FilterChip } from "@/components/ui/FilterChip";
 import { QUICK_LABELS, QUICK_ORDER, type Quick } from "@/components/library/types";
 

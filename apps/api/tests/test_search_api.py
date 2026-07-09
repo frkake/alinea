@@ -27,21 +27,21 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest_asyncio
-from httpx import AsyncClient
-from sqlalchemy import insert
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.services.session_service import create_session
-from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
-from yakudoku_core.db.models import (
+from alinea_api.services.session_service import create_session
+from alinea_api.services.user_service import purge_user, upsert_user_by_email
+from alinea_core.db.models import (
     Annotation,
     ArticleBlock,
     DocumentRevision,
     LibraryItem,
     Paper,
 )
-from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
-from yakudoku_core.document.inlines import Inline
-from yakudoku_core.search.rebuild import rebuild_block_search_index
+from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
+from alinea_core.document.inlines import Inline
+from alinea_core.search.rebuild import rebuild_block_search_index
+from httpx import AsyncClient
+from sqlalchemy import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def _insert_comment_annotation(
@@ -262,7 +262,7 @@ async def test_english_source_only_hit(client: AsyncClient, search_ctx: SimpleNa
     hit = body["groups"][0]["hits"][0]
     assert hit["matched_in"] == ["source"]
     assert hit["snippet_lang"] == "en"
-    assert '<mark class="yk-search-hit">' in hit["snippet"]
+    assert '<mark class="alinea-search-hit">' in hit["snippet"]
 
 
 async def test_japanese_translation_only_hit(
@@ -525,7 +525,7 @@ async def test_in_paper_search_translation_hit(
     item = body["items"][0]
     assert item["block_id"] == "blk-s1"
     assert item["matched_in"] == ["translation"]
-    assert '<mark class="yk-search-hit">' in item["snippet"]
+    assert '<mark class="alinea-search-hit">' in item["snippet"]
 
 
 async def test_in_paper_search_source_hit(client: AsyncClient, search_ctx: SimpleNamespace) -> None:

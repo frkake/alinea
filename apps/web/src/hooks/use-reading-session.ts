@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { settingsGet } from "@yakudoku/api-client";
+import { settingsGet } from "@alinea/api-client";
 
 const HEARTBEAT_MS = 30_000;
 const ACTIVITY_WINDOW_MS = 60_000;
@@ -24,7 +24,7 @@ interface ReadingSessionBody {
  * `pagehide` 時は `navigator.sendBeacon` で即時送信する。
  *
  * 設定 `reading.track_reading_time=false` のときは計測・送信を行わない。
- * `POST …/reading-sessions` は本レーン着手時点で `@yakudoku/api-client` に未生成のため、
+ * `POST …/reading-sessions` は本レーン着手時点で `@alinea/api-client` に未生成のため、
  * `fetch()` 直書きで plans/03 §5.9 の契約どおりに呼ぶ(deviations 参照)。
  */
 export function useReadingSession(params: { itemId: string; enabled?: boolean }): void {

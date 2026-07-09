@@ -1,12 +1,12 @@
 [project]
-name = "yakudoku-worker"
+name = "alinea-worker"
 version = "0.1.0"
-description = "訳読 / YAKUDOKU — arq 非同期ワーカー(InteractiveWorker/BulkWorker)"
+description = "Alinea — arq 非同期ワーカー(InteractiveWorker/BulkWorker)"
 requires-python = "==3.12.*"
 dependencies = [
-  "yakudoku-core",
-  "yakudoku-llm",
-  "yakudoku-figures",
+  "alinea-core",
+  "alinea-llm",
+  "alinea-figures",
   "arq==0.26.3",
   "pydantic==2.11.7",
   "pydantic-settings==2.10.1",
@@ -22,4 +22,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/yakudoku_worker"]
+packages = ["src/alinea_worker"]

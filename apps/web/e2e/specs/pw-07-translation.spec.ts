@@ -46,7 +46,7 @@ test.describe("PW-07 翻訳操作(M0)", () => {
     const dismiss = page.getByRole("button", { name: "閉じる" });
     if (await dismiss.isVisible().catch(() => false)) await dismiss.click();
 
-    const para = page.locator(".yk-paragraph[data-block-id]").first();
+    const para = page.locator(".alinea-paragraph[data-block-id]").first();
     await expect(para).toBeVisible();
     await para.scrollIntoViewIfNeeded();
     await para.hover();

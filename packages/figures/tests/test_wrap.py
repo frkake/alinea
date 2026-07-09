@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from yakudoku_figures.wrap import char_width, text_width, wrap_text
+from alinea_figures.wrap import char_width, text_width, wrap_text
 
 
 def test_char_width_table() -> None:

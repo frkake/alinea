@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, type CSSProperties } from "react";
-import type { ReferenceItem } from "@yakudoku/api-client";
+import type { ReferenceItem } from "@alinea/api-client";
 
 export type ReferenceImportState = "idle" | "importing" | "imported";
 

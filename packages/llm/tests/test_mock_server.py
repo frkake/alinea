@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from yakudoku_llm.testing.mock_server import build_app
+from alinea_llm.testing.mock_server import build_app
 
 
 @pytest.fixture

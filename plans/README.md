@@ -1,6 +1,6 @@
-# plans/ — 「訳読 / YAKUDOKU」実装計画書群の案内
+# plans/ — 「Alinea」実装計画書群の案内
 
-> 対象読者と前提: 本ディレクトリは「訳読 / YAKUDOKU — 論文読解ワークベンチ」を実装するエンジニア全員の入口である。**docs/00〜12 が「何を作るか」(機能仕様の正)、plans/ が「どう作るか」(実装の正)** であり、最終的な見た目の正は確定デザイン 16 画面(論文読解システム デザイン.dc.html + support.js)とその抽出値(各計画書に転記済み)である。三者が食い違ったら 見た目=確定デザイン → 機能=docs → 実装詳細=plans の順で優先する。
+> 対象読者と前提: 本ディレクトリは「Alinea — 論文読解ワークベンチ」を実装するエンジニア全員の入口である。**docs/00〜12 が「何を作るか」(機能仕様の正)、plans/ が「どう作るか」(実装の正)** であり、最終的な見た目の正は確定デザイン 16 画面(論文読解システム デザイン.dc.html + support.js)とその抽出値(各計画書に転記済み)である。三者が食い違ったら 見た目=確定デザイン → 機能=docs → 実装詳細=plans の順で優先する。
 
 ## 1. 位置づけ
 
@@ -17,7 +17,7 @@
 | 01 | [01-architecture.md](01-architecture.md) | 全体構成・キュー/ジョブ基盤・SSE・S3 レイアウト・認証・デプロイ |
 | 02 | [02-data-model.md](02-data-model.md) | PostgreSQL 16 完全 DDL(= Alembic 初期マイグレーション) |
 | 03 | [03-api.md](03-api.md) | REST API 完全仕様(全エンドポイント・スキーマ・エラー・SSE 契約) |
-| 04 | [04-llm-providers.md](04-llm-providers.md) | LLM/画像プロバイダ抽象化層(`yakudoku_llm`)・ルーティング・BYOK・計測 |
+| 04 | [04-llm-providers.md](04-llm-providers.md) | LLM/画像プロバイダ抽象化層(`alinea_llm`)・ルーティング・BYOK・計測 |
 | 05 | [05-ingest-pipeline.md](05-ingest-pipeline.md) | 取り込みパイプライン(arXiv 解決・パーサ・品質 A/B・ジョブ状態機械) |
 | 06 | [06-translation-pipeline.md](06-translation-pipeline.md) | 翻訳(プレースホルダ・プロンプト・共有キャッシュ・品質検査・進捗) |
 | 07 | [07-ai-features.md](07-ai-features.md) | チャット/要約/記事/概要図/解説図/語彙生成/提案 |
@@ -41,7 +41,7 @@
 | 1g-finish-reading-dialog.md | 読了フロー(モーダル) |
 | 1h-viewer-article-mode.md | ビューア 記事モード+全体概要図 |
 | 2a-viewer-pdf-mode.md | ビューア PDF モード+情報パネル |
-| 3a-extension-popup.md | 拡張ポップアップ(4 状態)+バッジ+「訳 保存」ピル |
+| 3a-extension-popup.md | 拡張ポップアップ(4 状態)+バッジ+「A 保存」ピル |
 | 4a-library-cards-notifications.md | ライブラリ カード+通知ポップオーバー |
 | 4b-collection-detail.md | コレクション詳細 |
 | 4c-collection-share-page.md | コレクション共有ページ(匿名・唯一の公開画面) |

@@ -1,6 +1,6 @@
 # 画面 1c: ビューア ダーク+図表参照ポップオーバー+図表/参考文献パネル
 
-> 対象読者と前提: 本書は「訳読 / YAKUDOKU — 論文読解ワークベンチ」のフロントエンド実装者向けに、確定デザイン画面 1c(論文ビューア ダークモード。図表参照ポップオーバー+サイドパネル図表/参考文献タブ)を 100% 忠実に実装するための計画書である。機能仕様は docs/04(ビューア)§7・§10.2・§14 を正とし、ピクセル値は抽出ファイル extract/1c.md の実測値を正とする。共通コンポーネント名・トークン名は plans/08、API 名は plans/03、データ型は plans/02 に完全準拠する。技術スタック: Next.js 15(App Router)+ React 19 + TypeScript 5 + Tailwind CSS v4 + TanStack Query v5 + Zustand。1c は独立画面ではなく、ビューア画面(1a と同一ルート)の「ダークテーマ+対訳モード+図表タブ+図参照ポップオーバー表示」という状態の組み合わせである。本書はその状態群と、1c で初出の要素(ダークトークン適用・図参照ポップオーバー・図表/参考文献パネル)の実装を確定させる。ヘッダ・目次・サイドパネル枠・URL 契約・読書位置/時間はビューアシェル計画書(plans/09-screens/viewer-shell.md)が正であり、対訳ビュー(ParallelView 系)は画面 1a の計画書(plans/09-screens/1a-viewer-parallel-chat.md)と共有する。本書では 1c 実測値との対応と 1c 固有部分(図参照ポップオーバー・図表タブ)を定義する。シェルと 1a 計画書が矛盾する場合は viewer-shell.md が正(決定)。
+> 対象読者と前提: 本書は「Alinea — 論文読解ワークベンチ」のフロントエンド実装者向けに、確定デザイン画面 1c(論文ビューア ダークモード。図表参照ポップオーバー+サイドパネル図表/参考文献タブ)を 100% 忠実に実装するための計画書である。機能仕様は docs/04(ビューア)§7・§10.2・§14 を正とし、ピクセル値は抽出ファイル extract/1c.md の実測値を正とする。共通コンポーネント名・トークン名は plans/08、API 名は plans/03、データ型は plans/02 に完全準拠する。技術スタック: Next.js 15(App Router)+ React 19 + TypeScript 5 + Tailwind CSS v4 + TanStack Query v5 + Zustand。1c は独立画面ではなく、ビューア画面(1a と同一ルート)の「ダークテーマ+対訳モード+図表タブ+図参照ポップオーバー表示」という状態の組み合わせである。本書はその状態群と、1c で初出の要素(ダークトークン適用・図参照ポップオーバー・図表/参考文献パネル)の実装を確定させる。ヘッダ・目次・サイドパネル枠・URL 契約・読書位置/時間はビューアシェル計画書(plans/09-screens/viewer-shell.md)が正であり、対訳ビュー(ParallelView 系)は画面 1a の計画書(plans/09-screens/1a-viewer-parallel-chat.md)と共有する。本書では 1c 実測値との対応と 1c 固有部分(図参照ポップオーバー・図表タブ)を定義する。シェルと 1a 計画書が矛盾する場合は viewer-shell.md が正(決定)。
 
 ## 1. 概要とルート
 
@@ -94,11 +94,11 @@ page.tsx  /papers/[itemId]
 
 ### 3.2 1c 固有コンポーネントの props 型(確定)
 
-型の要素は plans/03 のレスポンス型(生成クライアント `@yakudoku/api-client` の型)を使う。
+型の要素は plans/03 のレスポンス型(生成クライアント `@alinea/api-client` の型)を使う。
 
 ```ts
 // apps/web/src/components/viewer/panel/figures/types.ts
-import type { components } from '@yakudoku/api-client';
+import type { components } from '@alinea/api-client';
 export type FigureItem = components['schemas']['FigureItem'];
 // = { block_id; kind: 'figure'|'table'; label; display: '図2'|'表1'; caption_en;
 //     caption_ja: string|null; image_url: string|null;

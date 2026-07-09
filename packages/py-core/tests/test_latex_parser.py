@@ -14,10 +14,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from yakudoku_core.document.blocks import DocumentContent
-from yakudoku_core.document.plaintext import block_to_plain
-from yakudoku_core.parsing.carryover import carry_over_ids, flatten_blocks
-from yakudoku_core.parsing.latex_parser import (
+from alinea_core.document.blocks import DocumentContent
+from alinea_core.document.plaintext import block_to_plain
+from alinea_core.parsing.carryover import carry_over_ids, flatten_blocks
+from alinea_core.parsing.latex_parser import (
     PARSER_VERSION,
     LatexParseError,
     ParsedDocument,

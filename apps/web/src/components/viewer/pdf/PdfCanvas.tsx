@@ -75,7 +75,7 @@ export interface PdfCanvasProps {
  * dark: #14171B(`--pr-bg-canvas`)/light: #DDDAD1(plans/08 の --pr-bg-canvas とは
  * 実測が異なるため component 内定数で保持。2a §4)。
  */
-const CANVAS_BG_CLASS = "yk-pdf-canvas-bg";
+const CANVAS_BG_CLASS = "alinea-pdf-canvas-bg";
 export const PDF_PAGE_GAP_PX = 16;
 const PDF_CANVAS_PADDING_X_PX = 16;
 const PDF_CANVAS_PADDING_Y_PX = 20;
@@ -105,7 +105,7 @@ function pageLayerFromWheelEvent(root: HTMLElement, e: WheelEvent): HTMLElement 
   if (pointed) candidates.push(pointed);
 
   for (const candidate of candidates) {
-    const pageEl = candidate.closest<HTMLElement>(".yk-pdf-page-layer");
+    const pageEl = candidate.closest<HTMLElement>(".alinea-pdf-page-layer");
     if (pageEl && root.contains(pageEl)) return pageEl;
   }
   return null;
@@ -652,7 +652,7 @@ function PdfPageLayer({
   return (
     <div
       ref={wrapRef}
-      className="yk-pdf-page-layer"
+      className="alinea-pdf-page-layer"
       data-pdf-page={trackVisible ? pageNumber : undefined}
       onPointerDown={onDragStart}
       onPointerMove={onDragMove}
@@ -668,7 +668,7 @@ function PdfPageLayer({
       }}
     >
       <canvas ref={canvasRef} />
-      <div ref={textLayerRef} className="textLayer yk-pdf-text-layer" aria-hidden />
+      <div ref={textLayerRef} className="textLayer alinea-pdf-text-layer" aria-hidden />
       {annotationLinks.length > 0 ? <PdfAnnotationLinks links={annotationLinks} /> : null}
       {viewport && selectedHit && selectedDisplay ? (
         <PdfBboxHighlight viewport={viewport} bbox={selectedHit.bbox}>
@@ -739,7 +739,7 @@ function openAnnotationHref(href: string, annotation: PdfAnnotationLike) {
 function PdfAnnotationLinks({ links }: { links: PdfAnnotationLinkItem[] }) {
   if (links.length === 0) return null;
   return (
-    <div className="yk-pdf-link-layer" aria-label="PDF リンク">
+    <div className="alinea-pdf-link-layer" aria-label="PDF リンク">
       {links.map(({ ann, href, rect }, idx) => (
         <a
           key={`${href}-${idx}`}

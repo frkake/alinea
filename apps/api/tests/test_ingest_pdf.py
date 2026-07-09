@@ -18,14 +18,14 @@ from typing import Any
 import fitz
 import pytest
 import pytest_asyncio
+from alinea_api.main import app
+from alinea_api.routers.ingest import get_job_wakeup, get_pdf_storage
+from alinea_api.services.session_service import create_session
+from alinea_api.services.user_service import upsert_user_by_email
+from alinea_core.db.models import DocumentRevision, Job, LibraryItem, Paper, User
 from httpx import AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.main import app
-from yakudoku_api.routers.ingest import get_job_wakeup, get_pdf_storage
-from yakudoku_api.services.session_service import create_session
-from yakudoku_api.services.user_service import upsert_user_by_email
-from yakudoku_core.db.models import DocumentRevision, Job, LibraryItem, Paper, User
 
 
 # ---------------------------------------------------------------------------

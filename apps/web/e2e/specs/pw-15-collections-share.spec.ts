@@ -84,7 +84,7 @@ test.describe("PW-15 コレクション+共有", () => {
       await expect(page.getByText(/締切.*残り\s*\d+\s*日/)).toBeVisible();
 
       // 4) 共有リンク発行→「メモを含める」ON(既定 false)→匿名閲覧(書誌+要約+許可メモのみ・
-      //    noindex・「訳読をはじめる」CTA)。
+      //    noindex・「Alineaをはじめる」CTA)。
       await page.getByRole("button", { name: "共有リンクを発行" }).click();
       await expect(page.getByText("発行済み")).toBeVisible();
       await page.getByRole("switch", { name: "共有ページにメモを含める" }).click();
@@ -107,7 +107,7 @@ test.describe("PW-15 コレクション+共有", () => {
         await expect(anonPage.getByText("Flow Straight and Fast", { exact: false })).toBeVisible();
         await expect(anonPage.getByText("直線経路で 1 ステップ生成。reflow が肝。")).toBeVisible();
         await expect(anonPage.getByText(/サンプルを直線で結ぶ最小二乗回帰/)).toBeVisible();
-        await expect(anonPage.getByRole("link", { name: "訳読をはじめる" })).toBeVisible();
+        await expect(anonPage.getByRole("link", { name: "Alineaをはじめる" })).toBeVisible();
         await expect(anonPage.locator('meta[name="robots"]')).toHaveAttribute("content", /noindex/);
       } finally {
         await anonContext.close();

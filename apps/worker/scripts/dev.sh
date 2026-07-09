@@ -3,7 +3,7 @@ set -euo pipefail
 
 # The worker handles long-running jobs. In normal dev we avoid arq --watch so a
 # source/cache write does not SIGTERM an in-flight ingest and leave it queued
-# for retry. Use pnpm --filter @yakudoku/worker dev:watch when hot reload is
+# for retry. Use pnpm --filter @alinea/worker dev:watch when hot reload is
 # worth the cancellation risk.
 export PYTHONDONTWRITEBYTECODE=1
 
@@ -36,7 +36,7 @@ if [[ "$redis_addr" == *:* ]]; then
   redis_port="${redis_addr#*:}"
   redis_port="${redis_port%%/*}"
 fi
-wait_for_tcp "${redis_host:-localhost}" "${redis_port:-6379}" "Redis" "${YAKUDOKU_WORKER_REDIS_WAIT_TIMEOUT:-60}"
+wait_for_tcp "${redis_host:-localhost}" "${redis_port:-6379}" "Redis" "${ALINEA_WORKER_REDIS_WAIT_TIMEOUT:-60}"
 
 cleanup() {
   local status=$?
@@ -50,10 +50,10 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-uv run --no-sync arq yakudoku_worker.main.InteractiveWorker &
+uv run --no-sync arq alinea_worker.main.InteractiveWorker &
 pids+=("$!")
 
-uv run --no-sync arq yakudoku_worker.main.BulkWorker &
+uv run --no-sync arq alinea_worker.main.BulkWorker &
 pids+=("$!")
 
 wait -n "${pids[@]}"

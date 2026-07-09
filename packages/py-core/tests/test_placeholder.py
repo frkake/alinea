@@ -17,10 +17,7 @@ from collections import Counter
 from typing import Any, Literal
 
 import pytest
-from hypothesis import assume, example, given, settings
-from hypothesis import strategies as st
-from hypothesis.strategies import DrawFn, SearchStrategy
-from yakudoku_core.translation.placeholder import (
+from alinea_core.translation.placeholder import (
     TOKEN_RE,
     PlaceholderMismatchError,
     compute_source_hash,
@@ -31,6 +28,9 @@ from yakudoku_core.translation.placeholder import (
     validate,
     verify_tokens,
 )
+from hypothesis import assume, example, given, settings
+from hypothesis import strategies as st
+from hypothesis.strategies import DrawFn, SearchStrategy
 
 # ---------------------------------------------------------------------------
 # strategies(plans/12 §7.1 を実装 IR へ写像)

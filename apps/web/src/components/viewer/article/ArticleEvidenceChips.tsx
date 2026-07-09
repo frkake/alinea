@@ -1,6 +1,6 @@
 "use client";
 
-import type { EvidenceItemOut } from "@yakudoku/api-client";
+import type { EvidenceItemOut } from "@alinea/api-client";
 import { EvidenceChip, type EvidenceChipProps } from "@/components/ui/EvidenceChip";
 import type { AnchorRef } from "@/components/viewer/article/types";
 

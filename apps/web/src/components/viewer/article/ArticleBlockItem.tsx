@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { articlesBlockRewrite, figuresRegenerateExplainer, type ArticleBlockOut } from "@yakudoku/api-client";
+import { articlesBlockRewrite, figuresRegenerateExplainer, type ArticleBlockOut } from "@alinea/api-client";
 import { useToast } from "@/components/ui/Toast";
 import { useJobEvents } from "@/hooks/useJobEvents";
 import { articleKeys } from "@/components/viewer/article/queries";

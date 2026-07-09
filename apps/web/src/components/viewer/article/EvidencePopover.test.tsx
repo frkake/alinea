@@ -2,11 +2,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
 import { describe, expect, test, vi } from "vitest";
-import { viewerGetBlock, type EvidenceItemOut } from "@yakudoku/api-client";
+import { viewerGetBlock, type EvidenceItemOut } from "@alinea/api-client";
 import { EvidencePopover } from "@/components/viewer/article/EvidencePopover";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return { ...actual, viewerGetBlock: vi.fn() };
 });
 

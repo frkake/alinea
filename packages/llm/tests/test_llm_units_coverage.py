@@ -7,25 +7,25 @@ plans/04 §9・§12・§13・§14 の分岐を FakeLLMProvider/FakeImageProvider
 from __future__ import annotations
 
 import pytest
-from yakudoku_llm.caching import (
+from alinea_llm.caching import (
     MIN_CACHE_TOKENS,
     min_cache_tokens_for,
     translation_cache_key,
 )
-from yakudoku_llm.errors import (
+from alinea_llm.errors import (
     ErrorKind,
     ProviderChainExhausted,
     ProviderError,
     SchemaValidationFailed,
 )
-from yakudoku_llm.providers.openai_provider import OpenAIProvider
-from yakudoku_llm.registry import ModelRegistry
-from yakudoku_llm.router import ImageRouter, LLMRouter
-from yakudoku_llm.routing import RetryConfig
-from yakudoku_llm.structured import attach_parsed, structured_with_json_mode
-from yakudoku_llm.testing.fake_provider import FakeImageProvider, FakeLLMProvider
-from yakudoku_llm.tokens import IMAGE_TOKEN_COST, budget_for, estimate_tokens_o200k
-from yakudoku_llm.types import (
+from alinea_llm.providers.openai_provider import OpenAIProvider
+from alinea_llm.registry import ModelRegistry
+from alinea_llm.router import ImageRouter, LLMRouter
+from alinea_llm.routing import RetryConfig
+from alinea_llm.structured import attach_parsed, structured_with_json_mode
+from alinea_llm.testing.fake_provider import FakeImageProvider, FakeLLMProvider
+from alinea_llm.tokens import IMAGE_TOKEN_COST, budget_for, estimate_tokens_o200k
+from alinea_llm.types import (
     ContentPart,
     ImageRequest,
     ImageResult,
@@ -148,7 +148,7 @@ async def test_structured_json_mode_exhausted() -> None:
 
 
 def test_validate_raises_schema_validation_failed_directly() -> None:
-    from yakudoku_llm.structured import _validate
+    from alinea_llm.structured import _validate
 
     with pytest.raises(SchemaValidationFailed):
         _validate("{bad", _OBJ_SCHEMA)

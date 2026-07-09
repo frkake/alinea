@@ -203,14 +203,14 @@ test.describe.serial("拡張 E2E", () => {
     await page.close();
   });
 
-  test("XT-08 「訳 保存」ピル: 既定オフ(コンテントスクリプト非注入)", async ({
+  test("XT-08 「A 保存」ピル: 既定オフ(コンテントスクリプト非注入)", async ({
     extContext,
     extensionId,
   }) => {
     // 決定(followups 参照): 設定オンへの切替は chrome.permissions.request の実ユーザー
     // ジェスチャーを要求し(検証済み: Playwright のクリック/SW 経由呼び出しはいずれも
     // "must be called during a user gesture" で拒否/非許可となる)、この分岐は Playwright
-    // では自動化できない。本テストは既定オフ(=abs ページに .yk-pill が一切注入されない)
+    // では自動化できない。本テストは既定オフ(=abs ページに .alinea-pill が一切注入されない)
     // という不変条件のみを検証する。設定オン以降の注入・保存・非 arXiv 非注入の確認は
     // test.fixme(下記)。
     await ensureLoggedIn(extContext);
@@ -225,7 +225,7 @@ test.describe.serial("拡張 E2E", () => {
     await page.goto("https://arxiv.org/abs/2209.03003");
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
     await page.waitForTimeout(500); // content script は runtime 登録がなければ何もしないため即時確認で十分。
-    expect(await page.locator(".yk-pill").count()).toBe(0);
+    expect(await page.locator(".alinea-pill").count()).toBe(0);
     await page.close();
 
     // 拡張のポップアップ設定にも同じ既定値が反映されている。
@@ -243,7 +243,7 @@ test.describe.serial("拡張 E2E", () => {
   );
 
   test("XT-10 送信キュー永続: API停止中の保存が失敗キューに残り、コンテキスト再起動後も残り、復旧後に再試行で送信される", async () => {
-    const userDataDir = mkdtempSync(join(tmpdir(), "yk-ext-xt10-"));
+    const userDataDir = mkdtempSync(join(tmpdir(), "alinea-ext-xt10-"));
     const url = freshArxiv();
 
     // 1) API 停止状態を模倣(ingest 系エンドポイントのみネットワークエラーにする)→保存→失敗キュー。

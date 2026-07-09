@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { viewerGetDocument } from "@yakudoku/api-client";
+import { viewerGetDocument } from "@alinea/api-client";
 import { useViewerStore } from "@/stores/viewer-store";
 import { usePdfViewStore, type PdfSpreadFirstPageSide } from "@/stores/pdf-view-store";
 import { usePdfAvailability } from "@/hooks/use-pdf-availability";

@@ -8,7 +8,7 @@ export type HighlightColor = "important" | "question" | "idea" | "term";
  * 丸数字チップは選択メニュー操作後に DOM へ差し込まれる装飾要素であり、
  * 本文の実テキストではないため文字オフセット計算から除外する。
  */
-export const SKIP_OFFSET_ATTR = "data-yk-skip-offset";
+export const SKIP_OFFSET_ATTR = "data-alinea-skip-offset";
 
 export interface HighlightMarkProps {
   color: HighlightColor;
@@ -56,7 +56,7 @@ export function HighlightMark({
 }: HighlightMarkProps) {
   return (
     <>
-      <mark className={`yk-highlight yk-highlight-${color}`} style={markStyle(color)}>
+      <mark className={`alinea-highlight alinea-highlight-${color}`} style={markStyle(color)}>
         {children}
       </mark>
       {annotationNumber != null ? (

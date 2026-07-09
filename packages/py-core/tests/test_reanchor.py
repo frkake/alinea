@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.db.models import (
+from alinea_core.db.models import (
     Annotation,
     Article,
     ArticleBlock,
@@ -21,10 +20,11 @@ from yakudoku_core.db.models import (
     User,
     VocabEntry,
 )
-from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
-from yakudoku_core.document.inlines import Inline
-from yakudoku_core.ingest.reanchor import reanchor_paper
-from yakudoku_core.search.rebuild import rebuild_block_search_index
+from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
+from alinea_core.document.inlines import Inline
+from alinea_core.ingest.reanchor import reanchor_paper
+from alinea_core.search.rebuild import rebuild_block_search_index
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _content(blocks: list[tuple[str, str]]) -> DocumentContent:

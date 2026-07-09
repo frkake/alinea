@@ -7,13 +7,13 @@ cd "$ROOT_DIR"
 image_from_env_file=""
 if [[ -f .env ]]; then
   image_from_env_file="$(
-    awk -F= '/^[[:space:]]*YAKUDOKU_TEXLIVE_IMAGE[[:space:]]*=/{print substr($0, index($0, "=") + 1)}' .env \
+    awk -F= '/^[[:space:]]*ALINEA_TEXLIVE_IMAGE[[:space:]]*=/{print substr($0, index($0, "=") + 1)}' .env \
       | tail -n 1 \
       | sed -E 's/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//; s/^"//; s/"$//; s/^'\''//; s/'\''$//'
   )"
 fi
 
-image="${YAKUDOKU_TEXLIVE_IMAGE:-${image_from_env_file:-yakudoku-texlive-ja:latest}}"
+image="${ALINEA_TEXLIVE_IMAGE:-${image_from_env_file:-alinea-texlive-ja:latest}}"
 
 if docker image inspect "$image" >/dev/null 2>&1; then
   echo "TeX Live image already exists: $image"

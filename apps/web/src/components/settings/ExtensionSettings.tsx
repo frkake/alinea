@@ -16,7 +16,7 @@ export function ExtensionSettings({ settings, onToggle }: ExtensionSettingsProps
     <SettingsSection title="ブラウザ拡張">
       <Card padding="none">
         <SettingToggleRow
-          title="arXiv ページ内に「訳 保存」ボタンを表示"
+          title="arXiv ページ内に「A 保存」ボタンを表示"
           description="arxiv.org の論文ページ限定のオプトイン。既定はオフ"
           checked={settings.extension.arxiv_inline_button}
           onChange={onToggle}

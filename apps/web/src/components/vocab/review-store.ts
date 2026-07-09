@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import type { VocabEntryDetail } from "@yakudoku/api-client";
+import type { VocabEntryDetail } from "@alinea/api-client";
 import type { ReviewResult } from "@/components/vocab/types";
 
 export interface VocabReviewResultEntry {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
-import { STATUS_COLORS, STATUS_LABELS, type ReadingStatus } from "@yakudoku/tokens";
+import { STATUS_COLORS, STATUS_LABELS, type ReadingStatus } from "@alinea/tokens";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { QualityBadge } from "@/components/ui/QualityBadge";
 import { TagChip } from "@/components/ui/TagChip";
@@ -292,7 +292,7 @@ export function LibraryTable({
           <div
             key={row.id}
             role="row"
-            className="yk-lib-row"
+            className="alinea-lib-row"
             onClick={() => {
               onOpenRow(row.id);
             }}

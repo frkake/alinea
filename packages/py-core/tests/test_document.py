@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import pytest
+from alinea_core.document.anchor import AnchorJson
+from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
+from alinea_core.document.inlines import Inline
+from alinea_core.document.plaintext import block_to_plain, inline_to_plain, strip_markdown
+from alinea_core.document.stable_id import derive_block_id
+from alinea_core.search.rebuild import compute_index_rows, rebuild_block_search_index
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.document.anchor import AnchorJson
-from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
-from yakudoku_core.document.inlines import Inline
-from yakudoku_core.document.plaintext import block_to_plain, inline_to_plain, strip_markdown
-from yakudoku_core.document.stable_id import derive_block_id
-from yakudoku_core.search.rebuild import compute_index_rows, rebuild_block_search_index
 
 
 # ---- 安定 ID(docs/01 §4.3) ----

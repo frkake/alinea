@@ -1,4 +1,4 @@
-// API ラッパ(3a §1・§2.1)。@yakudoku/api-client の生成 SDK を拡張向けに設定する薄い層。
+// API ラッパ(3a §1・§2.1)。@alinea/api-client の生成 SDK を拡張向けに設定する薄い層。
 // - セッションクッキー(yk_session)共有: credentials:"include"。
 // - baseUrl は WXT_API_BASE(開発 http://localhost:3000)。拡張は別オリジンなので絶対 URL が必須。
 import {
@@ -19,7 +19,7 @@ import {
   type IngestRecentItem,
   type JobOut,
   type MeResponse,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 
 import type { Status } from "./status";
 

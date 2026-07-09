@@ -1,7 +1,7 @@
 """用語集 3 層 CRUD・逆引き検索・適用対象解決・personal フォーク解決の直接呼び出しテスト
 (plans/06 §8.3-§8.5・§9.2、docs/03 §7)。
 
-M1-14/M1-15 で追加された ``yakudoku_core.translation.glossary`` の CRUD/解決系関数を、
+M1-14/M1-15 で追加された ``alinea_core.translation.glossary`` の CRUD/解決系関数を、
 API ルータ(HTTP)を経由せず直接呼ぶ(DI 層を挟まない分、意図が読みやすい単体テストになる)。
 DB は実 PostgreSQL(SQLite 代替禁止)。テストデータはユニーク UUID/ランダム英字語で他テスト
 と衝突しないようにする。
@@ -13,8 +13,7 @@ import random
 import string
 import uuid
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.db.models import (
+from alinea_core.db.models import (
     DocumentRevision,
     Glossary,
     LibraryItem,
@@ -22,10 +21,10 @@ from yakudoku_core.db.models import (
     TranslationSet,
     User,
 )
-from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
-from yakudoku_core.document.inlines import Inline
-from yakudoku_core.search.rebuild import rebuild_block_search_index
-from yakudoku_core.translation.glossary import (
+from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
+from alinea_core.document.inlines import Inline
+from alinea_core.search.rebuild import rebuild_block_search_index
+from alinea_core.translation.glossary import (
     DuplicateTermError,
     create_term,
     delete_term,
@@ -39,6 +38,7 @@ from yakudoku_core.translation.glossary import (
     target_contexts_for_glossary,
     update_term,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _id() -> str:

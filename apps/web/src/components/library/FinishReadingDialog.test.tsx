@@ -2,12 +2,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { libraryItemsUpdate, notesCreate, type LibraryItemSummary } from "@yakudoku/api-client";
+import { libraryItemsUpdate, notesCreate, type LibraryItemSummary } from "@alinea/api-client";
 import { FinishReadingDialog } from "@/components/library/FinishReadingDialog";
 import { useToast } from "@/components/ui/Toast";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return {
     ...actual,
     libraryItemsUpdate: vi.fn(),

@@ -1,5 +1,5 @@
 /* 拡張ポップアップのスタイル(3a §4.4〜§4.6・フッタ・§5.1)。
- * 色はトークン(@yakudoku/tokens の --pr-* と、ここで定義する拡張ローカル --ext-*)を使い、
+ * 色はトークン(@alinea/tokens の --pr-* と、ここで定義する拡張ローカル --ext-*)を使い、
  * ルール中に hex を直書きしない(3a §4.4 が --ext-ok-* を定義する方針に倣う)。 */
 
 :root {
@@ -81,8 +81,12 @@ body {
   border-radius: 5px;
   background: var(--pr-a);
   color: #ffffff;
-  font-size: 10.5px;
-  font-weight: 700;
+  overflow: hidden;
+}
+
+.ext-logo-mark {
+  width: 100%;
+  height: 100%;
 }
 
 .ext-header-title {

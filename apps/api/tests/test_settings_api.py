@@ -12,11 +12,11 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest_asyncio
+from alinea_api.services.session_service import create_session
+from alinea_api.services.user_service import purge_user, upsert_user_by_email
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.services.session_service import create_session
-from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
 
 
 def _build_app() -> FastAPI:
@@ -24,13 +24,13 @@ def _build_app() -> FastAPI:
 
     並行タスクの WIP ルータに import を巻き込まれず、本タスクを独立に検証する。
     """
-    from yakudoku_api.errors import register_exception_handlers
-    from yakudoku_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
-    from yakudoku_api.ratelimit import RateLimitMiddleware
-    from yakudoku_api.redis_client import get_redis
-    from yakudoku_api.routers import library_items, llm_settings
-    from yakudoku_api.routers import settings as settings_router
-    from yakudoku_api.settings import get_api_settings
+    from alinea_api.errors import register_exception_handlers
+    from alinea_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
+    from alinea_api.ratelimit import RateLimitMiddleware
+    from alinea_api.redis_client import get_redis
+    from alinea_api.routers import library_items, llm_settings
+    from alinea_api.routers import settings as settings_router
+    from alinea_api.settings import get_api_settings
 
     s = get_api_settings()
     app = FastAPI()

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import fitz
-from yakudoku_core.db.models import TranslationUnit
-from yakudoku_core.document.blocks import DocumentContent
-from yakudoku_core.parsing.latex_parser import LatexArchive, parse_latex_source
-from yakudoku_worker.latex_pdf import (
+from alinea_core.db.models import TranslationUnit
+from alinea_core.document.blocks import DocumentContent
+from alinea_core.parsing.latex_parser import LatexArchive, parse_latex_source
+from alinea_worker.latex_pdf import (
     _find_overfull_boxes,
     _find_pdf_page_bound_violations,
     render_translated_latex_source,
@@ -93,7 +93,7 @@ E = mc^2
     assert "E = mc^2" in rendered.main_tex
     assert r"\includegraphics[width=.8\linewidth]{figures/mock.pdf}" in rendered.main_tex
     assert r"\caption{図の説明。$x$}" in rendered.main_tex
-    assert "% yakudoku-ja-pdf" in rendered.main_tex
+    assert "% alinea-ja-pdf" in rendered.main_tex
     assert rendered.replacements["heading"] == 1
     assert rendered.replacements["paragraph"] == 1
     assert rendered.replacements["figure"] == 1

@@ -2,12 +2,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { annotationsList, viewerGetDocument } from "@yakudoku/api-client";
+import { annotationsList, viewerGetDocument } from "@alinea/api-client";
 import { SourcePane } from "@/components/viewer/SourcePane";
 import { useViewerStore } from "@/stores/viewer-store";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return {
     ...actual,
     viewerGetDocument: vi.fn(),
@@ -142,7 +142,7 @@ describe("SourcePane hl parity (M1 統合ポリッシュ)", () => {
     expect(container.querySelector("mark")).toBeNull();
   });
 
-  test("wraps the ?hl= query match in a yk-search-hit mark for the jump-target block", async () => {
+  test("wraps the ?hl= query match in a alinea-search-hit mark for the jump-target block", async () => {
     useViewerStore.setState({ pendingHighlightQuery: "rectified" });
     renderWithClient(<SourcePane itemId="li_1" revisionId="rev_1" toc={[]} lastPosition={null} />);
     await screen.findByText(/ODE/);
@@ -152,7 +152,7 @@ describe("SourcePane hl parity (M1 統合ポリッシュ)", () => {
     });
 
     await waitFor(() => {
-      const mark = document.querySelector("mark.yk-search-hit");
+      const mark = document.querySelector("mark.alinea-search-hit");
       expect(mark).not.toBeNull();
       expect(mark).toHaveTextContent("rectified");
     });

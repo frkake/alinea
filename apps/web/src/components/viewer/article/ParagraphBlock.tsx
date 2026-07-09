@@ -1,4 +1,4 @@
-import type { EvidenceItemOut } from "@yakudoku/api-client";
+import type { EvidenceItemOut } from "@alinea/api-client";
 import { renderArticleMarkdown } from "@/components/viewer/article/markdown";
 import { ArticleEvidenceChips } from "@/components/viewer/article/ArticleEvidenceChips";
 import type { AnchorRef } from "@/components/viewer/article/types";

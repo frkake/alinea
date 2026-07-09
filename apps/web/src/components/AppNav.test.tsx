@@ -9,7 +9,7 @@ vi.mock("next/navigation", () => ({
 
 const vocabList = vi.fn();
 const savedFiltersList = vi.fn();
-vi.mock("@yakudoku/api-client", () => ({
+vi.mock("@alinea/api-client", () => ({
   vocabList: (...args: unknown[]) => vocabList(...args),
   savedFiltersList: (...args: unknown[]) => savedFiltersList(...args),
 }));

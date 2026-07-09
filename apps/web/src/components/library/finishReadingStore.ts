@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { LibraryItemSummary } from "@yakudoku/api-client";
+import type { LibraryItemSummary } from "@alinea/api-client";
 
 /**
  * 読了フロー(1g)のグローバル起動状態(plans/09-screens/1g §2.3)。

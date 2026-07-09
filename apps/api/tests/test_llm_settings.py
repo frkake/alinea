@@ -10,16 +10,16 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from alinea_api.errors import ProblemException
+from alinea_api.llm.deps import build_router_for_user, check_quota
+from alinea_api.llm.key_store import DbKeyStore
+from alinea_api.llm.meter import DbMeterHook
+from alinea_api.llm.route_store import DbRouteStore
+from alinea_api.settings import ApiSettings
+from alinea_llm.testing.fake_provider import FakeLLMProvider
 from cryptography.fernet import Fernet
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.errors import ProblemException
-from yakudoku_api.llm.deps import build_router_for_user, check_quota
-from yakudoku_api.llm.key_store import DbKeyStore
-from yakudoku_api.llm.meter import DbMeterHook
-from yakudoku_api.llm.route_store import DbRouteStore
-from yakudoku_api.settings import ApiSettings
-from yakudoku_llm.testing.fake_provider import FakeLLMProvider
 
 
 async def _new_user(session: AsyncSession) -> str:
@@ -33,7 +33,7 @@ async def _new_user(session: AsyncSession) -> str:
 
 
 def _settings(**overrides: str) -> ApiSettings:
-    # yakudoku_key_encryption_secret などは .env から読む。運営キーだけ上書きする。
+    # alinea_key_encryption_secret などは .env から読む。運営キーだけ上書きする。
     return ApiSettings(**overrides)  # type: ignore[arg-type]
 
 
@@ -90,12 +90,12 @@ async def test_byok_multifernet_rotation_decrypts_old_token(db_session: AsyncSes
     new_key = Fernet.generate_key().decode()
 
     # 旧マスタキーだけで暗号化保存。
-    old_store = DbKeyStore(db_session, _settings(yakudoku_key_encryption_secret=old_key))
+    old_store = DbKeyStore(db_session, _settings(alinea_key_encryption_secret=old_key))
     await old_store.put(user_id=user_id, provider="deepseek", plaintext="sk-old-token")
 
     # ローテーション後(新キー先頭・旧キーも保持)でも復号できる(§11.2)。
     rotated = DbKeyStore(
-        db_session, _settings(yakudoku_key_encryption_secret=f"{new_key},{old_key}")
+        db_session, _settings(alinea_key_encryption_secret=f"{new_key},{old_key}")
     )
     assert await rotated.get(user_id=user_id, provider="deepseek") == "sk-old-token"
 
@@ -130,7 +130,7 @@ async def test_quota_check_without_byok_does_not_require_fernet_secret(
 ) -> None:
     user_id = await _new_user(db_session)
     settings = _settings(
-        yakudoku_key_encryption_secret="not-a-fernet-key",
+        alinea_key_encryption_secret="not-a-fernet-key",
         openai_api_key="sk-operator",
     )
     await check_quota(db_session, user_id, "article", settings=settings)
@@ -244,8 +244,8 @@ async def test_quota_untracked_task_is_noop(db_session: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 async def test_meter_records_row_with_byok_key_source(db_session: AsyncSession) -> None:
     user_id = await _new_user(db_session)
-    from yakudoku_llm.protocols import UsageDraft
-    from yakudoku_llm.types import Usage
+    from alinea_llm.protocols import UsageDraft
+    from alinea_llm.types import Usage
 
     meter = DbMeterHook(db_session, byok_providers={"anthropic"})
     await meter.record(

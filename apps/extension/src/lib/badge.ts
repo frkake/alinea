@@ -1,6 +1,6 @@
 // ツールバーバッジの状態(3a §5.5・Task 33 契約)。純粋関数(browser 非依存)でテスト可能。
-// 色値は @yakudoku/tokens(AMBER=#C49432 / GREEN=#659471。hex 直書きしない)。
-import { AMBER, GREEN } from "@yakudoku/tokens";
+// 色値は @alinea/tokens(AMBER=#C49432 / GREEN=#659471。hex 直書きしない)。
+import { AMBER, GREEN } from "@alinea/tokens";
 
 export interface BadgeState {
   color: string;

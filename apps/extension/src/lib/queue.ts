@@ -1,6 +1,6 @@
 // 送信失敗キュー(plans/10 §11.3・docs/08 §6)。ブラウザ再起動をまたいで保持する。
 // - arXiv URL 保存の失敗: storage.local `queue:failedSaves`(小さい JSON のみ)。
-// - PDF 送信の失敗: IndexedDB(`yakudoku-ext` v1 / `failed_uploads`)。PDF バイト列は
+// - PDF 送信の失敗: IndexedDB(`alinea-ext` v1 / `failed_uploads`)。PDF バイト列は
 //   storage.local の既定上限(10MB)に収まらないため。
 // 決定(plans/10 §11.3・docs/08 §6): 自動再送はしない。再試行は FailedQueueBanner からの
 // 明示操作のみ(PDF の「自動送信はしない」原則、および P3「黙って失われない」と整合)。
@@ -8,7 +8,7 @@
 // (黙って捨てない)。同一 id(=Idempotency-Key)の再登録は重複排除(上書き)する。
 import { browser } from "wxt/browser";
 
-import type { IngestArxivRequest } from "@yakudoku/api-client";
+import type { IngestArxivRequest } from "@alinea/api-client";
 
 import type { PdfSendMeta } from "./api";
 
@@ -88,7 +88,7 @@ export interface FailedUploadRecord {
   lastError: string;
 }
 
-const DB_NAME = "yakudoku-ext";
+const DB_NAME = "alinea-ext";
 const DB_VERSION = 1;
 const STORE_NAME = "failed_uploads";
 

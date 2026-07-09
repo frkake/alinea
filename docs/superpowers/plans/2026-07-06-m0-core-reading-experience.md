@@ -95,7 +95,7 @@ Expected: 3.12.11 のパスが表示される
 
 - [ ] **Step 1: ルート設定ファイルを作成**
 
-plans/00 §1〜§5 の逐語値で上記ファイルを作成する。`.env.example` は plans/00 §5.2 の全ブロック + `YAKUDOKU_OPENAI_BASE_URL`/`YAKUDOKU_ANTHROPIC_BASE_URL`/`YAKUDOKU_GOOGLE_BASE_URL`/`YAKUDOKU_DEEPSEEK_BASE_URL`/`YAKUDOKU_XAI_BASE_URL`/`YAKUDOKU_ARXIV_BASE_URL`(plans/12 §15-2,3)+ `EXTENSION_ALLOWED_ORIGINS`/`API_INTERNAL_URL`/`S3_PUBLIC_ENDPOINT_URL`(plans/01 §8.4)を含める。
+plans/00 §1〜§5 の逐語値で上記ファイルを作成する。`.env.example` は plans/00 §5.2 の全ブロック + `ALINEA_OPENAI_BASE_URL`/`ALINEA_ANTHROPIC_BASE_URL`/`ALINEA_GOOGLE_BASE_URL`/`ALINEA_DEEPSEEK_BASE_URL`/`ALINEA_XAI_BASE_URL`/`ALINEA_ARXIV_BASE_URL`(plans/12 §15-2,3)+ `EXTENSION_ALLOWED_ORIGINS`/`API_INTERNAL_URL`/`S3_PUBLIC_ENDPOINT_URL`(plans/01 §8.4)を含める。
 
 - [ ] **Step 2: pnpm install が通ることを確認**
 
@@ -122,7 +122,7 @@ git add -A && git commit -m "chore: initialize pnpm+turbo+uv monorepo skeleton (
 - Create: `docker/db/init.sql`(`CREATE EXTENSION IF NOT EXISTS pgroonga; CREATE EXTENSION IF NOT EXISTS pgcrypto;`)
 
 **Interfaces:**
-- Produces: `docker compose up -d --wait` で db(5432)/redis(6379)/minio(9000/9001)/mailpit(1025/8025)が healthy になり、バケット `yakudoku-sources`/`yakudoku-assets` が作成される。
+- Produces: `docker compose up -d --wait` で db(5432)/redis(6379)/minio(9000/9001)/mailpit(1025/8025)が healthy になり、バケット `alinea-sources`/`alinea-assets` が作成される。
 
 - [ ] **Step 1: docker-compose.yml と init.sql を作成**(plans/00 §3 の逐語)
 
@@ -133,13 +133,13 @@ Expected: 全サービスが `Healthy` で終了コード 0
 
 - [ ] **Step 3: PGroonga 拡張が有効なことを確認**
 
-Run: `docker compose exec -T db psql -U yakudoku -d yakudoku -c "SELECT extname FROM pg_extension WHERE extname IN ('pgroonga','pgcrypto');"`
+Run: `docker compose exec -T db psql -U alinea -d alinea -c "SELECT extname FROM pg_extension WHERE extname IN ('pgroonga','pgcrypto');"`
 Expected: `pgroonga` と `pgcrypto` の2行
 
 - [ ] **Step 4: MinIO バケットを確認**
 
-Run: `docker compose exec -T minio mc ls local 2>/dev/null || docker run --rm --network yakudoku_default minio/mc:RELEASE.2025-04-16T18-13-26Z sh -c "mc alias set l http://minio:9000 yakudoku yakudoku-dev-secret && mc ls l"`
-Expected: `yakudoku-sources` と `yakudoku-assets`
+Run: `docker compose exec -T minio mc ls local 2>/dev/null || docker run --rm --network alinea_default minio/mc:RELEASE.2025-04-16T18-13-26Z sh -c "mc alias set l http://minio:9000 alinea alinea-dev-secret && mc ls l"`
+Expected: `alinea-sources` と `alinea-assets`
 
 - [ ] **Step 5: コミット**
 
@@ -177,7 +177,7 @@ git add .github/workflows/ci.yml && git commit -m "ci: add 5-job CI skeleton (M0
 デザイントークン単一ソース。`tokens.json`(plans/08 §1〜§4 の _global.md 全値)→ `tokens.css`/`tokens.ts` 生成。
 
 **Files:**
-- Create: `packages/tokens/package.json`(name: `@yakudoku/tokens`、exports: `./css`→dist/tokens.css, `./js`→dist/tokens.js, `./fonts`→css/fonts.css, `./theme`→css/theme.css)
+- Create: `packages/tokens/package.json`(name: `@alinea/tokens`、exports: `./css`→dist/tokens.css, `./js`→dist/tokens.js, `./fonts`→css/fonts.css, `./theme`→css/theme.css)
 - Create: `packages/tokens/src/tokens.json`(色・書体・導出規則・注釈4色・ステータス6色。plans/08 §1 の全値)
 - Create: `packages/tokens/build.mjs`(tokens.json → dist/tokens.css + dist/tokens.ts。アクセント4色の rgba 導出 0.10/0.32/0.14/0.40 を計算)
 - Create: `packages/tokens/src/accent.ts`(アクセント4色 #3E5C76/#4A6B57/#6E5A7E/#7A5C48 と導出関数)
@@ -185,7 +185,7 @@ git add .github/workflows/ci.yml && git commit -m "ci: add 5-job CI skeleton (M0
 - Test: `packages/tokens/src/tokens.test.ts`(VT-TOK-01: 生成 CSS 変数値が _global.md 期待値と一致)
 
 **Interfaces:**
-- Produces: CSS 変数 `--pr-a`/`--pr-as`/`--pr-am`/`--pr-ad`/`--pr-ads`/`--pr-adm`/`--pr-jp`、注釈 `--ann-important:#C49432`/`--ann-question:#5884AA`/`--ann-idea:#659471`/`--ann-term:#82827E`、ステータス `--st-toread:#9AA0A6`/`--st-next:#C49432`/`--st-reading:var(--pr-a)`/`--st-done:#659471`/`--st-reread:#8E7AA6`/`--st-hold:#B0ACA2`。`@yakudoku/tokens/js` から型付き定数 export。
+- Produces: CSS 変数 `--pr-a`/`--pr-as`/`--pr-am`/`--pr-ad`/`--pr-ads`/`--pr-adm`/`--pr-jp`、注釈 `--ann-important:#C49432`/`--ann-question:#5884AA`/`--ann-idea:#659471`/`--ann-term:#82827E`、ステータス `--st-toread:#9AA0A6`/`--st-next:#C49432`/`--st-reading:var(--pr-a)`/`--st-done:#659471`/`--st-reread:#8E7AA6`/`--st-hold:#B0ACA2`。`@alinea/tokens/js` から型付き定数 export。
 
 - [ ] **Step 1: tokens.json を plans/08 §1 の全値で作成**
 
@@ -209,14 +209,14 @@ test("status colors match _global.md verbatim", () => {
 
 - [ ] **Step 3: テストが失敗することを確認**
 
-Run: `pnpm --filter @yakudoku/tokens test`
+Run: `pnpm --filter @alinea/tokens test`
 Expected: FAIL(tokens.json が未整備、または vitest 未設定)
 
 - [ ] **Step 4: build.mjs と accent.ts を実装、vitest 設定を追加**
 
 - [ ] **Step 5: テストが通ることを確認 + ビルド生成物を確認**
 
-Run: `pnpm --filter @yakudoku/tokens build && pnpm --filter @yakudoku/tokens test`
+Run: `pnpm --filter @alinea/tokens build && pnpm --filter @alinea/tokens test`
 Expected: dist/tokens.css・dist/tokens.ts が生成され、テスト PASS。`grep -q -- '--ann-important: #C49432' packages/tokens/dist/tokens.css` が成功
 
 - [ ] **Step 6: コミット**
@@ -232,19 +232,19 @@ git add packages/tokens && git commit -m "feat(tokens): design token single sour
 SQLAlchemy 2 モデル全量 + Alembic 初期マイグレーション1本。plans/02 §4 の全テーブルを投入する。
 
 **Files:**
-- Create: `packages/py-core/pyproject.toml`(name: `yakudoku-core`、deps: sqlalchemy 2.0.41, asyncpg 0.30.0, pydantic 2.11.7, python-ulid 3.0.0, pydantic-settings 2.10.1)
-- Create: `packages/py-core/src/yakudoku_core/db/session.py`(async engine/sessionmaker、`get_session()`)
-- Create: `packages/py-core/src/yakudoku_core/db/ids.py`(接頭辞付き ULID 生成: `new_id("usr")` → `usr_01J...`。接頭辞表は plans/03 §1.6)
-- Create: `packages/py-core/src/yakudoku_core/db/models/*.py`(plans/02 §4 の全30+テーブルを Mapped[] スタイルで。1 ファイル = 関連テーブル群)
-- Create: `packages/py-core/src/yakudoku_core/settings.py`(`CoreSettings`(pydantic-settings)。`DATABASE_URL`/`REDIS_URL`/`S3_*` 等を型付きで読む)
-- Create: `apps/api/pyproject.toml`(name: `yakudoku-api`、deps に yakudoku-core・fastapi・alembic・uvicorn)
+- Create: `packages/py-core/pyproject.toml`(name: `alinea-core`、deps: sqlalchemy 2.0.41, asyncpg 0.30.0, pydantic 2.11.7, python-ulid 3.0.0, pydantic-settings 2.10.1)
+- Create: `packages/py-core/src/alinea_core/db/session.py`(async engine/sessionmaker、`get_session()`)
+- Create: `packages/py-core/src/alinea_core/db/ids.py`(接頭辞付き ULID 生成: `new_id("usr")` → `usr_01J...`。接頭辞表は plans/03 §1.6)
+- Create: `packages/py-core/src/alinea_core/db/models/*.py`(plans/02 §4 の全30+テーブルを Mapped[] スタイルで。1 ファイル = 関連テーブル群)
+- Create: `packages/py-core/src/alinea_core/settings.py`(`CoreSettings`(pydantic-settings)。`DATABASE_URL`/`REDIS_URL`/`S3_*` 等を型付きで読む)
+- Create: `apps/api/pyproject.toml`(name: `alinea-api`、deps に alinea-core・fastapi・alembic・uvicorn)
 - Create: `apps/api/alembic.ini` / `apps/api/alembic/env.py`
 - Create: `apps/api/alembic/versions/0001_initial_schema.py`(plans/02 §4 の全 DDL を上から順に。全 index・PGroonga 索引・`set_updated_at()` トリガ含む)
 - Test: `packages/py-core/tests/test_schema.py`(PY-DB-01〜12: 全テーブル存在・主キー型・CHECK 制約・FK カスケード・部分一意制約・PGroonga 索引の検証)
 
 **Interfaces:**
 - Consumes: docker-compose の PostgreSQL(Task 2)。
-- Produces: `alembic upgrade head` で plans/02 §4 の全テーブルが存在。`from yakudoku_core.db.models import User, Paper, LibraryItem, DocumentRevision, TranslationSet, TranslationUnit, Job, ...`。`new_id(prefix: str) -> str`。`CoreSettings` シングルトン。
+- Produces: `alembic upgrade head` で plans/02 §4 の全テーブルが存在。`from alinea_core.db.models import User, Paper, LibraryItem, DocumentRevision, TranslationSet, TranslationUnit, Job, ...`。`new_id(prefix: str) -> str`。`CoreSettings` シングルトン。
 
 - [ ] **Step 1: 失敗するテストを書く(PY-DB-01: 全テーブル存在)**
 
@@ -302,24 +302,24 @@ git add packages/py-core apps/api/alembic apps/api/pyproject.toml apps/api/alemb
 構造化ドキュメント中間表現 + アンカー + S3 ラッパ + ライセンス判定 + block_search_index 再構築。
 
 **Files:**
-- Create: `packages/py-core/src/yakudoku_core/document/blocks.py`(Block Pydantic モデル: 11 ブロック型。plans/02 §3 の JSONB 契約)
-- Create: `packages/py-core/src/yakudoku_core/document/inlines.py`(インライン8種)
-- Create: `packages/py-core/src/yakudoku_core/document/anchor.py`(`AnchorJson`: revision_id + block_id + start + end。plans/02 §3.1)
-- Create: `packages/py-core/src/yakudoku_core/document/stable_id.py`(`derive_block_id()` 決定的生成。docs/01 §4.3)
-- Create: `packages/py-core/src/yakudoku_core/storage/s3.py`(aioboto3 ラッパ、キー設計は plans/01 §7.1、署名付き URL 発行)
-- Create: `packages/py-core/src/yakudoku_core/licenses.py`(arXiv ライセンスマトリクス判定。docs/09 §5.2)
-- Create: `packages/py-core/src/yakudoku_core/search/rebuild.py`(`rebuild_block_search_index(revision)`: content JSONB → block_search_index を DELETE→INSERT)
+- Create: `packages/py-core/src/alinea_core/document/blocks.py`(Block Pydantic モデル: 11 ブロック型。plans/02 §3 の JSONB 契約)
+- Create: `packages/py-core/src/alinea_core/document/inlines.py`(インライン8種)
+- Create: `packages/py-core/src/alinea_core/document/anchor.py`(`AnchorJson`: revision_id + block_id + start + end。plans/02 §3.1)
+- Create: `packages/py-core/src/alinea_core/document/stable_id.py`(`derive_block_id()` 決定的生成。docs/01 §4.3)
+- Create: `packages/py-core/src/alinea_core/storage/s3.py`(aioboto3 ラッパ、キー設計は plans/01 §7.1、署名付き URL 発行)
+- Create: `packages/py-core/src/alinea_core/licenses.py`(arXiv ライセンスマトリクス判定。docs/09 §5.2)
+- Create: `packages/py-core/src/alinea_core/search/rebuild.py`(`rebuild_block_search_index(revision)`: content JSONB → block_search_index を DELETE→INSERT)
 - Test: `packages/py-core/tests/test_document.py`(PY-DB-13: アンカー往復・block_search_index 再構築)、`test_licenses.py`(PY-LIC-01: ライセンスマトリクス全行)
 
 **Interfaces:**
-- Consumes: `yakudoku_core.db.models`(Task 5)。
+- Consumes: `alinea_core.db.models`(Task 5)。
 - Produces: `Block`/`Inline`/`Section`/`AnchorJson`(Pydantic)、`derive_block_id(section_idx, para_idx, content_hash) -> str`(`blk-` 接頭辞)、`S3Storage.put/get/presign_get`、`classify_license(license_id) -> LicensePolicy`、`rebuild_block_search_index(session, revision) -> int`(挿入行数)。
 
 - [ ] **Step 1: 失敗するテストを書く(PY-DB-13: アンカー実在検証)**
 
 ```python
 # packages/py-core/tests/test_document.py
-from yakudoku_core.document.stable_id import derive_block_id
+from alinea_core.document.stable_id import derive_block_id
 def test_block_id_is_deterministic():
     a = derive_block_id(section_idx=3, para_idx=2, content="Rectified flow is a method")
     b = derive_block_id(section_idx=3, para_idx=2, content="Rectified flow is a method")
@@ -345,7 +345,7 @@ Expected: 全 PASS
 - [ ] **Step 5: コミット**
 
 ```bash
-git add packages/py-core/src/yakudoku_core/{document,storage,search,licenses.py} packages/py-core/tests && git commit -m "feat(core): document IR, anchors, S3 wrapper, license matrix, search index rebuild (M0-07)"
+git add packages/py-core/src/alinea_core/{document,storage,search,licenses.py} packages/py-core/tests && git commit -m "feat(core): document IR, anchors, S3 wrapper, license matrix, search index rebuild (M0-07)"
 ```
 
 ---
@@ -357,17 +357,17 @@ git add packages/py-core/src/yakudoku_core/{document,storage,search,licenses.py}
 5社テキスト + 3社画像アダプタ、ルーティング、フォールバック、structured output、count_tokens、Fake。
 
 **Files:**
-- Create: `packages/llm/pyproject.toml`(name: `yakudoku-llm`、deps: openai 1.93.0, anthropic 0.57.1, google-genai 1.24.0, tiktoken)
-- Create: `packages/llm/src/yakudoku_llm/types.py`(`ChatRequest`/`ChatResponse`/`Delta`/`ImageRequest` 等)
-- Create: `packages/llm/src/yakudoku_llm/errors.py`(`ProviderError`/`RateLimitError`/`QuotaError` 分類)
-- Create: `packages/llm/src/yakudoku_llm/protocols.py`(`LLMProvider`/`ImageProvider` Protocol)
-- Create: `packages/llm/src/yakudoku_llm/registry.py`(`ModelRegistry`: models.yaml を読む)
-- Create: `packages/llm/src/yakudoku_llm/routing.py` / `router.py`(`LLMRouter`: リトライ・フォールバック連鎖)
-- Create: `packages/llm/src/yakudoku_llm/structured.py`(各社の structured output 互換化)
-- Create: `packages/llm/src/yakudoku_llm/tokens.py`(count_tokens)
-- Create: `packages/llm/src/yakudoku_llm/providers/{openai_provider,anthropic_provider,google_provider,deepseek_provider,xai_provider}.py` + `providers/images/*.py`
+- Create: `packages/llm/pyproject.toml`(name: `alinea-llm`、deps: openai 1.93.0, anthropic 0.57.1, google-genai 1.24.0, tiktoken)
+- Create: `packages/llm/src/alinea_llm/types.py`(`ChatRequest`/`ChatResponse`/`Delta`/`ImageRequest` 等)
+- Create: `packages/llm/src/alinea_llm/errors.py`(`ProviderError`/`RateLimitError`/`QuotaError` 分類)
+- Create: `packages/llm/src/alinea_llm/protocols.py`(`LLMProvider`/`ImageProvider` Protocol)
+- Create: `packages/llm/src/alinea_llm/registry.py`(`ModelRegistry`: models.yaml を読む)
+- Create: `packages/llm/src/alinea_llm/routing.py` / `router.py`(`LLMRouter`: リトライ・フォールバック連鎖)
+- Create: `packages/llm/src/alinea_llm/structured.py`(各社の structured output 互換化)
+- Create: `packages/llm/src/alinea_llm/tokens.py`(count_tokens)
+- Create: `packages/llm/src/alinea_llm/providers/{openai_provider,anthropic_provider,google_provider,deepseek_provider,xai_provider}.py` + `providers/images/*.py`
 - Create: `packages/llm/models.yaml` / `packages/llm/routing.yaml`(plans/04 §7,§8 のシード)
-- Create: `packages/llm/src/yakudoku_llm/testing/fake_provider.py`(`FakeLLMProvider`/`FakeImageProvider`: 決定的応答)
+- Create: `packages/llm/src/alinea_llm/testing/fake_provider.py`(`FakeLLMProvider`/`FakeImageProvider`: 決定的応答)
 - Test: `packages/llm/tests/test_router.py`(PY-LLM-01〜07: フォールバック連鎖・structured output・count_tokens・Fake 決定性・未設定プロバイダ除外)
 
 **Interfaces:**
@@ -378,9 +378,9 @@ git add packages/py-core/src/yakudoku_core/{document,storage,search,licenses.py}
 ```python
 # packages/llm/tests/test_router.py
 import pytest
-from yakudoku_llm.testing.fake_provider import FakeLLMProvider
-from yakudoku_llm.router import LLMRouter
-from yakudoku_llm.errors import ProviderError
+from alinea_llm.testing.fake_provider import FakeLLMProvider
+from alinea_llm.router import LLMRouter
+from alinea_llm.errors import ProviderError
 @pytest.mark.asyncio
 async def test_router_falls_back_on_primary_error():
     primary = FakeLLMProvider(fail=True)
@@ -414,18 +414,18 @@ git add packages/llm && git commit -m "feat(llm): 5 text + 3 image adapters, rou
 ### Task 8: E2E 用モック LLM/外部サーバ(M0-09)
 
 **Files:**
-- Create: `packages/llm/src/yakudoku_llm/testing/mock_server.py`(FakeLLM と同一の決定的応答を HTTP で提供。5社エンドポイント + arXiv abs/e-print/Atom + GitHub/YouTube oEmbed 相当。ポート8090)
+- Create: `packages/llm/src/alinea_llm/testing/mock_server.py`(FakeLLM と同一の決定的応答を HTTP で提供。5社エンドポイント + arXiv abs/e-print/Atom + GitHub/YouTube oEmbed 相当。ポート8090)
 
 **Interfaces:**
 - Consumes: `FakeLLMProvider`(Task 7)。
-- Produces: `YAKUDOKU_{OPENAI,ANTHROPIC,GOOGLE,DEEPSEEK,XAI}_BASE_URL` と `YAKUDOKU_ARXIV_BASE_URL` を localhost:8090 に向けると実プロバイダ呼び出しがモックへ差し替わる。
+- Produces: `ALINEA_{OPENAI,ANTHROPIC,GOOGLE,DEEPSEEK,XAI}_BASE_URL` と `ALINEA_ARXIV_BASE_URL` を localhost:8090 に向けると実プロバイダ呼び出しがモックへ差し替わる。
 
 - [ ] **Step 1: 失敗するテストを書く(モックサーバの決定性)**
 
 ```python
 # packages/llm/tests/test_mock_server.py
 import pytest, httpx
-from yakudoku_llm.testing.mock_server import build_app
+from alinea_llm.testing.mock_server import build_app
 @pytest.mark.asyncio
 async def test_mock_openai_chat_deterministic():
     app = build_app()
@@ -451,7 +451,7 @@ Expected: PASS
 - [ ] **Step 5: コミット**
 
 ```bash
-git add packages/llm/src/yakudoku_llm/testing/mock_server.py packages/llm/tests/test_mock_server.py && git commit -m "feat(llm): deterministic mock server for E2E/CI (M0-09)"
+git add packages/llm/src/alinea_llm/testing/mock_server.py packages/llm/tests/test_mock_server.py && git commit -m "feat(llm): deterministic mock server for E2E/CI (M0-09)"
 ```
 
 ---
@@ -459,19 +459,19 @@ git add packages/llm/src/yakudoku_llm/testing/mock_server.py packages/llm/tests/
 ### Task 9: API 共通基盤(M0-10)
 
 **Files:**
-- Create: `apps/api/src/yakudoku_api/main.py`(FastAPI 生成・ルータ登録・ミドルウェア・`/api/openapi.json`)
-- Create: `apps/api/src/yakudoku_api/settings.py`(pydantic-settings)
-- Create: `apps/api/src/yakudoku_api/deps.py`(DB セッション・認証ユーザーの Depends)
-- Create: `apps/api/src/yakudoku_api/errors.py`(RFC 9457 Problem Details + 安定 code。plans/03 §1.4)
-- Create: `apps/api/src/yakudoku_api/schemas/common.py`(cursor ページング・SSE 共通。plans/03 §1.7)
-- Create: `apps/api/src/yakudoku_api/logging.py`(structlog 構造化ログ)
-- Create: `apps/api/src/yakudoku_api/export_openapi.py`(openapi.json を stdout へ出す5行スクリプト)
+- Create: `apps/api/src/alinea_api/main.py`(FastAPI 生成・ルータ登録・ミドルウェア・`/api/openapi.json`)
+- Create: `apps/api/src/alinea_api/settings.py`(pydantic-settings)
+- Create: `apps/api/src/alinea_api/deps.py`(DB セッション・認証ユーザーの Depends)
+- Create: `apps/api/src/alinea_api/errors.py`(RFC 9457 Problem Details + 安定 code。plans/03 §1.4)
+- Create: `apps/api/src/alinea_api/schemas/common.py`(cursor ページング・SSE 共通。plans/03 §1.7)
+- Create: `apps/api/src/alinea_api/logging.py`(structlog 構造化ログ)
+- Create: `apps/api/src/alinea_api/export_openapi.py`(openapi.json を stdout へ出す5行スクリプト)
 - Create: `apps/api/package.json`(`dev`: uvicorn --reload、`lint`/`test` が uv コマンドを呼ぶ)
 - Test: `apps/api/tests/test_platform.py`(PF-01: healthz/readyz・Problem Details 形式・レート制限)
 
 **Interfaces:**
-- Consumes: `yakudoku_core.db.session`(Task 5)。
-- Produces: `app`(FastAPI)、`GET /api/healthz`/`GET /api/readyz`、`ProblemDetail` 例外→レスポンス変換、`CursorPage[T]`、`python -m yakudoku_api.export_openapi`。
+- Consumes: `alinea_core.db.session`(Task 5)。
+- Produces: `app`(FastAPI)、`GET /api/healthz`/`GET /api/readyz`、`ProblemDetail` 例外→レスポンス変換、`CursorPage[T]`、`python -m alinea_api.export_openapi`。
 
 - [ ] **Step 1: 失敗するテストを書く(PF-01: healthz と Problem Details)**
 
@@ -479,7 +479,7 @@ git add packages/llm/src/yakudoku_llm/testing/mock_server.py packages/llm/tests/
 # apps/api/tests/test_platform.py
 import pytest
 from httpx import AsyncClient, ASGITransport
-from yakudoku_api.main import app
+from alinea_api.main import app
 @pytest.mark.asyncio
 async def test_healthz_ok():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
@@ -503,7 +503,7 @@ Expected: FAIL(app import error)
 
 - [ ] **Step 4: テストを通す + OpenAPI エクスポートを確認**
 
-Run: `uv run pytest apps/api/tests/test_platform.py -v && uv run python -m yakudoku_api.export_openapi | head -c 40`
+Run: `uv run pytest apps/api/tests/test_platform.py -v && uv run python -m alinea_api.export_openapi | head -c 40`
 Expected: PASS、`{"openapi":"3.` で始まる出力
 
 - [ ] **Step 5: コミット**
@@ -517,9 +517,9 @@ git add apps/api/src apps/api/tests apps/api/package.json && git commit -m "feat
 ### Task 10: 認証(M0-11)
 
 **Files:**
-- Create: `apps/api/src/yakudoku_api/routers/auth.py`(`/api/auth/*` 8 エンドポイント。plans/03 §2)
-- Modify: `apps/api/src/yakudoku_api/deps.py`(`current_user` Depends、Origin 検証 CSRF ミドルウェア)
-- Create: `apps/api/src/yakudoku_api/services/session_service.py`(サーバーセッション: SHA-256 ハッシュ保存 + Redis キャッシュ)
+- Create: `apps/api/src/alinea_api/routers/auth.py`(`/api/auth/*` 8 エンドポイント。plans/03 §2)
+- Modify: `apps/api/src/alinea_api/deps.py`(`current_user` Depends、Origin 検証 CSRF ミドルウェア)
+- Create: `apps/api/src/alinea_api/services/session_service.py`(サーバーセッション: SHA-256 ハッシュ保存 + Redis キャッシュ)
 - Test: `apps/api/tests/test_auth.py`(PY-AUTH-01〜03, PY-DB-03: メールリンク発行/検証・OAuth upsert・ログアウト失効・アカウント削除カスケード)
 
 **Interfaces:**
@@ -557,7 +557,7 @@ Expected: 全 PASS
 - [ ] **Step 5: コミット**
 
 ```bash
-git add apps/api/src/yakudoku_api/routers/auth.py apps/api/src/yakudoku_api/services/session_service.py apps/api/tests/test_auth.py && git commit -m "feat(api): auth — email magic link, oauth, sessions, csrf origin check (M0-11)"
+git add apps/api/src/alinea_api/routers/auth.py apps/api/src/alinea_api/services/session_service.py apps/api/tests/test_auth.py && git commit -m "feat(api): auth — email magic link, oauth, sessions, csrf origin check (M0-11)"
 ```
 
 ---
@@ -565,11 +565,11 @@ git add apps/api/src/yakudoku_api/routers/auth.py apps/api/src/yakudoku_api/serv
 ### Task 11: ジョブ基盤 + SSE(M0-12)
 
 **Files:**
-- Create: `apps/worker/pyproject.toml`(name: `yakudoku-worker`、deps に yakudoku-core・yakudoku-llm・arq)
-- Create: `apps/worker/src/yakudoku_worker/main.py` / `settings.py`(`InteractiveWorker`/`BulkWorker`、キュー `yk:interactive`/`yk:bulk`)
-- Create: `packages/py-core/src/yakudoku_core/jobs/store.py`(claim・checkpoint 段階再開・指数バックオフ 30s→2min→8min・冪等性キー。plans/01 §4)
-- Create: `packages/py-core/src/yakudoku_core/jobs/requeue.py`(`python -m yakudoku_core.jobs.requeue` 回復コマンド)
-- Create: `apps/api/src/yakudoku_api/routers/jobs.py`(ジョブ API + ユーザー単位 SSE `GET /api/events`。Redis Pub/Sub + Last-Event-ID 再送。plans/03 §21)
+- Create: `apps/worker/pyproject.toml`(name: `alinea-worker`、deps に alinea-core・alinea-llm・arq)
+- Create: `apps/worker/src/alinea_worker/main.py` / `settings.py`(`InteractiveWorker`/`BulkWorker`、キュー `alinea:interactive`/`alinea:bulk`)
+- Create: `packages/py-core/src/alinea_core/jobs/store.py`(claim・checkpoint 段階再開・指数バックオフ 30s→2min→8min・冪等性キー。plans/01 §4)
+- Create: `packages/py-core/src/alinea_core/jobs/requeue.py`(`python -m alinea_core.jobs.requeue` 回復コマンド)
+- Create: `apps/api/src/alinea_api/routers/jobs.py`(ジョブ API + ユーザー単位 SSE `GET /api/events`。Redis Pub/Sub + Last-Event-ID 再送。plans/03 §21)
 - Create: `apps/worker/package.json`(`dev`: arq --watch)
 - Test: `apps/api/tests/test_jobs.py`(PY-JOB-01, PY-JOB-03: claim 排他・段階再開・冪等性キー・SSE 再送)
 
@@ -583,7 +583,7 @@ git add apps/api/src/yakudoku_api/routers/auth.py apps/api/src/yakudoku_api/serv
 # apps/api/tests/test_jobs.py
 @pytest.mark.asyncio
 async def test_claim_is_exclusive(db_session):
-    from yakudoku_core.jobs.store import JobStore
+    from alinea_core.jobs.store import JobStore
     store = JobStore(db_session)
     jid = await store.enqueue(kind="translate_section", payload={}, idempotency_key="k1")
     first = await store.claim(jid)
@@ -606,7 +606,7 @@ Expected: 全 PASS
 - [ ] **Step 5: コミット**
 
 ```bash
-git add apps/worker packages/py-core/src/yakudoku_core/jobs apps/api/src/yakudoku_api/routers/jobs.py apps/api/tests/test_jobs.py && git commit -m "feat(jobs): job store with claim/checkpoint/backoff + user SSE (M0-12)"
+git add apps/worker packages/py-core/src/alinea_core/jobs apps/api/src/alinea_api/routers/jobs.py apps/api/tests/test_jobs.py && git commit -m "feat(jobs): job store with claim/checkpoint/backoff + user SSE (M0-12)"
 ```
 
 ---
@@ -614,10 +614,10 @@ git add apps/worker packages/py-core/src/yakudoku_core/jobs apps/api/src/yakudok
 ### Task 12: LLM ルーティング・BYOK・クォータ(M0-13)
 
 **Files:**
-- Create: `apps/api/src/yakudoku_api/llm/route_store.py`(`llm_models`/`llm_task_routes`/`user_task_model_overrides` を読む)
-- Create: `apps/api/src/yakudoku_api/llm/key_store.py`(`DbKeyStore`: Fernet 暗号化・マスク表示)
-- Create: `apps/api/src/yakudoku_api/llm/meter.py`(`DbMeterHook`: usage_records 記録)
-- Create: `apps/api/src/yakudoku_api/llm/deps.py`(ユーザー文脈で `LLMRouter` を構築、月次クォータ判定 → 429 `quota_exceeded`)
+- Create: `apps/api/src/alinea_api/llm/route_store.py`(`llm_models`/`llm_task_routes`/`user_task_model_overrides` を読む)
+- Create: `apps/api/src/alinea_api/llm/key_store.py`(`DbKeyStore`: Fernet 暗号化・マスク表示)
+- Create: `apps/api/src/alinea_api/llm/meter.py`(`DbMeterHook`: usage_records 記録)
+- Create: `apps/api/src/alinea_api/llm/deps.py`(ユーザー文脈で `LLMRouter` を構築、月次クォータ判定 → 429 `quota_exceeded`)
 - Test: `apps/api/tests/test_llm_settings.py`(PY-SET-02〜04 の LLM 側: BYOK 暗号化往復・マスク応答・クォータ超過)
 
 **Interfaces:**
@@ -630,7 +630,7 @@ git add apps/worker packages/py-core/src/yakudoku_core/jobs apps/api/src/yakudok
 # apps/api/tests/test_llm_settings.py
 @pytest.mark.asyncio
 async def test_byok_key_roundtrip_and_mask(db_session):
-    from yakudoku_api.llm.key_store import DbKeyStore
+    from alinea_api.llm.key_store import DbKeyStore
     ks = DbKeyStore(db_session)
     await ks.put(user_id="usr_x", provider="openai", plaintext="sk-secret-1234")
     got = await ks.get(user_id="usr_x", provider="openai")
@@ -654,7 +654,7 @@ Expected: 全 PASS
 - [ ] **Step 5: コミット**
 
 ```bash
-git add apps/api/src/yakudoku_api/llm apps/api/tests/test_llm_settings.py && git commit -m "feat(llm): db routing, byok fernet key store, usage meter, quota (M0-13)"
+git add apps/api/src/alinea_api/llm apps/api/tests/test_llm_settings.py && git commit -m "feat(llm): db routing, byok fernet key store, usage meter, quota (M0-13)"
 ```
 
 ---
@@ -664,13 +664,13 @@ git add apps/api/src/yakudoku_api/llm apps/api/tests/test_llm_settings.py && git
 ### Task 13: arXiv 解決(M0-14)
 
 **Files:**
-- Create: `packages/py-core/src/yakudoku_core/arxiv/ids.py`(URL/ID 正規化。新旧形式全パターン)
-- Create: `packages/py-core/src/yakudoku_core/arxiv/metadata.py`(メタデータ API・OAI-PMH ライセンス取得と正規化表)
-- Create: `packages/py-core/src/yakudoku_core/arxiv/fetch.py`(LaTeX ソース有無判定=「品質レベル A 見込み」・Redis 24h キャッシュ・取得レート制限)
+- Create: `packages/py-core/src/alinea_core/arxiv/ids.py`(URL/ID 正規化。新旧形式全パターン)
+- Create: `packages/py-core/src/alinea_core/arxiv/metadata.py`(メタデータ API・OAI-PMH ライセンス取得と正規化表)
+- Create: `packages/py-core/src/alinea_core/arxiv/fetch.py`(LaTeX ソース有無判定=「品質レベル A 見込み」・Redis 24h キャッシュ・取得レート制限)
 - Test: `packages/py-core/tests/test_arxiv.py`(PY-ING-03 の判定部: ID 正規化・LaTeX 有無判定)
 
 **Interfaces:**
-- Consumes: `YAKUDOKU_ARXIV_BASE_URL`(モックサーバ Task 8)。
+- Consumes: `ALINEA_ARXIV_BASE_URL`(モックサーバ Task 8)。
 - Produces: `normalize_arxiv_id(url_or_id) -> ArxivId`、`fetch_metadata(id) -> ArxivMeta`、`probe_latex_available(id) -> bool`。
 
 - [ ] **Step 1: 失敗するテストを書く(PY-ING-03: ID 正規化)**
@@ -678,7 +678,7 @@ git add apps/api/src/yakudoku_api/llm apps/api/tests/test_llm_settings.py && git
 ```python
 # packages/py-core/tests/test_arxiv.py
 import pytest
-from yakudoku_core.arxiv.ids import normalize_arxiv_id
+from alinea_core.arxiv.ids import normalize_arxiv_id
 @pytest.mark.parametrize("inp", [
     "https://arxiv.org/abs/2209.03003","arxiv.org/abs/2209.03003v2",
     "2209.03003","https://arxiv.org/pdf/2209.03003.pdf"])
@@ -701,7 +701,7 @@ Expected: 全 PASS
 - [ ] **Step 5: コミット**
 
 ```bash
-git add packages/py-core/src/yakudoku_core/arxiv packages/py-core/tests/test_arxiv.py && git commit -m "feat(ingest): arxiv id normalization, metadata, latex probe (M0-14)"
+git add packages/py-core/src/alinea_core/arxiv packages/py-core/tests/test_arxiv.py && git commit -m "feat(ingest): arxiv id normalization, metadata, latex probe (M0-14)"
 ```
 
 ---
@@ -709,10 +709,10 @@ git add packages/py-core/src/yakudoku_core/arxiv packages/py-core/tests/test_arx
 ### Task 14: arXiv HTML パーサ(M0-15)
 
 **Files:**
-- Create: `packages/py-core/src/yakudoku_core/parsing/html_parser.py`(DOM→11 ブロック型 + インライン8種。selectolax)
-- Create: `packages/py-core/src/yakudoku_core/parsing/block_ids.py`(ブロック安定 ID 生成)
-- Create: `packages/py-core/src/yakudoku_core/parsing/carryover.py`(リビジョン間 carryover)
-- Create: `packages/py-core/src/yakudoku_core/parsing/pdf_sync.py`(品質 A の page+bbox 同期。M0 は HTML 主経路なので最小)
+- Create: `packages/py-core/src/alinea_core/parsing/html_parser.py`(DOM→11 ブロック型 + インライン8種。selectolax)
+- Create: `packages/py-core/src/alinea_core/parsing/block_ids.py`(ブロック安定 ID 生成)
+- Create: `packages/py-core/src/alinea_core/parsing/carryover.py`(リビジョン間 carryover)
+- Create: `packages/py-core/src/alinea_core/parsing/pdf_sync.py`(品質 A の page+bbox 同期。M0 は HTML 主経路なので最小)
 - Test: `packages/py-core/tests/test_html_parser.py`(PY-PARSE-01, PY-PARSE-04: ブロック分解・KaTeX 数式コーパス検証)
 
 **Interfaces:**
@@ -723,7 +723,7 @@ git add packages/py-core/src/yakudoku_core/arxiv packages/py-core/tests/test_arx
 
 ```python
 # packages/py-core/tests/test_html_parser.py
-from yakudoku_core.parsing.html_parser import parse_arxiv_html
+from alinea_core.parsing.html_parser import parse_arxiv_html
 def test_parses_heading_paragraph_math():
     html = '<section><h2>Introduction</h2><p>Rectified flow.</p><math>x</math></section>'
     doc = parse_arxiv_html(html)
@@ -747,7 +747,7 @@ Expected: 全 PASS
 - [ ] **Step 5: コミット**
 
 ```bash
-git add packages/py-core/src/yakudoku_core/parsing packages/py-core/tests/test_html_parser.py && git commit -m "feat(ingest): arxiv html parser → 11 block types + stable ids (M0-15)"
+git add packages/py-core/src/alinea_core/parsing packages/py-core/tests/test_html_parser.py && git commit -m "feat(ingest): arxiv html parser → 11 block types + stable ids (M0-15)"
 ```
 
 ---
@@ -757,7 +757,7 @@ git add packages/py-core/src/yakudoku_core/parsing packages/py-core/tests/test_h
 翻訳で数式・図参照・引用を保護するプロトコル。往復不変が最重要(Hypothesis プロパティテスト必須)。
 
 **Files:**
-- Create: `packages/py-core/src/yakudoku_core/translation/placeholder.py`(`protect`/`restore`/`validate`。source_hash。plans/06 §4)
+- Create: `packages/py-core/src/alinea_core/translation/placeholder.py`(`protect`/`restore`/`validate`。source_hash。plans/06 §4)
 - Test: `packages/py-core/tests/test_placeholder.py`(PY-TR-01, HP-01〜04: 往復不変・全トークン1回・検証)
 
 **Interfaces:**
@@ -768,7 +768,7 @@ git add packages/py-core/src/yakudoku_core/parsing packages/py-core/tests/test_h
 ```python
 # packages/py-core/tests/test_placeholder.py
 from hypothesis import given, strategies as st
-from yakudoku_core.translation.placeholder import protect, restore
+from alinea_core.translation.placeholder import protect, restore
 @given(st.text())
 def test_protect_restore_roundtrip(x):
     protected, mapping = protect(x)
@@ -790,7 +790,7 @@ Expected: 全 PASS(Hypothesis 反例なし)
 - [ ] **Step 5: コミット**
 
 ```bash
-git add packages/py-core/src/yakudoku_core/translation/placeholder.py packages/py-core/tests/test_placeholder.py && git commit -m "feat(translation): placeholder protect/restore protocol with property tests (M0-16)"
+git add packages/py-core/src/alinea_core/translation/placeholder.py packages/py-core/tests/test_placeholder.py && git commit -m "feat(translation): placeholder protect/restore protocol with property tests (M0-16)"
 ```
 
 ---
@@ -798,10 +798,10 @@ git add packages/py-core/src/yakudoku_core/translation/placeholder.py packages/p
 ### Task 16: 翻訳パイプライン(M0-17)
 
 **Files:**
-- Create: `packages/py-core/src/yakudoku_core/translation/pipeline.py`(自然訳プロンプト・文脈パッキング・structured output・自動品質検査5種・共有キャッシュ解決・進捗計算)
-- Create: `packages/py-core/src/yakudoku_core/translation/glossary.py`(用語スナップショット凍結部)
-- Create: `packages/py-core/src/yakudoku_core/translation/prompts/`(system 2 層 + バッチ user)
-- Create: `apps/worker/src/yakudoku_worker/tasks/translate.py`(`translate_section` ジョブ)
+- Create: `packages/py-core/src/alinea_core/translation/pipeline.py`(自然訳プロンプト・文脈パッキング・structured output・自動品質検査5種・共有キャッシュ解決・進捗計算)
+- Create: `packages/py-core/src/alinea_core/translation/glossary.py`(用語スナップショット凍結部)
+- Create: `packages/py-core/src/alinea_core/translation/prompts/`(system 2 層 + バッチ user)
+- Create: `apps/worker/src/alinea_worker/tasks/translate.py`(`translate_section` ジョブ)
 - Test: `packages/py-core/tests/test_translation.py`(PY-TR-02〜07, PY-TR-10: 品質検査・共有キャッシュ・進捗写像・スコープ判定)
 
 **Interfaces:**
@@ -834,7 +834,7 @@ Expected: 全 PASS
 - [ ] **Step 5: コミット**
 
 ```bash
-git add packages/py-core/src/yakudoku_core/translation apps/worker/src/yakudoku_worker/tasks/translate.py packages/py-core/tests/test_translation.py && git commit -m "feat(translation): section pipeline, quality checks, shared cache, progress (M0-17)"
+git add packages/py-core/src/alinea_core/translation apps/worker/src/alinea_worker/tasks/translate.py packages/py-core/tests/test_translation.py && git commit -m "feat(translation): section pipeline, quality checks, shared cache, progress (M0-17)"
 ```
 
 ---
@@ -842,9 +842,9 @@ git add packages/py-core/src/yakudoku_core/translation apps/worker/src/yakudoku_
 ### Task 17: 取り込みステートマシン(M0-18)
 
 **Files:**
-- Create: `apps/worker/src/yakudoku_worker/tasks/ingest.py`(`ingest_paper` の8段階駆動)
-- Create: `apps/worker/src/yakudoku_worker/pipeline.py`(状態機械の駆動: queued→fetching→parsing→structuring→translating_abstract→readable→translating_body→complete)
-- Create: `packages/py-core/src/yakudoku_core/ingest/{dedupe,thumbnail,joblog,progress}.py`
+- Create: `apps/worker/src/alinea_worker/tasks/ingest.py`(`ingest_paper` の8段階駆動)
+- Create: `apps/worker/src/alinea_worker/pipeline.py`(状態機械の駆動: queued→fetching→parsing→structuring→translating_abstract→readable→translating_body→complete)
+- Create: `packages/py-core/src/alinea_core/ingest/{dedupe,thumbnail,joblog,progress}.py`
 - Test: `apps/worker/tests/test_ingest.py`(PY-ING-02, PY-ING-05, PY-JOB-02: 段階遷移・重複検知・readable 先頭直接翻訳・段階再開)
 
 **Interfaces:**
@@ -879,7 +879,7 @@ Expected: 全 PASS
 - [ ] **Step 5: コミット**
 
 ```bash
-git add apps/worker/src/yakudoku_worker/tasks/ingest.py apps/worker/src/yakudoku_worker/pipeline.py packages/py-core/src/yakudoku_core/ingest apps/worker/tests/test_ingest.py && git commit -m "feat(ingest): 8-stage ingest state machine, dedupe, readable-first (M0-18)"
+git add apps/worker/src/alinea_worker/tasks/ingest.py apps/worker/src/alinea_worker/pipeline.py packages/py-core/src/alinea_core/ingest apps/worker/tests/test_ingest.py && git commit -m "feat(ingest): 8-stage ingest state machine, dedupe, readable-first (M0-18)"
 ```
 
 ---
@@ -889,9 +889,9 @@ git add apps/worker/src/yakudoku_worker/tasks/ingest.py apps/worker/src/yakudoku
 ### Task 18: ingest / papers / assets API(M0-19)
 
 **Files:**
-- Create: `apps/api/src/yakudoku_api/routers/ingest.py`(`GET /api/ingest/check` 3分岐・`POST /api/ingest/arxiv` 202+Idempotency-Key・`GET /api/ingest/recent`)
-- Create: `apps/api/src/yakudoku_api/routers/papers.py`(reingest・ingest-log・pdf 配信)
-- Create: `apps/api/src/yakudoku_api/routers/assets.py`(`GET /api/assets/{id}` 302+署名付き URL)
+- Create: `apps/api/src/alinea_api/routers/ingest.py`(`GET /api/ingest/check` 3分岐・`POST /api/ingest/arxiv` 202+Idempotency-Key・`GET /api/ingest/recent`)
+- Create: `apps/api/src/alinea_api/routers/papers.py`(reingest・ingest-log・pdf 配信)
+- Create: `apps/api/src/alinea_api/routers/assets.py`(`GET /api/assets/{id}` 302+署名付き URL)
 - Test: `apps/api/tests/test_ingest_api.py`(PY-ING-01, PY-ING-03, PY-ING-06)
 
 **Interfaces:**
@@ -927,7 +927,7 @@ Expected: 全 PASS
 - [ ] **Step 5: コミット**
 
 ```bash
-git add apps/api/src/yakudoku_api/routers/{ingest,papers,assets}.py apps/api/tests/test_ingest_api.py && git commit -m "feat(api): ingest check/arxiv/recent, papers, asset delivery (M0-19)"
+git add apps/api/src/alinea_api/routers/{ingest,papers,assets}.py apps/api/tests/test_ingest_api.py && git commit -m "feat(api): ingest check/arxiv/recent, papers, asset delivery (M0-19)"
 ```
 
 ---
@@ -935,8 +935,8 @@ git add apps/api/src/yakudoku_api/routers/{ingest,papers,assets}.py apps/api/tes
 ### Task 19: viewer / translations API(M0-20)
 
 **Files:**
-- Create: `apps/api/src/yakudoku_api/routers/viewer.py`(ビューア初期化複合エンドポイント・document・blocks・figures・references)
-- Create: `apps/api/src/yakudoku_api/routers/translations.py`(翻訳セット取得・units・prioritize・オンデマンドセクション翻訳・指示なし retranslate・読書位置 PUT)
+- Create: `apps/api/src/alinea_api/routers/viewer.py`(ビューア初期化複合エンドポイント・document・blocks・figures・references)
+- Create: `apps/api/src/alinea_api/routers/translations.py`(翻訳セット取得・units・prioritize・オンデマンドセクション翻訳・指示なし retranslate・読書位置 PUT)
 - Test: `apps/api/tests/test_viewer_api.py`(PY-LIB-03: 読書位置 PUT・ビューア初期化)
 
 **Interfaces:**
@@ -971,7 +971,7 @@ Expected: 全 PASS
 - [ ] **Step 5: コミット**
 
 ```bash
-git add apps/api/src/yakudoku_api/routers/{viewer,translations}.py apps/api/tests/test_viewer_api.py && git commit -m "feat(api): viewer init, translation units, prioritize, reading position (M0-20)"
+git add apps/api/src/alinea_api/routers/{viewer,translations}.py apps/api/tests/test_viewer_api.py && git commit -m "feat(api): viewer init, translation units, prioritize, reading position (M0-20)"
 ```
 
 ---
@@ -979,10 +979,10 @@ git add apps/api/src/yakudoku_api/routers/{viewer,translations}.py apps/api/test
 ### Task 20: チャットバックエンド + API(M0-21)
 
 **Files:**
-- Create: `apps/api/src/yakudoku_api/chat/context_builder.py`(文脈ビルダー)
-- Create: `apps/api/src/yakudoku_api/chat/stream_pipeline.py`(`[[ev:n]]` ストリーム変換)
-- Create: `apps/api/src/yakudoku_api/chat/evidence.py`(根拠実在検証)
-- Create: `apps/api/src/yakudoku_api/routers/chat.py`(SSE 送信 API・スレッド CRUD・regenerate。plans/03 §10)
+- Create: `apps/api/src/alinea_api/chat/context_builder.py`(文脈ビルダー)
+- Create: `apps/api/src/alinea_api/chat/stream_pipeline.py`(`[[ev:n]]` ストリーム変換)
+- Create: `apps/api/src/alinea_api/chat/evidence.py`(根拠実在検証)
+- Create: `apps/api/src/alinea_api/routers/chat.py`(SSE 送信 API・スレッド CRUD・regenerate。plans/03 §10)
 - Test: `apps/api/tests/test_chat.py`(PY-CHAT-01〜06: 文脈構築・ストリーム・根拠検証・定型アクション)
 
 **Interfaces:**
@@ -995,7 +995,7 @@ git add apps/api/src/yakudoku_api/routers/{viewer,translations}.py apps/api/test
 # apps/api/tests/test_chat.py
 @pytest.mark.asyncio
 async def test_broken_evidence_anchor_is_stripped():
-    from yakudoku_api.chat.evidence import verify_evidence
+    from alinea_api.chat.evidence import verify_evidence
     anchors = [{"block_id":"blk-real"}, {"block_id":"blk-nonexistent"}]
     verified = await verify_evidence(anchors, existing_block_ids={"blk-real"})
     assert verified == [{"block_id":"blk-real"}]   # 実在しない根拠は除去(P1)
@@ -1016,7 +1016,7 @@ Expected: 全 PASS
 - [ ] **Step 5: コミット**
 
 ```bash
-git add apps/api/src/yakudoku_api/chat apps/api/src/yakudoku_api/routers/chat.py apps/api/tests/test_chat.py && git commit -m "feat(api): chat context, streaming, evidence verification (M0-21)"
+git add apps/api/src/alinea_api/chat apps/api/src/alinea_api/routers/chat.py apps/api/tests/test_chat.py && git commit -m "feat(api): chat context, streaming, evidence verification (M0-21)"
 ```
 
 ---
@@ -1024,9 +1024,9 @@ git add apps/api/src/yakudoku_api/chat apps/api/src/yakudoku_api/routers/chat.py
 ### Task 21: ライブラリ API(M0-22)+ 設定 API(M0-23)
 
 **Files:**
-- Create: `apps/api/src/yakudoku_api/routers/library_items.py`(一覧・facets・GET/PATCH/DELETE・tags。plans/03 §5)
-- Create: `apps/api/src/yakudoku_api/routers/settings.py`(`GET/PATCH /api/settings` deep merge・値域検証)
-- Create: `apps/api/src/yakudoku_api/routers/llm_settings.py`(BYOK PUT/DELETE マスク応答・`GET /api/settings/quota`)
+- Create: `apps/api/src/alinea_api/routers/library_items.py`(一覧・facets・GET/PATCH/DELETE・tags。plans/03 §5)
+- Create: `apps/api/src/alinea_api/routers/settings.py`(`GET/PATCH /api/settings` deep merge・値域検証)
+- Create: `apps/api/src/alinea_api/routers/llm_settings.py`(BYOK PUT/DELETE マスク応答・`GET /api/settings/quota`)
 - Test: `apps/api/tests/test_library_api.py`(PY-LIB-01, PY-LIB-02)、`test_settings_api.py`(PY-SET-01)
 
 **Interfaces:**
@@ -1061,7 +1061,7 @@ Expected: 全 PASS
 - [ ] **Step 5: コミット**
 
 ```bash
-git add apps/api/src/yakudoku_api/routers/{library_items,settings,llm_settings}.py apps/api/tests/test_library_api.py apps/api/tests/test_settings_api.py && git commit -m "feat(api): library items, settings, byok settings (M0-22, M0-23)"
+git add apps/api/src/alinea_api/routers/{library_items,settings,llm_settings}.py apps/api/tests/test_library_api.py apps/api/tests/test_settings_api.py && git commit -m "feat(api): library items, settings, byok settings (M0-22, M0-23)"
 ```
 
 ---
@@ -1069,26 +1069,26 @@ git add apps/api/src/yakudoku_api/routers/{library_items,settings,llm_settings}.
 ### Task 22: packages/api-client(M0-24)
 
 **Files:**
-- Create: `packages/api-client/package.json`(name: `@yakudoku/api-client`、devDeps: @hey-api/openapi-ts 0.78.3、scripts: `generate`)
+- Create: `packages/api-client/package.json`(name: `@alinea/api-client`、devDeps: @hey-api/openapi-ts 0.78.3、scripts: `generate`)
 - Create: `packages/api-client/openapi-ts.config.ts`(入力 openapi.json・出力 src/generated/)
 - Create: `packages/api-client/src/index.ts`(fetch ラッパ `credentials: "include"`)
 - Modify: `.github/workflows/ci.yml`(openapi-drift ジョブを実接続)
 
 **Interfaces:**
-- Consumes: `python -m yakudoku_api.export_openapi`(Task 9)、全ルータ(Task 18〜21)。
-- Produces: `@yakudoku/api-client` の型付きクライアント(手書き禁止・生成のみ)。
+- Consumes: `python -m alinea_api.export_openapi`(Task 9)、全ルータ(Task 18〜21)。
+- Produces: `@alinea/api-client` の型付きクライアント(手書き禁止・生成のみ)。
 
 - [ ] **Step 1: OpenAPI を書き出してクライアント生成**
 
 ```bash
-uv run python -m yakudoku_api.export_openapi > packages/api-client/openapi.json
-pnpm --filter @yakudoku/api-client generate
+uv run python -m alinea_api.export_openapi > packages/api-client/openapi.json
+pnpm --filter @alinea/api-client generate
 ```
 Expected: `packages/api-client/src/generated/` に型が生成される
 
 - [ ] **Step 2: ドリフト検査(生成が冪等)**
 
-Run: `pnpm --filter @yakudoku/api-client generate && git diff --exit-code packages/api-client/src/generated`
+Run: `pnpm --filter @alinea/api-client generate && git diff --exit-code packages/api-client/src/generated`
 Expected: 差分なし(終了コード 0)
 
 - [ ] **Step 3: コミット**
@@ -1102,12 +1102,12 @@ git add packages/api-client && git commit -m "feat(api-client): openapi-generate
 ### Task 23: シードデータ(M0-25)
 
 **Files:**
-- Create: `apps/api/src/yakudoku_api/seed_data/rectified_flow/`(bib.json, document.json, translation_natural.json ほか plans/12 §14.1 の全ファイル)
-- Create: `apps/api/src/yakudoku_api/seed.py`(`python -m yakudoku_api.seed --sample rectified-flow [--reset] [--scale N] [--full]`)
+- Create: `apps/api/src/alinea_api/seed_data/rectified_flow/`(bib.json, document.json, translation_natural.json ほか plans/12 §14.1 の全ファイル)
+- Create: `apps/api/src/alinea_api/seed.py`(`python -m alinea_api.seed --sample rectified-flow [--reset] [--scale N] [--full]`)
 - Test: `apps/api/tests/test_seed.py`(投入後に論文・リビジョン・翻訳セットが存在)
 
 **Interfaces:**
-- Produces: `python -m yakudoku_api.seed --sample rectified-flow` で Rectified Flow(arXiv:2209.03003)が投入される。全テスト・VR・開発の共通データ源。
+- Produces: `python -m alinea_api.seed --sample rectified-flow` で Rectified Flow(arXiv:2209.03003)が投入される。全テスト・VR・開発の共通データ源。
 
 - [ ] **Step 1: 失敗するテストを書く**
 
@@ -1132,14 +1132,14 @@ Expected: FAIL
 
 ```bash
 uv run pytest apps/api/tests/test_seed.py -v
-uv run python -m yakudoku_api.seed --sample rectified-flow --reset
+uv run python -m alinea_api.seed --sample rectified-flow --reset
 ```
 Expected: PASS、投入ログに `2209.03003` 完了
 
 - [ ] **Step 5: コミット**
 
 ```bash
-git add apps/api/src/yakudoku_api/seed_data apps/api/src/yakudoku_api/seed.py apps/api/tests/test_seed.py && git commit -m "feat(seed): rectified-flow sample data + seed command (M0-25)"
+git add apps/api/src/alinea_api/seed_data apps/api/src/alinea_api/seed.py apps/api/tests/test_seed.py && git commit -m "feat(seed): rectified-flow sample data + seed command (M0-25)"
 ```
 
 ---
@@ -1149,17 +1149,17 @@ git add apps/api/src/yakudoku_api/seed_data apps/api/src/yakudoku_api/seed.py ap
 ### Task 24: web アプリシェル(M0-26)
 
 **Files:**
-- Create: `apps/web/package.json`(name: `@yakudoku/web`、deps: next 15.4.2, react 19.1.0, @tanstack/react-query 5.81.5, zustand 5.0.6, @yakudoku/api-client, @yakudoku/tokens)
+- Create: `apps/web/package.json`(name: `@alinea/web`、deps: next 15.4.2, react 19.1.0, @tanstack/react-query 5.81.5, zustand 5.0.6, @alinea/api-client, @alinea/tokens)
 - Create: `apps/web/next.config.ts` / `tsconfig.json`(paths `@/*`)/ `postcss.config.mjs`(Tailwind v4)
 - Create: `apps/web/src/app/layout.tsx`(next/font・ThemeProvider・QueryClientProvider)
 - Create: `apps/web/src/app/(auth)/login/page.tsx`
 - Create: `apps/web/src/components/AppHeader.tsx` / `SidebarNav.tsx`
 - Create: `apps/web/src/lib/sse.ts`(`/api/events` 購読 + ポーリングフォールバック)
-- Create: `apps/web/src/styles/globals.css`(`@import "@yakudoku/tokens/css"; @theme` マッピング)
+- Create: `apps/web/src/styles/globals.css`(`@import "@alinea/tokens/css"; @theme` マッピング)
 - Test: `apps/web/src/app/layout.test.tsx`(VT-UI-01: シェル描画)
 
 **Interfaces:**
-- Consumes: `@yakudoku/api-client`(Task 22)、`@yakudoku/tokens`(Task 4)。
+- Consumes: `@alinea/api-client`(Task 22)、`@alinea/tokens`(Task 4)。
 - Produces: `(app)`/`(public)`/`(auth)` セグメント、`AppHeader`/`SidebarNav`、`useSSE()` フック。
 
 - [ ] **Step 1: 失敗するテストを書く(VT-UI-01)**
@@ -1170,20 +1170,20 @@ import { render, screen } from "@testing-library/react";
 import { AppHeader } from "./AppHeader";
 test("renders product name", () => {
   render(<AppHeader />);
-  expect(screen.getByText(/訳読/)).toBeInTheDocument();
+  expect(screen.getByText(/Alinea/)).toBeInTheDocument();
 });
 ```
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `pnpm --filter @yakudoku/web test`
+Run: `pnpm --filter @alinea/web test`
 Expected: FAIL
 
 - [ ] **Step 3: layout・AppHeader・SidebarNav・sse・globals.css を実装**
 
 - [ ] **Step 4: テストを通す + ビルド確認**
 
-Run: `pnpm --filter @yakudoku/web test && pnpm --filter @yakudoku/web build`
+Run: `pnpm --filter @alinea/web test && pnpm --filter @alinea/web build`
 Expected: PASS、Next.js ビルド成功
 
 - [ ] **Step 5: コミット**
@@ -1201,7 +1201,7 @@ git add apps/web && git commit -m "feat(web): app shell — layout, header, side
 - Test: `apps/web/src/components/ui/*.test.tsx`(VT-UI-02, VT-UI-03)
 
 **Interfaces:**
-- Consumes: `@yakudoku/tokens/js`(Task 4)。
+- Consumes: `@alinea/tokens/js`(Task 4)。
 - Produces: 各コンポーネント(plans/08 §5 の props 契約)。`StatusPill` は6ステータス色、`QualityBadge` は A/B、`AIBadge` は「AI生成」。
 
 - [ ] **Step 1: 失敗するテストを書く(VT-UI-02: StatusPill 6色)**
@@ -1218,14 +1218,14 @@ test("renders reading status label", () => {
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `pnpm --filter @yakudoku/web test`
+Run: `pnpm --filter @alinea/web test`
 Expected: FAIL
 
 - [ ] **Step 3: 17種のコンポーネントを実装**(plans/08 §5 の px・色・文言逐語)
 
 - [ ] **Step 4: テストを通す(VT-UI-02, VT-UI-03)**
 
-Run: `pnpm --filter @yakudoku/web test`
+Run: `pnpm --filter @alinea/web test`
 Expected: 全 PASS
 
 - [ ] **Step 5: コミット**
@@ -1265,14 +1265,14 @@ test("M0 shows only 3 tabs (chat/figures/info), hides notes/annotations/resource
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `pnpm --filter @yakudoku/web test`
+Run: `pnpm --filter @alinea/web test`
 Expected: FAIL
 
 - [ ] **Step 3: ViewerShell・ViewerHeader・TocTree・SidePanel・stores を実装**
 
 - [ ] **Step 4: テストを通す(VT-VIEW-01, VT-VIEW-04)**
 
-Run: `pnpm --filter @yakudoku/web test`
+Run: `pnpm --filter @alinea/web test`
 Expected: 全 PASS
 
 - [ ] **Step 5: コミット**
@@ -1310,14 +1310,14 @@ test("M0 selection menu shows only ask-AI and copy", () => {
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `pnpm --filter @yakudoku/web test`
+Run: `pnpm --filter @alinea/web test`
 Expected: FAIL
 
 - [ ] **Step 3: TranslationPane ほかを実装**
 
 - [ ] **Step 4: テストを通す(VT-VIEW-02, VT-VIEW-05)**
 
-Run: `pnpm --filter @yakudoku/web test`
+Run: `pnpm --filter @alinea/web test`
 Expected: 全 PASS
 
 - [ ] **Step 5: コミット**
@@ -1354,14 +1354,14 @@ test("assistant message shows AI badge and evidence chip", () => {
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `pnpm --filter @yakudoku/web test`
+Run: `pnpm --filter @alinea/web test`
 Expected: FAIL
 
 - [ ] **Step 3: BilingualPane・ChatPanel ほかを実装**
 
 - [ ] **Step 4: テストを通す(VT-VIEW-03,07,09〜12)**
 
-Run: `pnpm --filter @yakudoku/web test`
+Run: `pnpm --filter @alinea/web test`
 Expected: 全 PASS
 
 - [ ] **Step 5: コミット**
@@ -1397,14 +1397,14 @@ test("figure popover shows bilingual caption and jump action", () => {
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `pnpm --filter @yakudoku/web test`
+Run: `pnpm --filter @alinea/web test`
 Expected: FAIL
 
 - [ ] **Step 3: FigureRefPopover ほかを実装**
 
 - [ ] **Step 4: テストを通す(VT-VIEW-06)**
 
-Run: `pnpm --filter @yakudoku/web test`
+Run: `pnpm --filter @alinea/web test`
 Expected: 全 PASS
 
 - [ ] **Step 5: コミット**
@@ -1442,14 +1442,14 @@ test("renders 10 columns, dashes for unsupplied", () => {
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `pnpm --filter @yakudoku/web test`
+Run: `pnpm --filter @alinea/web test`
 Expected: FAIL
 
 - [ ] **Step 3: library ページ・コンポーネント・settings account を実装**
 
 - [ ] **Step 4: テストを通す(VT-LIB-01, VT-LIB-02 10列部)**
 
-Run: `pnpm --filter @yakudoku/web test`
+Run: `pnpm --filter @alinea/web test`
 Expected: 全 PASS
 
 - [ ] **Step 5: コミット**
@@ -1465,7 +1465,7 @@ git add apps/web/src/app/\(app\)/library apps/web/src/app/\(app\)/settings apps/
 ### Task 31: 拡張基盤(M0-34)
 
 **Files:**
-- Create: `apps/extension/package.json`(name: `@yakudoku/extension`、deps: wxt 0.20.7, @wxt-dev/module-react 1.1.3, react 19.1.0, @yakudoku/api-client)
+- Create: `apps/extension/package.json`(name: `@alinea/extension`、deps: wxt 0.20.7, @wxt-dev/module-react 1.1.3, react 19.1.0, @alinea/api-client)
 - Create: `apps/extension/wxt.config.ts`(manifest: permissions activeTab+storage、optional_host_permissions arxiv.org)
 - Create: `apps/extension/tsconfig.json`
 - Create: `apps/extension/src/entrypoints/popup/App.tsx`
@@ -1473,7 +1473,7 @@ git add apps/web/src/app/\(app\)/library apps/web/src/app/\(app\)/settings apps/
 - Test: `apps/extension/src/lib/arxiv.test.ts`(VT-XTU-01)
 
 **Interfaces:**
-- Consumes: `@yakudoku/api-client`(Task 22)、セッションクッキー共有。
+- Consumes: `@alinea/api-client`(Task 22)、セッションクッキー共有。
 - Produces: WXT プロジェクト、`popup/App.tsx`(未ログイン UI 含む)、`WXT_E2E=1` 時の `?tab_url=` フック。
 
 - [ ] **Step 1: 失敗するテストを書く(VT-XTU-01: arXiv URL 判定)**
@@ -1490,14 +1490,14 @@ test("detects arxiv abs url", () => {
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `pnpm --filter @yakudoku/extension test`
+Run: `pnpm --filter @alinea/extension test`
 Expected: FAIL
 
 - [ ] **Step 3: wxt.config・popup/App・lib を実装**
 
 - [ ] **Step 4: テストを通す + ビルド確認**
 
-Run: `pnpm --filter @yakudoku/extension test && pnpm --filter @yakudoku/extension build`
+Run: `pnpm --filter @alinea/extension test && pnpm --filter @alinea/extension build`
 Expected: PASS、`.output/chrome-mv3/` が生成される
 
 - [ ] **Step 5: コミット**
@@ -1534,14 +1534,14 @@ test("shows quality A estimate when latex available", () => {
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `pnpm --filter @yakudoku/extension test`
+Run: `pnpm --filter @alinea/extension test`
 Expected: FAIL
 
 - [ ] **Step 3: 3状態と pipeline/format を実装**
 
 - [ ] **Step 4: テストを通す**
 
-Run: `pnpm --filter @yakudoku/extension test`
+Run: `pnpm --filter @alinea/extension test`
 Expected: 全 PASS
 
 - [ ] **Step 5: コミット**
@@ -1578,14 +1578,14 @@ test("active ingest shows amber dot", () => {
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `pnpm --filter @yakudoku/extension test`
+Run: `pnpm --filter @alinea/extension test`
 Expected: FAIL
 
 - [ ] **Step 3: background・RecentIngests・アイコンを実装**
 
 - [ ] **Step 4: テストを通す + 両ターゲットビルド**
 
-Run: `pnpm --filter @yakudoku/extension test && pnpm --filter @yakudoku/extension build && pnpm --filter @yakudoku/extension build:edge`
+Run: `pnpm --filter @alinea/extension test && pnpm --filter @alinea/extension build && pnpm --filter @alinea/extension build:edge`
 Expected: PASS、`.output/chrome-mv3/` と Edge 版が生成される
 
 - [ ] **Step 5: コミット**
@@ -1616,7 +1616,7 @@ git add apps/extension/src/entrypoints/background.ts apps/extension/src/entrypoi
 ```bash
 docker compose up -d --wait db redis minio minio-init mailpit
 cd apps/api && uv run alembic upgrade head && cd ../..
-uv run pytest --cov=yakudoku_core --cov=yakudoku_llm --cov=yakudoku_api --cov=yakudoku_worker
+uv run pytest --cov=alinea_core --cov=alinea_llm --cov=alinea_api --cov=alinea_worker
 ```
 Expected: 全 PASS、カバレッジ ≥80%、placeholder/translation =100%
 
@@ -1653,20 +1653,20 @@ git add apps/api/tests/conftest.py apps/api/tests/factories.py tools/traceabilit
 ```bash
 docker compose up -d --wait
 cd apps/api && uv run alembic upgrade head && cd ../..
-uv run python -m yakudoku_api.seed --sample rectified-flow --reset
-pnpm --filter @yakudoku/web exec playwright install --with-deps chromium
-pnpm --filter @yakudoku/web e2e
+uv run python -m alinea_api.seed --sample rectified-flow --reset
+pnpm --filter @alinea/web exec playwright install --with-deps chromium
+pnpm --filter @alinea/web e2e
 ```
 Expected: PW-01 PASS
 
 - [ ] **Step 3: PW-02(取り込み経路が拡張のみ = アプリ内に+追加ボタン無し)・PW-03・PW-05(3モード)・PW-08(選択質問→根拠)・PW-09(位置復元)を追加**
 
-Run: `pnpm --filter @yakudoku/web e2e`
+Run: `pnpm --filter @alinea/web e2e`
 Expected: 全 PASS
 
 - [ ] **Step 4: 拡張 E2E(XT-01〜05: 保存→進捗→ビューア到達)を追加して実行**
 
-Run: `pnpm --filter @yakudoku/extension e2e`
+Run: `pnpm --filter @alinea/extension e2e`
 Expected: XT-01〜05 PASS
 
 - [ ] **Step 5: コミット**
@@ -1734,11 +1734,11 @@ git add docs/deployment.md && git commit -m "docs: global hosting runbook (Caddy
 docker compose up -d --wait
 uv sync --all-packages && pnpm install
 cd apps/api && uv run alembic upgrade head && cd ../..
-uv run python -m yakudoku_api.seed --sample rectified-flow --reset
+uv run python -m alinea_api.seed --sample rectified-flow --reset
 pnpm turbo build lint typecheck test
 uv run pytest
-pnpm --filter @yakudoku/web e2e
-pnpm --filter @yakudoku/extension e2e
+pnpm --filter @alinea/web e2e
+pnpm --filter @alinea/extension e2e
 ```
 Expected: 全 green
 

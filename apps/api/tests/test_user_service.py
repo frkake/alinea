@@ -9,15 +9,15 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.services.user_service import (
+from alinea_api.services.user_service import (
     count_unread_notifications,
     list_providers,
     purge_user,
     upsert_user_by_email,
 )
-from yakudoku_core.db.models import AuthIdentity, Notification
+from alinea_core.db.models import AuthIdentity, Notification
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def test_upsert_user_by_email_fills_missing_avatar_on_existing_user(

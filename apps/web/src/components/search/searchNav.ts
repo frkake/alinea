@@ -1,6 +1,6 @@
-import type { SearchAllData, SearchHit } from "@yakudoku/api-client";
+import type { SearchAllData, SearchHit } from "@alinea/api-client";
 
-/** `@yakudoku/api-client` は判別共用体に別名を出さないため、`SearchHit.target` から導出する。 */
+/** `@alinea/api-client` は判別共用体に別名を出さないため、`SearchHit.target` から導出する。 */
 export type SearchHitTarget = SearchHit["target"];
 
 /**

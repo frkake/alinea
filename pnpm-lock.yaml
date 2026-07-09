@@ -40,10 +40,10 @@ importers:
 
   apps/extension:
     dependencies:
-      '@yakudoku/api-client':
+      '@alinea/api-client':
         specifier: workspace:*
         version: link:../../packages/api-client
-      '@yakudoku/tokens':
+      '@alinea/tokens':
         specifier: workspace:*
         version: link:../../packages/tokens
       react:
@@ -89,10 +89,10 @@ importers:
       '@tanstack/react-query':
         specifier: 5.81.5
         version: 5.81.5(react@19.1.0)
-      '@yakudoku/api-client':
+      '@alinea/api-client':
         specifier: workspace:*
         version: link:../../packages/api-client
-      '@yakudoku/tokens':
+      '@alinea/tokens':
         specifier: workspace:*
         version: link:../../packages/tokens
       clsx:

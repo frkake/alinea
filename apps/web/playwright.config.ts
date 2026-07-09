@@ -11,7 +11,7 @@ import { defineConfig } from "@playwright/test";
  *   (e2e/global-env.ts)が seed 投入と BulkWorker / InteractiveWorker の spawn を行い、
  *   globalTeardown(e2e/global-teardown.ts)で停止する(plans/12 §4.1 の決定に準拠)。
  * - LLM は §8.4 のモックサーバへ全 5 プロバイダのベース URL を上書きして向ける
- *   (運営キーは test-stub 固定)。取り込み翻訳・要約はワーカー側 YAKUDOKU_FAKE_LLM=1。
+ *   (運営キーは test-stub 固定)。取り込み翻訳・要約はワーカー側 ALINEA_FAKE_LLM=1。
  */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -29,20 +29,20 @@ const NO_PROXY = "localhost,127.0.0.1";
 const apiEnv: Record<string, string> = {
   NO_PROXY,
   no_proxy: NO_PROXY,
-  YAKUDOKU_ARXIV_BASE_URL: `${MOCK_BASE}/arxiv`,
+  ALINEA_ARXIV_BASE_URL: `${MOCK_BASE}/arxiv`,
   // 全 5 プロバイダの運営キーを test-stub にし、ベース URL をモックへ向ける(§8.4)。
   OPENAI_API_KEY: "test-stub",
   ANTHROPIC_API_KEY: "test-stub",
   GEMINI_API_KEY: "test-stub",
   DEEPSEEK_API_KEY: "test-stub",
   XAI_API_KEY: "test-stub",
-  YAKUDOKU_OPENAI_BASE_URL: `${MOCK_BASE}/openai/v1`,
-  YAKUDOKU_ANTHROPIC_BASE_URL: `${MOCK_BASE}/anthropic`,
-  YAKUDOKU_GOOGLE_BASE_URL: `${MOCK_BASE}/google`,
-  YAKUDOKU_DEEPSEEK_BASE_URL: `${MOCK_BASE}/deepseek`,
-  YAKUDOKU_XAI_BASE_URL: `${MOCK_BASE}/xai/v1`,
+  ALINEA_OPENAI_BASE_URL: `${MOCK_BASE}/openai/v1`,
+  ALINEA_ANTHROPIC_BASE_URL: `${MOCK_BASE}/anthropic`,
+  ALINEA_GOOGLE_BASE_URL: `${MOCK_BASE}/google`,
+  ALINEA_DEEPSEEK_BASE_URL: `${MOCK_BASE}/deepseek`,
+  ALINEA_XAI_BASE_URL: `${MOCK_BASE}/xai/v1`,
   // BYOK キーストア(DbKeyStore)は起動時に Fernet 鍵を要求する。テスト固定鍵(本番は .env)。
-  YAKUDOKU_KEY_ENCRYPTION_SECRET: "FeSAew6Uy-pkWOhrdXpCqC5Dmpqg5fJVWo0DKJiGze8=",
+  ALINEA_KEY_ENCRYPTION_SECRET: "FeSAew6Uy-pkWOhrdXpCqC5Dmpqg5fJVWo0DKJiGze8=",
 };
 
 export default defineConfig({
@@ -95,7 +95,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: "uv run --no-sync python -m yakudoku_llm.testing.mock_server --port 8090",
+      command: "uv run --no-sync python -m alinea_llm.testing.mock_server --port 8090",
       url: `${MOCK_BASE}/healthz`,
       cwd: repoRoot,
       timeout: 120_000,
@@ -103,7 +103,7 @@ export default defineConfig({
       env: { NO_PROXY, no_proxy: NO_PROXY },
     },
     {
-      command: "uv run --no-sync uvicorn yakudoku_api.main:app --port 8000",
+      command: "uv run --no-sync uvicorn alinea_api.main:app --port 8000",
       url: "http://localhost:8000/api/healthz",
       cwd: repoRoot,
       timeout: 120_000,

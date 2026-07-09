@@ -14,16 +14,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
-from yakudoku_core.document.inlines import Inline
-from yakudoku_core.parsing.carryover import carry_over_ids, flatten_blocks
-from yakudoku_core.parsing.html_parser import (
+from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
+from alinea_core.document.inlines import Inline
+from alinea_core.parsing.carryover import carry_over_ids, flatten_blocks
+from alinea_core.parsing.html_parser import (
     PARSER_VERSION,
     ParsedDocument,
     _ref_kind,
     parse_arxiv_html,
 )
-from yakudoku_core.parsing.pdf_sync import BlockPosition, PdfWord, sync_block_positions
+from alinea_core.parsing.pdf_sync import BlockPosition, PdfWord, sync_block_positions
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "rectified_flow_arxiv.html"
 

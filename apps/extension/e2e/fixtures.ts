@@ -23,7 +23,7 @@ const LINK_RE = /https?:\/\/[^\s]+\/api\/auth\/email\/verify\?token=[^\s]+/;
  * ディレクトリを毎回生成する(既存呼び出しはすべてこの既定動作)。
  */
 export async function createExtensionContext(userDataDir?: string): Promise<BrowserContext> {
-  const dir = userDataDir ?? mkdtempSync(join(tmpdir(), "yk-ext-"));
+  const dir = userDataDir ?? mkdtempSync(join(tmpdir(), "alinea-ext-"));
   return chromium.launchPersistentContext(dir, {
     headless: false,
     args: [
@@ -109,10 +109,10 @@ export async function ensureLoggedIn(context: BrowserContext): Promise<void> {
   const page = await context.newPage();
   await context.request.delete(`${MAILPIT}/api/v1/messages`);
   await page.goto("http://localhost:3000/login");
-  await page.locator("#login-email").fill("dev@yakudoku.test");
+  await page.locator("#login-email").fill("dev@alinea.test");
   await page.getByRole("button", { name: "ログインリンクを送信" }).click();
   await expect(page.getByText("ログインリンクを送信しました")).toBeVisible({ timeout: 30_000 });
-  const link = await extractLink(context.request, "dev@yakudoku.test");
+  const link = await extractLink(context.request, "dev@alinea.test");
   await page.goto(link);
   await expect(page).toHaveURL(/\/dashboard$/);
   await page.close();

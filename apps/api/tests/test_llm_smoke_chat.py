@@ -20,20 +20,20 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import alinea_llm
 import pytest
-import yakudoku_llm
-from yakudoku_api.chat.context_builder import build_chat_request
-from yakudoku_api.chat.evidence import BlockRow, EvidenceValidator
-from yakudoku_api.chat.prompts import QUICK_ACTION_TEMPLATES
-from yakudoku_api.chat.stream_pipeline import StreamPipeline
-from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
-from yakudoku_core.document.inlines import Inline
-from yakudoku_core.search.rebuild import compute_index_rows
-from yakudoku_llm.errors import ProviderChainExhausted
-from yakudoku_llm.providers import build_provider
-from yakudoku_llm.registry import ModelRegistry
-from yakudoku_llm.router import ChainEntry, LLMRouter
-from yakudoku_llm.routing import RoutingConfig
+from alinea_api.chat.context_builder import build_chat_request
+from alinea_api.chat.evidence import BlockRow, EvidenceValidator
+from alinea_api.chat.prompts import QUICK_ACTION_TEMPLATES
+from alinea_api.chat.stream_pipeline import StreamPipeline
+from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
+from alinea_core.document.inlines import Inline
+from alinea_core.search.rebuild import compute_index_rows
+from alinea_llm.errors import ProviderChainExhausted
+from alinea_llm.providers import build_provider
+from alinea_llm.registry import ModelRegistry
+from alinea_llm.router import ChainEntry, LLMRouter
+from alinea_llm.routing import RoutingConfig
 
 pytestmark = pytest.mark.smoke
 
@@ -75,7 +75,7 @@ def _operator_keys() -> dict[str, str]:
 
 def _build_chat_router() -> LLMRouter:
     """routing.yaml の chat チェーンから、運営キーが設定されたプロバイダのみで実ルータを組む。"""
-    llm_root = Path(yakudoku_llm.__file__).resolve().parents[2]
+    llm_root = Path(alinea_llm.__file__).resolve().parents[2]
     routing = RoutingConfig.from_yaml(llm_root / "routing.yaml")
     registry = ModelRegistry.from_yaml(llm_root / "models.yaml")
     keys = _operator_keys()

@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties } from "react";
-import type { VocabCounts } from "@yakudoku/api-client";
+import type { VocabCounts } from "@alinea/api-client";
 import { FilterChip } from "@/components/ui/FilterChip";
 import { VOCAB_KIND_LABEL } from "@/components/vocab/VocabKindBadge";
 import type { VocabKind } from "@/components/vocab/types";

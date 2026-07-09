@@ -6,12 +6,12 @@ from typing import Any
 
 import pytest
 from _data import load_fixture
-from pydantic import ValidationError
-from yakudoku_figures.dsl import (
+from alinea_figures.dsl import (
     OVERVIEW_FIGURE_DSL_JSON_SCHEMA,
     OverviewFigureDsl,
     OverviewFigureDslGenerated,
 )
+from pydantic import ValidationError
 
 
 def _generated_payload() -> dict[str, Any]:
@@ -36,8 +36,8 @@ def test_valid_dsl_round_trips() -> None:
 
 def test_generated_dsl_to_render_dsl_adds_footer_drops_evidence() -> None:
     generated = OverviewFigureDslGenerated.model_validate(_generated_payload())
-    rendered = generated.to_render_dsl(generated_by="✦ AI 生成 · 訳読", date="2026-07-06")
-    assert rendered.footer.generated_by == "✦ AI 生成 · 訳読"
+    rendered = generated.to_render_dsl(generated_by="✦ AI 生成 · Alinea", date="2026-07-06")
+    assert rendered.footer.generated_by == "✦ AI 生成 · Alinea"
     assert rendered.footer.date == "2026-07-06"
     assert not hasattr(rendered, "evidence")
 

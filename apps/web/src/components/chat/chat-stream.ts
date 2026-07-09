@@ -1,4 +1,4 @@
-import type { AnchorRef, Problem } from "@yakudoku/api-client";
+import type { AnchorRef, Problem } from "@alinea/api-client";
 
 /**
  * チャット送信 SSE(plans/03 §10.3)を fetch + ReadableStream で受信するクライアント。

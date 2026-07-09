@@ -13,8 +13,8 @@ concurrency:
 
 env:
   NO_PROXY: localhost,127.0.0.1
-  YAKUDOKU_FAKE_LLM: "1"
-  YAKUDOKU_ARXIV_BASE_URL: http://localhost:8090/arxiv
+  ALINEA_FAKE_LLM: "1"
+  ALINEA_ARXIV_BASE_URL: http://localhost:8090/arxiv
   APP_BASE_URL: http://localhost:3000
   MAILPIT_URL: http://localhost:8025
   # チャット/要約以外のモック向けベース URL(§8.4)。
@@ -23,12 +23,12 @@ env:
   GEMINI_API_KEY: test-stub
   DEEPSEEK_API_KEY: test-stub
   XAI_API_KEY: test-stub
-  YAKUDOKU_OPENAI_BASE_URL: http://localhost:8090/openai/v1
-  YAKUDOKU_ANTHROPIC_BASE_URL: http://localhost:8090/anthropic
-  YAKUDOKU_GOOGLE_BASE_URL: http://localhost:8090/google
-  YAKUDOKU_DEEPSEEK_BASE_URL: http://localhost:8090/deepseek
-  YAKUDOKU_XAI_BASE_URL: http://localhost:8090/xai/v1
-  YAKUDOKU_KEY_ENCRYPTION_SECRET: FeSAew6Uy-pkWOhrdXpCqC5Dmpqg5fJVWo0DKJiGze8=
+  ALINEA_OPENAI_BASE_URL: http://localhost:8090/openai/v1
+  ALINEA_ANTHROPIC_BASE_URL: http://localhost:8090/anthropic
+  ALINEA_GOOGLE_BASE_URL: http://localhost:8090/google
+  ALINEA_DEEPSEEK_BASE_URL: http://localhost:8090/deepseek
+  ALINEA_XAI_BASE_URL: http://localhost:8090/xai/v1
+  ALINEA_KEY_ENCRYPTION_SECRET: FeSAew6Uy-pkWOhrdXpCqC5Dmpqg5fJVWo0DKJiGze8=
 
 jobs:
   perf:
@@ -55,15 +55,15 @@ jobs:
       - run: uv run alembic upgrade head
         working-directory: apps/api
       # PF 用に 300 件へ水増ししたシード(§12.1)。
-      - run: uv run python -m yakudoku_api.seed --sample rectified-flow --reset --scale 300
+      - run: uv run python -m alinea_api.seed --sample rectified-flow --reset --scale 300
 
       - name: バックエンド起動(mock + api + worker + web)
         run: |
-          nohup uv run python -m yakudoku_llm.testing.mock_server --port 8090 >/tmp/mock.log 2>&1 &
-          nohup uv run uvicorn yakudoku_api.main:app --port 8000 >/tmp/api.log 2>&1 &
-          nohup uv run arq yakudoku_worker.main.BulkWorker >/tmp/bulk.log 2>&1 &
-          nohup uv run arq yakudoku_worker.main.InteractiveWorker >/tmp/interactive.log 2>&1 &
-          nohup pnpm --filter @yakudoku/web dev --port 3000 >/tmp/web.log 2>&1 &
+          nohup uv run python -m alinea_llm.testing.mock_server --port 8090 >/tmp/mock.log 2>&1 &
+          nohup uv run uvicorn alinea_api.main:app --port 8000 >/tmp/api.log 2>&1 &
+          nohup uv run arq alinea_worker.main.BulkWorker >/tmp/bulk.log 2>&1 &
+          nohup uv run arq alinea_worker.main.InteractiveWorker >/tmp/interactive.log 2>&1 &
+          nohup pnpm --filter @alinea/web dev --port 3000 >/tmp/web.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://localhost:8000/api/healthz && break; sleep 1; done
           for i in $(seq 1 60); do curl -sf http://localhost:3000/login >/dev/null && break; sleep 1; done
 

@@ -1,4 +1,4 @@
-import type { VocabSrs } from "@yakudoku/api-client";
+import type { VocabSrs } from "@alinea/api-client";
 
 /** 同日 0 時起点での日数差(target が起点、base が比較対象)。plans/09-screens/4d §5.6。 */
 function daysBetween(target: Date, base: Date): number {

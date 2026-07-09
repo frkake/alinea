@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties } from "react";
-import type { AnchorRef, ChatMessage as ChatMessageData } from "@yakudoku/api-client";
+import type { AnchorRef, ChatMessage as ChatMessageData } from "@alinea/api-client";
 import { AiMark, AIBadge } from "@/components/ui/AIBadge";
 import { EvidenceChip } from "@/components/ui/EvidenceChip";
 import { EvidenceHighlight } from "@/components/chat/EvidenceHighlight";
@@ -81,7 +81,7 @@ export function ChatMessage({
       ) : streaming && !hasContent ? (
         <div
           aria-label="生成中"
-          style={{ fontSize: 12.6, color: "var(--pr-text-muted)", animation: "yk-pulse 1.2s ease-in-out infinite" }}
+          style={{ fontSize: 12.6, color: "var(--pr-text-muted)", animation: "alinea-pulse 1.2s ease-in-out infinite" }}
         >
           …
         </div>

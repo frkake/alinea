@@ -1,6 +1,6 @@
 # 実装計画 01. システムアーキテクチャ
 
-> **対象読者と前提**: 本書は「訳読 / YAKUDOKU — 論文読解ワークベンチ」を実装するエンジニア向けのアーキテクチャ定義である。機能仕様の正は `/docs/00〜12`(確定デザイン 16 画面準拠)であり、本書は docs が実装に委ねた技術詳細を**すべて確定**させる。技術スタックは確定済み(spec-decisions C 項): pnpm workspaces + Turborepo モノレポ / `apps/web`=Next.js 15(App Router)+React 19+TypeScript 5+Tailwind CSS v4 / `apps/api`=Python 3.12+FastAPI+SQLAlchemy 2+Alembic+Pydantic v2 / `apps/worker`=Python(arq) / `apps/extension`=WXT(MV3) / PostgreSQL 16+PGroonga / Redis 7 / S3 互換(dev=MinIO, prod=Cloudflare R2)/ 認証=FastAPI+authlib。DDL の完全形は `plans/02`(データモデル)、API エンドポイント一覧は `plans/03`(API 設計)に置き、本書はそれらと整合する用語(テーブル名 `jobs`・`notifications`・`sessions`・`usage_records`・`block_search_index`)を先に確定する。API パスは `plans/03` §1.1 の決定(URL バージョニングなし、全パス `/api/*` 配下)に従う。
+> **対象読者と前提**: 本書は「Alinea — 論文読解ワークベンチ」を実装するエンジニア向けのアーキテクチャ定義である。機能仕様の正は `/docs/00〜12`(確定デザイン 16 画面準拠)であり、本書は docs が実装に委ねた技術詳細を**すべて確定**させる。技術スタックは確定済み(spec-decisions C 項): pnpm workspaces + Turborepo モノレポ / `apps/web`=Next.js 15(App Router)+React 19+TypeScript 5+Tailwind CSS v4 / `apps/api`=Python 3.12+FastAPI+SQLAlchemy 2+Alembic+Pydantic v2 / `apps/worker`=Python(arq) / `apps/extension`=WXT(MV3) / PostgreSQL 16+PGroonga / Redis 7 / S3 互換(dev=MinIO, prod=Cloudflare R2)/ 認証=FastAPI+authlib。DDL の完全形は `plans/02`(データモデル)、API エンドポイント一覧は `plans/03`(API 設計)に置き、本書はそれらと整合する用語(テーブル名 `jobs`・`notifications`・`sessions`・`usage_records`・`block_search_index`)を先に確定する。API パスは `plans/03` §1.1 の決定(URL バージョニングなし、全パス `/api/*` 配下)に従う。
 
 ## 1. 全体構成図
 
@@ -14,11 +14,11 @@ flowchart LR
     end
 
     subgraph VPS["単一 VPS (Docker Compose)"]
-        CADDY["Caddy 2\nリバースプロキシ + TLS\nyakudoku.app"]
+        CADDY["Caddy 2\nリバースプロキシ + TLS\nalinea.app"]
         WEB["apps/web\nNext.js 15 (node server)\nSSR: 共有ページ 4c のみ\n他は CSR + OpenAPI クライアント"]
         API["apps/api\nFastAPI (uvicorn)\nREST /api/* + SSE /api/events\n認証 (authlib, /api/auth/*)"]
-        WI["apps/worker\nworker-interactive\n(arq, queue=yk:interactive)"]
-        WB["apps/worker\nworker-bulk\n(arq, queue=yk:bulk)"]
+        WI["apps/worker\nworker-interactive\n(arq, queue=alinea:interactive)"]
+        WB["apps/worker\nworker-bulk\n(arq, queue=alinea:bulk)"]
         PG[("PostgreSQL 16\n+ PGroonga\n全データ + jobs + 全文検索")]
         RD[("Redis 7\narq キュー / Pub/Sub\nセッションキャッシュ")]
         S3[("S3 互換\ndev=MinIO / prod=R2\nsources / figures /\nthumbnails / renders / exports")]
@@ -63,7 +63,7 @@ flowchart LR
 - **BFF は置かない(決定)**。ブラウザは `packages/api-client`(OpenAPI 生成 TS クライアント、`@hey-api/openapi-ts` で生成 — plans/00 §1.3)経由で FastAPI を**直接**呼ぶ。理由: API は同一オリジン `/api/*` 配下にあり(§8.2)、中継層は遅延と二重実装を生むだけで、認証はセッションクッキーで完結するため。
 - **SSR の対象は共有ページ(4c)`/c/{token}` のみ**。React Server Component が `API_INTERNAL_URL`(compose 内部 `http://api:8000`)の公開エンドポイント `GET /api/share/collections/{token}`(plans/03 §14.1)を fetch してレンダリングする。
   - レスポンスヘッダに `X-Robots-Tag: noindex` と `<meta name="robots" content="noindex">` の両方を付ける(docs/06 §5)。
-  - OGP メタタグを SSR で付与する: `og:title`=コレクション名、`og:description`=説明文先頭 120 字、`og:site_name`="訳読 / YAKUDOKU"、`og:image`=`/og/collection-default.png`(静的 1200×630px。個人資産を画像に出さないため動的 OG 画像は生成しない — 決定)。
+  - OGP メタタグを SSR で付与する: `og:title`=コレクション名、`og:description`=説明文先頭 120 字、`og:site_name`="Alinea"、`og:image`=`/og/collection-default.png`(静的 1200×630px。個人資産を画像に出さないため動的 OG 画像は生成しない — 決定)。
   - v2 で記事公開が解禁された場合、記事ページの SSR+OGP はこの共有ページと同じ「公開データを内部 API から取得して RSC で描画」の枠組みに追加する(v1 では実装しない。docs/07 §2.8)。
   - キャッシュ: `Cache-Control: private, no-store` はログイン画面系、共有ページは `s-maxage=60, stale-while-revalidate=300`(Next.js `revalidate: 60`)。
 - 上記以外の全画面(1a〜1h, 2a, 4a〜4f, 5a)は認証必須の CSR。ルートレイアウトでセッション確認(`GET /api/auth/me`)し、未認証は `/login` へ。データ取得は TanStack Query v5、クライアント状態(ビューア表示モード・サイドパネルタブ・選択状態)は Zustand。
@@ -81,14 +81,14 @@ flowchart LR
 
 - 責務: 取り込みパイプライン(arXiv 取得・パース・構造化)、翻訳(セクション単位)、再翻訳、記事/概要図/解説図生成、語彙 AI 生成、リソースメタデータ取得、リアンカー、エクスポート生成、締切リマインド cron。
 - **2 プロセス構成(決定)**: arq の Worker は 1 プロセス 1 キューのため、対話性の要る処理と物量処理をプロセスで分離する。
-  - `worker-interactive`: Redis キュー `yk:interactive`。オンデマンド翻訳(開いたセクション)、語彙 AI 生成、記事・図の生成、リソースメタデータ取得。`max_jobs=10`。
-  - `worker-bulk`: Redis キュー `yk:bulk`。取り込み、全文翻訳のバックグラウンド進行、エクスポート、リアンカー。`max_jobs=4`(LLM レート制限と VPS メモリを考慮)。
-- Python 共有コードは 2 パッケージに分割する(決定。plans/00 §1.3・plans/04 §1 と同一): `LLMProvider` / `ImageProvider` 抽象化層・ルーティング・フォールバックは `packages/llm`(import 名 `yakudoku_llm`)、パーサ・アンカー処理・ジョブ共通処理・設定は `packages/py-core`(import 名 `yakudoku_core`)。いずれも uv workspace の path 依存で `apps/api` と `apps/worker` の両方から参照する(API のチャットと worker の翻訳が同一のルーティング/フォールバック実装を使うため)。
+  - `worker-interactive`: Redis キュー `alinea:interactive`。オンデマンド翻訳(開いたセクション)、語彙 AI 生成、記事・図の生成、リソースメタデータ取得。`max_jobs=10`。
+  - `worker-bulk`: Redis キュー `alinea:bulk`。取り込み、全文翻訳のバックグラウンド進行、エクスポート、リアンカー。`max_jobs=4`(LLM レート制限と VPS メモリを考慮)。
+- Python 共有コードは 2 パッケージに分割する(決定。plans/00 §1.3・plans/04 §1 と同一): `LLMProvider` / `ImageProvider` 抽象化層・ルーティング・フォールバックは `packages/llm`(import 名 `alinea_llm`)、パーサ・アンカー処理・ジョブ共通処理・設定は `packages/py-core`(import 名 `alinea_core`)。いずれも uv workspace の path 依存で `apps/api` と `apps/worker` の両方から参照する(API のチャットと worker の翻訳が同一のルーティング/フォールバック実装を使うため)。
 
 ### 2.4 apps/extension(WXT, MV3)
 
 - 責務: arXiv 検出、書誌プレビュー(サーバー照会)、保存(URL のみ送信)、タブ内 PDF の明示送信、パイプライン進捗表示、直近の取り込み 3 件、ツールバーバッジ(docs/08)。
-- API 呼び出しは `https://yakudoku.app/api/*` に対する `fetch(…, { credentials: "include" })`。認証はサイトと同一のセッションクッキー(§6.4)。
+- API 呼び出しは `https://alinea.app/api/*` に対する `fetch(…, { credentials: "include" })`。認証はサイトと同一のセッションクッキー(§6.4)。
 - 読解機能は一切持たない(docs/08 §7)。
 
 ### 2.5 データ層
@@ -96,7 +96,7 @@ flowchart LR
 | コンポーネント | 責務 |
 |---|---|
 | PostgreSQL 16 + PGroonga | 全永続データ(ドメイン+`jobs`+`sessions`+`usage_records`+検索用 `block_search_index`)。全文検索は PGroonga(`pgroonga` インデックス、日本語トークナイズ+英語ステミング)で日英クロス検索(docs/06 §9)を実現 |
-| Redis 7 | arq ジョブキュー(`yk:interactive` / `yk:bulk`)、SSE ファンアウト用 Pub/Sub(`events:user:{user_id}`)、セッションのルックアップキャッシュ(TTL 300 秒)、レートリミットカウンタ |
+| Redis 7 | arq ジョブキュー(`alinea:interactive` / `alinea:bulk`)、SSE ファンアウト用 Pub/Sub(`events:user:{user_id}`)、セッションのルックアップキャッシュ(TTL 300 秒)、レートリミットカウンタ |
 | S3 互換 | 原データ・図・サムネイル・生成物(§7)。**Redis と PG が消えても S3 の原データから再構築可能**な状態を保つ(docs/09 §2) |
 
 ## 3. 主要フローのシーケンス
@@ -118,7 +118,7 @@ sequenceDiagram
     API-->>EXT: {bibliography, latex_available: true, existing_library_item: null}
     EXT->>API: POST /api/ingest/arxiv {url, status, tags[], collection_id, quick_note}
     API->>PG: Paper upsert + LibraryItem INSERT + jobs INSERT(kind=ingest_paper, stage=queued)
-    API->>RD: arq enqueue(yk:bulk, job_id)
+    API->>RD: arq enqueue(alinea:bulk, job_id)
     API-->>EXT: 202 {paper_id, library_item_id, job_id} (保存後3秒以内にカード表示可)
     W->>PG: claim (status=running, stage=fetching)
     W->>AX: メタデータAPI → LaTeXソース > HTML > PDF の順に取得
@@ -126,7 +126,7 @@ sequenceDiagram
     W->>PG: stage=parsing → structuring (DocumentRevision + Block + 図を figures/ へ)
     W->>RD: PUBLISH events:user:{uid} {type: job.progress}
     W->>PG: stage=translating_abstract (アブスト訳 + ✦3行要約)
-    W->>PG: stage=readable + translate_section ジョブ群をセクション順で INSERT & enqueue(yk:bulk)
+    W->>PG: stage=readable + translate_section ジョブ群をセクション順で INSERT & enqueue(alinea:bulk)
     Note over W,PG: 全 translate_section 完了を検知した最後のジョブが
     W->>PG: ingest ジョブ stage=complete + notifications INSERT(kind=translation_complete)
     W->>RD: PUBLISH events:user:{uid} {type: notification.created}
@@ -150,10 +150,10 @@ sequenceDiagram
     participant WB as worker-bulk
     participant LLM as LLMProvider (translation ルート)
 
-    Note over PG: readable 到達時に translate_section ジョブが<br/>セクション順で yk:bulk に積まれている
+    Note over PG: readable 到達時に translate_section ジョブが<br/>セクション順で alinea:bulk に積まれている
     WEB->>API: PUT /api/library-items/{id}/position {block_id}(plans/03 §5.8)
     API->>PG: 該当セクションの translate_section ジョブを priority=interactive に UPDATE
-    API->>RD: 同一 job_id を yk:interactive に再 enqueue(繰り上げ)
+    API->>RD: 同一 job_id を alinea:interactive に再 enqueue(繰り上げ)
     par 先着した worker が実行
         WI->>PG: claim(UPDATE jobs SET status=running WHERE id=? AND status=queued)
         WB->>PG: 後着側は claim 失敗 → 即 no-op 終了
@@ -171,7 +171,7 @@ sequenceDiagram
 
 - 翻訳の実行単位は **`translate_section` ジョブ(セクション単位)**、その内部処理単位はブロック(docs/03 §3)。セクション単位にする理由: ブロック単位ジョブでは 1 論文で数百ジョブになり arq/DB のオーバーヘッドが支配的になる一方、「開いたセクションを優先翻訳」(docs/02 §5.2)の繰り上げ粒度はセクションで十分なため。
 - 繰り上げの実装: 同一 `jobs` 行を高優先キューへ**二重 enqueue** し、DB の claim(`status=queued → running` の条件付き UPDATE)で先着 1 実行を保証する。後着はノーオペ。二重実行が起きても `TranslationUnit.source_hash` 照合により結果は冪等。
-- 直訳スタイル(オンデマンド生成)・付録のオンデマンド翻訳・「この表を翻訳」・再翻訳(`retranslate_blocks`)は常に `yk:interactive` に投入する(ユーザーが画面の前で待つため)。
+- 直訳スタイル(オンデマンド生成)・付録のオンデマンド翻訳・「この表を翻訳」・再翻訳(`retranslate_blocks`)は常に `alinea:interactive` に投入する(ユーザーが画面の前で待つため)。
 
 ### 3.3 チャット(SSE ストリーミング)
 
@@ -235,7 +235,7 @@ sequenceDiagram
     participant API as apps/api
     participant PG as PostgreSQL
 
-    ANON->>CADDY: GET https://yakudoku.app/c/x8Kf3qPw
+    ANON->>CADDY: GET https://alinea.app/c/x8Kf3qPw
     CADDY->>WEB: ルーティング(/c/* は Next.js)
     WEB->>API: GET http://api:8000/api/share/collections/x8Kf3qPw (認証なし)
     API->>PG: collections WHERE share_token=? AND share_status='active'
@@ -253,7 +253,7 @@ sequenceDiagram
 ### 4.1 役割分担(決定)
 
 - **PostgreSQL `jobs` テーブルが唯一の真実**: 状態・段階・進捗・失敗理由・再試行はすべて DB。UI(拡張パイプライン表示・2a タイムライン・処理ログ)は DB を読む。
-- **arq(Redis)は「起床通知」のみ**: enqueue は「この job_id を処理せよ」というシグナルに過ぎず、ペイロードは job_id のみ。Redis が消えても `jobs` の `status='queued'` 行を再 enqueue する回復コマンド(`python -m yakudoku_core.jobs.requeue`)で完全復旧できる。
+- **arq(Redis)は「起床通知」のみ**: enqueue は「この job_id を処理せよ」というシグナルに過ぎず、ペイロードは job_id のみ。Redis が消えても `jobs` の `status='queued'` 行を再 enqueue する回復コマンド(`python -m alinea_core.jobs.requeue`)で完全復旧できる。
 
 ### 4.2 `jobs` テーブル(本書のジョブ実行モデルが要求する論理列)
 
@@ -378,23 +378,23 @@ Set-Cookie: yk_session=<token>; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=
 ```
 
   `Max-Age` 30 日のローリング更新(残り 15 日を切ったアクセスで延長)。`Domain` 属性は付けない(host-only。web と api が同一オリジンのため — §8.2)。dev(http://localhost)では `Secure` を外す。
-- CSRF: **Origin ヘッダ検証方式(決定 — plans/03 §1.3 と同一。専用 CSRF トークン・`yk_csrf` クッキーは導入しない)**。非 GET リクエスト(POST/PUT/PATCH/DELETE)の `Origin` を許可リストと照合する — 許可: `https://yakudoku.app`、dev では `http://localhost:3000`、拡張発は `chrome-extension://{EXTENSION_ID}`(環境変数 `EXTENSION_ALLOWED_ORIGINS`、plans/10 §15-2)。不一致は 403 `origin_mismatch`。`anonymous` 区分(`/api/share/*`・OAuth コールバック・メールリンク検証)は対象外。
+- CSRF: **Origin ヘッダ検証方式(決定 — plans/03 §1.3 と同一。専用 CSRF トークン・`yk_csrf` クッキーは導入しない)**。非 GET リクエスト(POST/PUT/PATCH/DELETE)の `Origin` を許可リストと照合する — 許可: `https://alinea.app`、dev では `http://localhost:3000`、拡張発は `chrome-extension://{EXTENSION_ID}`(環境変数 `EXTENSION_ALLOWED_ORIGINS`、plans/10 §15-2)。不一致は 403 `origin_mismatch`。`anonymous` 区分(`/api/share/*`・OAuth コールバック・メールリンク検証)は対象外。
 
 ### 6.3 BYOK キーの保管(docs/09 §4)
 
-- ユーザーの API キーは `byok_api_keys` テーブル(plans/02 §4.2)に **Fernet で暗号化**して保存(マスタキーは環境変数 `YAKUDOKU_KEY_ENCRYPTION_SECRET`、44文字 urlsafe base64。カンマ区切り複数指定+MultiFernet でローテーション。plans/04 §11.2 が暗号化方式の正)。画面は末尾 4 文字(`key_hint`)のみのマスク表示・再表示 API なし(再入力のみ)。
+- ユーザーの API キーは `byok_api_keys` テーブル(plans/02 §4.2)に **Fernet で暗号化**して保存(マスタキーは環境変数 `ALINEA_KEY_ENCRYPTION_SECRET`、44文字 urlsafe base64。カンマ区切り複数指定+MultiFernet でローテーション。plans/04 §11.2 が暗号化方式の正)。画面は末尾 4 文字(`key_hint`)のみのマスク表示・再表示 API なし(再入力のみ)。
 
 ### 6.4 拡張からの認証(同一クッキー)
 
-- 拡張は `host_permissions: ["https://yakudoku.app/*"]` を宣言し、`fetch(…, { credentials: "include" })` で API を呼ぶ。Chromium はホスト権限を持つ拡張コンテキスト発のリクエストを same-site 扱いにするため、`SameSite=Lax` のままセッションクッキーが送信される。**v1 の拡張はクッキー共有のみを使う(決定)**。API 側には将来クッキーが使えない環境(Safari 等)向けのフォールバックとして拡張トークン `POST /api/auth/extension-token`(`Authorization: Bearer yk_ext_…`、スコープは plans/03 §1.2.1 に固定)を用意するが、v1 の拡張実装はこれを使用しない(plans/10 §4)。
-- 401 応答時、ポップアップは「ログインしてください」状態を表示し、「ログイン」ボタンで `https://yakudoku.app/login?from=extension` を新規タブで開く。ログイン完了後にポップアップを開き直せばクッキーが有効になっている(コールバック連携は実装しない — 最小権限)。
+- 拡張は `host_permissions: ["https://alinea.app/*"]` を宣言し、`fetch(…, { credentials: "include" })` で API を呼ぶ。Chromium はホスト権限を持つ拡張コンテキスト発のリクエストを same-site 扱いにするため、`SameSite=Lax` のままセッションクッキーが送信される。**v1 の拡張はクッキー共有のみを使う(決定)**。API 側には将来クッキーが使えない環境(Safari 等)向けのフォールバックとして拡張トークン `POST /api/auth/extension-token`(`Authorization: Bearer yk_ext_…`、スコープは plans/03 §1.2.1 に固定)を用意するが、v1 の拡張実装はこれを使用しない(plans/10 §4)。
+- 401 応答時、ポップアップは「ログインしてください」状態を表示し、「ログイン」ボタンで `https://alinea.app/login?from=extension` を新規タブで開く。ログイン完了後にポップアップを開き直せばクッキーが有効になっている(コールバック連携は実装しない — 最小権限)。
 - 拡張の状態変更リクエストは §6.2 の Origin 検証で保護する。拡張発リクエストの `Origin` は `chrome-extension://{EXTENSION_ID}` になるため、Chrome/Edge 各ストア配布 ID を `EXTENSION_ALLOWED_ORIGINS` に登録して許可する(dev では `chrome-extension://` スキームを一律許可 — plans/10 §15-2)。CSRF トークンの取得・保持は不要。
 
 ## 7. ストレージレイアウト(S3 キー設計)
 
 ### 7.1 バケットとキー
 
-バケットは 1 つ: dev=`yakudoku`(MinIO)、prod=`yakudoku-prod`(R2)。**全オブジェクト非公開**(パブリックアクセス無効)。ID はすべて ULID。
+バケットは 1 つ: dev=`alinea`(MinIO)、prod=`alinea-prod`(R2)。**全オブジェクト非公開**(パブリックアクセス無効)。ID はすべて ULID。
 
 ```
 sources/{paper_id}/{source_version}/latex.tar.gz        # arXiv LaTeX ソース(取得時のまま)
@@ -436,10 +436,10 @@ exports/{user_id}/{export_id}.zip                        # エクスポート成
 
 ### 8.2 ドメインとルーティング(決定: 単一オリジン)
 
-`https://yakudoku.app` の単一オリジンに web と api を同居させる。理由: クッキーが host-only で済み、CORS 設定・`SameSite` 例外・プリフライトが不要になり、拡張の `host_permissions` も 1 つで済む。
+`https://alinea.app` の単一オリジンに web と api を同居させる。理由: クッキーが host-only で済み、CORS 設定・`SameSite` 例外・プリフライトが不要になり、拡張の `host_permissions` も 1 つで済む。
 
 ```caddyfile
-yakudoku.app {
+alinea.app {
     encode zstd gzip
     @api path /api/*
     handle @api {
@@ -452,7 +452,7 @@ yakudoku.app {
     }
 }
 
-grafana.yakudoku.app {
+grafana.alinea.app {
     basicauth {
         admin <bcrypt ハッシュ>      # 管理者のみ(§8.3)。Grafana 自身のログインと二段
     }
@@ -466,13 +466,13 @@ grafana.yakudoku.app {
 services:
   caddy:    { image: caddy:2, ports: ["80:80", "443:443"] }
   web:      { build: apps/web,   command: node server.js }            # next build --output standalone
-  api:      { build: apps/api,   command: uvicorn yakudoku_api.main:app --host 0.0.0.0 --port 8000 --workers 2 }
-  worker-interactive: { build: apps/worker, command: arq yakudoku_worker.settings.InteractiveWorker }
-  worker-bulk:        { build: apps/worker, command: arq yakudoku_worker.settings.BulkWorker }
+  api:      { build: apps/api,   command: uvicorn alinea_api.main:app --host 0.0.0.0 --port 8000 --workers 2 }
+  worker-interactive: { build: apps/worker, command: arq alinea_worker.settings.InteractiveWorker }
+  worker-bulk:        { build: apps/worker, command: arq alinea_worker.settings.BulkWorker }
   postgres: { image: groonga/pgroonga:4.0.1-alpine-16, volumes: [pgdata:/var/lib/postgresql/data] }
   redis:    { image: redis:7-alpine, command: redis-server --appendonly yes }
   prometheus: { image: prom/prometheus:v2.53.0 }
-  grafana:    { image: grafana/grafana:11.1.0 }   # 管理者のみ。basic auth + 別サブドメイン grafana.yakudoku.app
+  grafana:    { image: grafana/grafana:11.1.0 }   # 管理者のみ。basic auth + 別サブドメイン grafana.alinea.app
 ```
 
 - prod のオブジェクトストレージは R2(コンテナ外部)。MinIO は dev のみ。
@@ -483,22 +483,22 @@ services:
 
 | 変数名 | 例(dev) | 使用箇所 |
 |---|---|---|
-| `DATABASE_URL` | `postgresql+asyncpg://yakudoku:***@localhost:5432/yakudoku` | api / worker |
+| `DATABASE_URL` | `postgresql+asyncpg://alinea:***@localhost:5432/alinea` | api / worker |
 | `REDIS_URL` | `redis://localhost:6379/0` | api / worker |
 | `S3_ENDPOINT_URL` | `http://minio:9000`(prod: R2 endpoint) | api / worker |
 | `S3_PUBLIC_ENDPOINT_URL` | `http://localhost:9000`(prod: 未設定=ENDPOINT と同一) | api |
-| `S3_BUCKET` | `yakudoku` | api / worker |
+| `S3_BUCKET` | `alinea` | api / worker |
 | `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | — | api / worker |
 | `SESSION_SECRET` | 64byte hex(state/メールリンク署名) | api |
-| `YAKUDOKU_KEY_ENCRYPTION_SECRET` | Fernet マスタキー(44文字 urlsafe base64、カンマ区切りでローテーション) | api / worker |
+| `ALINEA_KEY_ENCRYPTION_SECRET` | Fernet マスタキー(44文字 urlsafe base64、カンマ区切りでローテーション) | api / worker |
 | `OAUTH_GOOGLE_CLIENT_ID` / `OAUTH_GOOGLE_CLIENT_SECRET` | — | api |
 | `OAUTH_GITHUB_CLIENT_ID` / `OAUTH_GITHUB_CLIENT_SECRET` | — | api |
 | `SMTP_URL` | `smtp://user:pass@smtp.example.com:587` | api |
-| `APP_BASE_URL` | `http://localhost:3000`(prod: `https://yakudoku.app`) | api(リダイレクト・メールリンク) |
+| `APP_BASE_URL` | `http://localhost:3000`(prod: `https://alinea.app`) | api(リダイレクト・メールリンク) |
 | `API_INTERNAL_URL` | `http://localhost:8000`(prod: `http://api:8000`) | web(SSR fetch) |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `DEEPSEEK_API_KEY` / `XAI_API_KEY` | 運営キー | api / worker |
 | `SENTRY_DSN_API` / `SENTRY_DSN_WEB` | — | api+worker / web |
-| `ARXIV_USER_AGENT` | `yakudoku/1.0 (contact@yakudoku.app)` | worker(arXiv 規約遵守 — docs/09 §5.3) |
+| `ARXIV_USER_AGENT` | `alinea/1.0 (contact@alinea.app)` | worker(arXiv 規約遵守 — docs/09 §5.3) |
 | `EXTENSION_ALLOWED_ORIGINS` | dev: 未設定(`chrome-extension://` を一律許可)。prod: `chrome-extension://<ChromeストアID>,chrome-extension://<EdgeストアID>` | api(Origin 検証 §6.2 — plans/10 §15-2) |
 
 モデル ID・ルーティング・フォールバック連鎖は環境変数ではなく **DB の設定テーブル `llm_route_configs`** に持つ(docs/09 §3.2「再デプロイなしで変更できる」。既定値シードは 09 §3.4 の表: 翻訳=`deepseek-v4-flash`→`gemini-3.5-flash`、チャット/要約/記事=`claude-opus-4-8`→`gpt-5.5`、語彙=`claude-haiku-4-5`→`gpt-5.4-mini`、概要図 DSL=チャットと同一、解説図=`gemini-3.1-flash-image`→`grok-imagine-image`→`gpt-image-2`)。
@@ -507,11 +507,11 @@ services:
 
 ### 9.1 API エラー形式(決定: RFC 9457 Problem Details — plans/03 §1.4 の RFC 7807 形式と同一。9457 は 7807 の後継)
 
-全エラーレスポンスは `application/problem+json`。`type` は `https://yakudoku.app/problems/{code のケバブケース}` から決定的に導出する(plans/03 §1.4):
+全エラーレスポンスは `application/problem+json`。`type` は `https://alinea.app/problems/{code のケバブケース}` から決定的に導出する(plans/03 §1.4):
 
 ```json
 {
-  "type": "https://yakudoku.app/problems/quota-exceeded",
+  "type": "https://alinea.app/problems/quota-exceeded",
   "title": "月次クォータを超過しています",
   "status": 429,
   "code": "quota_exceeded",
@@ -552,7 +552,7 @@ services:
 | `sse_connections` | gauge | — | 接続数監視 |
 | `ingest_quality_total` | counter | `level(A\|B), source_kind` | 品質 A 率 ≥99% |
 
-- 死活監視: `GET /api/healthz`(プロセス生存)/ `GET /api/readyz`(PG・Redis・S3 疎通)。外形監視は UptimeRobot で `https://yakudoku.app/api/healthz` を 5 分間隔。アラートは Grafana Alerting → メール(閾値: p95 目標の 2 倍超が 15 分継続、`job_queue_depth > 100` が 10 分継続、5xx 率 > 1%)。
+- 死活監視: `GET /api/healthz`(プロセス生存)/ `GET /api/readyz`(PG・Redis・S3 疎通)。外形監視は UptimeRobot で `https://alinea.app/api/healthz` を 5 分間隔。アラートは Grafana Alerting → メール(閾値: p95 目標の 2 倍超が 15 分継続、`job_queue_depth > 100` が 10 分継続、5xx 率 > 1%)。
 - レート制限(Redis 固定ウィンドウ、超過は 429 `rate_limited`。全量は plans/03 §1.8 を正とする): メールリンク要求 5 回/10分/IP+メール、OAuth 開始 20 回/10分/IP、取り込み 30 回/時/user、チャット送信 20 回/分/user、検索 60 回/分/user、共有ページ 120 回/分/IP、その他 600 回/分/user。
 
 ---
@@ -561,9 +561,9 @@ services:
 
 1. BFF なし・ブラウザから OpenAPI 生成クライアントで API 直叩き。SSR は共有ページ 4c のみ(OGP は静的画像、動的 OG 画像は作らない)。
 2. チャット・リアルタイム更新は WebSocket ではなく SSE(チャット=POST レスポンスストリーム、進捗/通知=`GET /api/events`+Redis Pub/Sub)。フォールバックは TanStack Query ポーリング(翻訳状態 5,000ms / 通知 30,000ms)。拡張はポーリングのみ(15,000ms、ポップアップ表示中 2,000ms)。
-3. ジョブ基盤は「PostgreSQL `jobs` テーブルが真実、arq は起床通知のみ」。キューは `yk:interactive` / `yk:bulk` の 2 本+worker 2 プロセス。優先繰り上げは同一 job_id の二重 enqueue+DB claim。冪等性キー書式と指数バックオフ(30s/2min/8min×3 回)を確定。
+3. ジョブ基盤は「PostgreSQL `jobs` テーブルが真実、arq は起床通知のみ」。キューは `alinea:interactive` / `alinea:bulk` の 2 本+worker 2 プロセス。優先繰り上げは同一 job_id の二重 enqueue+DB claim。冪等性キー書式と指数バックオフ(30s/2min/8min×3 回)を確定。
 4. 翻訳ジョブの実行単位はセクション(`translate_section`)、内部処理単位はブロック。
-5. 単一オリジン `yakudoku.app`(Caddy が `/api/*` を FastAPI へ)。セッションは DB 保存(ハッシュ化)+`yk_session` クッキー(HttpOnly/Secure/SameSite=Lax/30 日ローリング)、CSRF は Origin ヘッダ検証(plans/03 §1.3。トークンなし)。拡張は host_permissions による same-site 扱いで同一クッキーを使用、拡張 Origin は `EXTENSION_ALLOWED_ORIGINS` で許可。
+5. 単一オリジン `alinea.app`(Caddy が `/api/*` を FastAPI へ)。セッションは DB 保存(ハッシュ化)+`yk_session` クッキー(HttpOnly/Secure/SameSite=Lax/30 日ローリング)、CSRF は Origin ヘッダ検証(plans/03 §1.3。トークンなし)。拡張は host_permissions による same-site 扱いで同一クッキーを使用、拡張 Origin は `EXTENSION_ALLOWED_ORIGINS` で許可。
 6. パスワード認証は持たない(OAuth+メールリンクのみ)。BYOK は AES-256-GCM 暗号化。
 7. S3 キーレイアウト(sources/figures/thumbnails/renders/exports)と不変キー原則、配信は `GET /api/assets/{asset_id}` の 302+署名付き URL(600 秒)。
 8. prod は単一 VPS(4 vCPU/8GB)+Docker Compose、ステージングなし、R2+日次 pg_dump(30 日保持)。モデルルーティングは DB 設定テーブル `llm_route_configs`。

@@ -1,6 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import type { SearchHitWithPaper } from "@yakudoku/api-client";
+import type { SearchHitWithPaper } from "@alinea/api-client";
 import { SearchDropdown, SearchPreviewItem } from "@/components/search/SearchDropdown";
 
 function hit(overrides: Partial<SearchHitWithPaper> = {}): SearchHitWithPaper {
@@ -8,7 +8,7 @@ function hit(overrides: Partial<SearchHitWithPaper> = {}): SearchHitWithPaper {
     source: "body",
     matched_in: ["source"],
     display: "§3.2 Training via Distillation · p.5",
-    snippet: '…the target network is an <mark class="yk-search-hit">EMA teacher</mark>…',
+    snippet: '…the target network is an <mark class="alinea-search-hit">EMA teacher</mark>…',
     snippet_lang: "en",
     target: { kind: "viewer", library_item_id: "li_1", anchor: { revision_id: "rev_1", block_id: "blk_1", display: "§3.2" } },
     library_item: { id: "li_1", title: "Consistency Models" },
@@ -23,7 +23,7 @@ describe("SearchPreviewItem (1e §4.3)", () => {
     expect(screen.getByText("本文でヒット")).toBeInTheDocument();
     expect(screen.getByText("Consistency Models")).toBeInTheDocument();
     expect(screen.getByText(/§3\.2 Training via Distillation/)).toBeInTheDocument();
-    expect(document.querySelector("mark.yk-search-hit")).toHaveTextContent("EMA teacher");
+    expect(document.querySelector("mark.alinea-search-hit")).toHaveTextContent("EMA teacher");
   });
 
   test("jump link only renders on the active row", () => {

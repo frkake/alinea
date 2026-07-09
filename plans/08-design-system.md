@@ -1,6 +1,6 @@
 # 08. デザインシステム実装計画(packages/tokens + 共通UIコンポーネント)
 
-> 対象読者と前提: 本書は「訳読 / YAKUDOKU — 論文読解ワークベンチ」のフロントエンド実装者向けに、確定デザイン(16画面)のビジュアルシステムをコードとして確定させる計画書である。機能仕様は docs/00〜12(特に docs/04 §14、docs/09 §6・§7.2)を正とし、ピクセル値は抽出ファイル(extract/_global.md および各画面 extract/<ID>.md)の値をそのまま採用する。技術スタックは確定済み: pnpm workspaces + Turborepo、apps/web = Next.js 15(App Router)+ React 19 + TypeScript 5 + Tailwind CSS v4、`packages/tokens` = デザイントークン単一ソース。本書に書かれた値・識別子が実装の正であり、デザインHTML と差分を作らないこと(docs/09 §8 受け入れ基準)。
+> 対象読者と前提: 本書は「Alinea — 論文読解ワークベンチ」のフロントエンド実装者向けに、確定デザイン(16画面)のビジュアルシステムをコードとして確定させる計画書である。機能仕様は docs/00〜12(特に docs/04 §14、docs/09 §6・§7.2)を正とし、ピクセル値は抽出ファイル(extract/_global.md および各画面 extract/<ID>.md)の値をそのまま採用する。技術スタックは確定済み: pnpm workspaces + Turborepo、apps/web = Next.js 15(App Router)+ React 19 + TypeScript 5 + Tailwind CSS v4、`packages/tokens` = デザイントークン単一ソース。本書に書かれた値・識別子が実装の正であり、デザインHTML と差分を作らないこと(docs/09 §8 受け入れ基準)。
 
 ## 1. パッケージ構成と責務
 
@@ -27,7 +27,7 @@ packages/tokens/
 
 ```json
 {
-  "name": "@yakudoku/tokens",
+  "name": "@alinea/tokens",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -59,7 +59,7 @@ packages/tokens/
 - **packages/tokens**: CSS変数・フォント指定・Tailwind theme・TS定数のみ。React コンポーネントは含まない。
 - **apps/web/src/components/ui/**: 共通 React コンポーネント(§5)。apps/web 専用。
 - **apps/web/src/components/icons/**: インラインSVGアイコン(§6)。
-- **apps/extension**: `@yakudoku/tokens/css/tokens.css`・`accents.css`・`fonts.css` を popup にインポートして色・書体を共有する。決定: React コンポーネントは共有しない(拡張の UI は小規模で MV3 バンドル制約があるため、拡張側に専用コンポーネントを持つ)。
+- **apps/extension**: `@alinea/tokens/css/tokens.css`・`accents.css`・`fonts.css` を popup にインポートして色・書体を共有する。決定: React コンポーネントは共有しない(拡張の UI は小規模で MV3 バンドル制約があるため、拡張側に専用コンポーネントを持つ)。
 
 ## 2. CSS トークン完全定義
 
@@ -68,7 +68,7 @@ packages/tokens/
 値の出典: ライト系は extract/_global.md・1a・1b・1e・4a・4f、ダーク系は extract/1c.md。ダークで未描画の面(ライブラリ等)の対応値は本書で確定し「決定:」を付す(§2.2)。
 
 ```css
-/* @yakudoku/tokens — css/tokens.css
+/* @alinea/tokens — css/tokens.css
    出典: 確定デザイン『論文読解システム デザイン.dc.html』ヘッダコメント+Tweaksスクリプト。
    このファイルの値を書き換える場合は必ずデザイン抽出ファイルと突き合わせること。 */
 
@@ -429,7 +429,7 @@ export const MIN_APP_WIDTH = 1200; // §7.2 決定値
 ### 3.2 css/fonts.css(完全形)
 
 ```css
-/* @yakudoku/tokens — css/fonts.css */
+/* @alinea/tokens — css/fonts.css */
 :root {
   /* UI・見出し */
   --pr-font-ui: 'IBM Plex Sans JP', 'Hiragino Sans', 'Noto Sans JP', sans-serif;
@@ -472,7 +472,7 @@ html, body {
 `@theme inline` を使い、ユーティリティが CSS 変数を参照する形にする(テーマ・アクセント切替に実行時追随させるため)。Tailwind 既定パレットは無効化し、トークン外の色の使用をビルドで不可能にする。
 
 ```css
-/* @yakudoku/tokens — css/theme.css(Tailwind v4) */
+/* @alinea/tokens — css/theme.css(Tailwind v4) */
 @theme inline {
   /* 既定パレット・フォントを無効化(トークン外の値を禁止) */
   --color-*: initial;
@@ -571,10 +571,10 @@ html, body {
 
 ```css
 @import 'tailwindcss';
-@import '@yakudoku/tokens/css/tokens.css';
-@import '@yakudoku/tokens/css/accents.css';
-@import '@yakudoku/tokens/css/fonts.css';
-@import '@yakudoku/tokens/css/theme.css';
+@import '@alinea/tokens/css/tokens.css';
+@import '@alinea/tokens/css/accents.css';
+@import '@alinea/tokens/css/fonts.css';
+@import '@alinea/tokens/css/theme.css';
 ```
 
 ### 4.3 数値ユーティリティの扱い(規則)
@@ -624,9 +624,9 @@ interface SegmentedControlProps<T extends string> {
 | 変種 `dot-label` | ピル枠なしのドット+ラベル(flex gap:5px、font 11px)。1e テーブルのステータスセル |
 
 ```ts
-import type { ReadingStatus } from '@yakudoku/api-client';
+import type { ReadingStatus } from '@alinea/api-client';
 interface StatusPillProps {
-  status: ReadingStatus; // 'planned'|'up_next'|'reading'|'done'|'reread'|'on_hold'(API 値。@yakudoku/api-client の型と一致)
+  status: ReadingStatus; // 'planned'|'up_next'|'reading'|'done'|'reread'|'on_hold'(API 値。@alinea/api-client の型と一致)
   size?: 'md' | 'sm';
   variant?: 'pill' | 'dot-label'; // 既定 'pill'
   interactive?: boolean;          // true で ▾ 付きドロップダウン
@@ -906,7 +906,7 @@ interface HighlightMarkProps {
 }
 ```
 
-使用画面: 1a/1b/1c 本文、4e 検索スニペット(検索ヒットは `color: 'important'` 相当の bg rgba(196,148,50,0.30) 固定 `<mark>` で、本コンポーネントの `variant='search-hit'` を追加せず素の mark クラス `.yk-search-hit` として `apps/web/src/app/globals.css` に定義する。決定)。
+使用画面: 1a/1b/1c 本文、4e 検索スニペット(検索ヒットは `color: 'important'` 相当の bg rgba(196,148,50,0.30) 固定 `<mark>` で、本コンポーネントの `variant='search-hit'` を追加せず素の mark クラス `.alinea-search-hit` として `apps/web/src/app/globals.css` に定義する。決定)。
 
 ### 5.18 EvidenceChip(根拠チップ)
 
@@ -957,7 +957,7 @@ interface ToastOptions {
   message: string;
   action?: { label: string; onClick: () => void };
 }
-// 呼び出しは useToast() フック(Zustand ストア yk-toast)経由: toast({ kind, message, action })
+// 呼び出しは useToast() フック(Zustand ストア alinea-toast)経由: toast({ kind, message, action })
 ```
 
 ### 5.21 EmptyState
@@ -1073,7 +1073,7 @@ export function BookmarkIcon({ size = 12, ...rest }: IconProps) {
 | トースト | `--z-toast` | 7 | Toast(決定) |
 | モーダル | `--z-modal` | 8 | 読了フロー(1g)・拡大表示 |
 
-拡張機能(3a)のページ内「訳 保存」ピルはホストページと競合するため `z-index: 2147483000` と決定(コンテンツスクリプト内のみ。アプリ内階層とは独立)。
+拡張機能(3a)のページ内「A 保存」ピルはホストページと競合するため `z-index: 2147483000` と決定(コンテンツスクリプト内のみ。アプリ内階層とは独立)。
 
 ## 8. ダークモード・テーマ切替の適用方式
 

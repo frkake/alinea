@@ -51,7 +51,7 @@ export function EquationBlock({ latex, assetUrl = null, number, onExplain }: Equ
 
   return (
     <div
-      className="yk-equation"
+      className="alinea-equation"
       style={{
         position: "relative",
         display: "flex",
@@ -93,7 +93,7 @@ export function EquationBlock({ latex, assetUrl = null, number, onExplain }: Equ
         </span>
       ) : null}
       <div
-        className="yk-equation-actions"
+        className="alinea-equation-actions"
         style={{
           position: "absolute",
           top: -6,

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql+asyncpg://yakudoku:yakudoku@localhost:5432/yakudoku",
+    "postgresql+asyncpg://alinea:alinea@localhost:5432/alinea",
 )
 
 

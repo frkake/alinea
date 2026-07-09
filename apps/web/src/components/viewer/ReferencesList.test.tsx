@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import type { ReferenceItem } from "@yakudoku/api-client";
+import type { ReferenceItem } from "@alinea/api-client";
 import { ReferencesList } from "./ReferencesList";
 
 function refItem(overrides: Partial<ReferenceItem> = {}): ReferenceItem {

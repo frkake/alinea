@@ -7,8 +7,8 @@ import {
   libraryItemsUpdate,
   type BulkOperationBody,
   type LibraryItemSummary,
-} from "@yakudoku/api-client";
-import type { ReadingStatus } from "@yakudoku/tokens";
+} from "@alinea/api-client";
+import type { ReadingStatus } from "@alinea/tokens";
 import { LibraryTable } from "@/components/ui/LibraryTable";
 import { BulkActionBar } from "@/components/library/BulkActionBar";
 import { toTableRow } from "@/components/library/toTableRow";

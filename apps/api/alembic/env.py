@@ -8,13 +8,13 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
-# yakudoku_core.db.models を import して全テーブルを Base.metadata に登録する
-import yakudoku_core.db.models  # noqa: F401
+# alinea_core.db.models を import して全テーブルを Base.metadata に登録する
+import alinea_core.db.models  # noqa: F401
 from alembic import context
+from alinea_core.db.base import Base
+from alinea_core.settings import get_settings
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlalchemy.pool import NullPool
-from yakudoku_core.db.base import Base
-from yakudoku_core.settings import get_settings
 
 config = context.config
 if config.config_file_name is not None:

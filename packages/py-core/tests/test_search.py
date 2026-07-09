@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.search.pgroonga_query import (
+from alinea_core.search.pgroonga_query import (
     MARK_CLOSE,
     MARK_OPEN,
     chat_qa_snippet,
@@ -16,6 +14,8 @@ from yakudoku_core.search.pgroonga_query import (
     snippet_lang_for,
     truncate_plain,
 )
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 # ---- 入力正規化・妥当性(§3.1) ----

@@ -12,8 +12,8 @@ import {
   type MeResponse,
   type NotificationListResponse,
   type NotificationOut,
-} from "@yakudoku/api-client";
-import { STATUS_LABELS, type ReadingStatus } from "@yakudoku/tokens";
+} from "@alinea/api-client";
+import { STATUS_LABELS, type ReadingStatus } from "@alinea/tokens";
 import { AiMark } from "@/components/ui/AIBadge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import {

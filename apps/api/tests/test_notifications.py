@@ -21,14 +21,14 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest_asyncio
+from alinea_api.services.events import read_events_since
+from alinea_api.services.notifications import fire_status_suggestion, fire_translation_complete
+from alinea_api.services.session_service import create_session
+from alinea_api.services.user_service import purge_user, upsert_user_by_email
+from alinea_core.db.models import User
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.services.events import read_events_since
-from yakudoku_api.services.notifications import fire_status_suggestion, fire_translation_complete
-from yakudoku_api.services.session_service import create_session
-from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
-from yakudoku_core.db.models import User
 
 
 def _arxiv_id() -> str:
@@ -45,13 +45,13 @@ def _build_app() -> FastAPI:
     ``library_items`` の読み出し専用ヘルパ(``_summary_for``)をモジュールレベルで
     import するのみ(ルータそのものはマウントしない)。
     """
-    from yakudoku_api.errors import register_exception_handlers
-    from yakudoku_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
-    from yakudoku_api.ratelimit import RateLimitMiddleware
-    from yakudoku_api.redis_client import get_redis
-    from yakudoku_api.routers import notifications
-    from yakudoku_api.routers.ingest import get_job_wakeup
-    from yakudoku_api.settings import get_api_settings
+    from alinea_api.errors import register_exception_handlers
+    from alinea_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
+    from alinea_api.ratelimit import RateLimitMiddleware
+    from alinea_api.redis_client import get_redis
+    from alinea_api.routers import notifications
+    from alinea_api.routers.ingest import get_job_wakeup
+    from alinea_api.settings import get_api_settings
 
     async def _noop_wakeup(_job_id: str) -> None:
         return None
@@ -551,7 +551,7 @@ async def test_action_apply_promotion_variant_enqueues_reingest_job(
     assert body["notification"]["payload"]["resolved"] == "applied"
     assert body["job_id"] is not None
 
-    from yakudoku_core.db.models import Job
+    from alinea_core.db.models import Job
 
     job = await db_session.get(Job, body["job_id"])
     assert job is not None
@@ -573,7 +573,7 @@ async def test_action_apply_promotion_variant_skips_enqueue_when_ingest_already_
     item = await factories.make_library_item(db_session, user=user, paper=paper)
     await db_session.commit()
 
-    from yakudoku_core.jobs.store import JobStore
+    from alinea_core.jobs.store import JobStore
 
     store = JobStore(db_session)
     active_job_id = await store.enqueue(
@@ -600,8 +600,8 @@ async def test_action_apply_promotion_variant_skips_enqueue_when_ingest_already_
     body = res.json()
     assert body["job_id"] is None  # 稼働中の ingest と衝突 → best-effort でスキップ
 
+    from alinea_core.db.models import Job
     from sqlalchemy import select
-    from yakudoku_core.db.models import Job
 
     rows = (
         (await db_session.execute(select(Job.id).where(Job.paper_id == str(paper.id))))
@@ -637,8 +637,8 @@ async def test_action_dismiss_promotion_variant_does_not_enqueue_reingest(
     assert body["notification"]["payload"]["resolved"] == "dismissed"
     assert body["job_id"] is None
 
+    from alinea_core.db.models import Job
     from sqlalchemy import select
-    from yakudoku_core.db.models import Job
 
     rows = (
         (await db_session.execute(select(Job.id).where(Job.paper_id == str(paper.id))))

@@ -11,7 +11,7 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { Z_INDEX } from "@yakudoku/tokens";
+import { Z_INDEX } from "@alinea/tokens";
 
 /** ポップオーバー(plans/08 §5.10)。position:fixed + アンカー矩形からの手動配置。 */
 export interface PopoverProps {

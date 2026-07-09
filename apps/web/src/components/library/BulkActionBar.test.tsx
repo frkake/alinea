@@ -7,7 +7,7 @@ import { BulkActionBar } from "@/components/library/BulkActionBar";
 
 const collectionsList = vi.fn();
 const tagsList = vi.fn();
-vi.mock("@yakudoku/api-client", () => ({
+vi.mock("@alinea/api-client", () => ({
   collectionsList: (...args: unknown[]) => collectionsList(...args),
   tagsList: (...args: unknown[]) => tagsList(...args),
 }));

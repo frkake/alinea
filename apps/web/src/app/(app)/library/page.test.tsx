@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { LibraryItemSummary } from "@yakudoku/api-client";
+import type { LibraryItemSummary } from "@alinea/api-client";
 import LibraryPage from "./page";
 import { ToastViewport } from "@/components/ui/Toast";
 import { mockMatchMedia } from "@/test-utils/mockMatchMedia";
@@ -17,7 +17,7 @@ const libraryItemsFacets = vi.fn();
 const libraryItemsList = vi.fn();
 const savedFiltersCreate = vi.fn();
 const libraryItemsDelete = vi.fn();
-vi.mock("@yakudoku/api-client", () => ({
+vi.mock("@alinea/api-client", () => ({
   libraryItemsFacets: (...args: unknown[]) => libraryItemsFacets(...args),
   libraryItemsList: (...args: unknown[]) => libraryItemsList(...args),
   savedFiltersCreate: (...args: unknown[]) => savedFiltersCreate(...args),

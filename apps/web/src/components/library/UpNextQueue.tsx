@@ -3,7 +3,7 @@
 import type { CSSProperties, KeyboardEvent } from "react";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { LibraryItemSummary } from "@yakudoku/api-client";
+import type { LibraryItemSummary } from "@alinea/api-client";
 import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { PriorityBadge } from "@/components/ui/PriorityBadge";
@@ -15,7 +15,7 @@ const WARN_THRESHOLD = 6;
 
 /**
  * ダッシュボード画面のクライアント側 UI 状態(plans/09-screens/1d-dashboard.md §5.4)。
- * localStorage キー `yk-dashboard-ui`(persist ミドルウェアの実キー名)。
+ * localStorage キー `alinea-dashboard-ui`(persist ミドルウェアの実キー名)。
  * 「× を押した時点の本数」を保存し、本数が変わると再表示される。
  */
 interface DashboardUiState {
@@ -31,7 +31,7 @@ export const useDashboardUiStore = create<DashboardUiState>()(
         set({ queueWarnDismissedCount: count });
       },
     }),
-    { name: "yk-dashboard-ui" },
+    { name: "alinea-dashboard-ui" },
   ),
 );
 

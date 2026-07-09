@@ -1,7 +1,7 @@
 // 拡張アイコン生成(M0-36)。ラスタライブラリ(sharp/canvas 等)が無い環境向けに、
 // Node 標準の zlib だけで角丸スレート地 + 白マークの PNG を生成する。
-// slate = --pr-a(#3E5C76)。文字グリフ「訳」の描画は未対応のため白い横棒マークで代替する
-// (deviations 参照)。`node scripts/gen-icons.mjs` で public/icon/{16,32,48,128}.png を出力。
+// slate = --pr-a(#3E5C76)。`node scripts/gen-icons.mjs` で
+// public/icon/{16,32,48,128}.png を出力。
 import { deflateSync } from "node:zlib";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -10,9 +10,10 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = resolve(HERE, "..", "public", "icon");
 
-// slate #3E5C76(--pr-a)と白。
+// slate #3E5C76(--pr-a)、白、淡い補助線。
 const BG = [0x3e, 0x5c, 0x76];
 const FG = [0xff, 0xff, 0xff];
+const SUB = [0xdd, 0xe8, 0xe1];
 const SIZES = [16, 32, 48, 128];
 
 function crc32(buf) {
@@ -43,34 +44,51 @@ function insideRounded(x, y, size, r) {
   return dx * dx + dy * dy <= r * r;
 }
 
+function distanceToSegment(px, py, ax, ay, bx, by) {
+  const vx = bx - ax;
+  const vy = by - ay;
+  const wx = px - ax;
+  const wy = py - ay;
+  const len2 = vx * vx + vy * vy;
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, (wx * vx + wy * vy) / len2));
+  const cx = ax + t * vx;
+  const cy = ay + t * vy;
+  const dx = px - cx;
+  const dy = py - cy;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function markColor(x, y, size) {
+  const px = x / size;
+  const py = y / size;
+  const mainStroke = Math.max(1.35 / size, 0.055);
+  const crossStroke = Math.max(1.2 / size, 0.047);
+  const subStroke = Math.max(0.9 / size, 0.032);
+  const inLeft = distanceToSegment(px, py, 0.3, 0.74, 0.5, 0.27) <= mainStroke;
+  const inRight = distanceToSegment(px, py, 0.5, 0.27, 0.7, 0.74) <= mainStroke;
+  const inCross = distanceToSegment(px, py, 0.4, 0.59, 0.6, 0.59) <= crossStroke;
+  const inSub = distanceToSegment(px, py, 0.34, 0.82, 0.66, 0.82) <= subStroke;
+  if (inSub) return SUB;
+  if (inLeft || inRight || inCross) return FG;
+  return null;
+}
+
 function buildPng(size) {
   const r = Math.round(size * 0.22);
-  // 白マーク(中央の横棒 + 小さな縦棒。glyph の代替)。
-  const barY0 = Math.round(size * 0.44);
-  const barY1 = Math.round(size * 0.56);
-  const barX0 = Math.round(size * 0.28);
-  const barX1 = Math.round(size * 0.72);
-  const stemX0 = Math.round(size * 0.46);
-  const stemX1 = Math.round(size * 0.54);
-  const stemY0 = Math.round(size * 0.3);
-  const stemY1 = Math.round(size * 0.7);
-
   const raw = Buffer.alloc(size * (size * 4 + 1));
   let p = 0;
   for (let y = 0; y < size; y++) {
     raw[p++] = 0; // filter: none
     for (let x = 0; x < size; x++) {
       const inShape = insideRounded(x + 0.5, y + 0.5, size, r);
-      const inMark =
-        (y >= barY0 && y < barY1 && x >= barX0 && x < barX1) ||
-        (x >= stemX0 && x < stemX1 && y >= stemY0 && y < stemY1);
+      const mark = markColor(x + 0.5, y + 0.5, size);
       if (!inShape) {
         raw[p++] = 0;
         raw[p++] = 0;
         raw[p++] = 0;
         raw[p++] = 0; // 透明
       } else {
-        const [rr, gg, bb] = inMark ? FG : BG;
+        const [rr, gg, bb] = mark ?? BG;
         raw[p++] = rr;
         raw[p++] = gg;
         raw[p++] = bb;

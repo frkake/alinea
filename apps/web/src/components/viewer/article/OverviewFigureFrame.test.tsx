@@ -3,12 +3,12 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { figuresGetOverview } from "@yakudoku/api-client";
+import { figuresGetOverview } from "@alinea/api-client";
 import { OverviewFigureFrame } from "@/components/viewer/article/OverviewFigureFrame";
 import type { OverviewFigureRef } from "@/components/viewer/article/types";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return { ...actual, figuresGetOverview: vi.fn() };
 });
 
@@ -29,7 +29,7 @@ function figure(overrides: Partial<OverviewFigureRef> = {}): OverviewFigureRef {
       layout: "flow-3",
       cards: [],
       connectors: [],
-      footer: { generated_by: "✦ AI 生成 · 訳読", date: "2026-07-06" },
+      footer: { generated_by: "✦ AI 生成 · Alinea", date: "2026-07-06" },
     },
     ...overrides,
   };
@@ -75,7 +75,7 @@ describe("OverviewFigureFrame (VT-VIEW-13)", () => {
         onJumpToAnchor={vi.fn()}
       />,
     );
-    expect(screen.getByText("✦ AI 生成 · 訳読 · 2026-07-06")).toBeInTheDocument();
+    expect(screen.getByText("✦ AI 生成 · Alinea · 2026-07-06")).toBeInTheDocument();
     expect(screen.getByText("§1")).toBeInTheDocument();
   });
 

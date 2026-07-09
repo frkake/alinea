@@ -202,9 +202,9 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
   pendingChatMessageId: null,
 
   initViewer(itemId, revisionId) {
-    const tocRaw = readLocal(`yk-toc-open:${itemId}`);
-    const styleRaw = readLocal(`yk-viewer-style:${itemId}`);
-    const panelRaw = readSession(`yk-viewer-panel:${itemId}`);
+    const tocRaw = readLocal(`alinea-toc-open:${itemId}`);
+    const styleRaw = readLocal(`alinea-viewer-style:${itemId}`);
+    const panelRaw = readSession(`alinea-viewer-panel:${itemId}`);
 
     let panelOpen = true;
     let activeTab: SidePanelTabId = "chat";
@@ -233,7 +233,7 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
 
   setTocOpen(open) {
     const { itemId } = get();
-    if (itemId) writeLocal(`yk-toc-open:${itemId}`, open ? "1" : "0");
+    if (itemId) writeLocal(`alinea-toc-open:${itemId}`, open ? "1" : "0");
     set({ tocOpen: open });
   },
 
@@ -241,14 +241,14 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
     const { itemId, activeTab } = get();
     const nextTab = tab ?? activeTab;
     if (itemId) {
-      writeSession(`yk-viewer-panel:${itemId}`, open ? nextTab : "closed");
+      writeSession(`alinea-viewer-panel:${itemId}`, open ? nextTab : "closed");
     }
     set({ panelOpen: open, activeTab: nextTab });
   },
 
   setStyle(style) {
     const { itemId } = get();
-    if (itemId) writeLocal(`yk-viewer-style:${itemId}`, style);
+    if (itemId) writeLocal(`alinea-viewer-style:${itemId}`, style);
     set({ style });
   },
 

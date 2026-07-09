@@ -12,12 +12,12 @@ import {
   type PaperBib,
   type RevisionInfo,
   type TimelineEntry,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 import { InfoPanel } from "@/components/viewer/InfoPanel";
 import { ToastViewport } from "@/components/ui/Toast";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return {
     ...actual,
     papersReingest: vi.fn(),

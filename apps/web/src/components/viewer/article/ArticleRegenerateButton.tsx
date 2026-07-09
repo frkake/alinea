@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { articlesRegenerate, type Problem } from "@yakudoku/api-client";
+import { articlesRegenerate, type Problem } from "@alinea/api-client";
 import type { Preset } from "@/components/viewer/article/types";
 import { AiMark } from "@/components/ui/AIBadge";
 import { useToast } from "@/components/ui/Toast";

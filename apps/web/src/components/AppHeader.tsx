@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { authMe, searchPreview, type SearchHitWithPaper } from "@yakudoku/api-client";
+import { authMe, searchPreview, type SearchHitWithPaper } from "@alinea/api-client";
+import { AlineaLogo } from "@/components/brand/AlineaLogo";
 import { SearchBox } from "@/components/ui/SearchBox";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
 import { meQueryKey, notificationsQueryKey } from "@/components/notifications/queryKeys";
@@ -182,36 +183,7 @@ export function AppHeader({ showSearch = true, initials = "YK", onMenuClick }: A
         </button>
       ) : null}
 
-      {/* ワードマーク */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, width: 198 }}>
-        <span
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 22,
-            height: 22,
-            borderRadius: 6,
-            background: "var(--pr-acc)",
-            color: "#FFFFFF",
-            fontSize: 11.5,
-            fontWeight: 700,
-          }}
-        >
-          訳
-        </span>
-        <span style={{ fontSize: 14.5, fontWeight: 700, letterSpacing: "0.5px" }}>訳読</span>
-        <span
-          style={{
-            fontSize: 9.5,
-            color: "var(--pr-text-faint)",
-            letterSpacing: "1.2px",
-            marginTop: 2,
-          }}
-        >
-          YAKUDOKU
-        </span>
-      </div>
+      <AlineaLogo width={198} />
 
       {showSearch ? (
         <div

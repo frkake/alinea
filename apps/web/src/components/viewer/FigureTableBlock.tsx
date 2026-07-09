@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import type { TranslationUnitItem } from "@yakudoku/api-client";
+import type { TranslationUnitItem } from "@alinea/api-client";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 import { TranslationInlineContent, hasTranslatedText } from "@/components/viewer/translation-content";
 import { renderInlineMath } from "@/lib/katex-render";

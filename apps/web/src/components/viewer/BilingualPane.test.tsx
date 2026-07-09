@@ -1,6 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import type { TranslationUnitItem } from "@yakudoku/api-client";
+import type { TranslationUnitItem } from "@alinea/api-client";
 import { TranslationColumnHeader } from "@/components/viewer/TranslationColumnHeader";
 import { BilingualParagraph } from "@/components/viewer/BilingualPane";
 import type { DocBlock } from "@/components/viewer/document-types";
@@ -124,15 +124,15 @@ describe("BilingualParagraph hl parity (M1 統合ポリッシュ)", () => {
     const { container } = render(
       <BilingualParagraph block={block} unit={unit()} searchHighlight="flow" />,
     );
-    expect(container.querySelector('[data-side="source"] mark.yk-search-hit')).toHaveTextContent("flow");
-    expect(container.querySelector('[data-side="translation"] mark.yk-search-hit')).toBeNull();
+    expect(container.querySelector('[data-side="source"] mark.alinea-search-hit')).toHaveTextContent("flow");
+    expect(container.querySelector('[data-side="translation"] mark.alinea-search-hit')).toBeNull();
   });
 
   test("marks a ?hl= match in the translation (Japanese) column", () => {
     const { container } = render(
       <BilingualParagraph block={block} unit={unit()} searchHighlight="フロー" />,
     );
-    expect(container.querySelector('[data-side="translation"] mark.yk-search-hit')).toHaveTextContent("フロー");
-    expect(container.querySelector('[data-side="source"] mark.yk-search-hit')).toBeNull();
+    expect(container.querySelector('[data-side="translation"] mark.alinea-search-hit')).toHaveTextContent("フロー");
+    expect(container.querySelector('[data-side="source"] mark.alinea-search-hit')).toBeNull();
   });
 });

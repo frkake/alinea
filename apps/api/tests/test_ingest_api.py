@@ -20,24 +20,21 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from httpx import AsyncClient
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.main import app
-from yakudoku_api.routers.ingest import (
+from alinea_api.main import app
+from alinea_api.routers.ingest import (
     ArxivGateway,
     get_arxiv_gateway,
     get_job_wakeup,
     get_pdf_storage,
 )
-from yakudoku_api.routers.papers import get_storage
-from yakudoku_api.schemas.assets import encode_asset_id
-from yakudoku_api.services.session_service import create_session
-from yakudoku_api.services.user_service import upsert_user_by_email
-from yakudoku_core.arxiv.fetch import FetchError
-from yakudoku_core.arxiv.ids import ArxivId
-from yakudoku_core.arxiv.metadata import ArxivMeta
-from yakudoku_core.db.models import (
+from alinea_api.routers.papers import get_storage
+from alinea_api.schemas.assets import encode_asset_id
+from alinea_api.services.session_service import create_session
+from alinea_api.services.user_service import upsert_user_by_email
+from alinea_core.arxiv.fetch import FetchError
+from alinea_core.arxiv.ids import ArxivId
+from alinea_core.arxiv.metadata import ArxivMeta
+from alinea_core.db.models import (
     BlockSearchIndex,
     DocumentRevision,
     Job,
@@ -46,6 +43,9 @@ from yakudoku_core.db.models import (
     SourceAsset,
     User,
 )
+from httpx import AsyncClient
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 _MINIMAL_PDF = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
 

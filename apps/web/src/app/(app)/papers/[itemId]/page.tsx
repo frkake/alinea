@@ -3,7 +3,7 @@
 import { useEffect, type ReactNode } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { viewerInit } from "@yakudoku/api-client";
+import { viewerInit } from "@alinea/api-client";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ViewerShell, type ViewerMode } from "@/components/viewer/ViewerShell";
 import { TranslationPane } from "@/components/viewer/TranslationPane";

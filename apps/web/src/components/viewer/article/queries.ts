@@ -1,4 +1,4 @@
-import { articlesGet, type Problem } from "@yakudoku/api-client";
+import { articlesGet, type Problem } from "@alinea/api-client";
 import type { Article } from "@/components/viewer/article/types";
 
 /**

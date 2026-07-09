@@ -1,6 +1,6 @@
 "use client";
 
-import type { TranslationUnitItem } from "@yakudoku/api-client";
+import type { TranslationUnitItem } from "@alinea/api-client";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 import { renderHighlightedText, type PlacedHighlight } from "@/components/viewer/highlight-render";
 import type { Inline } from "@/components/viewer/document-types";

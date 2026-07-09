@@ -27,7 +27,7 @@
   <text x="490.12" y="95.95" font-size="16" text-anchor="middle" fill="#B0B4BA">→</text>
   <line x1="0" y1="180.39" x2="718" y2="180.39" stroke="#F0EDE4"/>
   <rect x="0" y="180.39" width="718" height="30" fill="#FBFAF7"/>
-  <text x="20" y="198.81" font-size="9.5" fill="#9A9EA4">✦ AI 生成 · 訳読 · 2026-07-06</text>
+  <text x="20" y="198.81" font-size="9.5" fill="#9A9EA4">✦ AI 生成 · Alinea · 2026-07-06</text>
   <text x="592.25" y="198.81" font-size="9.5" text-anchor="end" fill="#9A9EA4">根拠:</text>
   <rect x="598.25" y="187.89" width="25.95" height="15" rx="7.5" fill="#FFFFFF" stroke="var(--pr-am, rgba(62,92,118,0.32))"/>
   <text x="611.22" y="198.63" font-size="9" text-anchor="middle" fill="var(--pr-a, #3E5C76)">§1</text>

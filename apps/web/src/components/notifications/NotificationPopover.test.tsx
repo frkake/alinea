@@ -7,7 +7,7 @@ import {
   notificationsList,
   type LibraryItemSummary,
   type NotificationOut,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 import { NotificationPopover } from "@/components/notifications/NotificationPopover";
 import { useFinishReadingStore } from "@/components/library/finishReadingStore";
 
@@ -15,8 +15,8 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
 }));
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return {
     ...actual,
     notificationsList: vi.fn(),

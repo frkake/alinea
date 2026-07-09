@@ -17,13 +17,9 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.services.session_service import create_extension_token, create_session
-from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
-from yakudoku_core.db.models import (
+from alinea_api.services.session_service import create_extension_token, create_session
+from alinea_api.services.user_service import purge_user, upsert_user_by_email
+from alinea_core.db.models import (
     Annotation,
     Article,
     ArticleBlock,
@@ -46,6 +42,10 @@ from yakudoku_core.db.models import (
     User,
     VocabEntry,
 )
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class _RecordingStorage:
@@ -82,13 +82,13 @@ def _build_app() -> FastAPI:
 
     並行タスクの WIP ルータ(chat 等)に import を巻き込まれず、本タスクを独立に検証する。
     """
-    from yakudoku_api.errors import register_exception_handlers
-    from yakudoku_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
-    from yakudoku_api.ratelimit import RateLimitMiddleware
-    from yakudoku_api.redis_client import get_redis
-    from yakudoku_api.routers import library_items, llm_settings
-    from yakudoku_api.routers import settings as settings_router
-    from yakudoku_api.settings import get_api_settings
+    from alinea_api.errors import register_exception_handlers
+    from alinea_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
+    from alinea_api.ratelimit import RateLimitMiddleware
+    from alinea_api.redis_client import get_redis
+    from alinea_api.routers import library_items, llm_settings
+    from alinea_api.routers import settings as settings_router
+    from alinea_api.settings import get_api_settings
 
     s = get_api_settings()
     app = FastAPI()

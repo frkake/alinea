@@ -1,6 +1,6 @@
 # 画面 1g: 読了フロー(モーダル)
 
-> **対象読者と前提**: 本書は「訳読 / YAKUDOKU」の画面 1g(読了フロー — 軽量ダイアログ、仕様上の識別子 S3)を実装するフロントエンドエンジニア向けの実装仕様である。ピクセル仕様の正は確定デザイン抽出 `extract/1g.md`、機能仕様の正は [docs/06-library.md](../../docs/06-library.md) §3、API 名は [plans/03-api.md](../03-api.md)、共通コンポーネント名・トークン名は [plans/08-design-system.md](../08-design-system.md) に従う。技術スタックは確定済み(Next.js 15 App Router + React 19 + TypeScript 5 + Tailwind CSS v4 + TanStack Query v5 + Zustand)。
+> **対象読者と前提**: 本書は「Alinea」の画面 1g(読了フロー — 軽量ダイアログ、仕様上の識別子 S3)を実装するフロントエンドエンジニア向けの実装仕様である。ピクセル仕様の正は確定デザイン抽出 `extract/1g.md`、機能仕様の正は [docs/06-library.md](../../docs/06-library.md) §3、API 名は [plans/03-api.md](../03-api.md)、共通コンポーネント名・トークン名は [plans/08-design-system.md](../08-design-system.md) に従う。技術スタックは確定済み(Next.js 15 App Router + React 19 + TypeScript 5 + Tailwind CSS v4 + TanStack Query v5 + Zustand)。
 
 ## 1. 概要とルート
 
@@ -46,7 +46,7 @@ export const qk = {
 ```ts
 // apps/web/src/stores/finish-reading.ts
 import { create } from 'zustand';
-import type { LibraryItemSummary } from '@yakudoku/api-client';
+import type { LibraryItemSummary } from '@alinea/api-client';
 
 interface FinishReadingStore {
   item: LibraryItemSummary | null;      // null = 閉じている

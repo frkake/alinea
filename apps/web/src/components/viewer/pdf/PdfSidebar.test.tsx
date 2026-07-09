@@ -1,6 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import type { TocNode } from "@yakudoku/api-client";
+import type { TocNode } from "@alinea/api-client";
 import { usePdfViewStore } from "@/stores/pdf-view-store";
 import { PdfSidebar } from "./PdfSidebar";
 import type { UsePdfDocumentResult } from "./use-pdf-document";

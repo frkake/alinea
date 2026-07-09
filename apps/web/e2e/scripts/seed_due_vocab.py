@@ -20,10 +20,10 @@ import json
 import sys
 import uuid
 
+from alinea_api.services.deadlines import today_jst
+from alinea_core.db.models import LibraryItem, Paper, User, VocabEntry
+from alinea_core.db.session import get_sessionmaker
 from sqlalchemy import select
-from yakudoku_api.services.deadlines import today_jst
-from yakudoku_core.db.models import LibraryItem, Paper, User, VocabEntry
-from yakudoku_core.db.session import get_sessionmaker
 
 
 async def _main(user_email: str) -> None:

@@ -1,12 +1,12 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { articlesGenerate } from "@yakudoku/api-client";
+import { articlesGenerate } from "@alinea/api-client";
 import { ArticleGenerateCTA } from "@/components/viewer/article/ArticleGenerateCTA";
 import { ToastViewport } from "@/components/ui/Toast";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return { ...actual, articlesGenerate: vi.fn() };
 });
 

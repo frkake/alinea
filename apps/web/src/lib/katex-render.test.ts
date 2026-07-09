@@ -6,7 +6,7 @@ describe("katex-render recovery", () => {
     const html = renderBlockMath("\\nabla f(x) &= x + 1");
 
     expect(html).toContain("katex");
-    expect(html).not.toContain("yk-math-fallback");
+    expect(html).not.toContain("alinea-math-fallback");
     expect(html).not.toContain("katex-error");
   });
 
@@ -15,7 +15,7 @@ describe("katex-render recovery", () => {
 
     expect(html).toContain("katex");
     expect(html).toContain("student");
-    expect(html).not.toContain("yk-math-fallback");
+    expect(html).not.toContain("alinea-math-fallback");
   });
 
   test("recovers unknown textual macros as operators", () => {
@@ -23,13 +23,13 @@ describe("katex-render recovery", () => {
 
     expect(html).toContain("katex");
     expect(html).toContain("mymodel");
-    expect(html).not.toContain("yk-math-fallback");
+    expect(html).not.toContain("alinea-math-fallback");
   });
 
   test("maps mathbbm to a supported blackboard-bold command", () => {
     const html = renderInlineMath("\\mathbbm{1}[x]");
 
     expect(html).toContain("katex");
-    expect(html).not.toContain("yk-math-fallback");
+    expect(html).not.toContain("alinea-math-fallback");
   });
 });

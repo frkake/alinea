@@ -52,7 +52,7 @@ function escapeHtml(value: string): string {
 
 function renderFallback(latex: string, display: boolean): string {
   const tag = display ? "div" : "span";
-  return `<${tag} class="yk-math-fallback">${escapeHtml(latex)}</${tag}>`;
+  return `<${tag} class="alinea-math-fallback">${escapeHtml(latex)}</${tag}>`;
 }
 
 /**

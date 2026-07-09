@@ -12,7 +12,7 @@ vi.mock("next/navigation", () => ({
 
 const authMe = vi.fn();
 const searchPreview = vi.fn();
-vi.mock("@yakudoku/api-client", () => ({
+vi.mock("@alinea/api-client", () => ({
   authMe: (...args: unknown[]) => authMe(...args),
   searchPreview: (...args: unknown[]) => searchPreview(...args),
 }));
@@ -36,12 +36,12 @@ describe("AppHeader (VT-UI-01)", () => {
 
   test("renders product name", () => {
     renderHeader();
-    expect(screen.getByText(/訳読/)).toBeInTheDocument();
+    expect(screen.getByText(/Alinea/)).toBeInTheDocument();
   });
 
   test("renders wordmark, global search and account controls", () => {
     renderHeader();
-    expect(screen.getByText("YAKUDOKU")).toBeInTheDocument();
+    expect(screen.getByText("Alinea")).toBeInTheDocument();
     expect(
       screen.getByLabelText("ライブラリ全体を検索 — 本文・訳文・メモ・チャット"),
     ).toBeInTheDocument();

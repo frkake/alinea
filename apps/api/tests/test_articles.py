@@ -22,23 +22,23 @@ from typing import Any
 
 import factories
 import pytest_asyncio
+from alinea_api.services.session_service import create_session
+from alinea_api.services.user_service import purge_user, upsert_user_by_email
+from alinea_core.db.models import Article, ArticleBlock, Job, User
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.services.session_service import create_session
-from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
-from yakudoku_core.db.models import Article, ArticleBlock, Job, User
 
 
 def _build_app() -> FastAPI:
     """本タスク所有ルータ(articles)のみをマウントしたアプリ(test_vocab.py と同方針)。"""
-    from yakudoku_api.errors import register_exception_handlers
-    from yakudoku_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
-    from yakudoku_api.ratelimit import RateLimitMiddleware
-    from yakudoku_api.redis_client import get_redis
-    from yakudoku_api.routers import articles
-    from yakudoku_api.settings import get_api_settings
+    from alinea_api.errors import register_exception_handlers
+    from alinea_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
+    from alinea_api.ratelimit import RateLimitMiddleware
+    from alinea_api.redis_client import get_redis
+    from alinea_api.routers import articles
+    from alinea_api.settings import get_api_settings
 
     s = get_api_settings()
     app = FastAPI()
@@ -52,7 +52,7 @@ def _build_app() -> FastAPI:
 
 @pytest_asyncio.fixture
 async def auth(db_session: AsyncSession, redis_client: Any) -> AsyncIterator[SimpleNamespace]:
-    from yakudoku_api.routers.articles import get_articles_job_wakeup
+    from alinea_api.routers.articles import get_articles_job_wakeup
 
     email = f"art-{uuid.uuid4().hex}@example.com"
     user = await upsert_user_by_email(db_session, email, provider="email")
@@ -248,7 +248,7 @@ async def test_generate_article_enqueues_job_with_preset_defaults(
 async def test_generate_article_conflicts_when_article_exists(
     article_ctx: SimpleNamespace,
 ) -> None:
-    from yakudoku_core.db.models import LibraryItem
+    from alinea_core.db.models import LibraryItem
 
     item = await article_ctx.db.get(LibraryItem, article_ctx.item_id)
     assert item is not None
@@ -265,7 +265,7 @@ async def test_generate_article_conflicts_when_article_exists(
 async def test_regenerate_enqueues_job_with_instruction_and_bumps_none_yet(
     article_ctx: SimpleNamespace,
 ) -> None:
-    from yakudoku_core.db.models import LibraryItem
+    from alinea_core.db.models import LibraryItem
 
     item = await article_ctx.db.get(LibraryItem, article_ctx.item_id)
     assert item is not None
@@ -368,7 +368,7 @@ async def test_get_article_ownership_is_enforced(
 # PY-ART-04: 出典ブロック(attribution)は削除・書き直し対象外
 # ===========================================================================
 async def test_rewrite_attribution_block_is_forbidden(article_ctx: SimpleNamespace) -> None:
-    from yakudoku_core.db.models import LibraryItem
+    from alinea_core.db.models import LibraryItem
 
     item = await article_ctx.db.get(LibraryItem, article_ctx.item_id)
     assert item is not None
@@ -388,7 +388,7 @@ async def test_rewrite_attribution_block_is_forbidden(article_ctx: SimpleNamespa
 
 
 async def test_rewrite_normal_block_enqueues_job(article_ctx: SimpleNamespace) -> None:
-    from yakudoku_core.db.models import LibraryItem
+    from alinea_core.db.models import LibraryItem
 
     item = await article_ctx.db.get(LibraryItem, article_ctx.item_id)
     assert item is not None
@@ -411,7 +411,7 @@ async def test_rewrite_normal_block_enqueues_job(article_ctx: SimpleNamespace) -
 
 
 async def test_rewrite_invalid_block_id_is_404(article_ctx: SimpleNamespace) -> None:
-    from yakudoku_core.db.models import LibraryItem
+    from alinea_core.db.models import LibraryItem
 
     item = await article_ctx.db.get(LibraryItem, article_ctx.item_id)
     assert item is not None
@@ -430,7 +430,7 @@ async def test_rewrite_invalid_block_id_is_404(article_ctx: SimpleNamespace) -> 
 async def test_list_versions_reads_redis_cache_newest_first(
     article_ctx: SimpleNamespace, redis_client: Any
 ) -> None:
-    from yakudoku_core.db.models import LibraryItem
+    from alinea_core.db.models import LibraryItem
 
     item = await article_ctx.db.get(LibraryItem, article_ctx.item_id)
     assert item is not None

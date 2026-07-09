@@ -1,7 +1,7 @@
 /**
  * リソース API(plans/03 §12)。
  *
- * `@yakudoku/api-client` は本エンドポイント群を未生成のため(main.py 未登録。M2-13 deviations
+ * `@alinea/api-client` は本エンドポイント群を未生成のため(main.py 未登録。M2-13 deviations
  * 参照)、`fetch()` 直書きで契約どおりに呼ぶ(apps/web/src/hooks/use-reading-session.ts と同方針)。
  */
 import type { ResKind, ResourceLink, ResourceListResponse } from "@/components/viewer/resources/types";

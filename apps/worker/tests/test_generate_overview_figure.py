@@ -17,9 +17,8 @@ import uuid
 from typing import Any
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.article.sources import collect_article_sources
-from yakudoku_core.db.models import (
+from alinea_core.article.sources import collect_article_sources
+from alinea_core.db.models import (
     Article,
     DocumentRevision,
     Job,
@@ -28,19 +27,20 @@ from yakudoku_core.db.models import (
     Paper,
     User,
 )
-from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
-from yakudoku_core.document.inlines import Inline
-from yakudoku_core.jobs.store import JobStore
-from yakudoku_llm.errors import ErrorKind, ProviderError
-from yakudoku_llm.router import LLMRouter
-from yakudoku_llm.structured import attach_parsed
-from yakudoku_llm.types import LLMRequest, LLMResponse
-from yakudoku_worker.tasks.generate_overview_figure import (
+from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
+from alinea_core.document.inlines import Inline
+from alinea_core.jobs.store import JobStore
+from alinea_llm.errors import ErrorKind, ProviderError
+from alinea_llm.router import LLMRouter
+from alinea_llm.structured import attach_parsed
+from alinea_llm.types import LLMRequest, LLMResponse
+from alinea_worker.tasks.generate_overview_figure import (
     OverviewFigureGenerationError,
     create_overview_figure_v1,
     generate_overview_dsl_with_retry,
     run_overview_figure_job,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _uid() -> str:
@@ -319,8 +319,8 @@ async def test_py_fig_04_raster_mode_off_by_default(db_session: AsyncSession) ->
 async def test_py_fig_04_raster_mode_on_generates_image_via_image_router(
     db_session: AsyncSession,
 ) -> None:
-    from yakudoku_llm.router import ImageRouter
-    from yakudoku_llm.testing.fake_provider import FakeImageProvider
+    from alinea_llm.router import ImageRouter
+    from alinea_llm.testing.fake_provider import FakeImageProvider
 
     seed = await _seed(db_session)
     seed["user"].settings = {"llm_routing": {"overview_figure_raster_mode": True}}

@@ -1,8 +1,8 @@
 "use client";
 
 import { useRef, useState, type ReactNode } from "react";
-import type { FacetsResponse } from "@yakudoku/api-client";
-import { STATUS_COLORS, STATUS_LABELS, type ReadingStatus } from "@yakudoku/tokens";
+import type { FacetsResponse } from "@alinea/api-client";
+import { STATUS_COLORS, STATUS_LABELS, type ReadingStatus } from "@alinea/tokens";
 import { FilterChip } from "@/components/ui/FilterChip";
 import { Popover } from "@/components/ui/Popover";
 

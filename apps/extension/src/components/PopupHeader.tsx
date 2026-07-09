@@ -1,4 +1,4 @@
-// ポップアップ共通ヘッダ(3a §3・§4.4/§4.5/§4.7)。ロゴ「訳」+タイトル+バッジ+設定ギア。
+// ポップアップ共通ヘッダ(3a §3・§4.4/§4.5/§4.7)。ロゴ+タイトル+バッジ+設定ギア。
 
 export type HeaderBadge =
   | { kind: "detect"; label: string } // 緑ピル「arXiv 論文を検出」
@@ -14,6 +14,35 @@ export interface PopupHeaderProps {
   onBack?: () => void;
 }
 
+function AlineaExtensionMark() {
+  return (
+    <svg viewBox="0 0 64 64" className="ext-logo-mark" aria-hidden="true">
+      <path
+        d="M19 47 31.8 17 45 47"
+        fill="none"
+        stroke="#FFFFFF"
+        strokeWidth="7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M25.8 37.5h12.4"
+        fill="none"
+        stroke="#FFFFFF"
+        strokeWidth="6"
+        strokeLinecap="round"
+      />
+      <path
+        d="M22 52h20"
+        fill="none"
+        stroke="#DDE8E1"
+        strokeWidth="4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 export function PopupHeader({ title, badge, onOpenSettings, onBack }: PopupHeaderProps) {
   return (
     <header className="ext-header">
@@ -23,7 +52,7 @@ export function PopupHeader({ title, badge, onOpenSettings, onBack }: PopupHeade
         </button>
       ) : (
         <span className="ext-logo" aria-hidden="true">
-          訳
+          <AlineaExtensionMark />
         </span>
       )}
       <span className="ext-header-title">{title}</span>

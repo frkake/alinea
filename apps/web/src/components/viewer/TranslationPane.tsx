@@ -15,7 +15,7 @@ import {
   type LastPosition,
   type TocNode,
   type TranslationUnitItem,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 import { useToast } from "@/components/ui/Toast";
 import type { HighlightColor } from "@/components/ui/HighlightMark";
 import { useIsMobile } from "@/hooks/useMediaQuery";
@@ -317,8 +317,8 @@ export function TranslationPane({
     const el = root.querySelector<HTMLElement>(selector);
     if (el) {
       el.scrollIntoView({ block: "start" });
-      el.classList.add("yk-block-flash");
-      window.setTimeout(() => el.classList.remove("yk-block-flash"), 2000);
+      el.classList.add("alinea-block-flash");
+      window.setTimeout(() => el.classList.remove("alinea-block-flash"), 2000);
     }
     consumeScroll();
     // `hl` の一発マークは遷移先ブロックのみ(plans/11 §7)。数秒後に消す(本来は次ナビゲーションで
@@ -358,7 +358,7 @@ export function TranslationPane({
       setSelection(null);
       return;
     }
-    // 選択元の判定: 対訳ポップ内原文・未訳フォールバック原文([data-yk-source-text])なら
+    // 選択元の判定: 対訳ポップ内原文・未訳フォールバック原文([data-alinea-source-text])なら
     // 'source'、それ以外(訳文段落)は 'translation'(1b §5.5)。
     const ancestorEl =
       range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
@@ -863,7 +863,7 @@ function PaneSkeleton() {
         marginBottom: mb,
         borderRadius: 4,
         background: "var(--pr-bg-muted)",
-        animation: "yk-pulse 1.6s ease-in-out infinite",
+        animation: "alinea-pulse 1.6s ease-in-out infinite",
       }}
     />
   );

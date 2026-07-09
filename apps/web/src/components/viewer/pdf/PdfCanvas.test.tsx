@@ -110,7 +110,7 @@ describe("PdfCanvas (2a §4.2.4)", () => {
         })}
       />,
     );
-    const root = container.querySelector<HTMLElement>(".yk-pdf-canvas-bg");
+    const root = container.querySelector<HTMLElement>(".alinea-pdf-canvas-bg");
     if (!root) throw new Error("PDF canvas root missing");
 
     const event = new WheelEvent("wheel", {
@@ -134,7 +134,7 @@ describe("PdfCanvas (2a §4.2.4)", () => {
     const onWheelZoom = vi.fn();
     const props = baseProps({ onWheelZoom });
     const { container, rerender } = render(<PdfCanvas {...props} />);
-    const root = container.querySelector<HTMLElement>(".yk-pdf-canvas-bg");
+    const root = container.querySelector<HTMLElement>(".alinea-pdf-canvas-bg");
     if (!root) throw new Error("PDF canvas root missing");
     const pageEl = await waitFor(() => {
       const el = container.querySelector<HTMLElement>('[data-pdf-page="5"]');
@@ -273,7 +273,7 @@ describe("PdfCanvas (2a §4.2.4)", () => {
       toJSON: () => ({}),
     });
     await waitFor(() =>
-      expect(container.querySelector(".yk-pdf-link-layer a")).toBeInTheDocument(),
+      expect(container.querySelector(".alinea-pdf-link-layer a")).toBeInTheDocument(),
     );
     fireEvent.click(pageEl, { clientX: 100, clientY: 150 });
     expect(open).toHaveBeenCalledWith("https://example.com/paper", "_blank", "noopener,noreferrer");
@@ -342,7 +342,7 @@ describe("PdfCanvas (2a §4.2.4)", () => {
       scrollIntoView.mockClear();
       now.mockReturnValue(2000);
 
-      const root = container.querySelector<HTMLElement>(".yk-pdf-canvas-bg");
+      const root = container.querySelector<HTMLElement>(".alinea-pdf-canvas-bg");
       if (!root) throw new Error("root missing");
       vi.spyOn(root, "getBoundingClientRect").mockReturnValue({
         left: 0,

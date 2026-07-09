@@ -62,7 +62,7 @@ export function searchSpans(text: string, query: string | null | undefined, exis
           start: idx,
           end,
           render: (slice, key) => (
-            <mark key={key} className="yk-search-hit">
+            <mark key={key} className="alinea-search-hit">
               {slice}
             </mark>
           ),
@@ -76,7 +76,7 @@ export function searchSpans(text: string, query: string | null | undefined, exis
 
 /**
  * `text` を注釈ハイライト範囲(`highlights`)+検索ヒット語(`searchQuery`。plans/11 §7 の `hl`)
- * で分割し、`HighlightMark` / `<mark class="yk-search-hit">` を差し込む。重なりは注釈側を優先する。
+ * で分割し、`HighlightMark` / `<mark class="alinea-search-hit">` を差し込む。重なりは注釈側を優先する。
  * TranslatedParagraph(訳文)/ InlineRenderer(対訳・原文の原文インライン列)が共有する部品。
  */
 export function renderHighlightedText(

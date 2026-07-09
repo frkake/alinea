@@ -1,11 +1,11 @@
 # 10. ブラウザ拡張(apps/extension)完全実装設計 — WXT / MV3
 
-> **対象読者と前提**: 本書は「訳読 / YAKUDOKU」のブラウザ拡張(apps/extension: WXT 0.20.7 + React 19 + TypeScript 5、Manifest V3、Chrome / Edge)の実装者向け。機能仕様の正は docs/08(拡張)と docs/02(取り込み)、ピクセル仕様の正は確定デザイン 3a(extract/3a.md)。API 契約は plans/03(パス・スキーマ・エラー形式)に **完全に一致** させ、本書はエンドポイントを一切再発明しない。トークン・色値は packages/tokens(plans/08)を使う。plans/00・01 と plans/03 の間の不整合(パス表記・クッキー名・CSRF 方式・manifest 権限)は本書では **plans/03 を正** として解消し、§15「⚠ 基盤への追加要求」に修正要求を列挙する。
+> **対象読者と前提**: 本書は「Alinea」のブラウザ拡張(apps/extension: WXT 0.20.7 + React 19 + TypeScript 5、Manifest V3、Chrome / Edge)の実装者向け。機能仕様の正は docs/08(拡張)と docs/02(取り込み)、ピクセル仕様の正は確定デザイン 3a(extract/3a.md)。API 契約は plans/03(パス・スキーマ・エラー形式)に **完全に一致** させ、本書はエンドポイントを一切再発明しない。トークン・色値は packages/tokens(plans/08)を使う。plans/00・01 と plans/03 の間の不整合(パス表記・クッキー名・CSRF 方式・manifest 権限)は本書では **plans/03 を正** として解消し、§15「⚠ 基盤への追加要求」に修正要求を列挙する。
 
 ## 1. 責務と全体像
 
 - 拡張は本プロダクト **唯一の取り込み経路**(docs/08 §1。例外: 参考文献の「+この論文も取り込む」のみ web からも `POST /api/ingest/arxiv`)。
-- 提供する面は 3 つだけ: **① ツールバーポップアップ(幅 372px・4 状態+補助状態)**、**② ツールバーアイコンのバッジ(スピナー/チェック/琥珀ドット)**、**③ arXiv ページ内「訳 保存」ピル(オプトイン・arxiv.org 限定)**。読解機能・翻訳表示・チャットは一切持たない(docs/08 §7)。
+- 提供する面は 3 つだけ: **① ツールバーポップアップ(幅 372px・4 状態+補助状態)**、**② ツールバーアイコンのバッジ(スピナー/チェック/琥珀ドット)**、**③ arXiv ページ内「A 保存」ピル(オプトイン・arxiv.org 限定)**。読解機能・翻訳表示・チャットは一切持たない(docs/08 §7)。
 - 原則 **URL のみ送信・取得と解析はサーバー**。タブ内容の送信は状態 4 の「このタブの PDF を送信」の明示クリック時のみ(docs/08 §4)。
 - 進捗のリアルタイム化は **SSE を使わずポーリングで確定**(決定。plans/01 §3.1: MV3 service worker は SSE 常時接続を維持できない)。間隔: **ポップアップ表示中 2,000ms / バックグラウンド(処理中ジョブあり)15,000ms**。
 - UI 言語は日本語のみ(spec-decisions D Q5)。`_locales` は作らない。
@@ -16,16 +16,16 @@ plans/00 §2 の骨格(`entrypoints/popup/`, `background.ts`, `arxiv-pill.conten
 
 ```
 apps/extension/
-├── package.json                  # name: "@yakudoku/extension"
+├── package.json                  # name: "@alinea/extension"
 │                                 # scripts: dev / build / zip / zip:edge / test / lint / typecheck / compile
 ├── wxt.config.ts                 # §3.1(manifest 定義の単一ソース)
 ├── tsconfig.json                 # extends ルート。paths: {"@/*": ["./src/*"]}
 ├── vitest.config.ts
 ├── .env                          # WXT_API_BASE_URL=http://localhost:8000 / WXT_APP_BASE_URL=http://localhost:3000
-├── .env.production               # WXT_API_BASE_URL=https://yakudoku.app / WXT_APP_BASE_URL=https://yakudoku.app
+├── .env.production               # WXT_API_BASE_URL=https://alinea.app / WXT_APP_BASE_URL=https://alinea.app
 ├── public/
 │   └── icons/                    # §9.2 の全 PNG(16/32/48/128 × 各状態)
-│       ├── icon-{16,32,48,128}.png            # 通常(「訳」角丸ロゴ)
+│       ├── icon-{16,32,48,128}.png            # 通常(「A」角丸ロゴ)
 │       ├── icon-dot-{16,32,48,128}.png        # 通常+琥珀ドット(#C49432)
 │       ├── check-{16,32,48,128}.png           # 完了チェック
 │       ├── check-dot-{16,32,48,128}.png       # 完了チェック+琥珀ドット
@@ -56,7 +56,7 @@ apps/extension/
     │   │       ├── FailedQueueBanner.tsx # 失敗キュー再試行 UI(§11.4)
     │   │       └── Spinner.tsx          # 11×11 CSS スピナー
     │   ├── background.ts         # バッジ管理・ポーリング・ピル用メッセージ処理(§9)
-    │   └── arxiv-pill.content.ts # 「訳 保存」ピル(registration: "runtime"、§10)
+    │   └── arxiv-pill.content.ts # 「A 保存」ピル(registration: "runtime"、§10)
     ├── lib/
     │   ├── api.ts                # packages/api-client の createClient ラッパ(§4.1)
     │   ├── arxiv.ts              # arXiv URL 正規化・判定正規表現(§5.2)
@@ -67,10 +67,10 @@ apps/extension/
     │   ├── queue.ts              # 失敗キュー(storage.local + IndexedDB)(§11.3)
     │   ├── badge.ts              # アイコン差し替えロジック(§9.2)
     │   └── messages.ts           # runtime メッセージの discriminated union(§10.3)
-    └── assets/                   # (空。トークン CSS は @yakudoku/tokens から import)
+    └── assets/                   # (空。トークン CSS は @alinea/tokens から import)
 ```
 
-- 決定: React コンポーネントは apps/web と共有しない(plans/08 §1.3 の決定に従う)。共有するのは `@yakudoku/tokens`(CSS 変数・TS 定数)と `@yakudoku/api-client`(型+fetch クライアント)のみ。
+- 決定: React コンポーネントは apps/web と共有しない(plans/08 §1.3 の決定に従う)。共有するのは `@alinea/tokens`(CSS 変数・TS 定数)と `@alinea/api-client`(型+fetch クライアント)のみ。
 - 決定: WXT の `srcDir` は `"src"`(plans/00 のツリーに一致させる)。
 
 ### 2.1 storage.local の型付きキー(lib/storage.ts で一元定義)
@@ -99,19 +99,19 @@ export default defineConfig({
   srcDir: "src",
   modules: ["@wxt-dev/module-react"],
   manifest: ({ mode }) => ({
-    name: "訳読 — 論文読解ワークベンチ",
+    name: "Alinea — 論文読解ワークベンチ",
     description:
-      "arXiv 論文を2クリックで訳読ライブラリへ保存。URL のみを送信し、取得・解析はサーバーで実行します。",
+      "arXiv 論文を2クリックでAlineaライブラリへ保存。URL のみを送信し、取得・解析はサーバーで実行します。",
     version: "1.0.0",
     action: {
-      default_title: "訳読に保存",
+      default_title: "Alineaに保存",
       // default_popup / default_icon は WXT が entrypoints/popup と public/icons から自動生成
     },
     permissions: ["activeTab", "storage", "cookies", "alarms", "scripting"],
     host_permissions:
       mode === "development"
         ? ["http://localhost/*"]          // 開発: web=:3000 / api=:8000(match pattern はポートを区別しない)
-        : ["https://yakudoku.app/*"],
+        : ["https://alinea.app/*"],
     optional_host_permissions: ["https://arxiv.org/*"],
     minimum_chrome_version: "120",
   }),
@@ -123,18 +123,18 @@ export default defineConfig({
 ```json
 {
   "manifest_version": 3,
-  "name": "訳読 — 論文読解ワークベンチ",
-  "description": "arXiv 論文を2クリックで訳読ライブラリへ保存。URL のみを送信し、取得・解析はサーバーで実行します。",
+  "name": "Alinea — 論文読解ワークベンチ",
+  "description": "arXiv 論文を2クリックでAlineaライブラリへ保存。URL のみを送信し、取得・解析はサーバーで実行します。",
   "version": "1.0.0",
   "action": {
-    "default_title": "訳読に保存",
+    "default_title": "Alineaに保存",
     "default_popup": "popup.html",
     "default_icon": { "16": "icons/icon-16.png", "32": "icons/icon-32.png", "48": "icons/icon-48.png" }
   },
   "background": { "service_worker": "background.js" },
   "icons": { "16": "icons/icon-16.png", "32": "icons/icon-32.png", "48": "icons/icon-48.png", "128": "icons/icon-128.png" },
   "permissions": ["activeTab", "storage", "cookies", "alarms", "scripting"],
-  "host_permissions": ["https://yakudoku.app/*"],
+  "host_permissions": ["https://alinea.app/*"],
   "optional_host_permissions": ["https://arxiv.org/*"],
   "minimum_chrome_version": "120"
 }
@@ -146,14 +146,14 @@ export default defineConfig({
 |---|---|---|
 | `activeTab` | 採用 | 現在タブの URL・タイトル取得(ポップアップ判定)と、状態 4 でユーザーがボタンを押したときの一時的オリジン権限によるタブ内 PDF の `fetch`(§11.2)。全タブ読み取り権限(`tabs` の URL 常時読取や `<all_urls>`)は **使わない** |
 | `storage` | 採用 | §2.1 のキャッシュ・失敗キュー・設定。閲覧履歴は保存しない |
-| `cookies` | 採用 | `https://yakudoku.app` の セッションクッキー `yk_session` の **存在確認のみ**(値は使わない。§4.2)と `chrome.cookies.onChanged` によるログイン/ログアウト即時検知。host_permissions が yakudoku.app 限定のため読み取り可能ドメインも yakudoku.app に限定される |
+| `cookies` | 採用 | `https://alinea.app` の セッションクッキー `yk_session` の **存在確認のみ**(値は使わない。§4.2)と `chrome.cookies.onChanged` によるログイン/ログアウト即時検知。host_permissions が alinea.app 限定のため読み取り可能ドメインも alinea.app に限定される |
 | `alarms` | 採用(決定) | 処理中ジョブのバッジポーリング(§9.3)と未読ドット更新。MV3 SW は 30 秒アイドルで停止するため `setInterval` では実現できない |
 | `scripting` | 採用(決定) | ページ内ピルの **動的登録**(`chrome.scripting.registerContentScripts`)。manifest 静的宣言だと既定オフ(docs/08 §5)を表現できないため |
-| `host_permissions: https://yakudoku.app/*` | 採用(決定) | ① API 呼び出しでセッションクッキーを same-site 扱いで送るため(plans/01 §6.4)、② `chrome.cookies` の対象ドメイン。**この 1 ドメインのみ** |
+| `host_permissions: https://alinea.app/*` | 採用(決定) | ① API 呼び出しでセッションクッキーを same-site 扱いで送るため(plans/01 §6.4)、② `chrome.cookies` の対象ドメイン。**この 1 ドメインのみ** |
 | `optional_host_permissions: https://arxiv.org/*` | 採用 | ページ内ピル用。既定は未付与で、設定オン時に `chrome.permissions.request()` で要求(plans/00 §2 の方針どおりオプトイン) |
 | 不採用: `tabs` / `webRequest` / `<all_urls>` / `notifications` / `offscreen` | — | docs/08 §7(閲覧履歴収集・自動スキャンをしない)。通知本体はサイト側 4a |
 
-⚠ plans/00 §2 の「permissions は activeTab + storage の 2 つ、host_permissions は arxiv.org のみ」は plans/01 §6.4(yakudoku.app の host_permissions がクッキー認証の前提)と両立しないため、本表に更新が必要(§15-1)。
+⚠ plans/00 §2 の「permissions は activeTab + storage の 2 つ、host_permissions は arxiv.org のみ」は plans/01 §6.4(alinea.app の host_permissions がクッキー認証の前提)と両立しないため、本表に更新が必要(§15-1)。
 
 ## 4. 認証 — セッションクッキー共有
 
@@ -161,10 +161,10 @@ export default defineConfig({
 
 ```ts
 // src/lib/api.ts
-import { createApiClient } from "@yakudoku/api-client";
+import { createApiClient } from "@alinea/api-client";
 
 export const api = createApiClient({
-  baseUrl: `${import.meta.env.WXT_API_BASE_URL}/api`, // 本番: https://yakudoku.app/api(plans/03 §1.1。/v1 プレフィックスなし)
+  baseUrl: `${import.meta.env.WXT_API_BASE_URL}/api`, // 本番: https://alinea.app/api(plans/03 §1.1。/v1 プレフィックスなし)
   credentials: "include",                              // yk_session クッキー同送
 });
 export const APP_BASE_URL: string = import.meta.env.WXT_APP_BASE_URL;
@@ -176,14 +176,14 @@ export const APP_BASE_URL: string = import.meta.env.WXT_APP_BASE_URL;
 
 ### 4.2 ログイン状態の判定順序
 
-1. `chrome.cookies.get({ url: `${APP_BASE_URL}/`, name: "yk_session" })` — クッキー不存在なら **ネットワークを介さず** 未ログイン確定(ポップアップを 0ms で LoginPrompt に)。決定: クッキー判定 URL は文字列を直書きせず `APP_BASE_URL`(§4.1 のビルド時 env)を使う。本番 `https://yakudoku.app/`、開発 `http://localhost:3000/`(以降のコード例で `https://yakudoku.app/` と書いた箇所も同様に `APP_BASE_URL` に読み替える)。
+1. `chrome.cookies.get({ url: `${APP_BASE_URL}/`, name: "yk_session" })` — クッキー不存在なら **ネットワークを介さず** 未ログイン確定(ポップアップを 0ms で LoginPrompt に)。決定: クッキー判定 URL は文字列を直書きせず `APP_BASE_URL`(§4.1 のビルド時 env)を使う。本番 `https://alinea.app/`、開発 `http://localhost:3000/`(以降のコード例で `https://alinea.app/` と書いた箇所も同様に `APP_BASE_URL` に読み替える)。
 2. クッキーがあれば `GET /api/auth/me`(§2.1 の `cache:me` が 60,000ms 以内ならスキップ)。**401** → LoginPrompt。200 → `unread_notifications` を `cache:me` に保存(琥珀ドットの源泉。plans/03 §2.6)。
 3. `chrome.cookies.onChanged`(background)で `yk_session` の追加/削除を検知したら `cache:me` を破棄し、バッジを即時再評価する(§9.4)。
 
 ### 4.3 未ログイン UI(LoginPrompt)
 
-- ヘッダ: ロゴ「訳」20×20 + タイトル「ログインが必要です」12.5px/700 + 右端「⚙」。
-- 本文(padding:12px 14px): 説明 10.5px #5B6067 line-height:1.65「訳読のアカウントでログインすると、このページの論文をライブラリに保存できます。」+ プライマリボタン(h:34px, radius:7px, 背景 var(--pr-a), 白 12.5px/700)「ログインして続ける」。
+- ヘッダ: ロゴ「A」20×20 + タイトル「ログインが必要です」12.5px/700 + 右端「⚙」。
+- 本文(padding:12px 14px): 説明 10.5px #5B6067 line-height:1.65「Alineaのアカウントでログインすると、このページの論文をライブラリに保存できます。」+ プライマリボタン(h:34px, radius:7px, 背景 var(--pr-a), 白 12.5px/700)「ログインして続ける」。
 - クリックで `chrome.tabs.create({ url: `${APP_BASE_URL}/login?from=extension` })`(plans/01 §6.4 の導線)。コールバック連携は実装しない — ログイン完了後にポップアップを開き直せばクッキーが有効(同 §6.4 の決定)。
 - フッタの「直近の取り込み」は未ログイン時は表示しない(キャッシュも 401 検知時に消去する — 決定: 共有 PC でのデータ残留防止)。
 
@@ -193,7 +193,7 @@ export const APP_BASE_URL: string = import.meta.env.WXT_APP_BASE_URL;
 
 ```ts
 // App.tsx 内
-import type { components } from "@yakudoku/api-client";
+import type { components } from "@alinea/api-client";
 type IngestCheck = components["schemas"]["IngestCheckResponse"];  // plans/03 §3.1
 type Job = components["schemas"]["Job"];                          // plans/03 §1.7
 
@@ -253,7 +253,7 @@ async function resolveInitialView(): Promise<PopupView> {
   const url = tab?.url ?? "";
   if (!/^https?:\/\//.test(url)) return { view: "unsupported" };
 
-  const cookie = await chrome.cookies.get({ url: "https://yakudoku.app/", name: "yk_session" });
+  const cookie = await chrome.cookies.get({ url: "https://alinea.app/", name: "yk_session" });
   if (!cookie) return { view: "login" };
   const me = await getMeCached();                 // §4.2 手順2(401 → null)
   if (!me) return { view: "login" };
@@ -276,9 +276,9 @@ async function resolveInitialView(): Promise<PopupView> {
 ### 6.1 共通シェル
 
 - ポップアップ実体は `<body>` = 372px 固定(`body { width: 372px; margin: 0 }`)。モック上の外枠 border(#D6D3C9)・box-shadow・角丸 10px・吹き出し矢印は **Chrome のポップアップウィンドウ表現に置き換わるため実装しない**(決定。内部レイアウト値のみ実装)。
-- main.tsx で `import "@yakudoku/tokens/css/tokens.css"; import "@yakudoku/tokens/css/accents.css"; import "./popup.css";`(plans/08 §1.3)。書体は index.html の `<link>` で Google Fonts(IBM Plex Sans JP 400/500/600/700)を読み、オフライン時は `system-ui` フォールバック(`font-family: 'IBM Plex Sans JP', system-ui, sans-serif`)。
+- main.tsx で `import "@alinea/tokens/css/tokens.css"; import "@alinea/tokens/css/accents.css"; import "./popup.css";`(plans/08 §1.3)。書体は index.html の `<link>` で Google Fonts(IBM Plex Sans JP 400/500/600/700)を読み、オフライン時は `system-ui` フォールバック(`font-family: 'IBM Plex Sans JP', system-ui, sans-serif`)。
 - テーマ: **ライト固定**(確定デザイン 3a にダーク版が存在しないため — 決定)。アクセントは `<html data-accent={ui:accent}>`。`ui:accent` はポップアップが `GET /api/settings` を **呼ばず**、apps/web がログイン中に `chrome.runtime` 連携を持たないため、次の規則で同期する(決定): 拡張設定ビュー(§10.2)にアクセント 4 色スウォッチを置き、storage.local `ui:accent` に保存する(サイト側設定とは独立。既定 `slate` = #3E5C76。キー名は plans/08 §2.3 の `AccentKey` に一致)。
-- ヘッダ(全状態共通・PopupHeader.tsx): `padding:11px 14px; border-bottom:1px solid #F0EDE4; display:flex; align-items:center; gap:8px`。ロゴ 20×20 `border-radius:5px; background:var(--pr-a)` 白文字「訳」10.5px/700。タイトル 12.5px/700 #1E2227。バッジは状態ごと(§6.2〜6.5)。右端 `margin-left:auto` に「⚙」12px #9A9EA4(クリックで `settings` ビューへ)。
+- ヘッダ(全状態共通・PopupHeader.tsx): `padding:11px 14px; border-bottom:1px solid #F0EDE4; display:flex; align-items:center; gap:8px`。ロゴ 20×20 `border-radius:5px; background:var(--pr-a)` 白文字「A」10.5px/700。タイトル 12.5px/700 #1E2227。バッジは状態ごと(§6.2〜6.5)。右端 `margin-left:auto` に「⚙」12px #9A9EA4(クリックで `settings` ビューへ)。
 - 本文コンテナ: `padding:12px 14px; display:flex; flex-direction:column;`(gap は状態ごとに 11px / 10px)。
 - フッタ「直近の取り込み」(§8)は **全状態で表示**(docs/08 §3.1 の決定: 右列モックの省略は省略とみなす)。ただし login ビューでは非表示(§4.3)。
 
@@ -370,7 +370,7 @@ body { width: 372px; margin: 0; background: #fff; font-family: 'IBM Plex Sans JP
 
 ### 6.5 状態 4: 一般ページ PDF(GenericPdf.tsx)
 
-- ヘッダ: タイトル「訳読に保存」+ `.badge-pdf`「PDF を表示中」。
+- ヘッダ: タイトル「Alineaに保存」+ `.badge-pdf`「PDF を表示中」。
 - 本文(gap:10px):
   - 書誌(gap:3px): タイトル 11.5px/600(`titleGuess`。null なら「(タイトル不明の PDF)」)+ インラインバッジ「書誌は推定」(h:14px, padding:0 5px, radius:3px, 背景 #F1EFE9, 文字 #8A8E94, 9px/600)/ URL 10.5px #9A9EA4(中央省略 `text-overflow` で 1 行)。
   - `.warnbox`: 「このページはサーバーから取得できない可能性があります(学内ネットワーク等)。ボタンを押したときだけ、このタブの PDF を直接送信します — 自動送信はしません。」
@@ -380,8 +380,8 @@ body { width: 372px; margin: 0; background: #fff; font-family: 'IBM Plex Sans JP
 
 ### 6.6 補助状態
 
-- **loading**: ヘッダ(タイトル「訳読に保存」)+ 本文に高さ 96px のスケルトン(背景 #F6F4EE、radius:6px、pulse アニメーション)+ フッタ(キャッシュがあれば実データ)。
-- **unsupported**: ヘッダ「訳読に保存」+ グレーバッジ「対応外ページ」(`.badge-pdf` と同スタイル — 決定)。本文 10.5px #5B6067 line-height:1.65: 「このページは取り込みに対応していません。arXiv の論文ページ、または PDF を表示中のタブで保存できます。」+ フッタ(docs/08 §7 の決定どおり案内+直近のみ)。
+- **loading**: ヘッダ(タイトル「Alineaに保存」)+ 本文に高さ 96px のスケルトン(背景 #F6F4EE、radius:6px、pulse アニメーション)+ フッタ(キャッシュがあれば実データ)。
+- **unsupported**: ヘッダ「Alineaに保存」+ グレーバッジ「対応外ページ」(`.badge-pdf` と同スタイル — 決定)。本文 10.5px #5B6067 line-height:1.65: 「このページは取り込みに対応していません。arXiv の論文ページ、または PDF を表示中のタブで保存できます。」+ フッタ(docs/08 §7 の決定どおり案内+直近のみ)。
 - **error**: `.warnbox` に「{message} — ネットワーク接続を確認してください。」+ セカンダリボタン「再試行」(h:30px)。黙って空表示にしない(P3)。
 
 ## 7. 保存 API 呼び出しと保存直後の進捗
@@ -487,7 +487,7 @@ check ──(表示 10,000ms 経過)──→ idle
 
 ### 9.2 アイコンアセット(public/icons/)
 
-- ベース: 角丸正方形(radius 比 4/17)背景 #3E5C76(アクセント既定固定 — 決定: バッジはユーザーアクセントに追随しない。再ビルド不要性を優先)+ 白「訳」。
+- ベース: 角丸正方形(radius 比 4/17)背景 #3E5C76(アクセント既定固定 — 決定: バッジはユーザーアクセントに追随しない。再ビルド不要性を優先)+ 白「A」。
 - ドット: 右上に直径 7/24 比の円 #C49432、縁 1.5px 白抜き(3a §2.2 の値を各サイズへ比例縮小)。
 - スピナー: ベースを 20% 減光し、中央に円弧(track rgba(62,92,118,0.32) / head #3E5C76)を 45° 刻みで回転させた 8 フレーム。`spinner-{n}` は 16/32/48 のみ(128 は store 用静止アイコンのみで十分)。
 
@@ -500,14 +500,14 @@ export default defineBackground(() => {
   chrome.runtime.onStartup.addListener(() => ensureAlarms());
 
   function ensureAlarms() {
-    chrome.alarms.create("yk-poll", { periodInMinutes: 0.5 });   // 30秒 = chrome.alarms の最小周期
-    chrome.alarms.create("yk-unread", { periodInMinutes: 5 });
+    chrome.alarms.create("alinea-poll", { periodInMinutes: 0.5 });   // 30秒 = chrome.alarms の最小周期
+    chrome.alarms.create("alinea-unread", { periodInMinutes: 5 });
   }
 
   chrome.alarms.onAlarm.addListener(async (alarm) => {
-    if (alarm.name === "yk-unread") return refreshUnreadAndIcon();
-    if (alarm.name === "yk-check-clear") return clearCheckIfExpired();  // check → idle(下記の決定)
-    if (alarm.name !== "yk-poll") return;
+    if (alarm.name === "alinea-unread") return refreshUnreadAndIcon();
+    if (alarm.name === "alinea-check-clear") return clearCheckIfExpired();  // check → idle(下記の決定)
+    if (alarm.name !== "alinea-poll") return;
     const active = await pollRecentAndUpdateIcon();      // 1回目(0s)
     if (!active) return;                                 // 処理中なしなら即終了(SW はアイドル停止)
     // 処理中あり: このハンドラの Promise を ~29 秒保留にして SW を生存させ、
@@ -516,17 +516,17 @@ export default defineBackground(() => {
   });
   // メッセージ: ポップアップ/ピルからの即時反映
   chrome.runtime.onMessage.addListener((msg: RuntimeMessage, _s, sendResponse) => {
-    if (msg.type === "INGEST_STARTED") { setBadgeMode("processing"); chrome.alarms.create("yk-poll", { when: Date.now(), periodInMinutes: 0.5 }); }
+    if (msg.type === "INGEST_STARTED") { setBadgeMode("processing"); chrome.alarms.create("alinea-poll", { when: Date.now(), periodInMinutes: 0.5 }); }
     if (msg.type === "PILL_CHECK" || msg.type === "PILL_SAVE") { handlePillMessage(msg).then(sendResponse); return true; }
   });
   chrome.cookies.onChanged.addListener(({ cookie }) => {
-    // ドメイン判定は APP_BASE_URL のホスト名で行う(本番 "yakudoku.app" / 開発 "localhost")
+    // ドメイン判定は APP_BASE_URL のホスト名で行う(本番 "alinea.app" / 開発 "localhost")
     if (cookie.name === "yk_session" && cookie.domain.includes(new URL(APP_BASE_URL).hostname)) invalidateMeAndRefreshIcon();
   });
 });
 ```
 
-- `pollRecentAndUpdateIcon()`: `GET /api/ingest/recent?limit=3` → キャッシュ更新 → アクティブ有無を判定 → `badge:state` 遷移(processing→check 遷移時に `checkSince` を記録し、one-shot アラーム `yk-check-clear` を `{ when: Date.now() + 10_000 }` で作成。発火時に `checkSince` から 10,000ms 以上経過していれば idle へ — 決定: 次回 `yk-poll` を待たず正確に 10 秒でチェックを消す)→ `chrome.action.setIcon`。未ログイン(401)時は idle アイコン+ドットなしに戻し、ポーリングを止める(`yk-poll` はアラーム自体は残すがハンドラ先頭の クッキー存在チェックで即 return — 決定: 未ログイン中の無駄な HTTP を出さない)。
+- `pollRecentAndUpdateIcon()`: `GET /api/ingest/recent?limit=3` → キャッシュ更新 → アクティブ有無を判定 → `badge:state` 遷移(processing→check 遷移時に `checkSince` を記録し、one-shot アラーム `alinea-check-clear` を `{ when: Date.now() + 10_000 }` で作成。発火時に `checkSince` から 10,000ms 以上経過していれば idle へ — 決定: 次回 `alinea-poll` を待たず正確に 10 秒でチェックを消す)→ `chrome.action.setIcon`。未ログイン(401)時は idle アイコン+ドットなしに戻し、ポーリングを止める(`alinea-poll` はアラーム自体は残すがハンドラ先頭の クッキー存在チェックで即 return — 決定: 未ログイン中の無駄な HTTP を出さない)。
 - `refreshUnreadAndIcon()`: `GET /api/auth/me` → `unread_notifications` を `cache:me` に保存しドット再評価(通知本体はサイト側 4a。docs/08 §3.2)。
 - バックグラウンドの実効ポーリング間隔は **15,000ms**(plans/01 §3.1 の決定と一致)。スピナーは 250ms/フレーム(8 フレームで 2 秒/回転)。
 
@@ -535,7 +535,7 @@ export default defineBackground(() => {
 - ポップアップの保存成功時 `INGEST_STARTED` メッセージ → バッジ即時 processing 化(次アラームを待たない)。
 - 完了チェックへの遷移は background のポーリングが検知する(ポップアップが閉じていても機能する)。
 
-## 10. arXiv ページ内「訳 保存」ピル(オプトイン)
+## 10. arXiv ページ内「A 保存」ピル(オプトイン)
 
 ### 10.1 登録と解除(既定オフ)
 
@@ -561,16 +561,16 @@ await storage.set("settings:arxivPillEnabled", true);
 
 ポップアップ内ビュー(独立オプションページは持たない — 決定: 権限要求のユーザージェスチャーをポップアップ内で完結させる)。項目は上から:
 
-1. トグル「arXiv ページに保存ボタンを表示」(既定オフ)+ 説明 9.5px #9A9EA4「arxiv.org の論文ページに『訳 保存』ボタンを追加します。有効化時に arxiv.org へのアクセス権限を求めます。」(Toggle スタイルは plans/08 §5.8 の値を 372px 幅に流用)。
+1. トグル「arXiv ページに保存ボタンを表示」(既定オフ)+ 説明 9.5px #9A9EA4「arxiv.org の論文ページに『A 保存』ボタンを追加します。有効化時に arxiv.org へのアクセス権限を求めます。」(Toggle スタイルは plans/08 §5.8 の値を 372px 幅に流用)。
 2. アクセント 4 色スウォッチ(#3E5C76 / #4A6B57 / #6E5A7E / #7A5C48。選択で `ui:accent` 保存・即時反映)。
-3. リンク行「訳読の設定を開く ↗」→ `${APP_BASE_URL}/settings`(4f の「ブラウザ拡張」カテゴリはサイト側の案内面。拡張ローカル設定はここが正 — 決定)。
-4. フッタ小文字 9.5px #9A9EA4: バージョン表記「訳読拡張 v{manifest.version}」。
+3. リンク行「Alineaの設定を開く ↗」→ `${APP_BASE_URL}/settings`(4f の「ブラウザ拡張」カテゴリはサイト側の案内面。拡張ローカル設定はここが正 — 決定)。
+4. フッタ小文字 9.5px #9A9EA4: バージョン表記「Alinea拡張 v{manifest.version}」。
 - 戻る: ヘッダ左に「←」(⚙ の代わり)。`settings.back` のビューへ復帰。
 
 ### 10.3 ピルの実装(arxiv-pill.content.ts)
 
 - 挿入位置: `h1.title`(arXiv abs のタイトル要素)の末尾に inline-flex で追加。**Shadow DOM**(WXT `createShadowRootUi`)でホスト CSS から隔離し、`z-index: 2147483000`(plans/08 §7.3 の確定値)。
-- スタイル(3a §2.3 逐語): `display:inline-flex; align-items:center; gap:5px; height:24px; padding:0 10px; border:1px solid var(--pr-am); border-radius:999px; background:var(--pr-as); color:var(--pr-a); font-size:10.5px; font-weight:700; margin-top:3px; margin-left:10px; cursor:pointer`。内部ミニロゴ 13×13 radius:3px 背景 var(--pr-a) 白「訳」8px + テキスト「保存」。アクセント変数は `ui:accent` から解決した実値を Shadow 内 `:host` にインライン展開(既定 #3E5C76 系)。
+- スタイル(3a §2.3 逐語): `display:inline-flex; align-items:center; gap:5px; height:24px; padding:0 10px; border:1px solid var(--pr-am); border-radius:999px; background:var(--pr-as); color:var(--pr-a); font-size:10.5px; font-weight:700; margin-top:3px; margin-left:10px; cursor:pointer`。内部ミニロゴ 13×13 radius:3px 背景 var(--pr-a) 白「A」8px + テキスト「保存」。アクセント変数は `ui:accent` から解決した実値を Shadow 内 `:host` にインライン展開(既定 #3E5C76 系)。
 - ライフサイクル(すべて background 経由のメッセージ。content script から直接 API を呼ばない — 決定: host_permissions による same-site クッキー送信は拡張コンテキスト発が条件のため):
 
 | メッセージ | 処理 | ピル表示 |
@@ -631,7 +631,7 @@ async function sendTabPdf(tabUrl: string, titleGuess: string | null) {
 | 種別 | 置き場所 | レコード |
 |---|---|---|
 | arXiv URL 保存の失敗 | storage.local `queue:failedSaves` | `{ id: string(=idempotencyKey); kind: "arxiv"; request: IngestArxivRequest; title: string; failedAt: number; lastError: string }` |
-| PDF 送信の失敗 | **IndexedDB**(DB `yakudoku-ext` v1 / objectStore `failed_uploads`, keyPath `id`) | `{ id: string(=idempotencyKey); kind: "pdf"; meta: IngestPdfMeta; blob: Blob; titleGuess: string \| null; failedAt: number; lastError: string }` |
+| PDF 送信の失敗 | **IndexedDB**(DB `alinea-ext` v1 / objectStore `failed_uploads`, keyPath `id`) | `{ id: string(=idempotencyKey); kind: "pdf"; meta: IngestPdfMeta; blob: Blob; titleGuess: string \| null; failedAt: number; lastError: string }` |
 
 - 決定: PDF バイト列は storage.local(既定上限 10MB)に入らないため IndexedDB に置く。`unlimitedStorage` 権限は追加しない(拡張オリジンの IndexedDB 既定クォータで 50MB は保持可能)。
 - 決定: **自動再送はしない**(docs/08 §6 は「再試行ボタンを表示」。PDF の「自動送信はしない」原則とも整合)。再試行は §11.4 の UI からのみ。再試行時は保存時と同じ Idempotency-Key を使い、二重取り込みを防ぐ(plans/03 §3.2)。
@@ -647,22 +647,22 @@ async function sendTabPdf(tabUrl: string, titleGuess: string | null) {
 
 ### 12.1 配布物
 
-- `pnpm --filter @yakudoku/extension zip`(Chrome Web Store 用)/ `zip:edge`(Microsoft Edge Add-ons 用。同一コード・同一 manifest。plans/00 §8 の CI ジョブ `extension` が両 zip を artifact 化)。
+- `pnpm --filter @alinea/extension zip`(Chrome Web Store 用)/ `zip:edge`(Microsoft Edge Add-ons 用。同一コード・同一 manifest。plans/00 §8 の CI ジョブ `extension` が両 zip を artifact 化)。
 - 拡張 ID はストアごとに別になるため、`EXTENSION_ALLOWED_ORIGINS`(§15-2)には両ストアの ID を登録する(Edge も Chromium のため Origin スキームは `chrome-extension://`)。
 
 ### 12.2 ストア掲載文(確定)
 
-- **単一目的(single purpose)**: 「閲覧中の学術論文(arXiv ページまたは PDF)を、ユーザーの明示操作でユーザー自身の訳読ライブラリに保存する。」
+- **単一目的(single purpose)**: 「閲覧中の学術論文(arXiv ページまたは PDF)を、ユーザーの明示操作でユーザー自身のAlineaライブラリに保存する。」
 - **権限説明文**(審査フォームへ逐語で提出):
 
 | 権限 | 説明文 |
 |---|---|
 | `activeTab` | 保存ボタンを押したタブの URL とタイトルを読み取るため、および arXiv 以外の PDF をユーザーがボタンで明示的に送信する場合にそのタブの PDF を読み取るために使用します。タブの自動スキャンは行いません。 |
 | `storage` | 直近の取り込み履歴のキャッシュ、送信に失敗した保存の再試行キュー、拡張の設定(ページ内ボタンのオン/オフ等)を保存するために使用します。閲覧履歴は収集しません。 |
-| `cookies` | yakudoku.app のログイン状態(セッションクッキーの有無)を確認するためだけに使用します。対象は yakudoku.app ドメインのみで、他サイトの Cookie にはアクセスできません。 |
+| `cookies` | alinea.app のログイン状態(セッションクッキーの有無)を確認するためだけに使用します。対象は alinea.app ドメインのみで、他サイトの Cookie にはアクセスできません。 |
 | `alarms` | 保存した論文の処理進捗をツールバーアイコンに反映するための定期確認(15〜30 秒間隔、処理中のみ)に使用します。 |
-| `scripting` | ユーザーが設定で有効にした場合のみ、arxiv.org の論文ページに「訳 保存」ボタンを追加するために使用します。既定では無効です。 |
-| `host: yakudoku.app` | 本サービス自身の API(論文の保存・進捗取得)を呼び出すために使用します。 |
+| `scripting` | ユーザーが設定で有効にした場合のみ、arxiv.org の論文ページに「A 保存」ボタンを追加するために使用します。既定では無効です。 |
+| `host: alinea.app` | 本サービス自身の API(論文の保存・進捗取得)を呼び出すために使用します。 |
 | `optional host: arxiv.org` | 設定で有効化した場合のみ、arXiv 論文ページ内に保存ボタンを表示するために使用します。 |
 
 - **データ利用の開示**(Chrome「プライバシーへの取り組み」/ Edge 同等欄): 収集するユーザーデータ = 「ユーザーが保存操作をしたページの URL(および PDF 送信を明示選択した場合のみその PDF ファイル)」。用途 = アプリ機能のみ。第三者提供・広告利用・売却 = なし。リモートコード実行 = なし。
@@ -700,7 +700,7 @@ docs/08 §8 の全項目に加えて:
 
 ## 15. ⚠ 基盤への追加要求(不整合の解消依頼)
 
-1. **plans/00-tech-stack §2(拡張の権限決定)の更新**: 「permissions は `activeTab` + `storage` の 2 つ、host_permissions は `https://arxiv.org/*` のみ」は、plans/01 §6.4 が前提とするクッキー認証(`host_permissions: https://yakudoku.app/*` が必須)と両立しない。本書 §3.3 の権限表(`activeTab, storage, cookies, alarms, scripting` + host `yakudoku.app` + optional host `arxiv.org`)への更新を要求する。
+1. **plans/00-tech-stack §2(拡張の権限決定)の更新**: 「permissions は `activeTab` + `storage` の 2 つ、host_permissions は `https://arxiv.org/*` のみ」は、plans/01 §6.4 が前提とするクッキー認証(`host_permissions: https://alinea.app/*` が必須)と両立しない。本書 §3.3 の権限表(`activeTab, storage, cookies, alarms, scripting` + host `alinea.app` + optional host `arxiv.org`)への更新を要求する。
 2. **plans/03-api §1.3(Origin 検証)への追記**: 拡張発の非 GET リクエストは `Origin: chrome-extension://{EXTENSION_ID}` を送るため、許可 Origin に拡張オリジンを追加する必要がある。要求: 環境変数 `EXTENSION_ALLOWED_ORIGINS`(カンマ区切り。Chrome/Edge 各ストア配布 ID)を plans/00 §5.2 の .env.example に追加し、`APP_ENV=development` では `chrome-extension://` スキームを一律許可する。
 3. **セッションクッキー名の不一致**: plans/03 §1.3 = `yk_session` / plans/00 §1.6 = `ykd_session`。本書は plans/03 の **`yk_session`** を採用した。plans/00 の修正を要求する(§4.2 の `chrome.cookies.get` が名前に依存)。
 4. **plans/01 のパス表記・CSRF 記述の更新**: §2.4・§3.1・§6.4 の `/api/v1/...`(例 `GET /api/v1/ingests/recent`, `GET /api/v1/me`)と「X-CSRF-Token を /api/v1/me ヘッダで取得」は、plans/03 §1.1(バージョニングなし `/api/*`)・§1.3(Origin 検証・CSRF トークンなし)・§3.4(`GET /api/ingest/recent`)と矛盾する。本書は plans/03 を正とした。

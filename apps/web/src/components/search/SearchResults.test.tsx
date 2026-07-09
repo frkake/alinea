@@ -1,6 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import type { LibraryItemSummary, SearchFacets, SearchGroup, SearchHit } from "@yakudoku/api-client";
+import type { LibraryItemSummary, SearchFacets, SearchGroup, SearchHit } from "@alinea/api-client";
 import {
   SearchFacetRail,
   SearchGroupCard,
@@ -58,7 +58,7 @@ function bodyHit(overrides: Partial<SearchHit> = {}): SearchHit {
     source: "body",
     matched_in: ["source"],
     display: "§3.2 Training via Distillation · p.5",
-    snippet: '…an <mark class="yk-search-hit">EMA teacher</mark>…',
+    snippet: '…an <mark class="alinea-search-hit">EMA teacher</mark>…',
     snippet_lang: "en",
     target: {
       kind: "viewer",
@@ -164,7 +164,7 @@ describe("SearchHitRow (4e §4.5)", () => {
     expect(link).toHaveAttribute("href", "/papers/li_1?block=blk_1&hl=EMA+teacher");
     expect(link.querySelectorAll("a")).toHaveLength(0); // 入れ子リンク禁止
     expect(screen.getByText("該当位置へ →")).toBeInTheDocument();
-    expect(document.querySelector("mark.yk-search-hit")).toHaveTextContent("EMA teacher");
+    expect(document.querySelector("mark.alinea-search-hit")).toHaveTextContent("EMA teacher");
   });
 
   test("combined source+translation hit renders two body badges", () => {

@@ -2,12 +2,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { searchInPaper, type InPaperSearchItem } from "@yakudoku/api-client";
+import { searchInPaper, type InPaperSearchItem } from "@alinea/api-client";
 import { InPaperSearch } from "@/components/viewer/InPaperSearch";
 import { useViewerStore } from "@/stores/viewer-store";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return { ...actual, searchInPaper: vi.fn() };
 });
 

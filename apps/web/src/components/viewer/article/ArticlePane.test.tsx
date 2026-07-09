@@ -2,14 +2,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { articlesGenerate, articlesGet, type ArticleOut } from "@yakudoku/api-client";
+import { articlesGenerate, articlesGet, type ArticleOut } from "@alinea/api-client";
 import { ArticlePane } from "@/components/viewer/article/ArticlePane";
 import { useViewerStore } from "@/stores/viewer-store";
 import { ToastViewport } from "@/components/ui/Toast";
 import { MockEventSource, firstEventSource } from "@/components/viewer/article/test-utils";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return {
     ...actual,
     articlesGet: vi.fn(),

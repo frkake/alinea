@@ -1,7 +1,7 @@
-/* arXiv ページ内「訳 保存」ピル(plans/10 §10.3 逐語)。
+/* arXiv ページ内「A 保存」ピル(plans/10 §10.3 逐語)。
  * アクセント変数は content script 側で :host にインライン展開する(ホストページに
- * @yakudoku/tokens が読み込まれていないため、CSS 変数の継承に頼れない)。 */
-.yk-pill {
+ * @alinea/tokens が読み込まれていないため、CSS 変数の継承に頼れない)。 */
+.alinea-pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -19,11 +19,11 @@
   font-family: system-ui, sans-serif;
 }
 
-.yk-pill:disabled {
+.alinea-pill:disabled {
   cursor: default;
 }
 
-.yk-pill-logo {
+.alinea-pill-logo {
   display: inline-flex;
   flex: none;
   align-items: center;
@@ -37,13 +37,13 @@
   font-weight: 700;
 }
 
-.yk-pill-saved {
+.alinea-pill-saved {
   border-color: rgba(101, 148, 113, 0.4);
   background: rgba(101, 148, 113, 0.16);
   color: #4c7458;
 }
 
-.yk-pill-saved .yk-pill-logo {
+.alinea-pill-saved .alinea-pill-logo {
   background: transparent;
   color: #4c7458;
 }

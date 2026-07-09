@@ -82,7 +82,7 @@ export function VocabSearchBox({ value, onChange, fetching = false }: VocabSearc
 function VocabSearchSpinner() {
   return (
     <>
-      <style>{"@keyframes yk-vocab-search-spin{to{transform:rotate(360deg)}}"}</style>
+      <style>{"@keyframes alinea-vocab-search-spin{to{transform:rotate(360deg)}}"}</style>
       <span
         role="status"
         aria-label="検索中"
@@ -94,7 +94,7 @@ function VocabSearchSpinner() {
           borderRadius: "50%",
           border: "1.5px solid var(--pr-text-muted)",
           borderTopColor: "transparent",
-          animation: "yk-vocab-search-spin 800ms linear infinite",
+          animation: "alinea-vocab-search-spin 800ms linear infinite",
         }}
       />
     </>

@@ -1,6 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import type { VocabSrs } from "@yakudoku/api-client";
+import type { VocabSrs } from "@alinea/api-client";
 import { ReviewFooter } from "@/components/vocab/ReviewFooter";
 
 function srs(overrides: Partial<VocabSrs> = {}): VocabSrs {

@@ -10,12 +10,12 @@
 | 1 | `docker compose up -d --wait` | ✅ | db(PGroonga)/redis/minio/mailpit 全 healthy |
 | 2 | `uv sync --all-packages` / `pnpm install` | ✅ | uv 105 packages / pnpm frozen-lockfile Done。workspace は py-core/llm/figures/api/worker + web/extension/tokens/api-client |
 | 3 | `alembic upgrade head` | ✅ | `0002_llm_routing (head)`(M2 は新規マイグレーション不要 — 全 34 テーブルが M0 で投入済み) |
-| 4 | `python -m yakudoku_api.seed --sample rectified-flow --reset` | ✅ | `[seed] 2209.03003 完了` |
+| 4 | `python -m alinea_api.seed --sample rectified-flow --reset` | ✅ | `[seed] 2209.03003 完了` |
 | 5 | `pnpm turbo build lint typecheck test` | ✅ | **21/21 タスク成功**(web 585・extension 49・figures 含む Vitest) |
 | 6 | dev 起動(web+api+worker+モック) | ✅ | Playwright webServer が全スタックを自己起動し全 E2E がこの実スタックを通過 |
 | 7 | pytest + カバレッジ | ✅ | **Python 904 passed / 3 skipped(SM-03/04 は RUN_LLM_SMOKE ゲートで既定 skip)**、2 連続でフレークなし。総合カバレッジ **80.47%**(閾値 80)、placeholder.py 100%。トレーサビリティ: M0/M1/M2 必達 108 ID 未割付・未実装 0(PASS)・docs 受け入れ 158=§6 表 158 |
 | 8 | Playwright E2E | ✅ | **web 54 passed / 9 fixme-skip / 0 failed**(M2: PW-13/15/16/20/21 + PW-04/05 の fixme 解除)。**拡張 14 passed / 1 skip**(XT-03 コレクション欄含む)。VR: M2 の 1e/1h/4b/4c/4d/5a 追加(VR-1g/5a は根本原因解消のうえ 3 連続 green) |
-| 9 | 拡張 zip ビルド | ✅ | `yakudokuextension-0.1.0-chrome.zip` / `-edge.zip` 生成成功 |
+| 9 | 拡張 zip ビルド | ✅ | `alineaextension-0.1.0-chrome.zip` / `-edge.zip` 生成成功 |
 
 ## 2. M2 DoD(docs/10 §4・§8)
 

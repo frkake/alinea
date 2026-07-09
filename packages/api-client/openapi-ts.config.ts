@@ -1,7 +1,7 @@
 import { defineConfig } from "@hey-api/openapi-ts";
 
 /**
- * @yakudoku/api-client の生成設定(plans/00 §2、plans/03 §1.10、M0-24)。
+ * @alinea/api-client の生成設定(plans/00 §2、plans/03 §1.10、M0-24)。
  *
  * 入力は apps/api が書き出した openapi.json、出力は src/generated/(手編集禁止・
  * CI の openapi-drift ジョブでドリフト検出)。

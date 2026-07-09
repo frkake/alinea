@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { dashboardGet, libraryItemsSetQueueOrder, type LibraryItemSummary } from "@yakudoku/api-client";
+import { dashboardGet, libraryItemsSetQueueOrder, type LibraryItemSummary } from "@alinea/api-client";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useToast } from "@/components/ui/Toast";
 import { ContinueReading } from "@/components/library/ContinueReading";

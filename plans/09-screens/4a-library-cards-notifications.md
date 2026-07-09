@@ -1,6 +1,6 @@
 # 画面 4a: ライブラリ カード+通知ポップオーバー
 
-> 対象読者と前提: 本書は「訳読 / YAKUDOKU — 論文読解ワークベンチ」の apps/web(Next.js 15 App Router + React 19 + TypeScript 5 + Tailwind CSS v4)実装者向けに、確定デザイン画面 4a(ライブラリ カードビュー+通知ポップオーバー)をピクセル一致で実装するための完全仕様である。機能仕様は docs/06(ライブラリと進捗管理)・docs/02(取り込み)を正、ピクセル値は抽出ファイル extract/4a.md を正とする。共通コンポーネント名は plans/08-design-system.md、API 名は plans/03-api.md、データ型は plans/03 §1.7・plans/02 のものを必ず使う。本書に書かれた値・識別子・文言が実装の正であり、独自の解釈・丸めを禁止する。
+> 対象読者と前提: 本書は「Alinea — 論文読解ワークベンチ」の apps/web(Next.js 15 App Router + React 19 + TypeScript 5 + Tailwind CSS v4)実装者向けに、確定デザイン画面 4a(ライブラリ カードビュー+通知ポップオーバー)をピクセル一致で実装するための完全仕様である。機能仕様は docs/06(ライブラリと進捗管理)・docs/02(取り込み)を正、ピクセル値は抽出ファイル extract/4a.md を正とする。共通コンポーネント名は plans/08-design-system.md、API 名は plans/03-api.md、データ型は plans/03 §1.7・plans/02 のものを必ず使う。本書に書かれた値・識別子・文言が実装の正であり、独自の解釈・丸めを禁止する。
 
 ## 1. 概要とルート
 
@@ -92,7 +92,7 @@ export type LibraryQueryParams = {
 ■ LibraryPage(page.tsx。Server Component: searchParams の解決のみ)
 └─ ■ LibraryShell(client。1d/1e/4a/4d/4e 共通骨格。components/shell/)
    ├─ ■ AppTopBar(h52)
-   │  ├─ ■ AppLogo(「訳」マーク+「訳読」)
+   │  ├─ ■ AppLogo(「A」マーク+「Alinea」)
    │  ├─ □ SearchBox(variant='global')+ ■ SearchDropdown(1e 計画書の固有コンポーネント。仕様・実装は 1e 計画書 §4.3・§5.3)
    │  ├─ ■ NotificationBell(◷+未読ドット)
    │  │  └─ □ Popover(width 352, placement='bottom-end', caretOffset={side:'right', px:26})
@@ -125,7 +125,7 @@ export type LibraryQueryParams = {
 ### 3.2 画面固有コンポーネントの props 型
 
 ```ts
-import type { LibraryItemSummary, Notification, ReadingStatus } from '@yakudoku/api-client';
+import type { LibraryItemSummary, Notification, ReadingStatus } from '@alinea/api-client';
 import type { LibraryQueryParams } from '@/lib/query-keys';
 
 // components/shell/LibraryShell.tsx
@@ -196,7 +196,7 @@ interface CardThumbnailProps {
 ```
 ┌──────────────────────────────────────────────────────────────── 1440px ─┐
 │ トップバー h:52px #FFFFFF 下線1px #E6E3DA                                │
-│ [訳ロゴ+訳読 w:198] [検索バー w:460 h:32] [flex:1] [◷通知30×30] [YK30×30]│
+│ [Aロゴ+Alinea w:198] [検索バー w:460 h:32] [flex:1] [◷通知30×30] [YK30×30]│
 ├──────────────┬───────────────────────────────────────────────────────────┤
 │ サイドバー    │ メインエリア(flex:1, padding:16px 22px, 縦flex gap:12px) │
 │ w:216px      │  ┌ 見出し行: ライブラリ / 41本 / [カード|テーブル] / 並び ┐│
@@ -218,8 +218,8 @@ interface CardThumbnailProps {
 ### 4.2 トップバー(■ AppTopBar、h:52px)
 
 1. **■ AppLogo**(display:flex; align-items:center; gap:8px; width:198px)
-   - ロゴマーク「訳」: inline-flex 中央、22×22px、border-radius:6px、background:var(--pr-a)(既定 #3E5C76)、color:#FFFFFF、font-size:11.5px、font-weight:700。
-   - ワードマーク「訳読」: font-size:14.5px、font-weight:700、letter-spacing:0.5px。
+   - ロゴマーク「A」: inline-flex 中央、22×22px、border-radius:6px、background:var(--pr-a)(既定 #3E5C76)、color:#FFFFFF、font-size:11.5px、font-weight:700。
+   - ワードマーク「Alinea」: font-size:14.5px、font-weight:700、letter-spacing:0.5px。
    - 全体を `/` へのリンク(`<Link href="/">`)にする(決定)。
 2. **□ SearchBox(variant='global')**(display:flex; align-items:center; gap:8px; height:32px; width:460px; background:#F1EFE9=`--pr-bg-inset`; border-radius:7px; padding:0 12px; font-size:12px; color:#8A8E94=`--pr-text-icon`)
    - 先頭に □ MagnifierIcon 12×12(viewBox 0 0 12 12、circle cx=5 cy=5 r=3.6 stroke=currentColor stroke-width=1.3 + path "M8 8l2.6 2.6" stroke-width=1.3 linecap:round)。
@@ -364,7 +364,7 @@ font-size:12.5px、color:#3A3E44。各ナビ項目 padding:7px 10px(コレクシ
 
 ### 4.10 全 UI 文言(逐語・完全リスト)
 
-トップバー: `訳` / `訳読` / `ライブラリ全体を検索 — 本文・訳文・メモ・チャット` / `⌘K` / `◷` / `YK`
+トップバー: `訳` / `Alinea` / `ライブラリ全体を検索 — 本文・訳文・メモ・チャット` / `⌘K` / `◷` / `YK`
 
 通知ポップオーバー: `通知` / `すべて既読にする` / `翻訳が完了しました — Stochastic Interpolants: A Unifying Framework…`(「翻訳が完了しました」が太字)/ `昨日 19:40 · 読み始める →` / `✦ InstaFlow を 3 分以上読んでいます。「読んでいる」にしますか?`(「「読んでいる」にしますか?」が太字)/ `変更する` / `そのまま` / `ステータスは勝手に変わりません — 提案のみ(設定で変更可)` / `輪読会 2026-07 の締切まで 10 日 — 未着手 1 本`(「10 日」が太字・#A05A42)/ `今日 8:00 · コレクションを開く →`
 

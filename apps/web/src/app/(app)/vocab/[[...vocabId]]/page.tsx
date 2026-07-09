@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { vocabDelete, vocabList, vocabReviewQueue } from "@yakudoku/api-client";
+import { vocabDelete, vocabList, vocabReviewQueue } from "@alinea/api-client";
 import { useToast } from "@/components/ui/Toast";
 import { VocabHeader } from "@/components/vocab/VocabHeader";
 import { VocabFilterRow } from "@/components/vocab/VocabFilterRow";

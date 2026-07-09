@@ -2,12 +2,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { articlesGet, type ArticleOut } from "@yakudoku/api-client";
+import { articlesGet, type ArticleOut } from "@alinea/api-client";
 import { ViewerHeader } from "@/components/viewer/ViewerHeader";
 import { useViewerStore } from "@/stores/viewer-store";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return { ...actual, articlesGet: vi.fn() };
 });
 

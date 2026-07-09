@@ -8,7 +8,7 @@ DB は worker conftest の ``db_session`` / ``maker`` フィクスチャ(実 Pos
 ``worker_ctx`` の ``FakeRedis`` を使う。実ネットワーク通信は発生しない。
 
 NOTE(所有範囲の確認): 本ファイルは新規追加であり、他タスクが所有する既存ファイルは編集しない。
-所有ファイルリストは ``apps/worker/src/yakudoku_worker/cron.py`` のみを明記しているが、
+所有ファイルリストは ``apps/worker/src/alinea_worker/cron.py`` のみを明記しているが、
 TDD(担当テスト ID 全 green)を満たすため本テストファイルを新規に追加する
 (followups に記載)。
 """
@@ -22,9 +22,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest_asyncio
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from yakudoku_core.db.models import (
+from alinea_core.db.models import (
     Collection,
     CollectionEntry,
     LibraryItem,
@@ -32,11 +30,13 @@ from yakudoku_core.db.models import (
     Paper,
     User,
 )
-from yakudoku_worker.cron import send_deadline_reminders
+from alinea_worker.cron import send_deadline_reminders
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql+asyncpg://yakudoku:yakudoku@localhost:5432/yakudoku",
+    "postgresql+asyncpg://alinea:alinea@localhost:5432/alinea",
 )
 
 

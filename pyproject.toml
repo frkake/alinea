@@ -1,16 +1,16 @@
 [project]
-name = "yakudoku-workspace"
+name = "alinea-workspace"
 version = "0.1.0"
 requires-python = "==3.12.*"
-description = "訳読 / YAKUDOKU — 論文読解ワークベンチ (uv workspace root)"
+description = "Alinea — 論文読解ワークベンチ (uv workspace root)"
 
 [tool.uv.workspace]
 members = ["apps/api", "apps/worker", "packages/py-core", "packages/llm", "packages/figures"]
 
 [tool.uv.sources]
-yakudoku-core = { workspace = true }
-yakudoku-llm = { workspace = true }
-yakudoku-figures = { workspace = true }
+alinea-core = { workspace = true }
+alinea-llm = { workspace = true }
+alinea-figures = { workspace = true }
 
 [dependency-groups]
 dev = [

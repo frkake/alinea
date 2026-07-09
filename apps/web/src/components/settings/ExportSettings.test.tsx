@@ -10,7 +10,7 @@ import { ToastViewport } from "@/components/ui/Toast";
 vi.mock("@/components/settings/download", () => ({ triggerDownload: vi.fn() }));
 
 const libraryItemsList = vi.fn();
-vi.mock("@yakudoku/api-client", () => ({
+vi.mock("@alinea/api-client", () => ({
   libraryItemsList: (...args: unknown[]) => libraryItemsList(...args),
 }));
 

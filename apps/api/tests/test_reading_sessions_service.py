@@ -11,11 +11,11 @@ import datetime as dt
 import uuid
 from typing import Any
 
+from alinea_api.services.reading_sessions import ReadingHeartbeatBody, record_heartbeat
+from alinea_api.services.user_service import purge_user, upsert_user_by_email
+from alinea_core.db.models import Notification, ReadingSession, User
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.services.reading_sessions import ReadingHeartbeatBody, record_heartbeat
-from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
-from yakudoku_core.db.models import Notification, ReadingSession, User
 
 
 def _iso(t: dt.datetime) -> str:

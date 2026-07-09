@@ -13,14 +13,14 @@ from typing import Any
 
 import httpx
 import pytest
-from yakudoku_api.services.oauth import (
+from alinea_api.services.oauth import (
     OAuthProvider,
     build_authorize_url,
     exchange_and_fetch_profile,
     get_provider,
     redirect_uri,
 )
-from yakudoku_api.settings import get_api_settings
+from alinea_api.settings import get_api_settings
 
 
 def _google_provider() -> OAuthProvider:

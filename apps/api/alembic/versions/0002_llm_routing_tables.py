@@ -16,8 +16,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import alinea_llm
 import sqlalchemy as sa
-import yakudoku_llm
 import yaml  # type: ignore[import-untyped]
 from alembic import op
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -84,8 +84,8 @@ QUOTA_DEFAULTS: dict[str, int] = {
 
 
 def _llm_seed_dir() -> Path:
-    # packages/llm/{models.yaml,routing.yaml}(yakudoku_llm パッケージの 2 つ上)
-    return Path(yakudoku_llm.__file__).resolve().parents[2]
+    # packages/llm/{models.yaml,routing.yaml}(alinea_llm パッケージの 2 つ上)
+    return Path(alinea_llm.__file__).resolve().parents[2]
 
 
 def _load_yaml(name: str) -> dict[str, Any]:

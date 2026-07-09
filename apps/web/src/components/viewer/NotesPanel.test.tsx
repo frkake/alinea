@@ -2,12 +2,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { notesCreate, notesDelete, notesList, notesUpdate, type Note } from "@yakudoku/api-client";
+import { notesCreate, notesDelete, notesList, notesUpdate, type Note } from "@alinea/api-client";
 import { NotesPanel } from "@/components/viewer/NotesPanel";
 import { useViewerStore } from "@/stores/viewer-store";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return {
     ...actual,
     notesList: vi.fn(),

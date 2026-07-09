@@ -4,7 +4,7 @@
 - PY-FIG-06: 画像生成プロンプト仕様(テンプレート契約テスト。「画像内に文字を描かない」指示を
   含み、重要情報はキャプション側に保持される)。
 
-ImageRouter は本ファイル専用の :class:`~yakudoku_llm.testing.fake_provider.FakeImageProvider`
+ImageRouter は本ファイル専用の :class:`~alinea_llm.testing.fake_provider.FakeImageProvider`
 で差し替える。DB は実 PostgreSQL、S3 は実 MinIO(worker conftest の規約と同じ。実通信なし)。
 """
 
@@ -14,10 +14,8 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.article.sources import collect_article_sources
-from yakudoku_core.db.models import (
+from alinea_core.article.sources import collect_article_sources
+from alinea_core.db.models import (
     Article,
     ArticleBlock,
     DocumentRevision,
@@ -27,13 +25,13 @@ from yakudoku_core.db.models import (
     Paper,
     User,
 )
-from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
-from yakudoku_core.document.inlines import Inline
-from yakudoku_core.jobs.store import JobStore
-from yakudoku_llm.errors import ErrorKind
-from yakudoku_llm.router import ImageRouter
-from yakudoku_llm.testing.fake_provider import FakeImageProvider
-from yakudoku_worker.tasks.generate_explainer_figure import (
+from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
+from alinea_core.document.inlines import Inline
+from alinea_core.jobs.store import JobStore
+from alinea_llm.errors import ErrorKind
+from alinea_llm.router import ImageRouter
+from alinea_llm.testing.fake_provider import FakeImageProvider
+from alinea_worker.tasks.generate_explainer_figure import (
     EXPLAINER_STYLE_PREAMBLE,
     ExplainerBrief,
     build_explainer_prompt,
@@ -41,6 +39,8 @@ from yakudoku_worker.tasks.generate_explainer_figure import (
     run_explainer_figure_job,
     sync_explainer_figures_for_regenerate,
 )
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _uid() -> str:

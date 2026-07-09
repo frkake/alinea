@@ -11,7 +11,7 @@ import {
   type Problem,
   type RevisionInfo,
   type TimelineEntry,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 import { useToast } from "@/components/ui/Toast";
 import { IngestLogModal } from "@/components/viewer/IngestLogModal";
 import { ReingestConfirmModal } from "@/components/viewer/ReingestConfirmModal";
@@ -312,7 +312,7 @@ export function InfoPanel({
                   <div key={i} style={{ display: "flex", gap: 9, fontSize: 10.5, color: "var(--pr-text-sub)" }}>
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
                       <span
-                        className={row.pulsing ? "yk-pulse" : undefined}
+                        className={row.pulsing ? "alinea-pulse" : undefined}
                         style={{
                           width: 7,
                           height: 7,

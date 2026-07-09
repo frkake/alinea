@@ -19,14 +19,14 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+from alinea_api.routers.dashboard import _week_start
+from alinea_api.services.session_service import create_session
+from alinea_api.services.user_service import purge_user, upsert_user_by_email
+from alinea_core.db.models import LibraryItem, User
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.routers.dashboard import _week_start
-from yakudoku_api.services.session_service import create_session
-from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
-from yakudoku_core.db.models import LibraryItem, User
 
 
 def _build_app() -> FastAPI:
@@ -35,12 +35,12 @@ def _build_app() -> FastAPI:
     並行タスクの WIP ルータ(annotations 等)に import を巻き込まれず、本タスクを
     独立に検証する(test_library_api.py と同じ方針)。
     """
-    from yakudoku_api.errors import register_exception_handlers
-    from yakudoku_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
-    from yakudoku_api.ratelimit import RateLimitMiddleware
-    from yakudoku_api.redis_client import get_redis
-    from yakudoku_api.routers import dashboard, library_items
-    from yakudoku_api.settings import get_api_settings
+    from alinea_api.errors import register_exception_handlers
+    from alinea_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
+    from alinea_api.ratelimit import RateLimitMiddleware
+    from alinea_api.redis_client import get_redis
+    from alinea_api.routers import dashboard, library_items
+    from alinea_api.settings import get_api_settings
 
     s = get_api_settings()
     app = FastAPI()
@@ -383,7 +383,7 @@ async def test_queue_order_rejects_duplicate_id_422(
 async def test_dashboard_deadlines_reflects_collection_and_unstarted_item(
     auth: tuple[AsyncClient, str], db_session: AsyncSession, factories: Any
 ) -> None:
-    from yakudoku_api.services.deadlines import today_jst
+    from alinea_api.services.deadlines import today_jst
 
     client, uid = auth
     user = await db_session.get(User, uid)
@@ -424,7 +424,7 @@ async def test_dashboard_deadlines_reflects_collection_and_unstarted_item(
 async def test_dashboard_deadlines_excludes_overdue_collections(
     auth: tuple[AsyncClient, str], db_session: AsyncSession, factories: Any
 ) -> None:
-    from yakudoku_api.services.deadlines import today_jst
+    from alinea_api.services.deadlines import today_jst
 
     client, uid = auth
     user = await db_session.get(User, uid)

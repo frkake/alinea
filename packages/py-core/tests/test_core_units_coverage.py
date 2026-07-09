@@ -7,22 +7,22 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.db.ids import new_ulid, new_uuid
-from yakudoku_core.db.models import DocumentRevision, Job, Paper, TranslationSet
-from yakudoku_core.document.blocks import DocumentContent
-from yakudoku_core.ingest.progress import (
+from alinea_core.db.ids import new_ulid, new_uuid
+from alinea_core.db.models import DocumentRevision, Job, Paper, TranslationSet
+from alinea_core.document.blocks import DocumentContent
+from alinea_core.ingest.progress import (
     body_progress,
     count_active_body_jobs,
     first_translatable_section,
     readable_upto,
     stage_index,
 )
-from yakudoku_core.translation.pipeline import (
+from alinea_core.translation.pipeline import (
     compute_progress,
     compute_translation_scope,
     resolve_translation,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
 _CONTENT = DocumentContent.model_validate(
     {

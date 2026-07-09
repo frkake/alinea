@@ -28,22 +28,22 @@ import fitz
 import httpx
 import pytest
 import pytest_asyncio
+from alinea_core.arxiv.fetch import RedisLike
+from alinea_core.arxiv.ids import normalize_arxiv_id
+from alinea_core.db.models import DocumentRevision, SourceAsset
+from alinea_core.document.blocks import DocumentContent
+from alinea_core.ingest import build_timeline
+from alinea_core.jobs.store import JobStore
+from alinea_core.settings import CoreSettings
+from alinea_llm.router import LLMRouter
+from alinea_worker.pipeline import _html_figure_asset_url
+from alinea_worker.tasks.ingest import ingest_paper
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
-from yakudoku_core.arxiv.fetch import RedisLike
-from yakudoku_core.arxiv.ids import normalize_arxiv_id
-from yakudoku_core.db.models import DocumentRevision, SourceAsset
-from yakudoku_core.document.blocks import DocumentContent
-from yakudoku_core.ingest import build_timeline
-from yakudoku_core.jobs.store import JobStore
-from yakudoku_core.settings import CoreSettings
-from yakudoku_llm.router import LLMRouter
-from yakudoku_worker.pipeline import _html_figure_asset_url
-from yakudoku_worker.tasks.ingest import ingest_paper
 
 # --------------------------------------------------------------------------- #
 # ローカル LaTeX e-print フィクスチャ(自作。tar.gz を動的構築)
@@ -76,7 +76,7 @@ def _tiny_pdf_figure() -> bytes:
     page.insert_text((10, 25), "figure")
     data = doc.tobytes()
     doc.close()
-    return data
+    return bytes(data)
 
 
 def _build_latex_archive() -> bytes:
@@ -210,7 +210,7 @@ def latex_worker_ctx(router: LLMRouter, latex_arxiv_http: httpx.AsyncClient) -> 
         "router": router,
         "arxiv_http": latex_arxiv_http,
         "redis": _FakeRedis(),
-        "settings": CoreSettings(yakudoku_arxiv_base_url="http://arxiv.test"),
+        "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
         "throttle": _noop_throttle,
     }
 
@@ -232,7 +232,7 @@ async def _source_asset_kinds(db: AsyncSession, paper_id: str) -> set[str]:
 
 def test_html_figure_asset_url_does_not_duplicate_version_prefix() -> None:
     ref = normalize_arxiv_id("2607.02963v1")
-    settings = CoreSettings(yakudoku_arxiv_base_url="https://arxiv.org")
+    settings = CoreSettings(alinea_arxiv_base_url="https://arxiv.org")
 
     url = _html_figure_asset_url(settings, ref, "2607.02963v1/x1.png")
 

@@ -16,23 +16,23 @@ import uuid
 from typing import Any
 
 import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.db.models import DocumentRevision, Job, LibraryItem, Paper, TranslationUnit
-from yakudoku_core.document.blocks import DocumentContent
-from yakudoku_core.ingest import (
+from alinea_core.db.models import DocumentRevision, Job, LibraryItem, Paper, TranslationUnit
+from alinea_core.document.blocks import DocumentContent
+from alinea_core.ingest import (
     build_timeline,
     detect_duplicate,
     find_fuzzy_duplicate,
     is_fuzzy_duplicate,
 )
-from yakudoku_core.ingest.dedupe import PaperBibView
-from yakudoku_core.jobs.store import JobStore
-from yakudoku_core.translation.pipeline import compute_translation_scope, find_shared_set
-from yakudoku_llm.errors import ProviderChainExhausted
-from yakudoku_llm.router import LLMRouter
-from yakudoku_llm.testing.fake_provider import FakeLLMProvider
-from yakudoku_worker.tasks.ingest import ingest_paper
+from alinea_core.ingest.dedupe import PaperBibView
+from alinea_core.jobs.store import JobStore
+from alinea_core.translation.pipeline import compute_translation_scope, find_shared_set
+from alinea_llm.errors import ProviderChainExhausted
+from alinea_llm.router import LLMRouter
+from alinea_llm.testing.fake_provider import FakeLLMProvider
+from alinea_worker.tasks.ingest import ingest_paper
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _uid() -> str:
@@ -104,7 +104,7 @@ async def test_ingest_reaches_readable_with_first_section_translated(
     # 本文の次セクションはまだ未訳(readable の時点では張り出しのみ)。
     assert not (second_blocks & set(units))
 
-    # 残セクションが yk:bulk に張り出されている(§11.2)。
+    # 残セクションが alinea:bulk に張り出されている(§11.2)。
     body_jobs = (
         (await db_session.execute(select(Job).where(Job.kind == "translation"))).scalars().all()
     )
@@ -274,7 +274,7 @@ async def test_find_fuzzy_duplicate_in_db(db_session: AsyncSession) -> None:
     sfx = _uid()
     title = f"Rectified Flow Straight and Fast {sfx}"
     user_id = str(uuid.uuid4())
-    from yakudoku_core.db.models import User
+    from alinea_core.db.models import User
 
     db_session.add(User(id=user_id, email=f"{sfx}@t.test"))
     await db_session.flush()

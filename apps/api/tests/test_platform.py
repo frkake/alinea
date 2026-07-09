@@ -26,7 +26,7 @@ async def test_not_found_is_problem_json(client: AsyncClient) -> None:
     assert r.headers["content-type"].startswith("application/problem+json")
     body = r.json()
     assert body["code"] == "not_found"
-    assert body["type"] == "https://yakudoku.app/problems/not-found"
+    assert body["type"] == "https://alinea.app/problems/not-found"
     assert body["status"] == 404
 
 

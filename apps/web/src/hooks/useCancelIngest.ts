@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation } from "@tanstack/react-query";
-import { libraryItemsDelete } from "@yakudoku/api-client";
+import { libraryItemsDelete } from "@alinea/api-client";
 
 /**
  * 取り込みキャンセル(docs/08 §2.2)。`DELETE /api/library-items/{id}` はライブラリ項目ごと

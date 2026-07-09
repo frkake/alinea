@@ -1,7 +1,7 @@
 /**
  * 匿名共有ページ(4c)の唯一のデータ取得(plans/09-screens/4c §2.1、plans/03 §14.1)。
  *
- * `@yakudoku/api-client` は本エンドポイント登録前の生成物のため型が存在しない(main.py への
+ * `@alinea/api-client` は本エンドポイント登録前の生成物のため型が存在しない(main.py への
  * `share.router` 登録待ち。followups 参照)。生成後に置き換えるまでの間、ここでレスポンス型を
  * 手書きし fetch を直書きする(厳守ルール6の許容範囲)。
  */

@@ -1,4 +1,4 @@
-import type { ExplainerContentOut } from "@yakudoku/api-client";
+import type { ExplainerContentOut } from "@alinea/api-client";
 import { AIBadge } from "@/components/ui/AIBadge";
 
 /** 解説図ブロック(1h §4.9 決定。docs/07 §2.3)。出典行を AIBadge に置き換える。 */

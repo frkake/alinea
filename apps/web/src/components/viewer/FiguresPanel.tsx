@@ -9,7 +9,7 @@ import {
   viewerListReferences,
   type FigureItem,
   type ReferenceItem,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 import { useToast } from "@/components/ui/Toast";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useViewerStore } from "@/stores/viewer-store";
@@ -319,7 +319,7 @@ function FigureSkeleton() {
     <>
       {[0, 1, 2].map((i) => (
         <div key={i} style={{ display: "flex", gap: 10, padding: 8 }}>
-          <div style={{ ...thumbStyle, animation: "yk-pulse 1.2s ease-in-out infinite" }} />
+          <div style={{ ...thumbStyle, animation: "alinea-pulse 1.2s ease-in-out infinite" }} />
           <div
             style={{
               flex: 1,
@@ -335,7 +335,7 @@ function FigureSkeleton() {
                 width: "88%",
                 borderRadius: 3,
                 background: "var(--pr-bg-thumb)",
-                animation: "yk-pulse 1.2s ease-in-out infinite",
+                animation: "alinea-pulse 1.2s ease-in-out infinite",
               }}
             />
             <div
@@ -344,7 +344,7 @@ function FigureSkeleton() {
                 width: "40%",
                 borderRadius: 3,
                 background: "var(--pr-bg-thumb)",
-                animation: "yk-pulse 1.2s ease-in-out infinite",
+                animation: "alinea-pulse 1.2s ease-in-out infinite",
               }}
             />
           </div>
@@ -365,7 +365,7 @@ function ReferenceSkeleton() {
             width: w,
             borderRadius: 3,
             background: "var(--pr-bg-thumb)",
-            animation: "yk-pulse 1.2s ease-in-out infinite",
+            animation: "alinea-pulse 1.2s ease-in-out infinite",
           }}
         />
       ))}

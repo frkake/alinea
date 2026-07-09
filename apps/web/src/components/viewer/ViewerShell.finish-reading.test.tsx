@@ -1,13 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { libraryItemsUpdate, type LibraryItemSummary, type ViewerInit } from "@yakudoku/api-client";
+import { libraryItemsUpdate, type LibraryItemSummary, type ViewerInit } from "@alinea/api-client";
 import { ViewerShell } from "@/components/viewer/ViewerShell";
 import { useFinishReadingStore } from "@/components/library/finishReadingStore";
 import { useViewerStore } from "@/stores/viewer-store";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return {
     ...actual,
     libraryItemsUpdate: vi.fn(),

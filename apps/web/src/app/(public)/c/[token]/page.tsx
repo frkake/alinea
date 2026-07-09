@@ -24,7 +24,7 @@ export default async function SharePage({
   return (
     <ShareThemeScope>
       <div
-        className="yk-share-scope"
+        className="alinea-share-scope"
         style={{
           minHeight: "100vh",
           display: "flex",
@@ -86,18 +86,18 @@ export async function generateMetadata({
   params: Promise<{ token: string }>;
 }): Promise<Metadata> {
   const data = await fetchShareCollection((await params).token);
-  if (!data) return { title: "訳読 — 共有ページ", robots: { index: false, follow: false } };
+  if (!data) return { title: "Alinea — 共有ページ", robots: { index: false, follow: false } };
   const description =
     data.collection.description ??
     `${data.collection.shared_by} さんが共有した ${data.collection.item_count} 本の論文コレクション`;
   return {
-    title: `${data.collection.name} — 訳読で共有されたコレクション`,
+    title: `${data.collection.name} — Alineaで共有されたコレクション`,
     description,
     robots: { index: false, follow: false },
     openGraph: {
       title: data.collection.name,
       description: description.slice(0, 120),
-      siteName: "訳読 / YAKUDOKU",
+      siteName: "Alinea",
       images: [{ url: "/og/collection-default.png", width: 1200, height: 630 }],
     },
   };

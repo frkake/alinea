@@ -1,6 +1,6 @@
 "use client";
 
-import type { FigureContentOut, FigureLinkCardOut } from "@yakudoku/api-client";
+import type { FigureContentOut, FigureLinkCardOut } from "@alinea/api-client";
 import { renderMarkdownLite } from "@/components/vocab/markdown-lite";
 import type { AnchorRef } from "@/components/viewer/article/types";
 

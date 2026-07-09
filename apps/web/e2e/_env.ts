@@ -25,6 +25,6 @@ export const workerEnv: NodeJS.ProcessEnv = {
   ...process.env,
   NO_PROXY,
   no_proxy: NO_PROXY,
-  YAKUDOKU_FAKE_LLM: "1",
-  YAKUDOKU_ARXIV_BASE_URL: `${MOCK_BASE}/arxiv`,
+  ALINEA_FAKE_LLM: "1",
+  ALINEA_ARXIV_BASE_URL: `${MOCK_BASE}/arxiv`,
 };

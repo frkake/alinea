@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import type { IngestCheckResponse } from "@yakudoku/api-client";
+import type { IngestCheckResponse } from "@alinea/api-client";
 
 import { resolvePopupState } from "./popup-state";
 

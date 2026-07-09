@@ -11,7 +11,7 @@
 [run]
 branch = false
 omit =
-    */yakudoku_llm/providers/*
+    */alinea_llm/providers/*
     */site-packages/*
     */tests/*
 

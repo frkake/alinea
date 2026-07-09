@@ -1,5 +1,5 @@
 // ポップアップの状態分岐(3a §2.4・§5.1)。純粋関数にして単体テスト可能にする。
-import type { IngestCheckResponse } from "@yakudoku/api-client";
+import type { IngestCheckResponse } from "@alinea/api-client";
 
 export type PopupState =
   | "loading" // check 取得中(状態 L)

@@ -17,27 +17,27 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest_asyncio
-from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.chat.context_builder import build_chat_request, render_document_context
-from yakudoku_api.chat.evidence import BlockRow, EvidenceValidator, derive_display, verify_evidence
-from yakudoku_api.chat.prompts import (
+from alinea_api.chat.context_builder import build_chat_request, render_document_context
+from alinea_api.chat.evidence import BlockRow, EvidenceValidator, derive_display, verify_evidence
+from alinea_api.chat.prompts import (
     PERSISTENT_QUICK_ACTIONS,
     QUICK_ACTION_TEMPLATES,
     SUGGESTED_QUICK_ACTIONS,
     resolve_user_content,
 )
-from yakudoku_api.chat.stream_pipeline import SseEvent, StreamPipeline
-from yakudoku_api.deps import get_settings_dep
-from yakudoku_api.routers.chat import get_chat_provider_factory
-from yakudoku_api.services.session_service import create_session
-from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
-from yakudoku_api.settings import ApiSettings
-from yakudoku_core.db.models import DocumentRevision, LibraryItem, Paper
-from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
-from yakudoku_core.document.inlines import Inline
-from yakudoku_core.search.rebuild import rebuild_block_search_index
-from yakudoku_llm.testing.fake_provider import FakeLLMProvider
+from alinea_api.chat.stream_pipeline import SseEvent, StreamPipeline
+from alinea_api.deps import get_settings_dep
+from alinea_api.routers.chat import get_chat_provider_factory
+from alinea_api.services.session_service import create_session
+from alinea_api.services.user_service import purge_user, upsert_user_by_email
+from alinea_api.settings import ApiSettings
+from alinea_core.db.models import DocumentRevision, LibraryItem, Paper
+from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
+from alinea_core.document.inlines import Inline
+from alinea_core.search.rebuild import rebuild_block_search_index
+from alinea_llm.testing.fake_provider import FakeLLMProvider
+from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +118,7 @@ def test_context_builder_packs_paper_and_history() -> None:
 
     # system[0]: プリアンブル + 論文メタデータ、キャッシュ境界。
     sys0 = req.system[0].text or ""
-    assert "訳読" in sys0
+    assert "Alinea" in sys0
     assert "[[evidence:ブロックID]]" in sys0  # モデルへの根拠マーカー指示(§2.6)
     assert "Flow Straight and Fast" in sys0
     assert "2209.03003" in sys0
@@ -261,7 +261,7 @@ def test_quick_action_templates_are_verbatim() -> None:
 async def chat_ctx(
     client: AsyncClient, db_session: AsyncSession, redis_client: Any
 ) -> AsyncIterator[SimpleNamespace]:
-    from yakudoku_api.main import app
+    from alinea_api.main import app
 
     user = await upsert_user_by_email(
         db_session, f"chat-{uuid.uuid4().hex}@example.com", provider="email"

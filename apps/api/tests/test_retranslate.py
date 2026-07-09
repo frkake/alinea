@@ -16,6 +16,18 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest_asyncio
+from alinea_api.services.session_service import COOKIE_NAME, create_session
+from alinea_api.services.user_service import purge_user
+from alinea_core.db.models import (
+    DocumentRevision,
+    Job,
+    Paper,
+    TranslationSet,
+    TranslationUnit,
+)
+from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
+from alinea_core.document.inlines import Inline
+from alinea_core.search.rebuild import rebuild_block_search_index
 from factories import (
     make_library_item,
     make_paper,
@@ -26,18 +38,6 @@ from factories import (
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.services.session_service import COOKIE_NAME, create_session
-from yakudoku_api.services.user_service import purge_user
-from yakudoku_core.db.models import (
-    DocumentRevision,
-    Job,
-    Paper,
-    TranslationSet,
-    TranslationUnit,
-)
-from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
-from yakudoku_core.document.inlines import Inline
-from yakudoku_core.search.rebuild import rebuild_block_search_index
 
 
 def _p(block_id: str, text: str) -> Block:

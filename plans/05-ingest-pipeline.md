@@ -1,6 +1,6 @@
 # 05. 取り込みパイプライン実装計画 — arXiv 解決・パーサ・ジョブステートマシン
 
-> **対象読者と前提**: 本書は「訳読 / YAKUDOKU」の取り込みパイプライン(apps/worker: Python 3.12 + arq、および apps/api の ingest 系エンドポイントの裏側)を実装するエンジニア向け。機能仕様の正は [docs/02-ingest.md](../docs/02-ingest.md)(取り込み)・[docs/01-domain-model.md](../docs/01-domain-model.md)(ドメインモデル)・[docs/08-extension.md](../docs/08-extension.md)(拡張)であり、本書はそれらを実装コードレベルまで確定させる。テーブル・カラムは [plans/02-data-model.md](02-data-model.md) の DDL、エンドポイントは [plans/03-api.md](03-api.md)(`/api` プレフィックス・全 133 本)、キュー構成・S3 レイアウトは [plans/01-architecture.md](01-architecture.md)(`yk:interactive` / `yk:bulk`、`sources/…` キー)、LLM 呼び出しは [plans/04-llm-providers.md](04-llm-providers.md)(`yakudoku_llm.LLMRouter`、8 タスク)を正として一致させる。基盤計画に不足がある箇所は「⚠ 基盤への追加要求」(§13)に集約した。
+> **対象読者と前提**: 本書は「Alinea」の取り込みパイプライン(apps/worker: Python 3.12 + arq、および apps/api の ingest 系エンドポイントの裏側)を実装するエンジニア向け。機能仕様の正は [docs/02-ingest.md](../docs/02-ingest.md)(取り込み)・[docs/01-domain-model.md](../docs/01-domain-model.md)(ドメインモデル)・[docs/08-extension.md](../docs/08-extension.md)(拡張)であり、本書はそれらを実装コードレベルまで確定させる。テーブル・カラムは [plans/02-data-model.md](02-data-model.md) の DDL、エンドポイントは [plans/03-api.md](03-api.md)(`/api` プレフィックス・全 133 本)、キュー構成・S3 レイアウトは [plans/01-architecture.md](01-architecture.md)(`alinea:interactive` / `alinea:bulk`、`sources/…` キー)、LLM 呼び出しは [plans/04-llm-providers.md](04-llm-providers.md)(`alinea_llm.LLMRouter`、8 タスク)を正として一致させる。基盤計画に不足がある箇所は「⚠ 基盤への追加要求」(§13)に集約した。
 
 ## 1. 全体像とコード配置
 
@@ -9,7 +9,7 @@
 ```
 拡張(3a) ── GET /api/ingest/check ──► apps/api(書誌プレビュー・LaTeX有無・重複判定)
 拡張(3a) ── POST /api/ingest/arxiv | /api/ingest/pdf ──► apps/api
-  └─► papers UPSERT + library_items INSERT + jobs INSERT(kind='ingest') + arq enqueue(yk:bulk)
+  └─► papers UPSERT + library_items INSERT + jobs INSERT(kind='ingest') + arq enqueue(alinea:bulk)
 apps/worker(worker-bulk)... ingest_paper(job_id)
   queued → fetching → parsing → structuring → translating_abstract → readable
         → translating_body(translate_section ジョブ群) → complete
@@ -19,10 +19,10 @@ apps/worker(worker-bulk)... ingest_paper(job_id)
 
 ### 1.2 コード配置(確定)
 
-パーサ・アンカー処理は api / worker 共有ライブラリ `libs/yakudoku_core`(import 名 `yakudoku_core`。plans/01 §2.3)に置く。LLM 呼び出しのみ `packages/llm`(`yakudoku_llm`。plans/04 §2)を使う。
+パーサ・アンカー処理は api / worker 共有ライブラリ `libs/alinea_core`(import 名 `alinea_core`。plans/01 §2.3)に置く。LLM 呼び出しのみ `packages/llm`(`alinea_llm`。plans/04 §2)を使う。
 
 ```
-libs/yakudoku_core/src/yakudoku_core/
+libs/alinea_core/src/alinea_core/
   arxiv/
     ids.py             # URL/ID 正規化(§3.1)
     metadata.py        # メタデータ API + OAI-PMH ライセンス(§3.2, §3.3)
@@ -42,7 +42,7 @@ libs/yakudoku_core/src/yakudoku_core/
     bib_estimate.py    # アップロード PDF の書誌推定(§9.3)
     joblog.py          # 処理ログ・タイムライン記録(§10)
     progress.py        # 進捗計算・SSE 発行(§2.2)
-apps/worker/src/yakudoku_worker/
+apps/worker/src/alinea_worker/
   settings.py          # InteractiveWorker / BulkWorker(plans/01 §8.3 の arq 起動対象)
   tasks/ingest.py      # arq タスク ingest_paper(ctx, job_id)
   tasks/translate.py   # arq タスク translate_section(ctx, job_id)(§11)
@@ -104,7 +104,7 @@ plans/03 §1.7 `PipelineState` の定義「0–100(translating_body 中は翻訳
 
 - 固定値は各 stage の**開始(遷移)時**に設定する(fetching 実行中は 10 のまま。段内の連続的な進捗表示は translating_body のみ)。
 - 進捗イベントは stage 遷移時+`translating_body` 中は 5% 刻み(plans/03 §21.2)で Redis Pub/Sub `events:user:{user_id}` に `job.progress` を PUBLISH し、Redis Stream `events:log:{user_id}`(MAXLEN ~1000)にも書く(plans/01 §5)。
-- `readable_upto`(「§3 まで読めます」): 保存しない導出値。`translation_units` を先頭セクションから走査し、「対象ブロックが全訳済みの連続セクション」の最後の節番号を `§{n}` 形式で返す(`yakudoku_core.ingest.progress.readable_upto(set_id, revision)`)。
+- `readable_upto`(「§3 まで読めます」): 保存しない導出値。`translation_units` を先頭セクションから走査し、「対象ブロックが全訳済みの連続セクション」の最後の節番号を `§{n}` 形式で返す(`alinea_core.ingest.progress.readable_upto(set_id, revision)`)。
 
 ### 2.3 冪等性 — 段階ごとの再開条件(checkpoint カラムは持たない)
 
@@ -125,7 +125,7 @@ plans/03 §1.7 `PipelineState` の定義「0–100(translating_body 中は翻訳
 ### 2.4 リトライとエラー分類
 
 - 失敗時: `attempt < max_attempts`(既定 3。plans/02)なら `status='queued'` に戻し、arq の `defer_by` で指数バックオフ **30 秒 → 2 分 → 8 分**(attempt 1/2/3。plans/01 §4.5)。`attempt = max_attempts` 到達で `status='failed'` 確定。手動「再試行」は attempt=0 の新規 jobs 行(§2.7 の reingest と同経路)。
-- エラー分類(`yakudoku_core.arxiv.fetch.FetchError.kind` / パーサ例外):
+- エラー分類(`alinea_core.arxiv.fetch.FetchError.kind` / パーサ例外):
 
 | code(jobs.error 先頭・Problem code) | 例 | リトライ |
 |---|---|---|
@@ -144,8 +144,8 @@ plans/03 §1.7 `PipelineState` の定義「0–100(translating_body 中は翻訳
 - トリガ: `POST /api/translation-sets/{set_id}/prioritize`(plans/03 §7.4。ビューアがセクション入場時に呼ぶ)。
 - 実装(apps/api 内・同期):
   1. `UPDATE jobs SET priority = priority + 100 WHERE kind='translation' AND status='queued' AND payload->>'set_id' = :set_id AND payload->>'section_id' = :section_id RETURNING id`(+100 は plans/02 §4.13 の規約)。
-  2. 返った job_id を **`yk:interactive` キューへ二重 enqueue**(元の `yk:bulk` 側はそのまま)。先着 claim が実行し後着は no-op(§2.3)。
-- 直訳オンデマンド(plans/03 §7.3)・付録オンデマンド(§7.5)・「この表を翻訳」は最初から `yk:interactive` + `priority=100` で投入する(plans/01 §3.2)。
+  2. 返った job_id を **`alinea:interactive` キューへ二重 enqueue**(元の `alinea:bulk` 側はそのまま)。先着 claim が実行し後着は no-op(§2.3)。
+- 直訳オンデマンド(plans/03 §7.3)・付録オンデマンド(§7.5)・「この表を翻訳」は最初から `alinea:interactive` + `priority=100` で投入する(plans/01 §3.2)。
 
 ### 2.6 waiting_quota(翻訳段のみ停止)
 
@@ -193,7 +193,7 @@ plans/02 の CHECK(`ingest/translation/article/figure/vocab/resource_meta/export
 
 ### 3.1 URL 正規化(全パターン・実装コード)
 
-`yakudoku_core/arxiv/ids.py`。docs/02 §2 の「abs / pdf / html / 旧形式をすべて `arxiv_id + version` に解決」を次で確定する:
+`alinea_core/arxiv/ids.py`。docs/02 §2 の「abs / pdf / html / 旧形式をすべて `arxiv_id + version` に解決」を次で確定する:
 
 ```python
 import re
@@ -285,7 +285,7 @@ GET https://export.arxiv.org/oai2?verb=GetRecord&identifier=oai:arXiv.org:{arxiv
 → <metadata><arXiv …><license>http://creativecommons.org/licenses/by/4.0/</license>…
 ```
 
-正規化(`yakudoku_core/arxiv/licenses.py`。比較前に scheme を除去し末尾 `/` を落とす):
+正規化(`alinea_core/arxiv/licenses.py`。比較前に scheme を除去し末尾 `/` を落とす):
 
 | license URL(scheme・末尾スラッシュ非依存) | `papers.license` |
 |---|---|
@@ -350,7 +350,7 @@ async def latex_available(ref: ArxivRef, redis: Redis, http: httpx.AsyncClient) 
 - 対象 HTML: arXiv 公式 HTML(2023-12 以降の論文で提供)と ar5iv。**どちらも LaTeXML 生成で CSS クラス体系(`ltx_*`)が共通**のため、単一パーサ `html_parser.py` で両対応する。ルート要素は `article.ltx_document`。
 - **決定**: HTML パーサは **selectolax(lexbor バックエンド)** を使う。理由: C 実装で BeautifulSoup 比 10 倍以上高速、CSS セレクタと属性走査で本用途に十分(spec-decisions C7 の選択肢から確定)。
 - `parser_version = 'html-1.0.0'`。出力は plans/02 §3.2 の `DocumentContentJson`(`quality_level: "A"`, `source_format: 'arxiv_html'`)。
-- 回帰テストのフィクスチャは Rectified Flow(arXiv:2209.03003、C10 のシード論文)の公式 HTML と ar5iv HTML を `libs/yakudoku_core/tests/fixtures/` に凍結する。
+- 回帰テストのフィクスチャは Rectified Flow(arXiv:2209.03003、C10 のシード論文)の公式 HTML と ar5iv HTML を `libs/alinea_core/tests/fixtures/` に凍結する。
 
 ### 4.2 DOM → ブロック対応表(完全)
 
@@ -414,7 +414,7 @@ async def latex_available(ref: ArxivRef, redis: Redis, http: httpx.AsyncClient) 
 docs/01 §4.3「セクションパス + ブロック種別 + セクション内出現順 + 内容ハッシュ(先頭 64bit)」の実装。`translation_units.source_hash`(xxhash64 hex — plans/02 §4.4)と同一のハッシュ関数を使う。
 
 ```python
-# libs/yakudoku_core/src/yakudoku_core/parsing/block_ids.py
+# libs/alinea_core/src/alinea_core/parsing/block_ids.py
 import re
 import unicodedata
 from collections import defaultdict
@@ -664,7 +664,7 @@ structuring 段で実行し、`papers` を UPDATE する:
 1. PyMuPDF `doc.metadata` の title / author(空・"untitled" 類は無視)。
 2. 1 ページ目解析: 上部 40% 領域で最大フォントサイズの行群= title 候補。その直下〜アブストラクト見出しまでの行= authors 候補。
 3. DOI 検出: 1〜2 ページ目テキストに `10\.\d{4,9}/[-._;()/:A-Za-z0-9]+`。arXiv ID 検出: §3.1 の ID 正規表現(検出時は §7 の統合候補にもなる)。
-4. DOI があれば **Crossref** `GET https://api.crossref.org/works/{doi}`(User-Agent: `yakudoku/1.0 (mailto:contact@yakudoku.app)`、タイムアウト 5 秒)で補完: `title[0]`→title、`author[].given+family`→authors、`issued.date-parts`→published_on、`container-title[0]`→venue、DOI→doi。
+4. DOI があれば **Crossref** `GET https://api.crossref.org/works/{doi}`(User-Agent: `alinea/1.0 (mailto:contact@alinea.app)`、タイムアウト 5 秒)で補完: `title[0]`→title、`author[].given+family`→authors、`issued.date-parts`→published_on、`container-title[0]`→venue、DOI→doi。
 5. **推定フラグ**: Crossref で DOI 直一致の書誌が取れたら `bib_estimated=false`、それ以外は `true`(「書誌は推定」バッジ+編集可能フォームの表示条件。カラムとエンドポイントは §13-4 の追加要求)。
 
 ## 10. 取り込みタイムライン・処理ログの記録形式
@@ -702,7 +702,7 @@ structuring 段で実行し、`papers` を UPDATE する:
 
 ### 11.1 translating_abstract 段
 
-1. `yakudoku_llm.LLMRouter.run(task='translation', …)` でアブストラクトを翻訳 → `papers.abstract_ja`。
+1. `alinea_llm.LLMRouter.run(task='translation', …)` でアブストラクトを翻訳 → `papers.abstract_ja`。
 2. `LLMRouter.run(task='summary', …)`(structured output)で ✦3行要約+提案タグを **1 呼び出し**で生成する(**確定**。要約とタグ提案を別呼び出しに分けない)。JSON Schema 名は `summary_3line_v1`(plans/07 §3.1 も同スキーマ: `{summary_lines: string[3], suggested_tags: string[]}`):
 
 ```json
@@ -718,7 +718,7 @@ structuring 段で実行し、`papers` を UPDATE する:
 1. readable 段の冒頭で翻訳セットを確保: public 論文 → `translation_sets (revision_id, style='natural', scope='shared')` を `ON CONFLICT DO NOTHING` + SELECT(`uq_translation_sets_shared`)。private 論文 → `scope='personal', user_id, base_set_id=NULL`。`glossary_snapshot` は shared ならグローバル既定用語のみ(plans/02 §1.4)。
 2. 自動翻訳対象ブロック(分母 `stats.translatable_blocks`): type ∈ {paragraph, heading, list, quote, theorem, footnote} + figure/table のキャプション。除外: equation・code・algorithm・reference_entry(plans/06 §2.1「equation / code / algorithm / reference_entry は常に対象外」が正 — algorithm=擬似コード本体は翻訳しない)・`is_appendix` セクション(設定 4f が既定 ON の間)・表セル(同)。docs/03 §6.1 の進捗分母定義と一致。
 3. 第 1 本文セクションを ingest ジョブ内で直接翻訳(§2.1)→ stage=readable。
-4. 残セクションぶんの `jobs (kind='translation', payload={"set_id", "section_id", "block_ids": […], "reason": "initial"})` をセクション文書順に INSERT + `yk:bulk` enqueue(§2.3 のアドバイザリロックで冪等)→ stage=translating_body。
+4. 残セクションぶんの `jobs (kind='translation', payload={"set_id", "section_id", "block_ids": […], "reason": "initial"})` をセクション文書順に INSERT + `alinea:bulk` enqueue(§2.3 のアドバイザリロックで冪等)→ stage=translating_body。
 5. **30 ページ超の扱い**(docs/03 §2 設定「30 ページ超の論文はセクション選択を提案」ON のとき): 既定は全選択のまま全ジョブを張り出し、ビューア側の提案 UI でユーザーが選択を確定したら選外セクションの queued ジョブを `status='canceled'` にする(確定エンドポイントは §13-6 の追加要求)。提案であって停止はしない(P6)。
 
 ### 11.3 translate_section ジョブと完了検知

@@ -12,16 +12,16 @@
 
 ## 2. パッケージ配置とファイル構成
 
-決定: 抽象化層は共有 Python パッケージ **`packages/llm`(配布名 `yakudoku-llm`、import 名 `yakudoku_llm`)** に置き、`apps/api` と `apps/worker` の `pyproject.toml` から path 依存(`yakudoku-llm @ file://../../packages/llm`、uv workspace)で参照する。理由: 翻訳ジョブ(worker)とチャット(api)の両方が同一実装を使うため、どちらかのアプリ配下に置くと依存が逆転する。
+決定: 抽象化層は共有 Python パッケージ **`packages/llm`(配布名 `alinea-llm`、import 名 `alinea_llm`)** に置き、`apps/api` と `apps/worker` の `pyproject.toml` から path 依存(`alinea-llm @ file://../../packages/llm`、uv workspace)で参照する。理由: 翻訳ジョブ(worker)とチャット(api)の両方が同一実装を使うため、どちらかのアプリ配下に置くと依存が逆転する。
 
 ```
 packages/llm/
-  pyproject.toml               # [project] name = "yakudoku-llm", requires-python = ">=3.12"
+  pyproject.toml               # [project] name = "alinea-llm", requires-python = ">=3.12"
                                # 依存: pydantic>=2.7, openai>=2.0, anthropic>=0.60, google-genai>=1.20,
                                #       tiktoken>=0.9, pyyaml>=6.0, cryptography>=44.0, httpx>=0.27
   models.yaml                  # モデルレジストリのシード(§7)
   routing.yaml                 # タスクルーティングのシード(§8)
-  src/yakudoku_llm/
+  src/alinea_llm/
     __init__.py                # 公開 API の再エクスポート
     types.py                   # 共通型(§3)
     errors.py                  # ProviderError と分類(§4)
@@ -62,7 +62,7 @@ apps/api/app/models/llm.py         # SQLAlchemy モデル(§10・§11・§15 の
 
 ## 3. 共通型定義(完全形)
 
-`packages/llm/src/yakudoku_llm/types.py`:
+`packages/llm/src/alinea_llm/types.py`:
 
 ```python
 from __future__ import annotations
@@ -183,7 +183,7 @@ class ImageResult(BaseModel):
 
 ## 4. エラー分類(ProviderError)
 
-`packages/llm/src/yakudoku_llm/errors.py`:
+`packages/llm/src/alinea_llm/errors.py`:
 
 ```python
 from __future__ import annotations
@@ -262,7 +262,7 @@ class ProviderChainExhausted(Exception):
 
 ## 5. Protocol 定義(完全形)
 
-`packages/llm/src/yakudoku_llm/protocols.py`:
+`packages/llm/src/alinea_llm/protocols.py`:
 
 ```python
 from __future__ import annotations
@@ -1162,7 +1162,7 @@ class ImageRouter:
 ### 9.3 呼び出し例(翻訳ワーカー)
 
 ```python
-# apps/worker/src/yakudoku_worker/tasks/translate_blocks.py(plans/06 側の管轄。呼び出し形だけ規定)
+# apps/worker/src/alinea_worker/tasks/translate_blocks.py(plans/06 側の管轄。呼び出し形だけ規定)
 resp = await llm_router.run(
     "translation",
     build=lambda model_id: build_translation_request(model_id, block, ctx, glossary_snapshot),
@@ -1243,7 +1243,7 @@ GROUP BY user_id, date_trunc('month', created_at), task;
 
 ### 11.2 暗号化保存
 
-- **Fernet(cryptography)+マスタキー**(決定: 暗号化方式は本書を正とする。plans/02 §4.2・plans/03 §17.3 の「AES-256-GCM」「`BYOK_ENCRYPTION_KEY`」「`API_KEY_ENC_KEY`」の記述は本書に追随して更新する — 基盤への追加要求)。マスタキーは環境変数 `YAKUDOKU_KEY_ENCRYPTION_SECRET`(Fernet 標準の 44 文字 urlsafe base64)。ローテーション用にカンマ区切り複数指定を許し `MultiFernet` で復号(先頭キーで暗号化)。
+- **Fernet(cryptography)+マスタキー**(決定: 暗号化方式は本書を正とする。plans/02 §4.2・plans/03 §17.3 の「AES-256-GCM」「`BYOK_ENCRYPTION_KEY`」「`API_KEY_ENC_KEY`」の記述は本書に追随して更新する — 基盤への追加要求)。マスタキーは環境変数 `ALINEA_KEY_ENCRYPTION_SECRET`(Fernet 標準の 44 文字 urlsafe base64)。ローテーション用にカンマ区切り複数指定を許し `MultiFernet` で復号(先頭キーで暗号化)。
 - 平文キーは DB・ログ・例外メッセージに残さない。表示は `key_hint`(末尾 4 文字)のみ。**再表示不可・再入力のみ**(docs/09 §4 の決定)。
 - テーブルは **plans/02 §4.2 の `byok_api_keys` を正**とする(plans/07 §12-⚠2 の統一方針に従い、本書旧称 `user_provider_keys` は廃止)。本層の要件の 2 列は **plans/02 §4.2 の CREATE TABLE に反映済み**(Fernet 化コメントも反映済み):
 
@@ -1411,8 +1411,8 @@ CREATE TABLE user_task_model_overrides (  -- 設定 4f のユーザー選択
 | `GEMINI_API_KEY` | 運営キー(google-genai が既定で参照する変数名に合わせる) | `AIza...` |
 | `DEEPSEEK_API_KEY` | 運営キー | `sk-...` |
 | `XAI_API_KEY` | 運営キー(テキストは既定チェーン外、画像+BYOK 検証用) | `xai-...` |
-| `YAKUDOKU_KEY_ENCRYPTION_SECRET` | BYOK Fernet マスタキー(カンマ区切りでローテーション) | 44 文字 base64 |
-| `YAKUDOKU_LLM_ROUTE_CACHE_TTL_S` | ルート解決の Redis キャッシュ TTL(既定 `60`) | `60` |
+| `ALINEA_KEY_ENCRYPTION_SECRET` | BYOK Fernet マスタキー(カンマ区切りでローテーション) | 44 文字 base64 |
+| `ALINEA_LLM_ROUTE_CACHE_TTL_S` | ルート解決の Redis キャッシュ TTL(既定 `60`) | `60` |
 
 ## 17. テスト計画(pytest)
 

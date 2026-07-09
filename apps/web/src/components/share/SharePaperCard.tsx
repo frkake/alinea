@@ -66,7 +66,7 @@ export function SharePaperCard({
                 href={arxivUrl}
                 target="_blank"
                 rel="noopener noreferrer nofollow"
-                className="yk-share-arxiv"
+                className="alinea-share-arxiv"
                 style={{ color: "var(--pr-acc)", fontWeight: 600, textDecoration: "none" }}
               >
                 arXiv ↗

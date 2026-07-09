@@ -1,12 +1,12 @@
 """記事 wire 変換のテスト(plans/03 §19.1)。
 
-``yakudoku_core.article.wire`` は DB 保存形(``article_blocks.content``。フラット)を
+``alinea_core.article.wire`` は DB 保存形(``article_blocks.content``。フラット)を
 API/ジョブ結果向けの wire 形(ネスト)へ変換する純関数群。DB・非同期は不要(unit)。
 """
 
 from __future__ import annotations
 
-from yakudoku_core.article.wire import (
+from alinea_core.article.wire import (
     EvidenceDisplayResolver,
     ExplainerRef,
     article_block_wire_id,
@@ -16,9 +16,9 @@ from yakudoku_core.article.wire import (
     derive_display,
     parse_article_block_pk,
 )
-from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
-from yakudoku_core.document.inlines import Inline
-from yakudoku_core.search.rebuild import BlockIndexRow
+from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
+from alinea_core.document.inlines import Inline
+from alinea_core.search.rebuild import BlockIndexRow
 
 
 def _content() -> DocumentContent:

@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties } from "react";
-import type { FigureItem } from "@yakudoku/api-client";
+import type { FigureItem } from "@alinea/api-client";
 import { AiMark } from "@/components/ui/AIBadge";
 
 export interface FigureRefPopoverProps {
@@ -164,7 +164,7 @@ function CaptionSkeleton({ width, height }: { width: string; height: number }) {
         height,
         borderRadius: 3,
         background: "var(--pr-bg-thumb)",
-        animation: "yk-pulse 1.2s ease-in-out infinite",
+        animation: "alinea-pulse 1.2s ease-in-out infinite",
       }}
     />
   );

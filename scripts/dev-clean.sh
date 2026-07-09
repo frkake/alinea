@@ -22,8 +22,8 @@ is_dev_process() {
 
   [[ "$cmdline" =~ (^|[[:space:]])pnpm([[:space:]][^[:space:]]+)*[[:space:]]dev([[:space:]]|$) ]] \
     || [[ "$cmdline" =~ (^|[[:space:]])turbo[[:space:]]dev([[:space:]]|$) ]] \
-    || [[ "$cmdline" == *"uvicorn yakudoku_api.main:app"* ]] \
-    || [[ "$cmdline" == *"arq yakudoku_worker.main"* ]] \
+    || [[ "$cmdline" == *"uvicorn alinea_api.main:app"* ]] \
+    || [[ "$cmdline" == *"arq alinea_worker.main"* ]] \
     || [[ "$cmdline" =~ (^|[[:space:]])next[[:space:]]dev([[:space:]]|$) ]] \
     || [[ "$cmdline" =~ (^|[[:space:]])wxt([[:space:]]|$) ]] \
     || [[ "$cmdline" == *"/wxt/bin/wxt.mjs"* ]]
@@ -45,11 +45,11 @@ while IFS= read -r -d "" proc; do
 done < <(find /proc -maxdepth 1 -type d -regex "/proc/[0-9]+" -print0 2>/dev/null)
 
 if (( ${#pids[@]} == 0 )); then
-  echo "No yakudoku dev processes found."
+  echo "No alinea dev processes found."
   exit 0
 fi
 
-echo "Stopping yakudoku dev processes: ${pids[*]}"
+echo "Stopping alinea dev processes: ${pids[*]}"
 kill -TERM "${pids[@]}" 2>/dev/null || true
 
 still_running=()

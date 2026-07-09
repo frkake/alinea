@@ -14,7 +14,7 @@ export default function ShareError({ reset }: { error: Error; reset: () => void 
   return (
     <ShareThemeScope>
       <div
-        className="yk-share-scope"
+        className="alinea-share-scope"
         style={{
           minHeight: "100vh",
           display: "flex",

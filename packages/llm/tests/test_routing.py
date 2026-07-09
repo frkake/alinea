@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from yakudoku_llm.routing import TASKS, RouteResolver, RoutingConfig
+from alinea_llm.routing import TASKS, RouteResolver, RoutingConfig
 
 _ROUTING_YAML = Path(__file__).resolve().parents[1] / "routing.yaml"
 

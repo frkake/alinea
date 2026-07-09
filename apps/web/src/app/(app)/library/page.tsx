@@ -8,7 +8,7 @@ import {
   libraryItemsList,
   savedFiltersCreate,
   type LibraryItemSummary,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Popover } from "@/components/ui/Popover";
 import { useToast } from "@/components/ui/Toast";

@@ -2,7 +2,7 @@
 
 import { type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { figuresGetOverview } from "@yakudoku/api-client";
+import { figuresGetOverview } from "@alinea/api-client";
 import { Popover } from "@/components/ui/Popover";
 import { articleKeys } from "@/components/viewer/article/queries";
 

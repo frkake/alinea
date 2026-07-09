@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { figuresRestoreOverviewVersion, figuresRewriteOverview, type Problem } from "@yakudoku/api-client";
+import { figuresRestoreOverviewVersion, figuresRewriteOverview, type Problem } from "@alinea/api-client";
 import { useToast } from "@/components/ui/Toast";
 import { useJobEvents } from "@/hooks/useJobEvents";
 import { useViewerStore } from "@/stores/viewer-store";

@@ -15,15 +15,15 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from alinea_core.db.models import DocumentRevision, LibraryItem, Paper, TranslationSet, User
+from alinea_core.document.blocks import DocumentContent
+from alinea_core.ingest import build_timeline
+from alinea_core.jobs.store import JobStore
+from alinea_core.storage.s3 import S3Storage, StorageKeys
+from alinea_core.translation.pipeline import compute_translation_scope
+from alinea_worker.tasks.ingest import ingest_paper
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.db.models import DocumentRevision, LibraryItem, Paper, TranslationSet, User
-from yakudoku_core.document.blocks import DocumentContent
-from yakudoku_core.ingest import build_timeline
-from yakudoku_core.jobs.store import JobStore
-from yakudoku_core.storage.s3 import S3Storage, StorageKeys
-from yakudoku_core.translation.pipeline import compute_translation_scope
-from yakudoku_worker.tasks.ingest import ingest_paper
 
 _FIXTURES = Path(__file__).resolve().parents[3] / "packages" / "py-core" / "tests" / "fixtures"
 

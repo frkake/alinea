@@ -15,15 +15,15 @@ from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.db.models import LibraryItem, Paper, User
-from yakudoku_core.db.models import ResourceLink as ResourceLinkModel
-from yakudoku_core.jobs.store import JobStore
-from yakudoku_worker.tasks.fetch_resource_meta import (
+from alinea_core.db.models import LibraryItem, Paper, User
+from alinea_core.db.models import ResourceLink as ResourceLinkModel
+from alinea_core.jobs.store import JobStore
+from alinea_worker.tasks.fetch_resource_meta import (
     classify_kind,
     run_fetch_resource_meta_job,
     youtube_video_id,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 # ---------------------------------------------------------------------------

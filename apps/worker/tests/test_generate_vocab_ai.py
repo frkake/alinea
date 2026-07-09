@@ -16,12 +16,12 @@ import json
 import uuid
 from typing import Any
 
+from alinea_core.db.models import Job, LibraryItem, Paper, User, VocabEntry
+from alinea_core.jobs.store import JobStore
+from alinea_llm.router import LLMRouter
+from alinea_llm.testing.fake_provider import FakeLLMProvider
+from alinea_worker.tasks.generate_vocab_ai import ALL_FIELDS, run_generate_vocab_ai
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.db.models import Job, LibraryItem, Paper, User, VocabEntry
-from yakudoku_core.jobs.store import JobStore
-from yakudoku_llm.router import LLMRouter
-from yakudoku_llm.testing.fake_provider import FakeLLMProvider
-from yakudoku_worker.tasks.generate_vocab_ai import ALL_FIELDS, run_generate_vocab_ai
 
 _STRUCTURED_RESPONSE: dict[str, Any] = {
     "kind": "idiom",

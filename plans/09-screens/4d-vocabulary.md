@@ -1,6 +1,6 @@
 # 画面 4d: 語彙帳
 
-> **対象読者と前提**: 本書は「訳読 / YAKUDOKU — 論文読解ワークベンチ」の apps/web(Next.js 15 App Router + React 19 + TypeScript 5 + Tailwind CSS v4 + TanStack Query v5 + Zustand)実装者向けに、画面 4d(語彙帳 — 論文から育てる英語学習)を確定デザインと 100% 一致させるための完全仕様である。機能仕様は [docs/11-vocabulary.md](../../docs/11-vocabulary.md) を正、ピクセル値は確定デザイン抽出 `extract/4d.md` を正とする(本書 §4 に全量転記済み)。共通コンポーネント名は [plans/08-design-system.md](../08-design-system.md)、API エンドポイント名は [plans/03-api.md](../03-api.md)、DB スキーマは [plans/02-data-model.md](../02-data-model.md)(`vocab_entries`、02 §4.8)に従う。本書に書かれた値・識別子・文言が実装の正であり、独自の解釈・丸めを禁止する。
+> **対象読者と前提**: 本書は「Alinea — 論文読解ワークベンチ」の apps/web(Next.js 15 App Router + React 19 + TypeScript 5 + Tailwind CSS v4 + TanStack Query v5 + Zustand)実装者向けに、画面 4d(語彙帳 — 論文から育てる英語学習)を確定デザインと 100% 一致させるための完全仕様である。機能仕様は [docs/11-vocabulary.md](../../docs/11-vocabulary.md) を正、ピクセル値は確定デザイン抽出 `extract/4d.md` を正とする(本書 §4 に全量転記済み)。共通コンポーネント名は [plans/08-design-system.md](../08-design-system.md)、API エンドポイント名は [plans/03-api.md](../03-api.md)、DB スキーマは [plans/02-data-model.md](../02-data-model.md)(`vocab_entries`、02 §4.8)に従う。本書に書かれた値・識別子・文言が実装の正であり、独自の解釈・丸めを禁止する。
 
 ## 1. 概要とルート
 
@@ -72,7 +72,7 @@ export const qk = {
 ```ts
 // apps/web/src/stores/vocab-review.ts
 import { create } from 'zustand';
-import type { VocabEntryDetail, ReviewResult } from '@yakudoku/api-client';
+import type { VocabEntryDetail, ReviewResult } from '@alinea/api-client';
 
 interface VocabReviewStore {
   queue: VocabEntryDetail[];      // 出題残(先頭 = 現在のカード)。[] かつ open=false が初期状態
@@ -122,7 +122,7 @@ apps/web/src/app/(app)/vocab/[[...vocabId]]/page.tsx  … VocabPage(画面固有
 画面固有コンポーネント(配置: `apps/web/src/components/vocab/`)の props 型:
 
 ```ts
-import type { VocabKind, VocabEntrySummary, VocabEntryDetail, ReviewResult } from '@yakudoku/api-client';
+import type { VocabKind, VocabEntrySummary, VocabEntryDetail, ReviewResult } from '@alinea/api-client';
 
 interface VocabHeaderProps {
   total: number;                       // counts.all → 「46 語 — 読んだ論文の文脈から」
@@ -202,7 +202,7 @@ interface VocabReviewModalProps {}           // 状態はすべて useVocabRevie
 ```
 ┌────────────────────────────────────────────────────────────── 1440px ─┐
 │ トップバー h=52px  #FFFFFF  border-bottom:1px #E6E3DA                  │
-│ [訳ロゴ+訳読 w=198] [検索バー w=460 h=32] …flex:1… [◷30×30] [YK30×30] │
+│ [Aロゴ+Alinea w=198] [検索バー w=460 h=32] …flex:1… [◷30×30] [YK30×30] │
 ├───────────┬───────────────────────────────────────────────────────────┤
 │ 左サイド   │ メインエリア flex:1  padding:16px 22px  縦flex gap:12px    │
 │ w=216px   │ ┌ 見出し行(語彙帳 / 46語 / 検索 / 復習をはじめるボタン) ┐ │
@@ -226,8 +226,8 @@ interface VocabReviewModalProps {}           // 状態はすべて useVocabRevie
 背景 `#FFFFFF`(`--pr-bg-card`)、border-bottom:1px solid `#E6E3DA`(`--pr-border-header`)、display:flex; align-items:center; gap:14px; padding:0 18px。
 
 1. ロゴ群(flex, gap:8px, width:198px)
-   - ロゴマーク: 22×22px、border-radius:6px、背景 `var(--pr-a)`(#3E5C76)、文字「訳」#FFFFFF、11.5px/700、inline-flex 中央。
-   - ワードマーク「訳読」: 14.5px/700、letter-spacing:0.5px。
+   - ロゴマーク: 22×22px、border-radius:6px、背景 `var(--pr-a)`(#3E5C76)、文字「A」#FFFFFF、11.5px/700、inline-flex 中央。
+   - ワードマーク「Alinea」: 14.5px/700、letter-spacing:0.5px。
 2. グローバル検索バー(= `SearchBox variant='global'`): flex, gap:8px, height:32px, width:460px、背景 `#F1EFE9`(`--pr-bg-inset`)、border-radius:7px、padding:0 12px、12px、color `#8A8E94`(`--pr-text-icon`)。
    - 虫眼鏡 SVG 12×12(`MagnifierIcon`: circle cx5 cy5 r3.6 + 線 M8 8→10.6 10.6、stroke currentColor 1.3、linecap round)。
    - プレースホルダ「ライブラリ全体を検索 — 本文・訳文・メモ・チャット」。
@@ -336,7 +336,7 @@ interface VocabReviewModalProps {}           // 状態はすべて useVocabRevie
 
 ### 4.3 全 UI 文言(逐語)
 
-トップバー: 「訳」「訳読」「ライブラリ全体を検索 — 本文・訳文・メモ・チャット」「⌘K」「◷」「YK」
+トップバー: 「A」「Alinea」「ライブラリ全体を検索 — 本文・訳文・メモ・チャット」「⌘K」「◷」「YK」
 
 サイドバー: 「ホーム」「ライブラリ」「41」「語彙帳」「46」「コレクション」「輪読会 2026-07」「5」「Diffusion 蒸留」「8」「保存フィルタ」「締切あり」「3」「cs.CV の未読」「7」
 

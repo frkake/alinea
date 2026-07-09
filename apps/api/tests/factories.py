@@ -9,7 +9,7 @@ plans/02 §3)を明示的に組めるようにするため。
   参照するテストは呼び出し側で `await db.commit()` すること(既存テストの慣習)。
 - 制約(CHECK / 部分一意)は apps/api/alembic/versions/0001_initial_schema.py が正。
   既定値はすべて制約を満たす有効値にしてある。
-- 後始末は `yakudoku_api.services.user_service.purge_user(db, user_id)` を使う
+- 後始末は `alinea_api.services.user_service.purge_user(db, user_id)` を使う
   (users 1 行 DELETE で個人資産がカスケード削除される。docs/01 §13)。
 """
 
@@ -20,8 +20,7 @@ import hashlib
 import uuid
 from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.db.models import (
+from alinea_core.db.models import (
     Annotation,
     Article,
     ArticleBlock,
@@ -44,6 +43,7 @@ from yakudoku_core.db.models import (
     User,
     VocabEntry,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _uid() -> str:

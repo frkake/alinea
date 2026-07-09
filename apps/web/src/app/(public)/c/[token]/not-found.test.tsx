@@ -9,8 +9,8 @@ describe("ShareNotFound(§5.3)", () => {
     expect(
       screen.getByText(/共有リンクが無効化されたか、URL が間違っています/),
     ).toBeInTheDocument();
-    expect(screen.getByText("訳読")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "訳読をはじめる" })).toHaveAttribute(
+    expect(screen.getByText("Alinea")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Alineaをはじめる" })).toHaveAttribute(
       "href",
       "/login",
     );

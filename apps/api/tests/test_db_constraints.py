@@ -15,9 +15,9 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from alinea_core.db.models import DocumentRevision, LibraryItem
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.db.models import DocumentRevision, LibraryItem
 
 
 async def _rejects(db: AsyncSession, obj: Any) -> None:

@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, type CSSProperties, type KeyboardEvent, type UIEvent } from "react";
-import type { VocabEntrySummary } from "@yakudoku/api-client";
+import type { VocabEntrySummary } from "@alinea/api-client";
 import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { VocabKindBadge } from "@/components/vocab/VocabKindBadge";
@@ -269,7 +269,7 @@ function SkeletonRow() {
     height: h,
     borderRadius: 3,
     background: "var(--pr-bg-muted)",
-    animation: "yk-pulse 1.2s ease-in-out infinite",
+    animation: "alinea-pulse 1.2s ease-in-out infinite",
   });
   return (
     <div

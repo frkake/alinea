@@ -1,14 +1,14 @@
 /* apps/web グローバルスタイル(plans/08 §4.2 取り込み順)。
    Tailwind v4 → tokens → accents(生成物)→ fonts → theme(@theme inline)。 */
 @import "tailwindcss";
-@import "@yakudoku/tokens/css/tokens.css";
-@import "@yakudoku/tokens/css/accents.css";
-@import "@yakudoku/tokens/css/fonts.css";
-@import "@yakudoku/tokens/css/theme.css";
+@import "@alinea/tokens/css/tokens.css";
+@import "@alinea/tokens/css/accents.css";
+@import "@alinea/tokens/css/fonts.css";
+@import "@alinea/tokens/css/theme.css";
 /* ビューア訳文モードのブロック/インライン数式(lib/katex-render.ts)。 */
 @import "katex/dist/katex.min.css";
 
-.yk-math-fallback {
+.alinea-math-fallback {
   display: inline-block;
   max-width: 100%;
   overflow-x: auto;
@@ -67,24 +67,24 @@ select:focus-visible,
 }
 
 /* セグメント選択の影はダークで消す(plans/08 §5.1・§8.3 の唯一の例外)。 */
-html[data-theme="dark"] .yk-seg-selected {
+html[data-theme="dark"] .alinea-seg-selected {
   box-shadow: none;
 }
 
 /* ライブラリテーブル行のホバー(plans/08 §5.15 決定)。選択中行はインライン bg が優先。 */
-.yk-lib-row:hover {
+.alinea-lib-row:hover {
   background: var(--pr-bg-hover);
 }
 
 /* 横断検索スニペットのヒットマーク(plans/08 §5.17 決定)。 */
-.yk-search-hit {
+.alinea-search-hit {
   background: rgba(196, 148, 50, 0.3);
   border-radius: 2px;
   padding: 0 1px;
 }
 
 /* 訳文モード: スケルトン脈動(1b §5.9)。 */
-@keyframes yk-pulse {
+@keyframes alinea-pulse {
   0%,
   100% {
     opacity: 1;
@@ -95,49 +95,49 @@ html[data-theme="dark"] .yk-seg-selected {
 }
 
 /* 訳文モード: 段落ホバーで「対」ボタンを出す(1b §5.3)。 */
-.yk-paragraph .yk-parallel-toggle {
+.alinea-paragraph .alinea-parallel-toggle {
   opacity: 0;
   transition: opacity 120ms ease;
 }
-.yk-paragraph:hover .yk-parallel-toggle,
-.yk-paragraph .yk-parallel-toggle:focus-visible {
+.alinea-paragraph:hover .alinea-parallel-toggle,
+.alinea-paragraph .alinea-parallel-toggle:focus-visible {
   opacity: 1;
 }
-.yk-paragraph p {
+.alinea-paragraph p {
   overflow-wrap: anywhere;
 }
 
 /* 訳文モード: ジャンプ先ブロックの一時強調(1b §5.2 / §5.7)。 */
-.yk-block-flash {
+.alinea-block-flash {
   background: var(--pr-acc-s);
   transition: background 300ms ease;
 }
 
 /* KaTeX ブロック数式のホバーアクション(1b: ✦この式を説明 / LaTeXをコピー)。 */
-.yk-equation .yk-equation-actions {
+.alinea-equation .alinea-equation-actions {
   opacity: 0;
   transition: opacity 120ms ease;
 }
-.yk-equation:hover .yk-equation-actions,
-.yk-equation:focus-within .yk-equation-actions {
+.alinea-equation:hover .alinea-equation-actions,
+.alinea-equation:focus-within .alinea-equation-actions {
   opacity: 1;
 }
 
 /* PDF モードのキャンバス背景(2a §4 決定: plans/08 --pr-bg-canvas とは実測が異なる
    ため component 側の例外色。ダークは --pr-bg-canvas に切替)。 */
-.yk-pdf-canvas-bg {
+.alinea-pdf-canvas-bg {
   background: #dddad1;
 }
-html[data-theme="dark"] .yk-pdf-canvas-bg {
+html[data-theme="dark"] .alinea-pdf-canvas-bg {
   background: var(--pr-bg-canvas);
 }
 
-.yk-pdf-page-layer {
+.alinea-pdf-page-layer {
   --scale-factor: 1;
 }
 
 /* pdf.js text layer: canvas の上に透明テキストを重ね、PDF本文の選択/コピーを可能にする。 */
-.yk-pdf-text-layer {
+.alinea-pdf-text-layer {
   position: absolute;
   inset: 0;
   overflow: clip;
@@ -152,7 +152,7 @@ html[data-theme="dark"] .yk-pdf-canvas-bg {
   user-select: text;
   z-index: 1;
 }
-.yk-pdf-text-layer :is(span, br) {
+.alinea-pdf-text-layer :is(span, br) {
   position: absolute;
   color: transparent;
   white-space: pre;
@@ -160,25 +160,25 @@ html[data-theme="dark"] .yk-pdf-canvas-bg {
   transform-origin: 0% 0%;
   user-select: text;
 }
-.yk-pdf-text-layer > :not(.markedContent),
-.yk-pdf-text-layer .markedContent span:not(.markedContent) {
+.alinea-pdf-text-layer > :not(.markedContent),
+.alinea-pdf-text-layer .markedContent span:not(.markedContent) {
   z-index: 1;
 }
-.yk-pdf-text-layer span.markedContent {
+.alinea-pdf-text-layer span.markedContent {
   top: 0;
   height: 0;
 }
-.yk-pdf-text-layer span[role="img"] {
+.alinea-pdf-text-layer span[role="img"] {
   user-select: none;
   cursor: default;
 }
-.yk-pdf-text-layer ::selection {
+.alinea-pdf-text-layer ::selection {
   background: color-mix(in srgb, var(--pr-acc) 35%, transparent);
 }
-.yk-pdf-text-layer br::selection {
+.alinea-pdf-text-layer br::selection {
   background: transparent;
 }
-.yk-pdf-text-layer .endOfContent {
+.alinea-pdf-text-layer .endOfContent {
   display: block;
   position: absolute;
   inset: 100% 0 0;
@@ -186,38 +186,38 @@ html[data-theme="dark"] .yk-pdf-canvas-bg {
   cursor: default;
   user-select: none;
 }
-.yk-pdf-text-layer.selecting .endOfContent {
+.alinea-pdf-text-layer.selecting .endOfContent {
   top: 0;
 }
-.yk-pdf-text-layer.selecting ~ .yk-pdf-link-layer,
-.yk-pdf-text-layer.selecting ~ .yk-pdf-link-layer a {
+.alinea-pdf-text-layer.selecting ~ .alinea-pdf-link-layer,
+.alinea-pdf-text-layer.selecting ~ .alinea-pdf-link-layer a {
   pointer-events: none;
 }
 
-.yk-pdf-link-layer {
+.alinea-pdf-link-layer {
   position: absolute;
   inset: 0;
   z-index: 2;
   pointer-events: none;
 }
-.yk-pdf-link-layer a {
+.alinea-pdf-link-layer a {
   pointer-events: none;
   border-radius: 2px;
 }
-.yk-pdf-link-layer a:hover {
+.alinea-pdf-link-layer a:hover {
   background: color-mix(in srgb, var(--pr-acc) 22%, transparent);
   outline: 1px solid color-mix(in srgb, var(--pr-acc) 60%, transparent);
 }
 
 /* 共有ページ(4c)の CTA・外部リンクホバー・フォーカスリング(§5.7 決定: デザイン未描画。
    新色は発明せず既存トークンのみで表現する)。 */
-.yk-share-cta:hover {
+.alinea-share-cta:hover {
   background: color-mix(in srgb, var(--pr-acc) 16%, transparent);
 }
-.yk-share-arxiv:hover {
+.alinea-share-arxiv:hover {
   text-decoration: underline;
 }
-.yk-share-scope a:focus-visible {
+.alinea-share-scope a:focus-visible {
   outline: 2px solid var(--pr-acc);
   outline-offset: 2px;
 }

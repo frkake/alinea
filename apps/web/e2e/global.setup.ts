@@ -55,11 +55,11 @@ async function loginViaEmail(
 }
 
 setup("authenticate dev user", async ({ page, request }) => {
-  await loginViaEmail(page, request, "dev@yakudoku.test");
+  await loginViaEmail(page, request, "dev@alinea.test");
   await page.context().storageState({ path: "e2e/.auth/user.json" });
 });
 
 setup("authenticate member user", async ({ page, request }) => {
-  await loginViaEmail(page, request, "member@yakudoku.test");
+  await loginViaEmail(page, request, "member@alinea.test");
   await page.context().storageState({ path: "e2e/.auth/member.json" });
 });

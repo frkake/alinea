@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState, type CSSProperties } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { ReadingStatus } from "@yakudoku/tokens";
+import type { ReadingStatus } from "@alinea/tokens";
 import { QualityBadge } from "@/components/ui/QualityBadge";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";

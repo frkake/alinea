@@ -17,7 +17,7 @@ import {
 } from "@/lib/theme";
 
 export const metadata: Metadata = {
-  title: "訳読 / YAKUDOKU",
+  title: "Alinea",
   description: "英語論文を日本語で深く読むための研究者向けワークベンチ。",
 };
 

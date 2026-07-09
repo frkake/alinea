@@ -7,7 +7,7 @@ export { SKIP_OFFSET_ATTR };
  * フォールバック)。選択メニューのアンカー構築(1b §5.5)で `side: 'source'` を
  * 判定するために使う(このマーカーの祖先内での選択は 'source'、それ以外は 'translation')。
  */
-export const SOURCE_TEXT_ATTR = "data-yk-source-text";
+export const SOURCE_TEXT_ATTR = "data-alinea-source-text";
 
 /**
  * テキスト選択 → ブロック内文字オフセット変換(1b §5.5「アンカー構築」)。

@@ -46,13 +46,13 @@ test.describe("PW-20 語彙帳", () => {
     const dismiss = page.getByRole("button", { name: "閉じる" });
     if (await dismiss.isVisible().catch(() => false)) await dismiss.click();
 
-    const para = page.locator(".yk-paragraph[data-block-id]").first();
+    const para = page.locator(".alinea-paragraph[data-block-id]").first();
     await para.scrollIntoViewIfNeeded();
     await para.hover();
     await para.getByRole("button", { name: "対訳を表示" }).click();
     const popover = page.getByRole("dialog", { name: "対訳" });
     await expect(popover).toBeVisible();
-    await dragSelect(page, popover.locator("[data-yk-source-text]"));
+    await dragSelect(page, popover.locator("[data-alinea-source-text]"));
 
     const menu = page.getByRole("menu", { name: "選択メニュー" });
     await expect(menu).toBeVisible();
@@ -109,7 +109,7 @@ test.describe("PW-20 語彙帳", () => {
   });
 
   test("復習をはじめる→2択評価→次の復習更新", async ({ page }) => {
-    const due = seedDueVocab("dev@yakudoku.test");
+    const due = seedDueVocab("dev@alinea.test");
     try {
       await page.goto(`/vocab/${due.vocab_id}`);
       await expect(page.getByText(due.term).first()).toBeVisible();

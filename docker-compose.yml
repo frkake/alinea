@@ -1,6 +1,6 @@
 # docker-compose.yml(リポジトリルート)
 # 開発でコンテナ化するのはデータ基盤のみ。web/api/worker/extension はホストで直接実行する。
-name: yakudoku
+name: alinea
 
 services:
   db:
@@ -8,13 +8,13 @@ services:
     # PGroonga 索引(plans/11 §2.2 の英語面 TokenFilterStem)が作れない(実測)。debian 版は
     # stem.so + tokenizers/mecab.so を同梱し plans/11 §2.3-2.4 の前提を満たす。
     image: groonga/pgroonga:4.0.1-debian-16
-    container_name: yakudoku-db
+    container_name: alinea-db
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: yakudoku
-      POSTGRES_PASSWORD: yakudoku
-      POSTGRES_DB: yakudoku
+      POSTGRES_USER: alinea
+      POSTGRES_PASSWORD: alinea
+      POSTGRES_DB: alinea
       POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
     # PGroonga のクラッシュ後索引破損防止(plans/02 §7・plans/11 §2.3)
     command:
@@ -27,14 +27,14 @@ services:
       - db-data:/var/lib/postgresql/data
       - ./docker/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U yakudoku -d yakudoku"]
+      test: ["CMD-SHELL", "pg_isready -U alinea -d alinea"]
       interval: 5s
       timeout: 3s
       retries: 10
 
   redis:
     image: redis:7.4-alpine
-    container_name: yakudoku-redis
+    container_name: alinea-redis
     ports:
       - "6379:6379"
     command: ["redis-server", "--appendonly", "yes"]
@@ -48,13 +48,13 @@ services:
 
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
-    container_name: yakudoku-minio
+    container_name: alinea-minio
     ports:
       - "9000:9000"   # S3 API
       - "9001:9001"   # 管理コンソール
     environment:
-      MINIO_ROOT_USER: yakudoku
-      MINIO_ROOT_PASSWORD: yakudoku-dev-secret
+      MINIO_ROOT_USER: alinea
+      MINIO_ROOT_PASSWORD: alinea-dev-secret
     command: ["server", "/data", "--console-address", ":9001"]
     volumes:
       - minio-data:/data
@@ -85,14 +85,14 @@ services:
       - /bin/sh
       - -c
       - |
-        mc alias set local http://minio:9000 yakudoku yakudoku-dev-secret || true
-        mc mb --ignore-existing local/yakudoku-sources || true
-        mc mb --ignore-existing local/yakudoku-assets || true
-        mc ls local/yakudoku-sources >/dev/null 2>&1 && mc ls local/yakudoku-assets >/dev/null 2>&1
+        mc alias set local http://minio:9000 alinea alinea-dev-secret || true
+        mc mb --ignore-existing local/alinea-sources || true
+        mc mb --ignore-existing local/alinea-assets || true
+        mc ls local/alinea-sources >/dev/null 2>&1 && mc ls local/alinea-assets >/dev/null 2>&1
 
   mailpit:
     image: axllent/mailpit:v1.27.0
-    container_name: yakudoku-mailpit
+    container_name: alinea-mailpit
     ports:
       - "1025:1025"   # SMTP
       - "8025:8025"   # Web UI(受信メール確認 = ログインリンクの取得)

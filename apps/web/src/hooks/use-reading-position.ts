@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { libraryItemsSavePosition } from "@yakudoku/api-client";
+import { libraryItemsSavePosition } from "@alinea/api-client";
 import { useViewerStore } from "@/stores/viewer-store";
 import type { ViewerMode } from "@/components/viewer/ViewerShell";
 

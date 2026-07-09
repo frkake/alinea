@@ -20,10 +20,8 @@ import uuid
 from typing import Any
 
 import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.article.prompts import PRESET_INCLUDE_MATH_DEFAULT, PRESET_OUTLINES
-from yakudoku_core.db.models import (
+from alinea_core.article.prompts import PRESET_INCLUDE_MATH_DEFAULT, PRESET_OUTLINES
+from alinea_core.db.models import (
     Annotation,
     Article,
     ArticleBlock,
@@ -32,14 +30,16 @@ from yakudoku_core.db.models import (
     Paper,
     User,
 )
-from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
-from yakudoku_core.document.inlines import Inline
-from yakudoku_core.jobs.store import JobStore
-from yakudoku_llm.errors import ErrorKind, ProviderError
-from yakudoku_llm.router import LLMRouter
-from yakudoku_llm.structured import attach_parsed
-from yakudoku_llm.types import LLMRequest, LLMResponse, StreamEvent
-from yakudoku_worker.tasks.generate_article import run_article_job
+from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
+from alinea_core.document.inlines import Inline
+from alinea_core.jobs.store import JobStore
+from alinea_llm.errors import ErrorKind, ProviderError
+from alinea_llm.router import LLMRouter
+from alinea_llm.structured import attach_parsed
+from alinea_llm.types import LLMRequest, LLMResponse, StreamEvent
+from alinea_worker.tasks.generate_article import run_article_job
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _uid() -> str:
@@ -160,41 +160,62 @@ async def _make_question_annotation(db: AsyncSession, *, library_item_id: str) -
 # ---------------------------------------------------------------------------
 # 記事構造 JSON(article_v1)の決定的フィクスチャ
 # ---------------------------------------------------------------------------
+def _article_block(**overrides: Any) -> dict[str, Any]:
+    block: dict[str, Any] = {
+        "heading": None,
+        "markdown": None,
+        "quote": None,
+        "figure": None,
+        "explainer": None,
+        "discussion": None,
+        "evidence": [],
+    }
+    block.update(overrides)
+    return block
+
+
+def _discussion_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{**item, "annotation_id": item.get("annotation_id")} for item in items]
+
+
 def _article_payload(*, discussion_items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = discussion_items or [
-        {"text": "reflow を重ねると誤差は蓄積しないか", "origin": "ai"},
-        {"text": "ベースラインの選び方は妥当か", "origin": "ai"},
-    ]
+    items = _discussion_items(
+        discussion_items
+        or [
+            {"text": "reflow を重ねると誤差は蓄積しないか", "origin": "ai"},
+            {"text": "ベースラインの選び方は妥当か", "origin": "ai"},
+        ]
+    )
     return {
         "title": "Rectified Flow を読む: 直線輸送への招待",
         "blocks": [
-            {"type": "heading", "heading": {"level": 2, "text": "背景"}},
-            {
-                "type": "paragraph",
-                "markdown": "整流フローは 2 つの分布の間を直線的に輸送する。",
-                "evidence": ["blk-p1"],
-            },
-            {"type": "heading", "heading": {"level": 2, "text": "手法"}},
-            {
-                "type": "paragraph",
-                "markdown": "蒸留には EMA 教師を用いる。",
-                "evidence": ["blk-p2"],
-            },
-            {
-                "type": "quote_source",
-                "quote": {
+            _article_block(type="heading", heading={"level": 2, "text": "背景"}),
+            _article_block(
+                type="paragraph",
+                markdown="整流フローは 2 つの分布の間を直線的に輸送する。",
+                evidence=["blk-p1"],
+            ),
+            _article_block(type="heading", heading={"level": 2, "text": "手法"}),
+            _article_block(
+                type="paragraph",
+                markdown="蒸留には EMA 教師を用いる。",
+                evidence=["blk-p2"],
+            ),
+            _article_block(
+                type="quote_source",
+                quote={
                     "block_id": "blk-p1",
                     "text_en": "Rectified flow learns a straight transport map "
                     "between two distributions.",
                 },
-            },
-            {
-                "type": "figure_embed",
-                "figure": {"block_id": "blk-fig1", "caption_ja": "軌道の直線化。"},
-            },
-            {"type": "heading", "heading": {"level": 2, "text": "まとめ"}},
-            {"type": "paragraph", "markdown": "少ないステップで良好な結果が得られる。"},
-            {"type": "discussion", "discussion": {"items": items}},
+            ),
+            _article_block(
+                type="figure_embed",
+                figure={"block_id": "blk-fig1", "caption_ja": "軌道の直線化。"},
+            ),
+            _article_block(type="heading", heading={"level": 2, "text": "まとめ"}),
+            _article_block(type="paragraph", markdown="少ないステップで良好な結果が得られる。"),
+            _article_block(type="discussion", discussion={"items": items}),
         ],
     }
 
@@ -206,15 +227,15 @@ def _article_payload_with_explainer(
     payload = _article_payload()
     payload["blocks"].insert(
         -1,  # discussion の直前(§2.3 の順序どおり解説図は本文中。末尾は discussion+attribution)
-        {
-            "type": "explainer_figure",
-            "explainer": {
+        _article_block(
+            type="explainer_figure",
+            explainer={
                 "slot": 0,
                 "image_brief_en": image_brief_en,
                 "caption_ja": "直線経路と 1 ステップ生成の直感",
             },
-            "evidence": ["blk-p1"],
-        },
+            evidence=["blk-p1"],
+        ),
     )
     return payload
 
@@ -509,7 +530,7 @@ async def test_block_rewrite_updates_only_target_block(db_session: AsyncSession)
     other_snapshot = {b.id: (b.content, b.text_plain) for b in blocks_before if b.id != target.id}
 
     rewrite_provider = ArticleScriptProvider(
-        block_payload={"type": "paragraph", "markdown": "書き直した本文です。"}
+        block_payload=_article_block(type="paragraph", markdown="書き直した本文です。")
     )
     rewrite_job_id = await store.enqueue(
         kind="article",
@@ -640,9 +661,9 @@ async def test_block_rewrite_of_attribution_is_rejected(db_session: AsyncSession
 async def test_generate_auto_creates_overview_and_explainer_figures(
     db_session: AsyncSession,
 ) -> None:
-    from yakudoku_core.db.models import ExplainerFigure, OverviewFigure
-    from yakudoku_llm.router import ImageRouter
-    from yakudoku_llm.testing.fake_provider import FakeImageProvider
+    from alinea_core.db.models import ExplainerFigure, OverviewFigure
+    from alinea_llm.router import ImageRouter
+    from alinea_llm.testing.fake_provider import FakeImageProvider
 
     ctx_data = await _seed(db_session)
     provider = ArticleScriptProvider(article_payload=_article_payload_with_explainer())
@@ -694,7 +715,7 @@ async def test_generate_auto_creates_overview_and_explainer_figures(
 async def test_generate_without_image_router_skips_explainer_but_succeeds(
     db_session: AsyncSession,
 ) -> None:
-    from yakudoku_core.db.models import ExplainerFigure, OverviewFigure
+    from alinea_core.db.models import ExplainerFigure, OverviewFigure
 
     ctx_data = await _seed(db_session)
     provider = ArticleScriptProvider(article_payload=_article_payload_with_explainer())
@@ -743,9 +764,9 @@ async def test_generate_without_image_router_skips_explainer_but_succeeds(
 async def test_regenerate_reuses_unchanged_explainer_and_bumps_changed_slot(
     db_session: AsyncSession,
 ) -> None:
-    from yakudoku_core.db.models import ExplainerFigure, OverviewFigure
-    from yakudoku_llm.router import ImageRouter
-    from yakudoku_llm.testing.fake_provider import FakeImageProvider
+    from alinea_core.db.models import ExplainerFigure, OverviewFigure
+    from alinea_llm.router import ImageRouter
+    from alinea_llm.testing.fake_provider import FakeImageProvider
 
     ctx_data = await _seed(db_session)
     provider = ArticleScriptProvider(article_payload=_article_payload_with_explainer())

@@ -1,6 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import type { TranslationUnitItem } from "@yakudoku/api-client";
+import type { TranslationUnitItem } from "@alinea/api-client";
 import { TranslatedParagraph, type PlacedHighlight } from "@/components/viewer/TranslatedParagraph";
 import type { DocBlock } from "@/components/viewer/document-types";
 
@@ -126,9 +126,9 @@ describe("TranslatedParagraph structured translation content", () => {
   });
 });
 
-// plans/11 §7: 検索ヒット遷移の `?hl=` は遷移先ブロックのみを yk-search-hit でマークする。
+// plans/11 §7: 検索ヒット遷移の `?hl=` は遷移先ブロックのみを alinea-search-hit でマークする。
 describe("TranslatedParagraph searchHighlight (plans/11 §7)", () => {
-  test("wraps case-insensitive matches of the hl query in a yk-search-hit mark", () => {
+  test("wraps case-insensitive matches of the hl query in a alinea-search-hit mark", () => {
     const { container } = render(
       <TranslatedParagraph
         block={block()}
@@ -139,7 +139,7 @@ describe("TranslatedParagraph searchHighlight (plans/11 §7)", () => {
         searchHighlight="フロー"
       />,
     );
-    const mark = container.querySelector("mark.yk-search-hit");
+    const mark = container.querySelector("mark.alinea-search-hit");
     expect(mark).not.toBeNull();
     expect(mark).toHaveTextContent("フロー");
   });
@@ -159,9 +159,9 @@ describe("TranslatedParagraph searchHighlight (plans/11 §7)", () => {
         searchHighlight="整流"
       />,
     );
-    // 「整流」は注釈ハイライト範囲(0-4)と重なるため yk-search-hit は付かない。
-    expect(container.querySelector("mark.yk-search-hit")).toBeNull();
-    expect(container.querySelector("mark.yk-highlight-term")).toHaveTextContent("整流フロ");
+    // 「整流」は注釈ハイライト範囲(0-4)と重なるため alinea-search-hit は付かない。
+    expect(container.querySelector("mark.alinea-search-hit")).toBeNull();
+    expect(container.querySelector("mark.alinea-highlight-term")).toHaveTextContent("整流フロ");
   });
 });
 

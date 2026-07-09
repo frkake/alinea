@@ -35,7 +35,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: "uv run --no-sync python -m yakudoku_llm.testing.mock_server --port 8090",
+      command: "uv run --no-sync python -m alinea_llm.testing.mock_server --port 8090",
       url: `${MOCK_BASE}/healthz`,
       cwd: repoRoot,
       timeout: 120_000,
@@ -43,7 +43,7 @@ export default defineConfig({
       env: { NO_PROXY, no_proxy: NO_PROXY },
     },
     {
-      command: "uv run --no-sync uvicorn yakudoku_api.main:app --port 8000",
+      command: "uv run --no-sync uvicorn alinea_api.main:app --port 8000",
       url: "http://localhost:8000/api/healthz",
       cwd: repoRoot,
       timeout: 120_000,
@@ -52,7 +52,7 @@ export default defineConfig({
     },
     {
       // cwd は config ディレクトリ(apps/extension)のため、web アプリは filter で起動する。
-      command: "pnpm --filter @yakudoku/web dev --port 3000",
+      command: "pnpm --filter @alinea/web dev --port 3000",
       url: "http://localhost:3000/login",
       cwd: repoRoot,
       timeout: 120_000,

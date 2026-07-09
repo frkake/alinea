@@ -26,7 +26,7 @@ test.describe("PW-10 選択メニュー・注釈一覧", () => {
     const dismiss = page.getByRole("button", { name: "閉じる" });
     if (await dismiss.isVisible().catch(() => false)) await dismiss.click();
 
-    const paragraphs = page.locator(".yk-paragraph[data-block-id]");
+    const paragraphs = page.locator(".alinea-paragraph[data-block-id]");
     await expect(paragraphs.first()).toBeVisible();
 
     // 1) 重要(important)ハイライト。
@@ -95,13 +95,13 @@ test.describe("PW-10 選択メニュー・注釈一覧", () => {
     const dismiss = page.getByRole("button", { name: "閉じる" });
     if (await dismiss.isVisible().catch(() => false)) await dismiss.click();
 
-    const para = page.locator(".yk-paragraph[data-block-id]").first();
+    const para = page.locator(".alinea-paragraph[data-block-id]").first();
     await para.scrollIntoViewIfNeeded();
     await para.hover();
     await para.getByRole("button", { name: "対訳を表示" }).click();
     const popover = page.getByRole("dialog", { name: "対訳" });
     await expect(popover).toBeVisible();
-    await dragSelect(page, popover.locator("[data-yk-source-text]"));
+    await dragSelect(page, popover.locator("[data-alinea-source-text]"));
 
     const menu = page.getByRole("menu", { name: "選択メニュー" });
     await expect(menu).toBeVisible();

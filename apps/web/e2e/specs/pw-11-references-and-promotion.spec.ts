@@ -97,7 +97,7 @@ test.describe("PW-11 参考文献展開・リビジョン昇格", () => {
   });
 
   test("B 論文に昇格提案通知→「変更する」→新リビジョン適用・注釈追従・未配置", async ({ page }) => {
-    const seed = seedPromotion("dev@yakudoku.test");
+    const seed = seedPromotion("dev@alinea.test");
 
     try {
       await page.goto("/dashboard");

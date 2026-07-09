@@ -1,10 +1,10 @@
 import { renderHook, act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { settingsGet } from "@yakudoku/api-client";
+import { settingsGet } from "@alinea/api-client";
 import { useReadingSession } from "@/hooks/use-reading-session";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return { ...actual, settingsGet: vi.fn() };
 });
 

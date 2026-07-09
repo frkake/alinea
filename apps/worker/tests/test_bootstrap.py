@@ -1,7 +1,7 @@
 """ワーカー実行時ブートストラップのテスト(M0-12/17/18 統合残件)。
 
 - build_router: 運営キーの有無・チェーン絞り込み・キー無し→None。
-- build_fake_router / on_startup: YAKUDOKU_FAKE_LLM=1 で router が構築される。
+- build_fake_router / on_startup: ALINEA_FAKE_LLM=1 で router が構築される。
 - make_publish: /api/events(apps/api/services/events.py・routers/jobs.py)の購読形式に
   一致した封筒が実 Redis に往復で届く。
 
@@ -20,11 +20,10 @@ from typing import Any
 import pytest
 import pytest_asyncio
 import redis.asyncio as redis
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from yakudoku_core.db.models import LibraryItem, Paper, User
-from yakudoku_llm.router import LLMRouter
-from yakudoku_llm.testing.fake_provider import FakeLLMProvider
-from yakudoku_worker.bootstrap import (
+from alinea_core.db.models import LibraryItem, Paper, User
+from alinea_llm.router import LLMRouter
+from alinea_llm.testing.fake_provider import FakeLLMProvider
+from alinea_worker.bootstrap import (
     TaskAwareLLMRouter,
     build_fake_router,
     build_router,
@@ -36,10 +35,11 @@ from yakudoku_worker.bootstrap import (
     operator_keys_from_env,
     stream_key,
 )
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql+asyncpg://yakudoku:yakudoku@localhost:5432/yakudoku",
+    "postgresql+asyncpg://alinea:alinea@localhost:5432/alinea",
 )
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
@@ -176,7 +176,7 @@ def test_operator_keys_from_env_reads_configured_providers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # CoreSettings 基底を空に固定し、os.environ の上書き分だけを検証する。
-    monkeypatch.setattr("yakudoku_worker.bootstrap.get_settings", lambda: _StubSettings({}))
+    monkeypatch.setattr("alinea_worker.bootstrap.get_settings", lambda: _StubSettings({}))
     for env in (
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
@@ -199,7 +199,7 @@ def test_operator_keys_fall_back_to_env_file_settings(
     environ の明示値は .env 由来の値より優先される。
     """
     monkeypatch.setattr(
-        "yakudoku_worker.bootstrap.get_settings",
+        "alinea_worker.bootstrap.get_settings",
         lambda: _StubSettings({"anthropic": "sk-from-envfile", "deepseek": "sk-old"}),
     )
     for env in (
@@ -310,7 +310,7 @@ async def test_publish_resolves_user_from_explicit_user_id(
 async def test_on_startup_configures_ctx_with_fake_llm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("YAKUDOKU_FAKE_LLM", "1")
+    monkeypatch.setenv("ALINEA_FAKE_LLM", "1")
     ctx: dict[str, Any] = {}
     await on_startup(ctx)
     try:
@@ -332,9 +332,9 @@ async def test_on_startup_configures_ctx_with_fake_llm(
 
 
 async def test_run_job_fails_visibly_when_router_missing() -> None:
-    from yakudoku_core.db.session import get_sessionmaker
-    from yakudoku_core.jobs.store import JobStore
-    from yakudoku_worker.main import run_job
+    from alinea_core.db.session import get_sessionmaker
+    from alinea_core.jobs.store import JobStore
+    from alinea_worker.main import run_job
 
     maker = get_sessionmaker()
     async with maker() as session:
@@ -362,8 +362,8 @@ async def test_run_job_schedules_retry_wakeup_when_retrying(
     monkeypatch: pytest.MonkeyPatch,
     maker: async_sessionmaker[AsyncSession],
 ) -> None:
-    from yakudoku_core.jobs.store import JobStore
-    from yakudoku_worker import main as worker_main
+    from alinea_core.jobs.store import JobStore
+    from alinea_worker import main as worker_main
 
     class ArqPoolStub:
         def __init__(self) -> None:
@@ -388,16 +388,16 @@ async def test_run_job_schedules_retry_wakeup_when_retrying(
     function, args, kwargs = pool.calls[0]
     assert function == "run_job"
     assert args == (job_id,)
-    assert kwargs["_queue_name"] == "yk:bulk"
+    assert kwargs["_queue_name"] == "alinea:bulk"
     assert kwargs["_defer_until"] is not None
 
 
 async def test_run_job_counts_cancelled_job_as_retryable_failure(
     monkeypatch: pytest.MonkeyPatch, maker: async_sessionmaker[AsyncSession]
 ) -> None:
-    from yakudoku_core.db.models import Job
-    from yakudoku_core.jobs.store import JobStore
-    from yakudoku_worker import main as worker_main
+    from alinea_core.db.models import Job
+    from alinea_core.jobs.store import JobStore
+    from alinea_worker import main as worker_main
 
     async def _cancel(_ctx: dict[str, Any], _store: JobStore, _job: Job) -> None:
         raise asyncio.CancelledError

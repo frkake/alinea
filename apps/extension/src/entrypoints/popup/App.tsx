@@ -8,7 +8,7 @@ import type {
   IngestCheckResponse,
   IngestRecentItem,
   JobOut,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 
 import { FailedQueueBanner, type FailedQueueEntry } from "@/components/FailedQueueBanner";
 import { PopupHeader, type HeaderBadge } from "@/components/PopupHeader";
@@ -493,7 +493,7 @@ export function App() {
   // 通信エラー(3a §5.1)。
   if (connError) {
     return frame(
-      "訳読に保存",
+      "Alineaに保存",
       undefined,
       <Unsupported
         message="サーバーに接続できません。ネットワークを確認して開き直してください。"
@@ -526,14 +526,14 @@ export function App() {
   switch (state) {
     case "login":
       return frame(
-        "訳読に保存",
+        "Alineaに保存",
         undefined,
         <Login onLogin={() => openTab(siteUrl("/login?from=extension"))} />,
         false,
       );
     case "saveform":
       return frame(
-        "訳読に保存",
+        "Alineaに保存",
         { kind: "detect", label: "arXiv 論文を検出" },
         <SaveForm
           preview={{
@@ -553,13 +553,13 @@ export function App() {
     case "existing": {
       const saved = check?.saved;
       // resolvePopupState が existing を返すのは saved != null のときのみ。
-      if (!saved) return frame("訳読に保存", undefined, <Loading />, false);
+      if (!saved) return frame("Alineaに保存", undefined, <Loading />, false);
       return renderExisting(saved);
     }
     case "pdf":
       // 状態4: 一般ページ PDF(3a §6.5・plans/10 §11)。書誌は推定 + 明示クリックでのみ送信。
       return frame(
-        "訳読に保存",
+        "Alineaに保存",
         { kind: "pdf", label: "PDF を表示中" },
         <GenericPdf
           tabUrl={tabInfo?.url ?? ""}
@@ -573,14 +573,14 @@ export function App() {
       );
     case "unsupported":
       return frame(
-        "訳読に保存",
+        "Alineaに保存",
         { kind: "unsupported", label: "対応外のページ" },
         <Unsupported />,
         true,
       );
     case "loading":
     default:
-      return frame("訳読に保存", undefined, <Loading />, false);
+      return frame("Alineaに保存", undefined, <Loading />, false);
   }
 }
 

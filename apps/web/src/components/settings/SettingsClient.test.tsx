@@ -18,7 +18,7 @@ const settingsUpdate = vi.fn();
 const settingsListApiKeys = vi.fn();
 const settingsPutApiKey = vi.fn();
 const settingsDeleteApiKey = vi.fn();
-vi.mock("@yakudoku/api-client", () => ({
+vi.mock("@alinea/api-client", () => ({
   settingsGet: (...args: unknown[]) => settingsGet(...args),
   settingsUpdate: (...args: unknown[]) => settingsUpdate(...args),
   settingsListApiKeys: (...args: unknown[]) => settingsListApiKeys(...args),
@@ -180,10 +180,10 @@ describe("SettingsClient (4f)", () => {
   test("extension category renders the arXiv inline-button toggle", async () => {
     const user = userEvent.setup();
     renderSettings("extension");
-    await screen.findByText("arXiv ページ内に「訳 保存」ボタンを表示");
+    await screen.findByText("arXiv ページ内に「A 保存」ボタンを表示");
 
     await user.click(
-      screen.getByRole("switch", { name: "arXiv ページ内に「訳 保存」ボタンを表示" }),
+      screen.getByRole("switch", { name: "arXiv ページ内に「A 保存」ボタンを表示" }),
     );
     await waitFor(() =>
       expect(settingsUpdate).toHaveBeenCalledWith(

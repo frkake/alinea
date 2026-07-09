@@ -1,10 +1,10 @@
 """PY-ART-03: 記事内 figure_embed のライセンス連動判定(plans/07 §4.5、docs/09 §5.2)。
 
-``yakudoku_core.licenses.classify_license`` の判定結果(PY-LIC-01 が単体で検証済み)が、記事の
-後処理(:func:`yakudoku_core.article.postprocess.normalize_article`)を通じて figure_embed
+``alinea_core.licenses.classify_license`` の判定結果(PY-LIC-01 が単体で検証済み)が、記事の
+後処理(:func:`alinea_core.article.postprocess.normalize_article`)を通じて figure_embed
 ブロックへ正しく反映されることを検証する(統合: licenses → sources → postprocess の接続)。
 
-対象は docs/09 §5.2 マトリクスの全 8 ライセンス値(``yakudoku_core.licenses.LicenseId`` の
+対象は docs/09 §5.2 マトリクスの全 8 ライセンス値(``alinea_core.licenses.LicenseId`` の
 9 値のうち、表に現れない ``cc-by-nc-nd-4.0`` を除く)。arxiv-nonexclusive / unknown は
 figure_link_card へブロックされ代替提示、cc-by-4.0 はクレジット自動付記+ライセンスバッジ、
 cc-by-nd はキャプション分離、cc-by-sa 系はクレジットに加え SA 表示フラグが立つ。
@@ -16,18 +16,18 @@ import datetime as dt
 from typing import Any
 
 import pytest
-from yakudoku_core.article.postprocess import (
+from alinea_core.article.postprocess import (
     ArticleGenerationError,
     BlockTypeMismatchError,
     normalize_article,
     normalize_rewritten_block,
     verify_quote,
 )
-from yakudoku_core.article.schema import ARTICLE_V1_JSON_SCHEMA
-from yakudoku_core.article.sources import AnnotationRef, ArticleSources, FigureInfo
-from yakudoku_core.db.models import DocumentRevision, LibraryItem, Paper
-from yakudoku_core.document.blocks import DocumentContent
-from yakudoku_core.licenses import classify_license
+from alinea_core.article.schema import ARTICLE_V1_JSON_SCHEMA
+from alinea_core.article.sources import AnnotationRef, ArticleSources, FigureInfo
+from alinea_core.db.models import DocumentRevision, LibraryItem, Paper
+from alinea_core.document.blocks import DocumentContent
+from alinea_core.licenses import classify_license
 
 # docs/09 §5.2 マトリクス全 8 行(cc-by-nc-nd-4.0 は表に無いため対象外)。
 LICENSE_MATRIX_ROWS: list[tuple[str, str]] = [

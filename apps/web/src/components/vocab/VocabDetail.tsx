@@ -10,7 +10,7 @@ import {
   type VocabEntryDetail,
   type VocabPatch,
   type VocabPatchAi,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 import { Modal } from "@/components/ui/Modal";
 import { Popover } from "@/components/ui/Popover";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";

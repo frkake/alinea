@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties } from "react";
-import type { TocNode } from "@yakudoku/api-client";
+import type { TocNode } from "@alinea/api-client";
 import { BookmarkIcon, MagnifierIcon } from "@/components/icons";
 import { CountBadge } from "@/components/ui/CountBadge";
 

@@ -28,7 +28,7 @@ async function globalSetup(): Promise<void> {
       "--no-sync",
       "python",
       "-m",
-      "yakudoku_api.seed",
+      "alinea_api.seed",
       "--sample",
       "rectified-flow",
       "--reset",
@@ -54,7 +54,7 @@ async function globalSetup(): Promise<void> {
   const pids: number[] = [];
   for (const name of ["BulkWorker", "InteractiveWorker"] as const) {
     const out = openSync(join(workerLogDir, `${name}.log`), "a");
-    const child = spawn("uv", ["run", "--no-sync", "arq", `yakudoku_worker.main.${name}`], {
+    const child = spawn("uv", ["run", "--no-sync", "arq", `alinea_worker.main.${name}`], {
       cwd: repoRoot,
       env: { ...workerEnv, NO_PROXY, no_proxy: NO_PROXY },
       detached: true,

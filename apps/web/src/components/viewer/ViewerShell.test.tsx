@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import type { TocNode } from "@yakudoku/api-client";
+import type { TocNode } from "@alinea/api-client";
 import { ViewerHeader } from "@/components/viewer/ViewerHeader";
 import { SidePanel } from "@/components/viewer/SidePanel";
 import { TocTree } from "@/components/viewer/TocTree";

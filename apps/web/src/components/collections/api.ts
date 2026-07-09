@@ -9,8 +9,8 @@ import type {
 
 /**
  * collections API(plans/03 §13)向けの薄い fetch ラッパー。
- * deviations: main.py へのルータ登録は他レーンの担当のため `@yakudoku/api-client` に
- * まだ生成されていない(rule 6 の許容範囲。生成後は `@yakudoku/api-client` 呼び出しへ
+ * deviations: main.py へのルータ登録は他レーンの担当のため `@alinea/api-client` に
+ * まだ生成されていない(rule 6 の許容範囲。生成後は `@alinea/api-client` 呼び出しへ
  * 差し替える)。同一オリジン相対パスのみを使い、セッションクッキーは `credentials: "include"`
  * で送る(`packages/api-client/src/index.ts` と同方針)。
  */

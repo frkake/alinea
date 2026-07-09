@@ -21,10 +21,10 @@ import time
 import uuid
 from typing import Any
 
+from alinea_core.db.models import Annotation, DocumentRevision, LibraryItem, Paper, User
+from alinea_core.jobs.store import JobStore
+from alinea_worker.tasks.ingest import ingest_paper
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.db.models import Annotation, DocumentRevision, LibraryItem, Paper, User
-from yakudoku_core.jobs.store import JobStore
-from yakudoku_worker.tasks.ingest import ingest_paper
 
 # FIXTURE_HTML(conftest)の S1 段落テキスト。旧(B)リビジョンの段落にも同一文言を仕込み、
 # reanchor の quote 探索(§4.5 パス 2)が新リビジョンの該当ブロックへ一致することを確認する。

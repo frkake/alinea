@@ -5,13 +5,13 @@
  * 「読み込みに失敗しました」を出したまま止まるのではなく、ログイン画面へ誘導する
  * (docs/06 §1 の想定フロー)。api-client のレスポンスインターセプタとして登録する。
  *
- * - ここは apps/web 専用: 拡張は同じ @yakudoku/api-client を使うが、ポップアップは
+ * - ここは apps/web 専用: 拡張は同じ @alinea/api-client を使うが、ポップアップは
  *   401 で独自の未ログイン UI を出すため、この副作用は web 側でのみ登録する。
  * - /login 自身と /api/auth/*(me はログイン状態確認に 401 を正常系として使う)は除外し、
  *   リダイレクトループを防ぐ。
  */
 
-import { client } from "@yakudoku/api-client";
+import { client } from "@alinea/api-client";
 
 let registered = false;
 

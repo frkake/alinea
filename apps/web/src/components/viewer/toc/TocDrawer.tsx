@@ -1,6 +1,6 @@
 "use client";
 
-import type { TocNode } from "@yakudoku/api-client";
+import type { TocNode } from "@alinea/api-client";
 import { Drawer } from "@/components/ui/Drawer";
 import { TocRowGroup } from "@/components/viewer/TocTree";
 

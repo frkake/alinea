@@ -1,10 +1,10 @@
-import type { LibraryItemSummary } from "@yakudoku/api-client";
+import type { LibraryItemSummary } from "@alinea/api-client";
 
 /**
  * collections API(plans/03 §13)の型。M2-09 時点では main.py にルータが未登録
- * (article レーンの担当)のため `@yakudoku/api-client` の生成物にまだ現れず、手書きする
+ * (article レーンの担当)のため `@alinea/api-client` の生成物にまだ現れず、手書きする
  * (rule 6: 生成前の新規エンドポイントは手書き可。deviations 記載)。API 側の実装は
- * apps/api/src/yakudoku_api/schemas/collections.py と 1:1 対応させる。
+ * apps/api/src/alinea_api/schemas/collections.py と 1:1 対応させる。
  */
 
 export interface CollectionListItem {

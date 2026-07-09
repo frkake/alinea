@@ -1,6 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import type { FigureItem } from "@yakudoku/api-client";
+import type { FigureItem } from "@alinea/api-client";
 import { FigureRefPopover } from "@/components/viewer/FigureRefPopover";
 
 function figure(overrides: Partial<FigureItem> = {}): FigureItem {

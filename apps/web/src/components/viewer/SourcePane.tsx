@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { annotationsList, viewerGetDocument, type LastPosition, type TocNode } from "@yakudoku/api-client";
+import { annotationsList, viewerGetDocument, type LastPosition, type TocNode } from "@alinea/api-client";
 import type { HighlightColor } from "@/components/ui/HighlightMark";
 import { useViewerStore } from "@/stores/viewer-store";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
@@ -172,8 +172,8 @@ export function SourcePane({
     const el = root.querySelector<HTMLElement>(selector);
     if (el) {
       el.scrollIntoView({ block: "start" });
-      el.classList.add("yk-block-flash");
-      window.setTimeout(() => el.classList.remove("yk-block-flash"), 2000);
+      el.classList.add("alinea-block-flash");
+      window.setTimeout(() => el.classList.remove("alinea-block-flash"), 2000);
     }
     consumeScroll();
     // `hl` の一発マークは遷移先ブロックのみ(TranslationPane と同じ規約。plans/11 §7)。
@@ -422,7 +422,7 @@ function SkeletonLines() {
         marginBottom: 10,
         borderRadius: 4,
         background: "var(--pr-bg-muted)",
-        animation: "yk-pulse 1.2s ease-in-out infinite",
+        animation: "alinea-pulse 1.2s ease-in-out infinite",
       }}
     />
   );

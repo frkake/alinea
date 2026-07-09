@@ -13,17 +13,17 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest_asyncio
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.seed import (
+from alinea_api.seed import (
     ARXIV_ID,
     DEV_EMAIL,
     FIXTURE_DIR,
     seed_rectified_flow,
 )
-from yakudoku_core.db.models import DocumentRevision, LibraryItem, Paper, TranslationSet, User
-from yakudoku_core.document.blocks import DocumentContent
-from yakudoku_core.parsing.block_ids import assign_block_ids
+from alinea_core.db.models import DocumentRevision, LibraryItem, Paper, TranslationSet, User
+from alinea_core.document.blocks import DocumentContent
+from alinea_core.parsing.block_ids import assign_block_ids
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 RunSeed = Callable[..., Awaitable[str | None]]
 

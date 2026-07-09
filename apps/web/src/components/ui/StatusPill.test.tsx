@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
-import { STATUS_LABELS, type ReadingStatus } from "@yakudoku/tokens";
+import { STATUS_LABELS, type ReadingStatus } from "@alinea/tokens";
 import { StatusPill } from "@/components/ui/StatusPill";
 
 // VT-UI-02: StatusPill 6色/6ラベル

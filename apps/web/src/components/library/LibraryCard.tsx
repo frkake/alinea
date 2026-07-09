@@ -2,8 +2,8 @@
 
 import { useState, type CSSProperties, type KeyboardEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { libraryItemsUpdate, type LibraryItemSummary } from "@yakudoku/api-client";
-import type { ReadingStatus } from "@yakudoku/tokens";
+import { libraryItemsUpdate, type LibraryItemSummary } from "@alinea/api-client";
+import type { ReadingStatus } from "@alinea/tokens";
 import { Card } from "@/components/ui/Card";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { ProgressBar } from "@/components/ui/ProgressBar";

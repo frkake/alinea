@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { papersIngestLog, type PapersIngestLogEntry } from "@yakudoku/api-client";
+import { papersIngestLog, type PapersIngestLogEntry } from "@alinea/api-client";
 import { Modal } from "@/components/ui/Modal";
 import { EmptyState } from "@/components/ui/EmptyState";
 

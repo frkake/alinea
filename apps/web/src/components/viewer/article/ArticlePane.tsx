@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { LastPosition } from "@yakudoku/api-client";
+import type { LastPosition } from "@alinea/api-client";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useToast } from "@/components/ui/Toast";
 import { SelectionMenu } from "@/components/viewer/SelectionMenu";
@@ -74,8 +74,8 @@ export function ArticlePane({ libraryItemId, revisionId, lastPosition }: Article
     const el = root.querySelector<HTMLElement>(`[data-block-id="${pendingScroll.blockId}"]`);
     if (!el) return;
     el.scrollIntoView({ block: "start" });
-    el.classList.add("yk-block-flash");
-    window.setTimeout(() => el.classList.remove("yk-block-flash"), 2000);
+    el.classList.add("alinea-block-flash");
+    window.setTimeout(() => el.classList.remove("alinea-block-flash"), 2000);
     consumeScroll();
   }, [pendingScroll, article, consumeScroll]);
 

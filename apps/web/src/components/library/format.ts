@@ -1,12 +1,12 @@
-import { STATUS_LABELS, type ReadingStatus } from "@yakudoku/tokens";
-import type { LibraryItemSummary, PaperBib } from "@yakudoku/api-client";
+import { STATUS_LABELS, type ReadingStatus } from "@alinea/tokens";
+import type { LibraryItemSummary, PaperBib } from "@alinea/api-client";
 
 /**
  * ライブラリ画面の書誌・日付・数値の派生表記(1e §2.6/§4、4a §4.7/§4.8 の決定を集約)。
  * API 値 → 画面表示文字列の変換はここ 1 箇所に閉じる。
  */
 
-/** API の Status(plans/03 §1.6)は @yakudoku/tokens の ReadingStatus キーと同一。安全にキャストする。 */
+/** API の Status(plans/03 §1.6)は @alinea/tokens の ReadingStatus キーと同一。安全にキャストする。 */
 export function toReadingStatus(status: string): ReadingStatus {
   return Object.prototype.hasOwnProperty.call(STATUS_LABELS, status)
     ? (status as ReadingStatus)

@@ -1,4 +1,4 @@
-import type { AnchorRefOut, ArticleBlockOut, ArticleOut, OverviewFigureRefOut } from "@yakudoku/api-client";
+import type { AnchorRefOut, ArticleBlockOut, ArticleOut, OverviewFigureRefOut } from "@alinea/api-client";
 
 /** 記事(plans/03 §19.1)。api-client の `ArticleOut` をそのまま使う。 */
 export type Article = ArticleOut;

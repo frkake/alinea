@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
-import { searchAll } from "@yakudoku/api-client";
+import { searchAll } from "@alinea/api-client";
 import { SearchResults } from "@/components/search/SearchResults";
 import type { SearchSortOption, SearchSourceFilter } from "@/components/search/searchNav";
 
@@ -32,9 +32,9 @@ export default function SearchPage() {
   const paper = searchParams.get("paper");
   const sort = normalizeSort(searchParams.get("sort"));
 
-  // §5.8: document.title「「{q}」の検索結果 — 訳読」/ 未入力は「検索 — 訳読」。
+  // §5.8: document.title「「{q}」の検索結果 — Alinea」/ 未入力は「検索 — Alinea」。
   useEffect(() => {
-    document.title = q ? `「${q}」の検索結果 — 訳読` : "検索 — 訳読";
+    document.title = q ? `「${q}」の検索結果 — Alinea` : "検索 — Alinea";
   }, [q]);
 
   const resultsQuery = useInfiniteQuery({

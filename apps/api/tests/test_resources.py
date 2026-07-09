@@ -22,22 +22,22 @@ from typing import Any
 import httpx
 import pytest
 import pytest_asyncio
+from alinea_api.services.session_service import create_session
+from alinea_api.services.user_service import purge_user
+from alinea_core.db.models import LibraryItem, Paper, ResourceLink
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.services.session_service import create_session
-from yakudoku_api.services.user_service import purge_user
-from yakudoku_core.db.models import LibraryItem, Paper, ResourceLink
 
 
 def _build_app() -> FastAPI:
     """本タスク所有ルータのみをマウントしたアプリ(main.py は article レーンが登録)。"""
-    from yakudoku_api.errors import register_exception_handlers
-    from yakudoku_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
-    from yakudoku_api.ratelimit import RateLimitMiddleware
-    from yakudoku_api.redis_client import get_redis
-    from yakudoku_api.routers import resources
-    from yakudoku_api.settings import get_api_settings
+    from alinea_api.errors import register_exception_handlers
+    from alinea_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
+    from alinea_api.ratelimit import RateLimitMiddleware
+    from alinea_api.redis_client import get_redis
+    from alinea_api.routers import resources
+    from alinea_api.settings import get_api_settings
 
     s = get_api_settings()
     app = FastAPI()
@@ -179,14 +179,14 @@ def _pdf_bytes(*, title: str | None = None) -> bytes:
     ],
 )
 def test_classify_kind_table(url: str, expected_kind: str) -> None:
-    from yakudoku_api.routers.resources import classify_kind
+    from alinea_api.routers.resources import classify_kind
 
     kind, _gh = classify_kind(url)
     assert kind == expected_kind
 
 
 def test_classify_kind_github_extracts_owner_repo_and_strips_git_suffix() -> None:
-    from yakudoku_api.routers.resources import classify_kind
+    from alinea_api.routers.resources import classify_kind
 
     kind, gh = classify_kind("https://github.com/gnobitab/RectifiedFlow.git")
     assert kind == "github"
@@ -194,7 +194,7 @@ def test_classify_kind_github_extracts_owner_repo_and_strips_git_suffix() -> Non
 
 
 def test_youtube_video_id_watch_and_short_forms() -> None:
-    from yakudoku_api.routers.resources import youtube_video_id
+    from alinea_api.routers.resources import youtube_video_id
 
     assert youtube_video_id("https://www.youtube.com/watch?v=abc123&t=5s") == "abc123"
     assert youtube_video_id("https://youtu.be/abc123") == "abc123"
@@ -203,7 +203,7 @@ def test_youtube_video_id_watch_and_short_forms() -> None:
 
 
 def test_normalize_url_strips_tracking_params_lowercases_host_and_www() -> None:
-    from yakudoku_api.routers.resources import normalize_url
+    from alinea_api.routers.resources import normalize_url
 
     a = normalize_url("https://WWW.Example.com/Path/?utm_source=newsletter&b=2&a=1")
     b = normalize_url("https://example.com/Path?a=1&b=2")
@@ -211,7 +211,7 @@ def test_normalize_url_strips_tracking_params_lowercases_host_and_www() -> None:
 
 
 def test_normalize_url_preserves_case_sensitive_path_and_query() -> None:
-    from yakudoku_api.routers.resources import normalize_url
+    from alinea_api.routers.resources import normalize_url
 
     assert normalize_url("https://github.com/Owner/Repo") == "https://github.com/Owner/Repo"
     # 動画 ID は大小区別を保つ。

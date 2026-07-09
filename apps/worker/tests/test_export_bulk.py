@@ -14,8 +14,7 @@ import zipfile
 from io import BytesIO
 from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.db.models import (
+from alinea_core.db.models import (
     Annotation,
     Article,
     ArticleBlock,
@@ -30,9 +29,10 @@ from yakudoku_core.db.models import (
     User,
     VocabEntry,
 )
-from yakudoku_core.jobs.store import JobStore
-from yakudoku_core.storage.s3 import S3Storage, StorageKeys
-from yakudoku_worker.tasks.export_user_data import build_export_payload, run_export_full_job
+from alinea_core.jobs.store import JobStore
+from alinea_core.storage.s3 import S3Storage, StorageKeys
+from alinea_worker.tasks.export_user_data import build_export_payload, run_export_full_job
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
@@ -206,8 +206,8 @@ async def test_run_export_full_job_uploads_zip_and_sets_download_url(
     archive = await storage.get(storage.assets_bucket, key)
     with zipfile.ZipFile(BytesIO(archive)) as zf:
         names = zf.namelist()
-        assert names == ["yakudoku-export.json"]
-        payload = json.loads(zf.read("yakudoku-export.json"))
+        assert names == ["alinea-export.json"]
+        payload = json.loads(zf.read("alinea-export.json"))
     assert payload["user"]["id"] == ids["user_id"]
     assert len(payload["library"]) == 1
 

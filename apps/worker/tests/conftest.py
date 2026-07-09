@@ -19,26 +19,26 @@ from typing import Any
 import httpx
 import pytest
 import pytest_asyncio
+from alinea_core.arxiv.fetch import RedisLike
+from alinea_core.db.models import LibraryItem, Paper, User
+from alinea_core.jobs.store import JobStore
+from alinea_core.settings import CoreSettings
+from alinea_core.translation.placeholder import TOKEN_RE
+from alinea_llm.router import LLMRouter
+from alinea_llm.testing._assets import png_bytes
+from alinea_llm.types import LLMRequest, LLMResponse, StreamEvent
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
-from yakudoku_core.arxiv.fetch import RedisLike
-from yakudoku_core.db.models import LibraryItem, Paper, User
-from yakudoku_core.jobs.store import JobStore
-from yakudoku_core.settings import CoreSettings
-from yakudoku_core.translation.placeholder import TOKEN_RE
-from yakudoku_llm.router import LLMRouter
-from yakudoku_llm.testing._assets import png_bytes
-from yakudoku_llm.types import LLMRequest, LLMResponse, StreamEvent
 
 os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1")
 os.environ.setdefault("no_proxy", "localhost,127.0.0.1")
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql+asyncpg://yakudoku:yakudoku@localhost:5432/yakudoku",
+    "postgresql+asyncpg://alinea:alinea@localhost:5432/alinea",
 )
 
 # --------------------------------------------------------------------------- #
@@ -263,7 +263,7 @@ class ScriptProvider:
 @pytest.fixture
 def settings() -> CoreSettings:
     # ASGITransport はホストを無視しパスでルーティングするため任意の URL でよい。
-    return CoreSettings(yakudoku_arxiv_base_url="http://arxiv.test")
+    return CoreSettings(alinea_arxiv_base_url="http://arxiv.test")
 
 
 @pytest_asyncio.fixture

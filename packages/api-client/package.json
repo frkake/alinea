@@ -1,5 +1,5 @@
 {
-  "name": "@yakudoku/api-client",
+  "name": "@alinea/api-client",
   "version": "0.1.0",
   "private": true,
   "type": "module",

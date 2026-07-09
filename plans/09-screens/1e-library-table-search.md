@@ -1,6 +1,6 @@
 # 画面 1e: ライブラリ テーブル+横断検索ドロップダウン+一括操作
 
-> 対象読者と前提: 本書は「訳読 / YAKUDOKU」の apps/web(Next.js 15 App Router + React 19 + TypeScript 5 + Tailwind CSS v4)実装者向けに、確定デザイン画面 1e(ライブラリ テーブルビュー。クイックフィルタ+一括操作+横断検索ドロップダウン)を 1px 単位で再現するための完全仕様である。ピクセル値・UI 文言は抽出ファイル extract/1e.md を正とし、機能仕様は docs/06(§1・§8・§9)、API は plans/03、共通コンポーネント・トークンは plans/08 の識別子をそのまま使う。本書に無い選択肢は存在しない(すべて確定済み)。
+> 対象読者と前提: 本書は「Alinea」の apps/web(Next.js 15 App Router + React 19 + TypeScript 5 + Tailwind CSS v4)実装者向けに、確定デザイン画面 1e(ライブラリ テーブルビュー。クイックフィルタ+一括操作+横断検索ドロップダウン)を 1px 単位で再現するための完全仕様である。ピクセル値・UI 文言は抽出ファイル extract/1e.md を正とし、機能仕様は docs/06(§1・§8・§9)、API は plans/03、共通コンポーネント・トークンは plans/08 の識別子をそのまま使う。本書に無い選択肢は存在しない(すべて確定済み)。
 
 ## 1. 概要とルート
 
@@ -76,7 +76,7 @@ export const shellKeys = {
 (app)/layout.tsx
 └─ LibraryShell                                 固有(シェル共有: apps/web/src/components/shell/)
    ├─ TopBar                                    固有
-   │  ├─ LogoBlock(「訳」+「訳読」)            固有(shell 内ローカル)
+   │  ├─ LogoBlock(「A」+「Alinea」)            固有(shell 内ローカル)
    │  ├─ GlobalSearch                           固有
    │  │  ├─ SearchBox(variant="global")        共通 §5.13
    │  │  └─ SearchDropdown                      固有
@@ -122,7 +122,7 @@ interface GlobalSearchProps {
 }
 
 // apps/web/src/features/library/SearchDropdown.tsx
-import type { components } from '@yakudoku/api-client';
+import type { components } from '@alinea/api-client';
 type SearchPreviewHit = components['schemas']['SearchHit_with_paper'];
 interface SearchDropdownProps {
   query: string;                      // 表示中の確定クエリ(デバウンス後)
@@ -158,7 +158,7 @@ interface LibraryToolbarProps {
 }
 
 // apps/web/src/features/library/QuickFilterRow.tsx
-import type { components } from '@yakudoku/api-client';
+import type { components } from '@alinea/api-client';
 type Facets = components['schemas']['LibraryFacets'];   // §5.2 レスポンス
 type Status = components['schemas']['Status'];          // plans/03 §1.6(BulkStatusMenuProps でも同型を使う)
 type Quick = 'all' | 'unread' | 'in_progress' | 'done' | 'recheck';
@@ -195,7 +195,7 @@ interface BulkCollectionPopoverProps {
 ```
 
 - `LibraryTable` / `BulkActionBar` / `SidebarNav` / `SearchBox` / `FilterChip` / `StatusPill` / `QualityBadge` / `PriorityBadge` / `DeadlineBadge` / `TagChip` / `SourceBadge` / `SegmentedControl` / `Popover` / `EmptyState` / `CountBadge` の props は plans/08 §5 の定義を変更なしで使う。
-- **決定(列挙値マッピング)**: API の `Status`(`planned | up_next | reading | done | reread | on_hold`、plans/03 §1.6)と `@yakudoku/tokens` の `STATUS_COLORS` / `STATUS_LABELS` キー(`to_read | read_next | …`、plans/08 §2.4)の対応は `apps/web/src/lib/status.ts` の変換表で吸収する: `planned→to_read`、`up_next→read_next`、`reading→reading`、`done→done`、`reread→reread`、`on_hold→on_hold`。理由: API 列挙は確定済みで変更不可、tokens 側キー名も plans/08 で確定済みのため、境界 1 箇所で写像する。
+- **決定(列挙値マッピング)**: API の `Status`(`planned | up_next | reading | done | reread | on_hold`、plans/03 §1.6)と `@alinea/tokens` の `STATUS_COLORS` / `STATUS_LABELS` キー(`to_read | read_next | …`、plans/08 §2.4)の対応は `apps/web/src/lib/status.ts` の変換表で吸収する: `planned→to_read`、`up_next→read_next`、`reading→reading`、`done→done`、`reread→reread`、`on_hold→on_hold`。理由: API 列挙は確定済みで変更不可、tokens 側キー名も plans/08 で確定済みのため、境界 1 箇所で写像する。
 - **決定(行データ変換)**: `LibraryItemSummary → LibraryTableRow` の整形は `apps/web/src/features/library/toTableRow.ts` に集約する。
   - `authorsLine` = `authors_short + ' · ' + venue + ' ' + year(venue が null なら year のみ)+(arxiv_id があれば ' · arXiv:' + arxiv_id)`。source=upload かつ arxiv_id なしは末尾 `' · アップロード'`。
   - `readingHours` = `reading_seconds_total === 0 ? null : round(reading_seconds_total / 3600, 小数1桁)`(表示 `3.2h`)。
@@ -234,8 +234,8 @@ interface BulkCollectionPopoverProps {
 ### 4.2 トップバー(h52)
 
 1. ロゴブロック(width:198px、flex、gap:8px):
-   - ロゴマーク: 22×22px、border-radius:6px、`background: var(--pr-acc)`、色 #FFFFFF、font-size:11.5px、font-weight:700、中央配置。文言「訳」。
-   - ワードマーク: 「訳読」font-size:14.5px、font-weight:700、letter-spacing:0.5px。
+   - ロゴマーク: 22×22px、border-radius:6px、`background: var(--pr-acc)`、色 #FFFFFF、font-size:11.5px、font-weight:700、中央配置。文言「A」。
+   - ワードマーク: 「Alinea」font-size:14.5px、font-weight:700、letter-spacing:0.5px。
 2. 検索ボックス(`SearchBox variant="global"`。フォーカス状態の実測):
    - width:460px、height:32px、`background: var(--pr-bg-card)`、`border: 1.5px solid var(--pr-acc)`、border-radius:7px、padding:0 12px、font-size:12.5px、`color: var(--pr-text)`、`box-shadow: 0 0 0 3px var(--pr-acc-s)`(フォーカスリング)。flex / align-items:center / gap:8px。
    - 虫眼鏡 `MagnifierIcon` 12×12、`color: var(--pr-text-icon)`(#8A8E94)。円(cx5,cy5,r3.6、stroke-width:1.3)+柄(M8 8→l2.6 2.6、stroke-linecap:round)。
@@ -257,7 +257,7 @@ interface BulkCollectionPopoverProps {
     - 種別バッジ = `SourceBadge`: height:16px、padding:0 6px、border-radius:3px、font-size:9.5px、font-weight:700。**決定(ラベル・色の写像)**: `source==='body'`→「本文でヒット」(bg `--pr-src-body-bg`/fg `--pr-src-body-fg` = アクセント)/ `source==='note' | 'annotation'`→「あなたのメモ」(bg `--pr-src-note-bg` rgba(101,148,113,0.16) / fg #4C7458)/ `source==='chat'`→「チャット履歴」(bg `--pr-src-chat-bg` rgba(110,90,126,0.14) / fg #6E5A7E)/ `source==='article'`→「記事でヒット」(bg `--pr-src-article-bg` #F1EFE9 / fg #777B81)。理由: 1e に描かれた 3 種の逐語+4e の記事バッジ色を流用し、annotation はファセット定義(docs/06: notes=メモ・注釈)に従い「あなたのメモ」に合流させる。
     - タイトル: `hit.library_item.title`。font-size:11.5px / font-weight:600。続けてメタ(`color: var(--pr-text-muted)` / font-weight:400): 「· §3.2 · 読んだ」「· メモ · 6/20」「· メインスレッド · 6/28」= `· {display} · {meta}`。**決定: `SearchHit_with_paper` にサーバー導出の補足表記 `meta: string | null`(body=論文ステータスの日本語ラベル、note/chat/article=M/D 日付)を追加する(plans/03 §15.2 への追記事項)**。理由: 1e 逐語の「· 読んだ」「· 6/20」は現行スキーマの `display` だけでは再現できない。`meta` が null の間は「· {display}」のみ表示。
   - 2 行目(スニペット): font-size:11.5px、line-height:1.7、`color: var(--pr-text-mid)`(#3C4046)。フォント(決定。4e と同規則): `source==='body' && snippet_lang==='en'` → `var(--pr-font-en)`('Source Serif 4',Georgia,serif)/ `source==='body' && snippet_lang==='ja'` → `var(--pr-jp)` / その他 → `var(--pr-font-ui)`。
-    - 検索語ハイライトは API の `snippet` に含まれる `<mark class="hit">` をそのまま描画(サニタイズ済み HTML。plans/03 §15.1)。mark スタイル(`.yk-search-hit`、plans/08 §5.17 決定): `background: rgba(196,148,50,0.30)`、`color: var(--pr-text)`、border-radius:2px、padding:0 1px。
+    - 検索語ハイライトは API の `snippet` に含まれる `<mark class="hit">` をそのまま描画(サニタイズ済み HTML。plans/03 §15.1)。mark スタイル(`.alinea-search-hit`、plans/08 §5.17 決定): `background: rgba(196,148,50,0.30)`、`color: var(--pr-text)`、border-radius:2px、padding:0 1px。
     - 描画例(逐語): 「…the target network is an EMA teacher updated by θ⁻ ← μθ⁻ + (1−μ)θ, which stabilizes online distillation…」/「EMA teacher の減衰 0.999 が安定。オンライン蒸留では student と同時更新に注意…」/「Q: EMA teacher を使うオンライン蒸留と offline 蒸留の違いは?…」
   - 3 行目(ジャンプ行): font-size:10px、`color: var(--pr-acc)`、font-weight:600。**アクティブ行のみ表示**(1e では結果 1=ハイライト行だけが持つ)。文言は `target.kind` で切替(決定。plans/03 §15.1 の遷移先ラベルと一致): `viewer`→「該当位置へジャンプ →」/ `note`→「メモを開く →」/ `chat`→「スレッドを開く →」/ `article`→「記事モードで開く →」。
 - フッタ: padding:9px 14px、`border-top: 1px solid var(--pr-border-hair)`、font-size:11px、`color: var(--pr-acc)`、font-weight:600。文言「すべての結果を表示({total} 件)→」。クリック/Enter(アクティブ行なし時)で `/search?q={q}` へ遷移(4e)。
@@ -370,7 +370,7 @@ align-items: center; gap: 8px; padding: 8px 14px;
 
 ### 4.9 全 UI 文言(逐語)
 
-- トップバー: 「訳」「訳読」「esc で閉じる」+プレースホルダ「ライブラリ全体を検索 — 本文・訳文・メモ・チャット」+「⌘K」。
+- トップバー: 「A」「Alinea」「esc で閉じる」+プレースホルダ「ライブラリ全体を検索 — 本文・訳文・メモ・チャット」+「⌘K」。
 - 検索ドロップダウン: 「「{q}」の結果 {n} 件」「本文・訳文・メモ・チャット・記事を横断」「本文でヒット」「あなたのメモ」「チャット履歴」「記事でヒット」「該当位置へジャンプ →」「メモを開く →」「スレッドを開く →」「記事モードで開く →」「すべての結果を表示({n} 件)→」。
 - サイドバー: 「ホーム」「ライブラリ」「語彙帳」「コレクション」「保存フィルタ」「+ 新規コレクション」「設定 · エクスポート」。
 - 見出し行: 「ライブラリ」「{n} 本」「カード」「テーブル」「並び: {ソート名} ▾」「この条件を保存」。
@@ -398,7 +398,7 @@ align-items: center; gap: 8px; padding: 8px 14px;
 
 ### 5.2 デザイン未描画の必須状態(すべて決定)
 
-- **テーブル初回ローディング**: `LibraryTableSkeleton`。ヘッダ行は実描画し、データ行の代わりにスケルトン行 ×7(同グリッド・同 padding)。各行: チェックボックス列=空、論文セル=サムネ形状 26×34px(`background: var(--pr-bg-muted)`、radius 3px)+バー 2 本(width 60% × height 10px / width 40% × height 8px、radius 3px、`background: var(--pr-bg-muted)`)、他列=width 70% × height 10px のバー 1 本。全体に `animation: yk-pulse 1.2s ease-in-out infinite`(opacity 1→0.55→1)。
+- **テーブル初回ローディング**: `LibraryTableSkeleton`。ヘッダ行は実描画し、データ行の代わりにスケルトン行 ×7(同グリッド・同 padding)。各行: チェックボックス列=空、論文セル=サムネ形状 26×34px(`background: var(--pr-bg-muted)`、radius 3px)+バー 2 本(width 60% × height 10px / width 40% × height 8px、radius 3px、`background: var(--pr-bg-muted)`)、他列=width 70% × height 10px のバー 1 本。全体に `animation: alinea-pulse 1.2s ease-in-out infinite`(opacity 1→0.55→1)。
 - **追加ページ取得中**(cursor): テーブル最下行の下に height:36px の行、中央に「読み込み中…」font-size:11px / `color: var(--pr-text-muted)`。
 - **空状態(フィルタ起因)**: `EmptyState` — title「条件に一致する論文がありません」/ description「フィルタを解除するか、検索語を変えてください」/ action「フィルタをすべて解除」(クリックで quick=all+全属性フィルタ・filter_id 解除)。
 - **空状態(ライブラリ 0 件)**: `EmptyState` — title「まだ論文がありません」/ description「ブラウザ拡張で arXiv ページを開き「保存」すると、ここに並びます」/ action なし。判定: フィルタ未適用かつ `facets.quick.all === 0`。

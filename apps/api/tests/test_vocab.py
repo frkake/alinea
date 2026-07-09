@@ -24,25 +24,25 @@ from typing import Any
 
 import factories
 import pytest_asyncio
+from alinea_api.services.deadlines import today_jst
+from alinea_api.services.session_service import create_session
+from alinea_api.services.user_service import purge_user, upsert_user_by_email
+from alinea_core.db.models import Glossary, GlossaryTerm, User, VocabEntry
+from alinea_core.document.blocks import DocumentContent
+from alinea_core.search.rebuild import rebuild_block_search_index
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.services.deadlines import today_jst
-from yakudoku_api.services.session_service import create_session
-from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
-from yakudoku_core.db.models import Glossary, GlossaryTerm, User, VocabEntry
-from yakudoku_core.document.blocks import DocumentContent
-from yakudoku_core.search.rebuild import rebuild_block_search_index
 
 
 def _build_app() -> FastAPI:
     """本タスク所有ルータ(vocab)のみをマウントしたアプリ(test_dashboard.py と同方針)。"""
-    from yakudoku_api.errors import register_exception_handlers
-    from yakudoku_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
-    from yakudoku_api.ratelimit import RateLimitMiddleware
-    from yakudoku_api.redis_client import get_redis
-    from yakudoku_api.routers import vocab
-    from yakudoku_api.settings import get_api_settings
+    from alinea_api.errors import register_exception_handlers
+    from alinea_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
+    from alinea_api.ratelimit import RateLimitMiddleware
+    from alinea_api.redis_client import get_redis
+    from alinea_api.routers import vocab
+    from alinea_api.settings import get_api_settings
 
     s = get_api_settings()
     app = FastAPI()
@@ -56,7 +56,7 @@ def _build_app() -> FastAPI:
 
 @pytest_asyncio.fixture
 async def auth(db_session: AsyncSession, redis_client: Any) -> AsyncIterator[SimpleNamespace]:
-    from yakudoku_api.routers.vocab import get_vocab_job_wakeup
+    from alinea_api.routers.vocab import get_vocab_job_wakeup
 
     email = f"voc-{uuid.uuid4().hex}@example.com"
     user = await upsert_user_by_email(db_session, email, provider="email")
@@ -435,7 +435,7 @@ async def test_export_markdown_includes_context_and_source(vocab_ctx: SimpleName
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/markdown")
     assert "attachment" in resp.headers["content-disposition"]
-    assert "yakudoku-vocab-" in resp.headers["content-disposition"]
+    assert "alinea-vocab-" in resp.headers["content-disposition"]
 
     text = resp.text
     assert "reflow" in text

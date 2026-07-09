@@ -6,14 +6,14 @@ import {
   articlesBlockRewrite,
   figuresRegenerateExplainer,
   type ArticleBlockOut,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 import { ArticleBlockItem } from "@/components/viewer/article/ArticleBlockItem";
 import { articleKeys } from "@/components/viewer/article/queries";
 import type { Article } from "@/components/viewer/article/types";
 import { MockEventSource, firstEventSource } from "@/components/viewer/article/test-utils";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return {
     ...actual,
     articlesBlockRewrite: vi.fn(),

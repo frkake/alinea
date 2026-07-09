@@ -33,7 +33,7 @@ test.describe("PW-08 チャット(選択→AIに質問→チャットタブ)", (
     if (await dismiss.isVisible().catch(() => false)) await dismiss.click();
 
     // 本文段落をドラッグ選択 → 選択メニュー。
-    const para = page.locator(".yk-paragraph[data-block-id]").first();
+    const para = page.locator(".alinea-paragraph[data-block-id]").first();
     await expect(para).toBeVisible();
     await para.scrollIntoViewIfNeeded();
     await dragSelect(page, para);

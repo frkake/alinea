@@ -34,7 +34,7 @@ os.environ.setdefault("no_proxy", "localhost,127.0.0.1")
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql+asyncpg://yakudoku:yakudoku@localhost:5432/yakudoku",
+    "postgresql+asyncpg://alinea:alinea@localhost:5432/alinea",
 )
 MAILPIT_API = os.environ.get("MAILPIT_API", "http://localhost:8025")
 
@@ -56,8 +56,8 @@ def _clear_rate_limit_windows() -> Iterator[None]:
 @pytest_asyncio.fixture(autouse=True)
 async def _reset_shared_clients() -> AsyncIterator[None]:
     """各テストで Engine / Redis / sessionmaker をこのループに作り直す。"""
-    from yakudoku_api.redis_client import get_redis
-    from yakudoku_core.db.session import get_engine, get_sessionmaker
+    from alinea_api.redis_client import get_redis
+    from alinea_core.db.session import get_engine, get_sessionmaker
 
     get_redis.cache_clear()
     get_engine.cache_clear()
@@ -85,7 +85,7 @@ async def db_session() -> AsyncIterator[AsyncSession]:
 @pytest_asyncio.fixture
 async def redis_client() -> AsyncIterator[Any]:
     import redis.asyncio as redis
-    from yakudoku_api.settings import get_api_settings
+    from alinea_api.settings import get_api_settings
 
     client: Any = redis.Redis.from_url(get_api_settings().redis_url, decode_responses=True)
     yield client
@@ -94,7 +94,7 @@ async def redis_client() -> AsyncIterator[Any]:
 
 @pytest_asyncio.fixture
 async def client() -> AsyncIterator[AsyncClient]:
-    from yakudoku_api.main import app
+    from alinea_api.main import app
 
     transport = ASGITransport(app=app)
     async with AsyncClient(
@@ -109,7 +109,7 @@ async def client() -> AsyncIterator[AsyncClient]:
 @pytest_asyncio.fixture
 async def bare_client() -> AsyncIterator[AsyncClient]:
     """クッキーを持たないクライアント(Bearer 認証・認証スイープ用)。"""
-    from yakudoku_api.main import app
+    from alinea_api.main import app
 
     transport = ASGITransport(app=app)
     async with AsyncClient(

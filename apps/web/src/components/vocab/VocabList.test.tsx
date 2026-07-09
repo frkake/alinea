@@ -1,6 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
-import type { VocabEntrySummary } from "@yakudoku/api-client";
+import type { VocabEntrySummary } from "@alinea/api-client";
 import { VocabList } from "@/components/vocab/VocabList";
 
 function entry(overrides: Partial<VocabEntrySummary> = {}): VocabEntrySummary {

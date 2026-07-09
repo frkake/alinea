@@ -10,12 +10,12 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from alinea_core.db.models import Notification, User
+from alinea_core.jobs.store import JobStore
+from alinea_worker.notify import fire_translation_complete
+from alinea_worker.tasks.ingest import ingest_paper
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.db.models import Notification, User
-from yakudoku_core.jobs.store import JobStore
-from yakudoku_worker.notify import fire_translation_complete
-from yakudoku_worker.tasks.ingest import ingest_paper
 
 
 async def _make_user(db: AsyncSession, settings: dict[str, Any] | None = None) -> User:

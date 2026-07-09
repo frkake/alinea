@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { vocabReview, type VocabEntryDetail } from "@yakudoku/api-client";
+import { vocabReview, type VocabEntryDetail } from "@alinea/api-client";
 import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { VocabKindBadge } from "@/components/vocab/VocabKindBadge";

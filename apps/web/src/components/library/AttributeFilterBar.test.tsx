@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
-import type { FacetsResponse } from "@yakudoku/api-client";
+import type { FacetsResponse } from "@alinea/api-client";
 import {
   AttributeFilterBar,
   emptyAttributeFilters,

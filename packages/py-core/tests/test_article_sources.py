@@ -1,4 +1,4 @@
-"""``yakudoku_core.article.sources`` の素材収集テスト(plans/07 §4.2)。
+"""``alinea_core.article.sources`` の素材収集テスト(plans/07 §4.2)。
 
 ``collect_article_sources`` はメモ・注釈・チャット履歴を DB から読み取り 1 つの素材集合
 (:class:`ArticleSources`)にまとめる。実 PostgreSQL(``db_session``)に対して実行する。
@@ -10,9 +10,8 @@ import datetime as dt
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.article.sources import collect_article_sources
-from yakudoku_core.db.models import (
+from alinea_core.article.sources import collect_article_sources
+from alinea_core.db.models import (
     Annotation,
     ChatMessage,
     ChatThread,
@@ -22,8 +21,9 @@ from yakudoku_core.db.models import (
     Paper,
     User,
 )
-from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
-from yakudoku_core.document.inlines import Inline
+from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
+from alinea_core.document.inlines import Inline
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @dataclass

@@ -1,6 +1,6 @@
 "use client";
 
-import type { QuoteContentOut } from "@yakudoku/api-client";
+import type { QuoteContentOut } from "@alinea/api-client";
 import type { AnchorRef } from "@/components/viewer/article/types";
 
 /** 原文引用ブロック(1h §4.8)。 */

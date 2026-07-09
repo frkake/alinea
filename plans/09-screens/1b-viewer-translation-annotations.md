@@ -1,6 +1,6 @@
 # 画面 1b: ビューア 訳文+注釈パネル(対訳ポップ/選択メニュー)
 
-> 対象読者と前提: 本書は「訳読 / YAKUDOKU — 論文読解ワークベンチ」の apps/web(Next.js 15 App Router + React 19 + TypeScript 5 + Tailwind CSS v4)実装者向けに、確定デザイン画面 1b(論文ビューア・訳文モード・ゆったり)をピクセル一致で実装するための完全仕様である。機能仕様は docs/04(ビューア)・docs/03(翻訳)・docs/11(語彙帳)を正、ピクセル値は抽出ファイル extract/1b.md を正とする。共通コンポーネント名は plans/08-design-system.md、API 名は plans/03-api.md、トークンは packages/tokens(plans/08 §2)のものを必ず使う。ビューア共通骨格(ヘッダ・目次レール/ペイン・サイドパネル枠・URL 契約・キーマップ登録・論文内検索・読書位置/時間フック)は plans/09-screens/viewer-shell.md が実装・仕様の正であり、本書での再掲はピクセル照合用の転記である(値が食い違う場合は viewer-shell.md を正とし本書を改訂する)。本書が所有するのは viewer-shell §11 の「1b」行 — `TranslationPane`・前回位置バナー・対訳ポップ・`t`/`b` の実処理・SelectionMenu の呼び出し・`AnnotationsTab` — である。本書に書かれた値・識別子・文言が実装の正であり、独自の解釈・丸めを禁止する。
+> 対象読者と前提: 本書は「Alinea — 論文読解ワークベンチ」の apps/web(Next.js 15 App Router + React 19 + TypeScript 5 + Tailwind CSS v4)実装者向けに、確定デザイン画面 1b(論文ビューア・訳文モード・ゆったり)をピクセル一致で実装するための完全仕様である。機能仕様は docs/04(ビューア)・docs/03(翻訳)・docs/11(語彙帳)を正、ピクセル値は抽出ファイル extract/1b.md を正とする。共通コンポーネント名は plans/08-design-system.md、API 名は plans/03-api.md、トークンは packages/tokens(plans/08 §2)のものを必ず使う。ビューア共通骨格(ヘッダ・目次レール/ペイン・サイドパネル枠・URL 契約・キーマップ登録・論文内検索・読書位置/時間フック)は plans/09-screens/viewer-shell.md が実装・仕様の正であり、本書での再掲はピクセル照合用の転記である(値が食い違う場合は viewer-shell.md を正とし本書を改訂する)。本書が所有するのは viewer-shell §11 の「1b」行 — `TranslationPane`・前回位置バナー・対訳ポップ・`t`/`b` の実処理・SelectionMenu の呼び出し・`AnnotationsTab` — である。本書に書かれた値・識別子・文言が実装の正であり、独自の解釈・丸めを禁止する。
 
 ## 1. 概要とルート
 
@@ -184,7 +184,7 @@ interface TranslationPaneState {
   hoveredBlockId: string | null;        // 「対」ボタン表示対象
   selection: SelectionState | null;     // null=選択メニュー非表示
   annFilter: AnnFilter;                 // 既定 'all'
-  bannerDismissed: boolean;             // sessionStorage 'yk-resume-dismissed:{liId}' と同期
+  bannerDismissed: boolean;             // sessionStorage 'alinea-resume-dismissed:{liId}' と同期
 }
 ```
 
@@ -353,7 +353,7 @@ position:absolute、top:14px、left:50%、transform:translateX(-50%)、z-index:v
 
 ### 5.2 前回位置バナー
 
-- 表示条件(決定): `viewer.last_position != null` かつ 未 dismiss(`sessionStorage['yk-resume-dismissed:'+liId]` 不在)かつ 初期スクロール位置が last_position のブロックと不一致。自動ジャンプはしない(docs/04 §3)。
+- 表示条件(決定): `viewer.last_position != null` かつ 未 dismiss(`sessionStorage['alinea-resume-dismissed:'+liId]` 不在)かつ 初期スクロール位置が last_position のブロックと不一致。自動ジャンプはしない(docs/04 §3)。
 - 「続きから ↓」: `last_position.block_id` のセクションをロード(§2.4)→ `scrollIntoView({ block:'start' })`+スクロール後に該当ブロックを 2000ms `--pr-acc-s` 背景で強調(transition 300ms)→バナーを閉じる。
 - 「×」: バナー非表示+sessionStorage 記録(同一タブセッション中は再表示しない。次回訪問では再表示)。
 - スクロールを 1200px 以上進めた時点でも自動で閉じる(決定。読み始めた=不要のため)。フェードアウト 150ms。
@@ -393,7 +393,7 @@ position:absolute、top:14px、left:50%、transform:translateX(-50%)、z-index:v
 
 - 発火: 本文(訳文)・対訳ポップ内原文での `selectionchange` 終了(`pointerup` / `keyup`)時、選択が空でなく単一ブロック内に収まる場合に表示。複数ブロック跨ぎ選択は非対応(メニューを出さない。決定: アンカーがブロック単位のため)。
 - 位置(決定): 選択範囲 `getClientRects()` の最終行矩形の下 8px・左端揃え。本文カラム右端をはみ出す場合は右端に合わせ、ビューポート下端 60px 以内なら選択の上 8px に反転。デザイン値(top:34px / left:210px)はこの規則の一例スナップショット。
-- 選択中の擬似ハイライト: メニュー表示中、対象 Range を `background:var(--pr-as); outline:1px solid var(--pr-am); border-radius:2px` の `<span data-yk-pending>` でラップ(メニュー消滅時に解除)。ブラウザ標準 `::selection` はトークンの rgba(62,92,118,0.22) のまま。
+- 選択中の擬似ハイライト: メニュー表示中、対象 Range を `background:var(--pr-as); outline:1px solid var(--pr-am); border-radius:2px` の `<span data-alinea-pending>` でラップ(メニュー消滅時に解除)。ブラウザ標準 `::selection` はトークンの rgba(62,92,118,0.22) のまま。
 - アンカー構築: `{ revision_id, block_id, start, end, quote(選択文字列・最大500字), side }`。side は選択元が対訳ポップ内原文なら `'source'`、訳文段落なら `'translation'`。
 - アクション:
   - **色ドット 4 個**: クリックで `POST …/annotations { kind:'highlight', color, anchor }`。楽観的更新(§5.6)。メニューを閉じる。
@@ -423,7 +423,7 @@ position:absolute、top:14px、left:50%、transform:translateX(-50%)、z-index:v
 
 ### 5.9 ローディング・エラー・空状態(デザイン未描画分の決定)
 
-- **初期スケルトン**(決定): ヘッダ・レール・パネル枠は即時描画(タイトル位置に 330×13px、bg `--pr-bg-muted`、radius 4px のバー)。本文カラムに: セクションラベル位置 160×12px バー、3行要約カード枠(border 1px `--pr-border-card`、radius 10px、高さ 118px、内部に 11.5px 相当バー 1 本+13px 相当バー 3 本)、段落位置に幅 720/680/700px×16.5px のバー 3 群(各群 4 本、gap 12px)。すべて `animation: yk-pulse 1.6s ease-in-out infinite`(opacity 1→0.55→1)。「〜px 相当バー」の高さは当該 font-size の四捨五入整数 px(11.5px→h12px、13px→h13px、16.5px→h17px)と決定。パネルには注釈カード形スケルトン 3 枚(h64px)。
+- **初期スケルトン**(決定): ヘッダ・レール・パネル枠は即時描画(タイトル位置に 330×13px、bg `--pr-bg-muted`、radius 4px のバー)。本文カラムに: セクションラベル位置 160×12px バー、3行要約カード枠(border 1px `--pr-border-card`、radius 10px、高さ 118px、内部に 11.5px 相当バー 1 本+13px 相当バー 3 本)、段落位置に幅 720/680/700px×16.5px のバー 3 群(各群 4 本、gap 12px)。すべて `animation: alinea-pulse 1.6s ease-in-out infinite`(opacity 1→0.55→1)。「〜px 相当バー」の高さは当該 font-size の四捨五入整数 px(11.5px→h12px、13px→h13px、16.5px→h17px)と決定。パネルには注釈カード形スケルトン 3 枚(h64px)。
 - **viewer 取得エラー**: 本文領域中央に □ EmptyState(title「論文を読み込めませんでした」、description=Problem.title、action「再読み込み」→ refetch)。404 は `notFound()`(Next.js)。
 - **セクション本文/訳文取得エラー**: 該当セクション位置にインラインで再試行行(font-size:12px、color:`--pr-warn`、「このセクションを読み込めませんでした · 再試行」)。
 - **未翻訳ユニット**(`text_ja: null`): 原文(`--pr-font-en`、14.5px/1.8、color #33373C)+ 直後に「翻訳中…」(font-size:10.5px、color:#9A9EA4、font-family:'IBM Plex Sans JP')。`quality_flags` に翻訳失敗フラグ **`placeholder_mismatch` / `provider_refusal` / `untranslated` のいずれか**(plans/06 §12: text_ja が null で返る失敗系はこの 3 値のみ)を含む場合は「翻訳中…」の代わりに「この段落の翻訳に失敗しました · 再翻訳」(color:`--pr-warn`、再翻訳リンクは §5.3 と同処理)。それ以外の品質フラグ(`number_mismatch` / `length_outlier` 等の警告系)は訳文をそのまま表示し、docs/03 §10 の下線表示に従う。P3 準拠。

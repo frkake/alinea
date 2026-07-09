@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties } from "react";
-import type { DeadlineCollectionEntry, DeadlineItemEntry } from "@yakudoku/api-client";
+import type { DeadlineCollectionEntry, DeadlineItemEntry } from "@alinea/api-client";
 import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ProgressBar } from "@/components/ui/ProgressBar";
@@ -20,7 +20,7 @@ const STATUS_LABELS: Record<string, string> = {
 /**
  * 「締切が近い」セクション(plans/09-screens/1d-dashboard.md §4.7・docs/06 §6.3。M2-09 で有効化)。
  * `GET /api/dashboard` の `deadlines`(collections 最大2・items 最大3。実データ化は
- * apps/api/src/yakudoku_api/services/deadlines.py)を消費するだけの表示コンポーネント。
+ * apps/api/src/alinea_api/services/deadlines.py)を消費するだけの表示コンポーネント。
  */
 export interface DashboardDeadlinesProps {
   collections: DeadlineCollectionEntry[];

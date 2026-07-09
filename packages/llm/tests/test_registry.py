@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from yakudoku_llm.registry import ModelRegistry
-from yakudoku_llm.types import Usage
+from alinea_llm.registry import ModelRegistry
+from alinea_llm.types import Usage
 
 _MODELS_YAML = Path(__file__).resolve().parents[1] / "models.yaml"
 

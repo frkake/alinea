@@ -20,9 +20,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.db.models import (
+from alinea_core.db.models import (
     DocumentRevision,
     LibraryItem,
     Paper,
@@ -30,13 +28,15 @@ from yakudoku_core.db.models import (
     TranslationUnit,
     User,
 )
-from yakudoku_core.document.blocks import Block, DocumentContent, Section, SectionHeading
-from yakudoku_core.document.inlines import Inline
-from yakudoku_core.jobs.store import JobStore
-from yakudoku_core.search.rebuild import rebuild_block_search_index
-from yakudoku_llm.router import LLMRouter
-from yakudoku_llm.types import LLMRequest, LLMResponse, StreamEvent
-from yakudoku_worker.tasks.translate import run_translation_job
+from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
+from alinea_core.document.inlines import Inline
+from alinea_core.jobs.store import JobStore
+from alinea_core.search.rebuild import rebuild_block_search_index
+from alinea_llm.router import LLMRouter
+from alinea_llm.types import LLMRequest, LLMResponse, StreamEvent
+from alinea_worker.tasks.translate import run_translation_job
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _uid() -> str:

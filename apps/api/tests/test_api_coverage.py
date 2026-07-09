@@ -14,18 +14,18 @@ from typing import Any
 
 import factories
 import pytest_asyncio
+from alinea_core.db.models import User
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.db.models import User
 
 
 @pytest_asyncio.fixture
 async def api(
     db_session: AsyncSession, redis_client: Any
 ) -> AsyncIterator[tuple[AsyncClient, str]]:
-    from yakudoku_api.main import app
-    from yakudoku_api.services.session_service import COOKIE_NAME, create_session
-    from yakudoku_api.services.user_service import purge_user
+    from alinea_api.main import app
+    from alinea_api.services.session_service import COOKIE_NAME, create_session
+    from alinea_api.services.user_service import purge_user
 
     user = await factories.make_user(db_session)
     await db_session.commit()

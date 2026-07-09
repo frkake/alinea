@@ -8,7 +8,7 @@ import {
   annotationsUpdate,
   annotationsList,
   type Annotation,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { FilterChip } from "@/components/ui/FilterChip";
 import { useToast } from "@/components/ui/Toast";
@@ -115,8 +115,8 @@ export function AnnotationListPanel({ readOnly = false }: AnnotationListPanelPro
     );
     if (el) {
       el.scrollIntoView({ block: "center" });
-      el.classList.add("yk-block-flash");
-      window.setTimeout(() => el.classList.remove("yk-block-flash"), 2000);
+      el.classList.add("alinea-block-flash");
+      window.setTimeout(() => el.classList.remove("alinea-block-flash"), 2000);
     }
     consumeAnnotationFocus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -441,7 +441,7 @@ function AnnotationSkeleton() {
     borderRadius: 8,
     background: "var(--pr-bg-card)",
     border: "1px solid var(--pr-border-card)",
-    animation: "yk-pulse 1.6s ease-in-out infinite",
+    animation: "alinea-pulse 1.6s ease-in-out infinite",
   };
   return (
     <>

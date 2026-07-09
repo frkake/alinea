@@ -1,6 +1,6 @@
 # 画面 1a: ビューア 対訳+チャットパネル
 
-> 対象読者と前提: 本書は「訳読 / YAKUDOKU」のフロントエンド実装者向けに、確定デザイン画面 1a(論文ビューア — 対訳モード・高密度、左右分割+チャットパネル根拠チップ)を 1px の差分なく実装するための計画書である。機能仕様は docs/04(ビューア)・docs/05(読解チャット)・docs/03(翻訳)を正、ピクセル値は抽出ファイル extract/1a.md を正とする。共通コンポーネント名・トークン名は plans/08-design-system.md、API エンドポイント名・型名は plans/03-api.md のものをそのまま使う。技術スタック: Next.js 15(App Router)+ React 19 + TypeScript 5 + Tailwind CSS v4 + TanStack Query v5 + Zustand + KaTeX + `packages/api-client`(openapi-fetch 生成クライアント+`sseFetch()`)。
+> 対象読者と前提: 本書は「Alinea」のフロントエンド実装者向けに、確定デザイン画面 1a(論文ビューア — 対訳モード・高密度、左右分割+チャットパネル根拠チップ)を 1px の差分なく実装するための計画書である。機能仕様は docs/04(ビューア)・docs/05(読解チャット)・docs/03(翻訳)を正、ピクセル値は抽出ファイル extract/1a.md を正とする。共通コンポーネント名・トークン名は plans/08-design-system.md、API エンドポイント名・型名は plans/03-api.md のものをそのまま使う。技術スタック: Next.js 15(App Router)+ React 19 + TypeScript 5 + Tailwind CSS v4 + TanStack Query v5 + Zustand + KaTeX + `packages/api-client`(openapi-fetch 生成クライアント+`sseFetch()`)。
 
 ## 1. 概要とルート
 
@@ -123,7 +123,7 @@ ReadPage (app/(app)/papers/[itemId]/page.tsx)
 ```ts
 // apps/web/src/features/viewer/types.ts
 import type { LibraryItemSummary, TocNode, Style, Anchor, AnchorRef,
-              ChatThread, ChatMessage, Block, Annotation } from '@yakudoku/api-client';
+              ChatThread, ChatMessage, Block, Annotation } from '@alinea/api-client';
 
 export type ViewerMode = 'translation' | 'parallel' | 'source' | 'pdf' | 'article';
 
@@ -454,7 +454,7 @@ h=52px、flex:none、background:#FFFFFF(→ `--pr-bg-card`)、border-bottom:1px 
 
 | 状態 | 決定内容 |
 |---|---|
-| 初期ローディング(viewer 取得中) | ヘッダ・3 ペインの骨格は即描画。目次: 幅 88〜168px(行ごとに 168/120/88/152px の循環)× h13px、border-radius:4px、background:var(--pr-bg-muted) のバー 13 本(gap 9px)。本文: 2 カラムグリッドに段落 4 組分のスケルトン(各段落 = 幅 100%×3 本+幅 62%×1 本、h13px、gap 8px、同色)。チャット: メッセージ域中央に何も出さず入力エリアのみ描画。すべて `animation: yk-pulse 1.2s ease-in-out infinite`(opacity 1→0.55→1) |
+| 初期ローディング(viewer 取得中) | ヘッダ・3 ペインの骨格は即描画。目次: 幅 88〜168px(行ごとに 168/120/88/152px の循環)× h13px、border-radius:4px、background:var(--pr-bg-muted) のバー 13 本(gap 9px)。本文: 2 カラムグリッドに段落 4 組分のスケルトン(各段落 = 幅 100%×3 本+幅 62%×1 本、h13px、gap 8px、同色)。チャット: メッセージ域中央に何も出さず入力エリアのみ描画。すべて `animation: alinea-pulse 1.2s ease-in-out infinite`(opacity 1→0.55→1) |
 | セクション本文の追加ロード | 対象セクション位置に上記段落スケルトン 2 組。取得失敗時はその位置に `EmptyState`(title='本文を読み込めませんでした', action={label:'再試行'}) |
 | 訳文未翻訳ブロック | 右列に原文はそのまま、訳セルに「翻訳中…」font-size:12px、color:var(--pr-text-muted)(docs/04 §2)。`quality_flags` に `placeholder_mismatch` を含み `text_ja:null` の場合(`text_ja:null` で返るのはこのフラグのみ。plans/03 §7.2)は「この段落の翻訳に失敗しました · 再翻訳」(再翻訳リンクは color:var(--pr-a)) |
 | チャット履歴なし | メッセージ域中央に `EmptyState`(共通): title「まだ会話がありません」、description「下の定型チップか入力欄から、この論文について質問できます。」 |

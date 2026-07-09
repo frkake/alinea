@@ -8,13 +8,13 @@ import {
   annotationsList,
   annotationsUpdate,
   type Annotation,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 import { AnnotationListPanel } from "@/components/viewer/AnnotationListPanel";
 import { ToastViewport } from "@/components/ui/Toast";
 import { useViewerStore } from "@/stores/viewer-store";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return {
     ...actual,
     annotationsList: vi.fn(),

@@ -11,7 +11,7 @@ const repoRoot = resolve(__dirname, "..", "..", "..", "..");
 const NO_PROXY = "localhost,127.0.0.1";
 
 /**
- * §14 シード(vocab.json の "boil down to")は `yakudoku_api.seed` から実際には投入されない
+ * §14 シード(vocab.json の "boil down to")は `alinea_api.seed` から実際には投入されない
  * (article.json/overview_dsl.json と同様の死んだ fixture。pw-13 冒頭コメント・followups 参照)。
  * VR-4d の詳細パネル撮影用に、同一の値で直接 INSERT する(seed_due_vocab.py と同方針)。
  */
@@ -168,7 +168,7 @@ test.describe("VR M2 追加画面", () => {
       try {
         const anonPage = await anonContext.newPage();
         await anonPage.goto(`/c/${token}`);
-        await expect(anonPage.getByText("訳読をはじめる")).toBeVisible();
+        await expect(anonPage.getByText("Alineaをはじめる")).toBeVisible();
         await anonPage.waitForTimeout(300);
         // 「更新 YYYY-MM-DD」は撮影日に応じて変わるためマスクする(§9.1 の日時マスク方針)。
         await expect(anonPage).toHaveScreenshot("vr-4c-share-page.png", {
@@ -189,7 +189,7 @@ test.describe("VR M2 追加画面", () => {
   });
 
   test("VR-4d 語彙帳: 詳細パネル", async ({ page }) => {
-    const seeded = seedBoilDownTo("dev@yakudoku.test");
+    const seeded = seedBoilDownTo("dev@alinea.test");
     try {
       await page.goto("/vocab");
       // サイドバーの「語彙帳」リンクとも同名一致するため main 内に絞る。

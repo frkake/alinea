@@ -3,7 +3,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { create } from "zustand";
-import { Z_INDEX } from "@yakudoku/tokens";
+import { Z_INDEX } from "@alinea/tokens";
 
 /** トースト(plans/08 §5.20)。一括操作バーの視覚言語を流用。 */
 export interface ToastOptions {
@@ -18,7 +18,7 @@ interface ToastState {
   dismiss: () => void;
 }
 
-/** Zustand ストア yk-toast。同時 1 件のみ(後着優先で置換)。 */
+/** Zustand ストア alinea-toast。同時 1 件のみ(後着優先で置換)。 */
 const useToastStore = create<ToastState>((set) => ({
   current: null,
   show: (options) => {

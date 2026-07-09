@@ -1,6 +1,6 @@
 # 09-screens/viewer-shell. ビューアシェル共通実装仕様(1a/1b/1c/2a/1h/5a 共有)
 
-> 対象読者と前提: 本書は「訳読 / YAKUDOKU — 論文読解ワークベンチ」のビューア6画面(1a 対訳 / 1b 訳文 / 1c ダーク・図表 / 2a PDF / 1h 記事 / 5a リソース)が共有する「ビューアシェル」の実装計画書である。機能仕様は docs/04-viewer.md を正とし、ピクセル値は抽出ファイル(extract/1a.md・1b.md・1c.md・2a.md・1h.md・5a.md)の実測値をそのまま採用する。共通 UI コンポーネントとデザイントークンは plans/08-design-system.md、API は plans/03-api.md の定義を参照し、本書では再定義しない。技術スタックは確定済み(Next.js 15 App Router + React 19 + TypeScript 5 + Tailwind CSS v4 / TanStack Query + Zustand)。デザイン抽出値と docs に無い実装詳細は本書がすべて確定させる(「決定:」表記)。
+> 対象読者と前提: 本書は「Alinea — 論文読解ワークベンチ」のビューア6画面(1a 対訳 / 1b 訳文 / 1c ダーク・図表 / 2a PDF / 1h 記事 / 5a リソース)が共有する「ビューアシェル」の実装計画書である。機能仕様は docs/04-viewer.md を正とし、ピクセル値は抽出ファイル(extract/1a.md・1b.md・1c.md・2a.md・1h.md・5a.md)の実測値をそのまま採用する。共通 UI コンポーネントとデザイントークンは plans/08-design-system.md、API は plans/03-api.md の定義を参照し、本書では再定義しない。技術スタックは確定済み(Next.js 15 App Router + React 19 + TypeScript 5 + Tailwind CSS v4 / TanStack Query + Zustand)。デザイン抽出値と docs に無い実装詳細は本書がすべて確定させる(「決定:」表記)。
 
 ## 1. 対象範囲とコンポーネント構成
 
@@ -110,7 +110,7 @@ export interface ViewerShellProps {
 import { create } from 'zustand';
 import type { SidePanelTabId } from '@/components/ui/SidePanelTabs';
 import type { ViewerMode } from '@/components/viewer/ViewerShell';
-import type { AnchorRef, Style } from '@yakudoku/api-client';
+import type { AnchorRef, Style } from '@alinea/api-client';
 
 interface ViewerStoreState {
   itemId: string | null;
@@ -160,7 +160,7 @@ interface ViewerStoreState {
 }
 ```
 
-- ストアは論文単位に 1 つ(ページマウントで初期化)。**永続化(決定)**: `tocOpen` は `localStorage['yk-toc-open:{itemId}']`(値: `"1"` / `"0"`)、`activeTab`・`panelOpen` は `sessionStorage['yk-viewer-panel:{itemId}']`(値: `"chat"` 等 / `"closed"`)、`style` は `localStorage['yk-viewer-style:{itemId}']`。理由: 目次開閉と書体系は再訪でも維持したい設定、タブはセッション内文脈のため。
+- ストアは論文単位に 1 つ(ページマウントで初期化)。**永続化(決定)**: `tocOpen` は `localStorage['alinea-toc-open:{itemId}']`(値: `"1"` / `"0"`)、`activeTab`・`panelOpen` は `sessionStorage['alinea-viewer-panel:{itemId}']`(値: `"chat"` 等 / `"closed"`)、`style` は `localStorage['alinea-viewer-style:{itemId}']`。理由: 目次開閉と書体系は再訪でも維持したい設定、タブはセッション内文脈のため。
 - URL に置くのは `mode` のみ(§3)。パネル・目次状態は URL に載せない。決定。理由: 共有・ブックマークで意味を持つのは表示モードと位置だけであり、URL の直交性を保つ。
 
 ## 3. 表示モードのルーティング(URL 契約)
@@ -242,7 +242,7 @@ const MODE_OPTIONS = [
 - 見た目(1a 実測): inline-flex、gap:5px、height:26px、padding:0 10px、border:1px solid `var(--pr-border-control)`、border-radius:6px、font-size:11.5px、color:`var(--pr-text-mid)`。表示は「スタイル: 自然訳」+「▾」(color `var(--pr-text-muted)`、font-size:9px)。ラベル対応: `natural`=自然訳 / `literal`=直訳。
 - クリックで Popover(width 180px、`bottom-end`)に 2 行(自然訳 / 直訳。現在値はアクセント淡背景+weight 600)。
 - 切替時の挙動(決定):
-  1. `viewer-store.style` を更新+`localStorage['yk-viewer-style:{itemId}']` へ保存。
+  1. `viewer-store.style` を更新+`localStorage['alinea-viewer-style:{itemId}']` へ保存。
   2. 切替先が `literal` で、`GET /api/revisions/{revision_id}/translations` の一覧に literal の TranslationSet が無い、または `status !== 'complete'` の場合、`POST /api/revisions/{revision_id}/translations { style: 'literal', priority_section_id: <activeSectionId> }` を発行(202)。決定: オンデマンド生成が存在するのは literal のみ(03-api §7.3 の Request は `style: "literal"` 固定)。`natural` への切替で natural セットが未 complete の場合は POST を発行しない(パイプラインが生成中であり、進捗は SSE で追随する)。いずれも未翻訳ブロックは本文ペインが原文+「翻訳中…」で表示(P3。表示は各ペイン担当)。
   3. 本文ペインの翻訳クエリはキーに `style` を含むため自動で再取得される。
 - `mode === 'source'` と `mode === 'pdf'` でもセレクタは表示・操作可能(2a 実測でセレクタが存在する)。原文/PDF 表示自体には作用せず、対訳ポップ・相互リンク先の訳文スタイルを規定する。
@@ -262,7 +262,7 @@ const MODE_OPTIONS = [
 | 記事(article) | 折畳(1h) |
 | 原文(source) | 折畳。決定。理由: 訳文と同じ 1 カラム読書レイアウトのため(デザイン未提示の補完) |
 
-- ユーザーが明示的にトグルした場合は `localStorage['yk-toc-open:{itemId}']` に保存し、以後そのアイテムでは**全モードでその値を既定より優先**する。決定。理由: 「読書の邪魔をしない」— モード切替のたびに開閉が勝手に変わらないこと(P6)。
+- ユーザーが明示的にトグルした場合は `localStorage['alinea-toc-open:{itemId}']` に保存し、以後そのアイテムでは**全モードでその値を既定より優先**する。決定。理由: 「読書の邪魔をしない」— モード切替のたびに開閉が勝手に変わらないこと(P6)。
 
 ### 5.2 TocRail(44px 折畳レール。1b/1h/5a 実測)
 
@@ -340,7 +340,7 @@ const MODE_OPTIONS = [
 
 - 起動: 検索ボックスクリックまたはキー `/`。`searchOpen=true` でボックスが実 input 化しフォーカス(見た目は不変。フォーカスリングは plans/08 §5 共通規約)。
 - クエリ 2 文字以上で `GET /api/revisions/{revision_id}/search?q=&limit=50` を 300ms デバウンス実行。対象は原文・訳文の両面、訳文ヒットは原文ブロックと同一視して 1 件(API 仕様)。
-- **結果ドロップダウン(決定。デザイン未描画のため本書で確定)**: `Popover`(width 300px、placement `bottom-end`、caret なし、アンカー=検索ボックス)。各行: padding 8px 12px、border-bottom 1px `var(--pr-border-hair)`。1 行目=`display`(「§2.2 ¶3」。font 10px、color `var(--pr-text-muted)`)、2 行目=`snippet`(font 11.5px、color `var(--pr-text-body)`、2 行 clamp。`<mark>` は `.yk-search-hit`=bg rgba(196,148,50,0.30)、plans/08 §5.17)。アクティブ行(`searchActiveIndex`)は bg `var(--pr-bg-hover)`。ヒット 0 件は `EmptyState` 縮小版「一致なし」(font 11px、muted、padding 16px)。
+- **結果ドロップダウン(決定。デザイン未描画のため本書で確定)**: `Popover`(width 300px、placement `bottom-end`、caret なし、アンカー=検索ボックス)。各行: padding 8px 12px、border-bottom 1px `var(--pr-border-hair)`。1 行目=`display`(「§2.2 ¶3」。font 10px、color `var(--pr-text-muted)`)、2 行目=`snippet`(font 11.5px、color `var(--pr-text-body)`、2 行 clamp。`<mark>` は `.alinea-search-hit`=bg rgba(196,148,50,0.30)、plans/08 §5.17)。アクティブ行(`searchActiveIndex`)は bg `var(--pr-bg-hover)`。ヒット 0 件は `EmptyState` 縮小版「一致なし」(font 11px、muted、padding 16px)。
 - キー操作: `↓`/`↑` で行移動、`Enter` でアクティブ行の `block_id` へジャンプ(`requestScroll`)+ドロップダウンは開いたまま(連続ジャンプ可)、`Esc` で `closeSearch()`(input blur+ドロップダウン閉+クエリ保持)。
 - **目次マーカー(docs/04 §12 の決定を実装)**: 検索結果が開いている間、ヒットを含む節の `TocRow` 行末に 5×5px の丸ドット(background:`var(--pr-amber)`、margin-left:auto)を表示する。`closeSearch()` で消える。
 - PDF モードでは同一 UI でヒット先を page+bbox 位置へジャンプ(bbox 無しは節先頭ページ)。記事モードではヒット先が原文位置のため、`Enter` で `?mode=translation&block=…` へ遷移する(記事本文自体は検索対象外。横断検索 4e が担当)。決定。

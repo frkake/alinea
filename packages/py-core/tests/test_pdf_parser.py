@@ -10,9 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from yakudoku_core.document.blocks import DocumentContent
-from yakudoku_core.ingest.bib_estimate import BibEstimate, estimate_bibliography
-from yakudoku_core.parsing.pdf_parser import (
+from alinea_core.document.blocks import DocumentContent
+from alinea_core.ingest.bib_estimate import BibEstimate, estimate_bibliography
+from alinea_core.parsing.pdf_parser import (
     PARSER_VERSION,
     ParsedPdfDocument,
     PdfParseError,

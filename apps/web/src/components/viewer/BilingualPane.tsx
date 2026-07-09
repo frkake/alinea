@@ -9,7 +9,7 @@ import {
   type LastPosition,
   type TocNode,
   type TranslationUnitItem,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 import type { HighlightColor } from "@/components/ui/HighlightMark";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import { useViewerChatStore } from "@/stores/viewer-chat-store";
@@ -250,8 +250,8 @@ export function BilingualPane({
     const el = root.querySelector<HTMLElement>(selector);
     if (el) {
       el.scrollIntoView({ block: "start" });
-      el.classList.add("yk-block-flash");
-      window.setTimeout(() => el.classList.remove("yk-block-flash"), 2000);
+      el.classList.add("alinea-block-flash");
+      window.setTimeout(() => el.classList.remove("alinea-block-flash"), 2000);
     }
     consumeScroll();
     // `hl` の一発マークは遷移先ブロックのみ(TranslationPane と同じ規約。plans/11 §7)。
@@ -662,7 +662,7 @@ function PaneSkeleton() {
         marginBottom: mb,
         borderRadius: 4,
         background: "var(--pr-bg-muted)",
-        animation: "yk-pulse 1.2s ease-in-out infinite",
+        animation: "alinea-pulse 1.2s ease-in-out infinite",
       }}
     />
   );

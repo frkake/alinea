@@ -19,14 +19,14 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest_asyncio
+from alinea_core.db.models import DocumentRevision, LibraryItem, Notification, Paper, User
+from alinea_worker.cron import check_quality_promotions
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from yakudoku_core.db.models import DocumentRevision, LibraryItem, Notification, Paper, User
-from yakudoku_worker.cron import check_quality_promotions
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql+asyncpg://yakudoku:yakudoku@localhost:5432/yakudoku",
+    "postgresql+asyncpg://alinea:alinea@localhost:5432/alinea",
 )
 
 

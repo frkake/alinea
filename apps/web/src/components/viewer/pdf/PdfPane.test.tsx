@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { viewerGetDocument } from "@yakudoku/api-client";
+import { viewerGetDocument } from "@alinea/api-client";
 import { useViewerStore } from "@/stores/viewer-store";
 import { usePdfViewStore } from "@/stores/pdf-view-store";
 import type { DocumentResponse } from "@/components/viewer/document-types";
@@ -21,8 +21,8 @@ beforeAll(() => {
   );
 });
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return { ...actual, viewerGetDocument: vi.fn() };
 });
 
@@ -142,7 +142,7 @@ describe("PdfPane (2a §5)", () => {
     await screen.findByText("§2.2 Reflow");
     await waitFor(() => {
       const trackedPages = container.querySelectorAll("[data-pdf-page]");
-      const pageLayers = container.querySelectorAll(".yk-pdf-page-layer");
+      const pageLayers = container.querySelectorAll(".alinea-pdf-page-layer");
       expect(trackedPages).toHaveLength(24);
       expect(pageLayers).toHaveLength(48);
     });
@@ -164,7 +164,7 @@ describe("PdfPane (2a §5)", () => {
   test("Ctrl+wheel updates PDF zoom state and leaves fit mode", async () => {
     const { container } = renderPane();
     await screen.findByText("§2.2 Reflow");
-    const root = container.querySelector<HTMLElement>(".yk-pdf-canvas-bg");
+    const root = container.querySelector<HTMLElement>(".alinea-pdf-canvas-bg");
     if (!root) throw new Error("PDF canvas root missing");
 
     fireEvent.wheel(root, { ctrlKey: true, deltaY: -120 });

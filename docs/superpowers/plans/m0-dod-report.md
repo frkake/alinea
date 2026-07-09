@@ -10,12 +10,12 @@
 | 1 | `docker compose up -d --wait` | ✅ | db(PGroonga)/redis/minio/minio-init/mailpit 全 healthy |
 | 2 | `uv sync --all-packages` / `pnpm install` | ✅ | 依存解決・インストール成功(uv workspace 6 パッケージ+pnpm 7 パッケージ) |
 | 3 | `alembic upgrade head` | ✅ | `0002_llm_routing (head)`。全 34 テーブル+PGroonga 索引+ルーティングシード |
-| 4 | `python -m yakudoku_api.seed --sample rectified-flow` | ✅ | `[seed] 2209.03003 完了(要旨+先頭セクション訳)`。--reset/--scale/--full 動作確認済み |
+| 4 | `python -m alinea_api.seed --sample rectified-flow` | ✅ | `[seed] 2209.03003 完了(要旨+先頭セクション訳)`。--reset/--scale/--full 動作確認済み |
 | 5 | `pnpm turbo build lint typecheck test` | ✅ | **21/21 タスク成功**(tokens 7・web 74・extension 16 の Vitest 含む) |
 | 6 | dev 起動(web 3000+api 8000+worker) | ✅ | uvicorn `/api/healthz`=ok・`/api/readyz`=ready(db/redis)。arq Interactive+Bulk 両ワーカー起動確認(実ランタイムスモークで保存→8 段階→complete を実証) |
 | 7 | pytest / Vitest green | ✅ | **Python 366 passed**(実 PostgreSQL/Redis/MinIO)。カバレッジ 82.02%(CI 分母・閾値 80)、placeholder.py 100%。トレーサビリティ: M0 必達 54 ID 未割付 0・docs 受け入れ基準 158=§6 表 158 |
 | 8 | Playwright E2E green | ✅ | **web 18 passed**(PW-01/02/03/05/07/08/09、M1/M2 分は test.fixme)+ VR-1a/1b/1c 基準画像。**拡張 9 passed**(XT-01〜05/07/09)+ VR-3a×3。いずれも 2 連続 green |
-| 9 | 拡張 unpacked ビルド | ✅ | `.output/chrome-mv3` 生成+`yakudokuextension-0.1.0-{chrome,edge}.zip` ビルド成功。手動ロード手順は docs/extension-local-verification.md |
+| 9 | 拡張 unpacked ビルド | ✅ | `.output/chrome-mv3` 生成+`alineaextension-0.1.0-{chrome,edge}.zip` ビルド成功。手動ロード手順は docs/extension-local-verification.md |
 
 ## 2. M0 DoD(docs/10 §2・§8)
 

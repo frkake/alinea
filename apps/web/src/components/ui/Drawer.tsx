@@ -2,7 +2,7 @@
 
 import { useEffect, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Z_INDEX } from "@yakudoku/tokens";
+import { Z_INDEX } from "@alinea/tokens";
 
 /**
  * 左からオーバーレイする汎用ドロワー(mobile.md §4.3 の目次ドロワー・§5.1 のナビドロワーで共用)。

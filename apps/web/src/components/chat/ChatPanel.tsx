@@ -12,7 +12,7 @@ import {
   type ChatMessage as ChatMessageData,
   type EvidenceRef,
   type MarkdownBlock,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 import { useToast } from "@/components/ui/Toast";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Popover } from "@/components/ui/Popover";
@@ -165,8 +165,8 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
       );
       if (el) {
         el.scrollIntoView({ block: "center" });
-        el.classList.add("yk-block-flash");
-        window.setTimeout(() => el.classList.remove("yk-block-flash"), 2000);
+        el.classList.add("alinea-block-flash");
+        window.setTimeout(() => el.classList.remove("alinea-block-flash"), 2000);
       }
     }
     consumeChatFocus();

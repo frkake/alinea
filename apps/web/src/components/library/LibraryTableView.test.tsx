@@ -6,12 +6,12 @@ import {
   libraryItemsBulk,
   libraryItemsUpdate,
   type LibraryItemSummary,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 import { LibraryTableView } from "@/components/library/LibraryTableView";
 import { useFinishReadingStore } from "@/components/library/finishReadingStore";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return {
     ...actual,
     libraryItemsUpdate: vi.fn(),

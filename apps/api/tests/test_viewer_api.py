@@ -13,11 +13,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.seed import ARXIV_ID, DEV_EMAIL, seed_rectified_flow
-from yakudoku_core.db.models import (
+from alinea_api.seed import ARXIV_ID, DEV_EMAIL, seed_rectified_flow
+from alinea_core.db.models import (
     DocumentRevision,
     LibraryItem,
     Paper,
@@ -25,6 +22,9 @@ from yakudoku_core.db.models import (
     TranslationUnit,
     User,
 )
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class Seeded:
@@ -71,9 +71,9 @@ async def seeded(db_session: AsyncSession) -> AsyncIterator[Seeded]:
 @pytest_asyncio.fixture
 async def auth_client(seeded: Seeded) -> AsyncIterator[AsyncClient]:
     """dev ユーザーのセッションクッキーを持つ認証済みクライアント。"""
-    from yakudoku_api.main import app
-    from yakudoku_api.redis_client import get_redis
-    from yakudoku_api.services.session_service import COOKIE_NAME, create_session
+    from alinea_api.main import app
+    from alinea_api.redis_client import get_redis
+    from alinea_api.services.session_service import COOKIE_NAME, create_session
 
     token = await create_session(get_redis(), seeded.user_id)
     transport = ASGITransport(app=app)
@@ -340,7 +340,7 @@ async def test_units_placeholder_mismatch_is_null(
     doc = await db_session.scalar(
         select(DocumentRevision.content).where(DocumentRevision.id == seeded.revision_id)
     )
-    from yakudoku_core.document.blocks import DocumentContent
+    from alinea_core.document.blocks import DocumentContent
 
     content = DocumentContent.model_validate(doc)
     target_block = row[1]
@@ -410,7 +410,7 @@ async def test_section_translate_creates_job(
 async def test_retry_failed_translations_creates_section_job(
     auth_client: AsyncClient, seeded: Seeded, db_session: AsyncSession
 ) -> None:
-    from yakudoku_core.document.blocks import DocumentContent
+    from alinea_core.document.blocks import DocumentContent
 
     set_id = await _shared_set_id(db_session, seeded.revision_id, "natural")
     revision = await db_session.get(DocumentRevision, seeded.revision_id)
@@ -442,7 +442,7 @@ async def test_retry_failed_translations_creates_section_job(
     else:
         unit.quality_flags = ["placeholder_mismatch"]
         unit.text_ja = ""
-        unit.content_ja = []
+        unit.content_ja = []  # type: ignore[assignment]
     await db_session.commit()
 
     r = await auth_client.post(f"/api/translation-sets/{set_id}/retry-failed", json={"section_id": section_id})

@@ -1,10 +1,10 @@
 import { renderHook, waitFor, act } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { jobsGet } from "@yakudoku/api-client";
+import { jobsGet } from "@alinea/api-client";
 import { useJobEvents } from "@/hooks/useJobEvents";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return { ...actual, jobsGet: vi.fn() };
 });
 

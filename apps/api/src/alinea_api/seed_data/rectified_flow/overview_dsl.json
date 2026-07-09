@@ -1,0 +1,85 @@
+{
+  "versions": [
+    {
+      "version": 1,
+      "is_current": false,
+      "render_mode": "svg",
+      "dsl": {
+        "layout": "flow-3",
+        "cards": [
+          {
+            "role": "problem",
+            "label": "課題",
+            "heading": "拡散モデルの生成が遅い",
+            "body": "多数のサンプリングステップを要し、推論コストが大きい。",
+            "tone": "neutral"
+          },
+          {
+            "role": "proposal",
+            "label": "提案 — RECTIFIED FLOW",
+            "heading": "経路を直線に近づけて学習",
+            "body": "始点と終点を結ぶ直線的な輸送を学習する。",
+            "tone": "accent"
+          },
+          {
+            "role": "result",
+            "label": "結果",
+            "heading": "少ないステップで生成",
+            "body": "reflow を重ねることで 1 ステップ生成に近づける。",
+            "tone": "green"
+          }
+        ],
+        "connectors": [
+          { "from": 0, "to": 1 },
+          { "from": 1, "to": 2 }
+        ],
+        "footer": { "generated_by": "✦ AI 生成 · Alinea", "date": "2026-07-05" }
+      },
+      "evidence": [
+        { "block_id": "sec-1", "side": "source", "display": "§1" },
+        { "block_id": "sec-2-1", "side": "source", "display": "§2.1" }
+      ]
+    },
+    {
+      "version": 2,
+      "is_current": true,
+      "render_mode": "svg",
+      "dsl": {
+        "layout": "flow-3",
+        "cards": [
+          {
+            "role": "problem",
+            "label": "課題",
+            "heading": "拡散モデルの生成経路は曲がっている",
+            "body": "SDE/ODE の数値解法に数十〜数百ステップが必要で、生成が遅い",
+            "tone": "neutral"
+          },
+          {
+            "role": "proposal",
+            "label": "提案 — RECTIFIED FLOW",
+            "heading": "直線補間の向きを回帰し、ODE を学習",
+            "body": "v ← (X₁−X₀) の最小二乗回帰(式5)。reflow の反復で経路を再直線化",
+            "tone": "accent"
+          },
+          {
+            "role": "result",
+            "label": "結果",
+            "heading": "1 ステップ生成で FID 4.85",
+            "body": "CIFAR-10。蒸留と併用で従来の拡散 ODE 蒸留を上回る",
+            "tone": "green"
+          }
+        ],
+        "connectors": [
+          { "from": 0, "to": 1 },
+          { "from": 1, "to": 2 }
+        ],
+        "footer": { "generated_by": "✦ AI 生成 · Alinea", "date": "2026-07-06" }
+      },
+      "evidence": [
+        { "block_id": "sec-1", "side": "source", "display": "§1" },
+        { "block_id": "sec-2-2", "side": "source", "display": "§2.2" },
+        { "block_id": "blk-2-2-tbl1-9653", "side": "source", "display": "表1" }
+      ]
+    }
+  ]
+}

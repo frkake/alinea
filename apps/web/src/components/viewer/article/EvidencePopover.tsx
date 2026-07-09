@@ -2,7 +2,7 @@
 
 import { type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { viewerGetBlock, type EvidenceItemOut } from "@yakudoku/api-client";
+import { viewerGetBlock, type EvidenceItemOut } from "@alinea/api-client";
 import { Popover } from "@/components/ui/Popover";
 import type { DocBlock } from "@/components/viewer/document-types";
 import { articleKeys } from "@/components/viewer/article/queries";

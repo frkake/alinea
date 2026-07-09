@@ -14,16 +14,13 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from httpx import AsyncClient
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.deps import get_settings_dep
-from yakudoku_api.services import session_service
-from yakudoku_api.services.oauth import OAuthProfile
-from yakudoku_api.services.session_service import create_session
-from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
-from yakudoku_api.settings import ApiSettings
-from yakudoku_core.db.models import (
+from alinea_api.deps import get_settings_dep
+from alinea_api.services import session_service
+from alinea_api.services.oauth import OAuthProfile
+from alinea_api.services.session_service import create_session
+from alinea_api.services.user_service import purge_user, upsert_user_by_email
+from alinea_api.settings import ApiSettings
+from alinea_core.db.models import (
     ByokApiKey,
     ChatMessage,
     ChatThread,
@@ -35,6 +32,9 @@ from yakudoku_core.db.models import (
     SavedFilter,
     User,
 )
+from httpx import AsyncClient
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # anonymous 区分(plans/03 §1.2)+ 運用エンドポイント。ここに無い経路は未認証で 401 必須。
 ANONYMOUS_PATHS: set[tuple[str, str]] = {
@@ -64,7 +64,7 @@ def _fill_path(path: str) -> str:
 # PY-AUTH-01
 # ---------------------------------------------------------------------------
 async def test_auth_sweep_non_anonymous_requires_login(bare_client: AsyncClient) -> None:
-    from yakudoku_api.main import app
+    from alinea_api.main import app
 
     schema = app.openapi()
     checked = 0
@@ -276,7 +276,7 @@ async def test_oauth_start_rejects_unsupported_provider(client: AsyncClient) -> 
 async def test_oauth_start_redirects_to_login_when_provider_unconfigured(
     client: AsyncClient,
 ) -> None:
-    from yakudoku_api.main import app
+    from alinea_api.main import app
 
     unconfigured = ApiSettings(oauth_google_client_id="", oauth_google_client_secret="")
     app.dependency_overrides[get_settings_dep] = lambda: unconfigured
@@ -291,7 +291,7 @@ async def test_oauth_start_redirects_to_login_when_provider_unconfigured(
 async def test_oauth_start_stores_state_and_redirects_to_provider(
     client: AsyncClient, redis_client: Any
 ) -> None:
-    from yakudoku_api.main import app
+    from alinea_api.main import app
 
     configured = ApiSettings(oauth_google_client_id="gid", oauth_google_client_secret="gsecret")
     app.dependency_overrides[get_settings_dep] = lambda: configured
@@ -338,8 +338,8 @@ async def test_oauth_callback_success_creates_user_and_sets_session(
     redis_client: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yakudoku_api.main import app
-    from yakudoku_api.routers import auth as auth_router
+    from alinea_api.main import app
+    from alinea_api.routers import auth as auth_router
 
     email = f"oauth-{uuid.uuid4().hex}@example.com"
 
@@ -381,8 +381,8 @@ async def test_oauth_callback_success_creates_user_and_sets_session(
 async def test_oauth_callback_exchange_failure_redirects_to_login_error(
     client: AsyncClient, redis_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yakudoku_api.main import app
-    from yakudoku_api.routers import auth as auth_router
+    from alinea_api.main import app
+    from alinea_api.routers import auth as auth_router
 
     async def _boom(provider: Any, code: str, redirect: str) -> OAuthProfile:
         raise ValueError("token exchange failed")

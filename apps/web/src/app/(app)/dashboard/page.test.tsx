@@ -9,7 +9,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 const dashboardGet = vi.fn();
-vi.mock("@yakudoku/api-client", () => ({
+vi.mock("@alinea/api-client", () => ({
   dashboardGet: (...args: unknown[]) => dashboardGet(...args),
   libraryItemsSetQueueOrder: vi.fn(),
 }));

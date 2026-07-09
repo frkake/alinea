@@ -10,12 +10,12 @@
 | 1 | `docker compose up -d --wait` | ✅ | db(PGroonga)/redis/minio/mailpit 全 healthy(Up 30h) |
 | 2 | `uv sync --all-packages` / `pnpm install` | ✅ | uv 104 packages checked / pnpm frozen-lockfile Done |
 | 3 | `alembic upgrade head` | ✅ | `0002_llm_routing (head)` |
-| 4 | `python -m yakudoku_api.seed --sample rectified-flow --reset` | ✅ | `[seed] 2209.03003 完了(要旨+先頭セクション訳)` |
+| 4 | `python -m alinea_api.seed --sample rectified-flow --reset` | ✅ | `[seed] 2209.03003 完了(要旨+先頭セクション訳)` |
 | 5 | `pnpm turbo build lint typecheck test` | ✅ | **21/21 タスク成功**(web 368・extension 49 Vitest 含む) |
 | 6 | dev 起動(web 3000+api 8000+worker+モック 8090) | ✅ | Playwright webServer で全スタック起動・全 E2E がこの実スタックを通過 |
 | 7 | pytest / Vitest green + カバレッジ | ✅ | **Python 599 passed**(2 連続)。カバレッジ **81.15%**(CI 同一コマンド・閾値 80)、placeholder.py 100% 維持。トレーサビリティ: M0/M1 必達 73 ID 未割付・未実装 0(PASS) |
 | 8 | Playwright E2E green | ✅ | **web 38 passed / 13 fixme-skip / 0 failed**(PW-04〜22 の M1 分有効化・PW-08 メモ保存解除・PW-11 通知経由昇格含む)。**拡張 13 passed / 1 skip**(XT-06/08/10 含む)。VR 基準画像: 1d/1g/2a/4a/4e/4f/3a-4 追加(VR-1g は根本原因解消のうえ 6 連続 green 確認済み) |
-| 9 | 拡張 unpacked/zip ビルド | ✅ | `yakudokuextension-0.1.0-chrome.zip` 生成成功 |
+| 9 | 拡張 unpacked/zip ビルド | ✅ | `alineaextension-0.1.0-chrome.zip` 生成成功 |
 
 ## 2. M1 DoD(docs/10 §3・§8)
 

@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  DATABASE_URL: postgresql+asyncpg://yakudoku:yakudoku@localhost:5432/yakudoku
+  DATABASE_URL: postgresql+asyncpg://alinea:alinea@localhost:5432/alinea
   REDIS_URL: redis://localhost:6379/0
 
 jobs:
@@ -39,12 +39,12 @@ jobs:
       db:
         image: groonga/pgroonga:4.0.1-alpine-16
         env:
-          POSTGRES_USER: yakudoku
-          POSTGRES_PASSWORD: yakudoku
-          POSTGRES_DB: yakudoku
+          POSTGRES_USER: alinea
+          POSTGRES_PASSWORD: alinea
+          POSTGRES_DB: alinea
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U yakudoku" --health-interval 5s
+          --health-cmd "pg_isready -U alinea" --health-interval 5s
           --health-timeout 3s --health-retries 10
       redis:
         image: redis:7.4-alpine
@@ -64,23 +64,23 @@ jobs:
       - run: uv run mypy packages/figures
       - run: uv run mypy apps/api
       - run: uv run mypy apps/worker
-      - run: psql "postgresql://yakudoku:yakudoku@localhost:5432/yakudoku" -c "CREATE EXTENSION IF NOT EXISTS pgroonga; CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+      - run: psql "postgresql://alinea:alinea@localhost:5432/alinea" -c "CREATE EXTENSION IF NOT EXISTS pgroonga; CREATE EXTENSION IF NOT EXISTS pgcrypto;"
       - run: uv run alembic upgrade head
         working-directory: apps/api
       # トレーサビリティ: M0 対象テスト ID(PY/HP/VT)が実テストに実在するか + docs↔§6 件数突合
       - run: uv run python tools/traceability/check.py
       # pytest + カバレッジ(総合 80%)。実プロバイダ SDK アダプタは CI が実 LLM に
       # 接続しない(plans/12 §16)ため到達不能。tools/coverage/coveragerc で omit する。
-      # yakudoku_figures(M2-05/M2-06 の SVG/画像プロンプト実装)を分母に追加(M2-16)。
+      # alinea_figures(M2-05/M2-06 の SVG/画像プロンプト実装)を分母に追加(M2-16)。
       - run: >-
           uv run pytest
           --cov-config=tools/coverage/coveragerc
-          --cov=yakudoku_core --cov=yakudoku_llm --cov=yakudoku_api --cov=yakudoku_worker --cov=yakudoku_figures
+          --cov=alinea_core --cov=alinea_llm --cov=alinea_api --cov=alinea_worker --cov=alinea_figures
           --cov-report=term-missing --cov-fail-under=80
       # 重点モジュール placeholder.py は行カバレッジ 100% を要求(plans/12 §2.1)
       - run: >-
           uv run coverage report
-          --include='*/yakudoku_core/translation/placeholder.py' --fail-under=100
+          --include='*/alinea_core/translation/placeholder.py' --fail-under=100
 
   openapi-drift:
     name: OpenAPI クライアントのドリフト検出
@@ -97,8 +97,8 @@ jobs:
           cache: pnpm
       - run: uv sync --all-packages --frozen
       - run: pnpm install --frozen-lockfile
-      - run: uv run python -m yakudoku_api.export_openapi > packages/api-client/openapi.json
-      - run: pnpm --filter @yakudoku/api-client generate
+      - run: uv run python -m alinea_api.export_openapi > packages/api-client/openapi.json
+      - run: pnpm --filter @alinea/api-client generate
       - run: git diff --exit-code packages/api-client
 
   e2e:
@@ -120,9 +120,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: uv run alembic upgrade head
         working-directory: apps/api
-      - run: uv run python -m yakudoku_api.seed --sample rectified-flow
-      - run: pnpm --filter @yakudoku/web exec playwright install --with-deps chromium
-      - run: pnpm --filter @yakudoku/web e2e
+      - run: uv run python -m alinea_api.seed --sample rectified-flow
+      - run: pnpm --filter @alinea/web exec playwright install --with-deps chromium
+      - run: pnpm --filter @alinea/web e2e
         env:
           OPENAI_API_KEY: test-stub
       - uses: actions/upload-artifact@v4
@@ -142,8 +142,8 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @yakudoku/extension zip
-      - run: pnpm --filter @yakudoku/extension zip:edge
+      - run: pnpm --filter @alinea/extension zip
+      - run: pnpm --filter @alinea/extension zip:edge
       - uses: actions/upload-artifact@v4
         with:
           name: extension-zips

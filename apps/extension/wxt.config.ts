@@ -16,7 +16,7 @@ export default defineConfig({
   webExt: {
     disabled: true,
   },
-  // wxt の dev サーバ既定ポートは 3000 で Next.js(@yakudoku/web)と衝突し、
+  // wxt の dev サーバ既定ポートは 3000 で Next.js(@alinea/web)と衝突し、
   // pnpm dev で先に起動した側が 3000 を奪って web が 3001 へ逃げてしまう。
   // 拡張の HMR 用サーバは 3717 に固定する(plans/00 §9: web=3000 が正)。
   dev: {
@@ -26,18 +26,18 @@ export default defineConfig({
   },
   manifest: {
     // 3a §5.9(確定 manifest)。
-    name: "訳読 — 論文をライブラリへ",
+    name: "Alinea — 論文をライブラリへ",
     description: "arXiv 論文の URL だけを送ってライブラリへ保存します(取得・解析はサーバー)。",
     // 権限(plans/10 §3.3): 現在タブ URL 判定 + storage + arXiv ページ内ピルの動的登録(scripting)。
     // scripting 自体はサイトアクセスを持たない(実際の arxiv.org アクセスは下の
     // optional_host_permissions をユーザーがオプトインで許可した場合のみ)。
     permissions: ["activeTab", "storage", "scripting"],
     // API 呼び出し(セッションクッキー共有)に必要なホスト権限。開発は localhost:3000(3a §5.9 決定)。
-    host_permissions: ["http://localhost:3000/*", "https://yakudoku.app/*"],
-    // ページ内「訳 保存」ピル(オプトイン・将来)。既定では要求しない。
+    host_permissions: ["http://localhost:3000/*", "https://alinea.app/*"],
+    // ページ内「A 保存」ピル(オプトイン・将来)。既定では要求しない。
     optional_host_permissions: ["https://arxiv.org/*"],
     action: {
-      default_title: "訳読に保存",
+      default_title: "Alineaに保存",
     },
   },
 });

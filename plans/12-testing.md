@@ -1,7 +1,7 @@
 # 12. テスト戦略 実装計画
 
 > 対象読者と前提
-> 本書は「訳読 / YAKUDOKU — 論文読解ワークベンチ」の全レイヤ(apps/api / apps/worker / packages/py-core / packages/llm / apps/web / apps/extension / packages/tokens / packages/api-client)のテスト戦略の完全定義である。機能仕様の正は docs/00〜12(各文書末尾の受け入れ基準チェックリスト)、実装の正は plans/00〜08 であり、本書はその両者を「どのテストが・どの基準を・どう検証するか」に落とす。ツールバージョンは plans/00 §4.1(pytest 8.4.1 / pytest-asyncio 1.0.0 / hypothesis 6.135.26 / Vitest 3.2.4 / Playwright 1.53.2)、CI は plans/00 §8 の `ci.yml` を基盤とし、本書で追加分(VR・プロパティ・夜間ワークフロー)を確定する。テスト ID(`PY-*` / `HP-*` / `VT-*` / `PW-*` / `XT-*` / `VR-*` / `PF-*` / `SM-*` / `REV-*`)は §6 のトレーサビリティ表と実テストコードの docstring / `test.describe` 名で共通に使う。
+> 本書は「Alinea — 論文読解ワークベンチ」の全レイヤ(apps/api / apps/worker / packages/py-core / packages/llm / apps/web / apps/extension / packages/tokens / packages/api-client)のテスト戦略の完全定義である。機能仕様の正は docs/00〜12(各文書末尾の受け入れ基準チェックリスト)、実装の正は plans/00〜08 であり、本書はその両者を「どのテストが・どの基準を・どう検証するか」に落とす。ツールバージョンは plans/00 §4.1(pytest 8.4.1 / pytest-asyncio 1.0.0 / hypothesis 6.135.26 / Vitest 3.2.4 / Playwright 1.53.2)、CI は plans/00 §8 の `ci.yml` を基盤とし、本書で追加分(VR・プロパティ・夜間ワークフロー)を確定する。テスト ID(`PY-*` / `HP-*` / `VT-*` / `PW-*` / `XT-*` / `VR-*` / `PF-*` / `SM-*` / `REV-*`)は §6 のトレーサビリティ表と実テストコードの docstring / `test.describe` 名で共通に使う。
 
 ## 1. 全体方針とレイヤ構成
 
@@ -15,9 +15,9 @@
 | LLM リプレイ | pytest(`-m replay`)+ vcrpy カセット(§8.2) | プロバイダアダプタの実ワイヤ形式(録画済み HTTP を再生) | `uv run pytest -m replay` | `python` |
 | LLM 実 API スモーク | pytest(`-m smoke`、`RUN_LLM_SMOKE=1` 時のみ収集) | 各社実キーでの疎通・品質サンプル(§8.3) | `RUN_LLM_SMOKE=1 uv run pytest -m smoke` | 夜間 `llm-smoke.yml`(CI では skip) |
 | JS ユニット/コンポーネント | Vitest 3.2.4 + @testing-library/react 16(jsdom 26) | apps/web コンポーネント・hooks・純関数、apps/extension ユニット、packages/tokens 生成検証 | `pnpm turbo test` | `js` |
-| E2E | Playwright 1.53.2(Chromium・1440×900・ja-JP・Asia/Tokyo) | 主要フロー(§4)。LLM は §8.4 のモックサーバ | `pnpm --filter @yakudoku/web e2e` | `e2e` |
-| 拡張 E2E | Playwright(`chromium.launchPersistentContext` + ビルド済み拡張ロード) | ポップアップ 4 状態・ピル・バッジ・送信キュー(§5) | `pnpm --filter @yakudoku/extension e2e` | `e2e` |
-| ビジュアルリグレッション | Playwright `toHaveScreenshot`(専用 project `visual`) | 確定デザイン 16 画面(§9。うち 3a=拡張ポップアップは拡張 E2E 側で撮影) | `pnpm --filter @yakudoku/web e2e:vr`(3a のみ `pnpm --filter @yakudoku/extension e2e`) | `e2e` |
+| E2E | Playwright 1.53.2(Chromium・1440×900・ja-JP・Asia/Tokyo) | 主要フロー(§4)。LLM は §8.4 のモックサーバ | `pnpm --filter @alinea/web e2e` | `e2e` |
+| 拡張 E2E | Playwright(`chromium.launchPersistentContext` + ビルド済み拡張ロード) | ポップアップ 4 状態・ピル・バッジ・送信キュー(§5) | `pnpm --filter @alinea/extension e2e` | `e2e` |
+| ビジュアルリグレッション | Playwright `toHaveScreenshot`(専用 project `visual`) | 確定デザイン 16 画面(§9。うち 3a=拡張ポップアップは拡張 E2E 側で撮影) | `pnpm --filter @alinea/web e2e:vr`(3a のみ `pnpm --filter @alinea/extension e2e`) | `e2e` |
 | パフォーマンス | k6 0.57.0 + Playwright トレース + 本番テレメトリ(plans/01 §9.4) | docs/09 §1 の 11 目標(§12) | 夜間 `perf.yml` | 夜間(CI ゲート外) |
 
 - 決定: DB を使うテストは常に実 PostgreSQL 16 + PGroonga に対して実行する。SQLite 代替は禁止(PGroonga・部分一意インデックス・生成列・トリガが再現できないため。plans/00 §4.5 と同一決定)。
@@ -90,28 +90,28 @@ addopts = "-ra --strict-markers"
 ```
 
 - `smoke` は `conftest.py` の collection hook で `RUN_LLM_SMOKE != "1"` のとき `pytest.skip` する(CI では常に skip。§8.3)。
-- カバレッジ: CI で `--cov=yakudoku_core --cov=yakudoku_api --cov=yakudoku_worker --cov=yakudoku_llm --cov-fail-under=80`。加えて重点 2 モジュールは専用ステップで行カバレッジ 100% を要求する: `yakudoku_core/translation/placeholder.py` と `yakudoku_core/figures/svg_renderer.py`(`coverage report --include=... --fail-under=100`)。理由: docs/03 §12(99.9%)と docs/09 §8(バイト同一)はこの 2 モジュールの正しさに直結する。
+- カバレッジ: CI で `--cov=alinea_core --cov=alinea_api --cov=alinea_worker --cov=alinea_llm --cov-fail-under=80`。加えて重点 2 モジュールは専用ステップで行カバレッジ 100% を要求する: `alinea_core/translation/placeholder.py` と `alinea_core/figures/svg_renderer.py`(`coverage report --include=... --fail-under=100`)。理由: docs/03 §12(99.9%)と docs/09 §8(バイト同一)はこの 2 モジュールの正しさに直結する。
 
 ### 2.2 テスト DB・フィクスチャ方針(確定)
 
-- **テスト DB**: `DATABASE_URL` の DB 名に `_test` を付けた `yakudoku_test` を使う。セッション開始時に DROP → CREATE → `CREATE EXTENSION pgroonga; CREATE EXTENSION citext; CREATE EXTENSION pgcrypto;` → `alembic upgrade head` を 1 回だけ実行(マイグレーションがテストスキーマの唯一の作成手段。手書き `create_all` は使わない)。
+- **テスト DB**: `DATABASE_URL` の DB 名に `_test` を付けた `alinea_test` を使う。セッション開始時に DROP → CREATE → `CREATE EXTENSION pgroonga; CREATE EXTENSION citext; CREATE EXTENSION pgcrypto;` → `alembic upgrade head` を 1 回だけ実行(マイグレーションがテストスキーマの唯一の作成手段。手書き `create_all` は使わない)。
 - **分離方式**: 各テストは外側トランザクション+SAVEPOINT ロールバック方式。トリガ(`set_updated_at`)・部分一意・PGroonga はトランザクション内で機能するため、この方式で全 DDL 挙動を検証できる。TRUNCATE 方式は使わない(遅い)。
 - **Redis**: テストは DB 番号 15(`redis://localhost:6379/15`)を使い、各テスト前に `FLUSHDB`。
-- **MinIO**: バケット `yakudoku-sources-test` / `yakudoku-assets-test` をセッション fixture で作成・終了時に削除。
+- **MinIO**: バケット `alinea-sources-test` / `alinea-assets-test` をセッション fixture で作成・終了時に削除。
 
-`apps/api/tests/conftest.py`(worker 側も同一実装を `packages/py-core` の `yakudoku_core.testing.db` から import):
+`apps/api/tests/conftest.py`(worker 側も同一実装を `packages/py-core` の `alinea_core.testing.db` から import):
 
 ```python
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from yakudoku_api.main import create_app
-from yakudoku_core.testing.db import build_test_database_url, prepare_test_database
+from alinea_api.main import create_app
+from alinea_core.testing.db import build_test_database_url, prepare_test_database
 
 @pytest.fixture(scope="session")
 async def engine():
-    url = build_test_database_url()          # DATABASE_URL の DB 名を yakudoku_test に置換
+    url = build_test_database_url()          # DATABASE_URL の DB 名を alinea_test に置換
     await prepare_test_database(url)         # drop/create + extensions + alembic upgrade head
     engine = create_async_engine(url, pool_size=5)
     yield engine
@@ -252,7 +252,7 @@ async def user(db):        # factories.py 参照。以降 as_user(client, user) 
 | PY-FIG-04 | integration | ラスターモード: `overview_figure_raster_mode=true` で ImageRouter 経由生成・false(既定)で SVG。切替が設定のみで効く |
 | PY-FIG-05 | integration | 解説図: provider 3 値(openai/google/xai)での生成・S3 保存・slot/version 管理 |
 | PY-FIG-06 | unit | 画像生成プロンプト仕様: プロンプトテンプレートが「画像内に文字を描かない」指示を含み、キャプションが本文情報を保持する(テンプレート契約テスト。docs/07 §3) |
-| PY-LIC-01 | unit | `yakudoku_core.licenses`: docs/09 §5.2 マトリクス全 8 行(翻訳表示可否×図表転載可否×共有ページ縮退)の判定表テスト |
+| PY-LIC-01 | unit | `alinea_core.licenses`: docs/09 §5.2 マトリクス全 8 行(翻訳表示可否×図表転載可否×共有ページ縮退)の判定表テスト |
 | PY-JOB-01 | integration | 冪等・段階再開: 各 stage 完了直後に強制終了(例外注入)→再実行で checkpoint から再開し、TranslationUnit・SourceAsset・通知が二重作成されない(docs/09 §8)。idempotency_key 再投入は既存 job を返す |
 | PY-JOB-02 | integration | 部分読書: readable 到達で viewer が開け、未翻訳セクションは原文+進捗、優先繰り上げ(prioritize)でキュー先頭化 |
 | PY-JOB-03 | integration | リトライ: 指数バックオフ 30s→2min→8min の 3 回・以後 failed+手動再試行。部分成功(図抽出失敗)がジョブ全体を fail させず処理ログに残る |
@@ -265,7 +265,7 @@ async def user(db):        # factories.py 参照。以降 as_user(client, user) 
 
 | ID | 対象 | 検証 |
 |---|---|---|
-| VT-UI-01 | AppHeader / ログイン画面 | プロダクト名「訳読 / YAKUDOKU」表記(docs/00) |
+| VT-UI-01 | AppHeader / ログイン画面 | プロダクト名「Alinea」表記(docs/00) |
 | VT-UI-02 | QualityBadge | A=アクセント淡色/B=グレー+「PDF 取り込み」文言(plans/08 §5.3) |
 | VT-UI-03 | StatusPill | 6 値×色トークン(`--status-*`)対応・日本語ラベル(読む予定/すぐ読む/読んでいる/読んだ/あとで再読/保留) |
 | VT-VIEW-01 | SidePanelTabs | 排他 6 タブ(チャット/メモ/注釈/図表/リソース/情報)・注釈/リソースの CountBadge |
@@ -327,23 +327,23 @@ export default defineConfig({
       use: { storageState: "e2e/.auth/user.json" } },
   ],
   webServer: [
-    { command: "uv run python -m yakudoku_llm.testing.mock_server --port 8090", port: 8090, reuseExistingServer: true },
-    { command: "uv run uvicorn yakudoku_api.main:app --port 8000", port: 8000, reuseExistingServer: true,
+    { command: "uv run python -m alinea_llm.testing.mock_server --port 8090", port: 8090, reuseExistingServer: true },
+    { command: "uv run uvicorn alinea_api.main:app --port 8000", port: 8000, reuseExistingServer: true,
       env: { /* §8.4 のモック向け BASE_URL 群 */ } },
     // 決定: arq ワーカーは待受ポートを持たないため webServer では起動できない。
-    // global.setup.ts が child_process.spawn("uv", ["run", "arq", "yakudoku_worker.main.WorkerSettings"]) で
+    // global.setup.ts が child_process.spawn("uv", ["run", "arq", "alinea_worker.main.WorkerSettings"]) で
     // 起動し(既存プロセスがあれば再利用)、globalTeardown で停止する。
     { command: "pnpm dev --port 3000", port: 3000, reuseExistingServer: true },
   ],
 });
 ```
 
-- 前提データ: E2E 実行前に `uv run python -m yakudoku_api.seed --sample rectified-flow --reset`(§14)。テスト間はシードを共有し、**書き込み系テストは自分が作ったデータのみを削除する**(シード本体を変更するテストは `test.describe.serial` + 終了時に seed 再投入)。
+- 前提データ: E2E 実行前に `uv run python -m alinea_api.seed --sample rectified-flow --reset`(§14)。テスト間はシードを共有し、**書き込み系テストは自分が作ったデータのみを削除する**(シード本体を変更するテストは `test.describe.serial` + 終了時に seed 再投入)。
 - 決定: 実行ブラウザは Chromium のみ(plans/00 §4.5)。クロスブラウザ(Safari/Firefox 最新 2 版。docs/09 §6)は自動化せず、リリース前チェックリストの手動確認項目とする(v2: WebKit/Firefox プロジェクト追加)。
 
 ### 4.2 認証セットアップ(`global.setup.ts`)
 
-メールリンク認証を実経路で通す(= PY-AUTH-02 の E2E 版を兼ねる): (1) `/login` で `dev@yakudoku.test` を送信 → (2) Mailpit API `GET http://localhost:8025/api/v1/messages` から最新メールのリンクを抽出 → (3) リンクへ遷移しダッシュボード表示を確認 → (4) `storageState` を `e2e/.auth/user.json` に保存。2 人目ユーザー(共有・担当テスト用)は `member@yakudoku.test` で同様に `e2e/.auth/member.json`。
+メールリンク認証を実経路で通す(= PY-AUTH-02 の E2E 版を兼ねる): (1) `/login` で `dev@alinea.test` を送信 → (2) Mailpit API `GET http://localhost:8025/api/v1/messages` から最新メールのリンクを抽出 → (3) リンクへ遷移しダッシュボード表示を確認 → (4) `storageState` を `e2e/.auth/user.json` に保存。2 人目ユーザー(共有・担当テスト用)は `member@alinea.test` で同様に `e2e/.auth/member.json`。
 
 ### 4.3 E2E シナリオ(PW-01〜22 確定)
 
@@ -363,7 +363,7 @@ export default defineConfig({
 | PW-12 | PDF モード: 「同期: p.5 ≒ §2.2」・bbox 選択→「≒ §2.2 ¶2 — 訳文で見る →」で対応段落へ・「この位置を訳文で開く →」 |
 | PW-13 | 記事モード: モード切替から開く→プリセット選択生成→メタ行(AI生成・日付・免責)・概要図(3 カード・版 2・SVG ⤓ ダウンロード検証・書き直し指示→版 3→版 2 へ復帰)・ブロックホバー 3 操作・根拠チップ→原文ジャンプ・出典ブロック末尾固定・**公開/限定公開/コメント UI が存在しない**(否定) |
 | PW-14 | 横断検索: 1e ドロップダウン(プレビュー 3 件+すべての結果)→ 4e 全結果(源バッジ・論文グループ・日英クロス §11 データ)→源別遷移 4 種 |
-| PW-15 | コレクション+共有: 順序ドラッグ・担当・締切→共有リンク発行→**ログアウト状態の新コンテキスト**で `/c/{token}` 閲覧(書誌+要約+許可メモのみ・`<meta name="robots" content="noindex">`・順序保持・「訳読をはじめる」CTA)→無効化で 404 |
+| PW-15 | コレクション+共有: 順序ドラッグ・担当・締切→共有リンク発行→**ログアウト状態の新コンテキスト**で `/c/{token}` 閲覧(書誌+要約+許可メモのみ・`<meta name="robots" content="noindex">`・順序保持・「Alineaをはじめる」CTA)→無効化で 404 |
 | PW-16 | エクスポート: 設定画面から Markdown / BibTeX / CSV ダウンロード+JSON 一括(ジョブ完了→ download_url) |
 | PW-17 | 設定: 8 カテゴリ表示・翻訳 4 項目の切替が挙動に反映(付録トグル→目次表示変化)・アクセント 4 色切替(CSS 変数値検証)・本文書体切替・BYOK 登録→マスク表示・再表示不可 |
 | PW-18 | 読了フロー(1g): 最終セクション到達→読了提案→モーダル(読了日・累計時間の自動記録表示・理解度 4/5・重要度・ひとことメモ・「すべてスキップ」経路)→「記事モードで読み返す →」遷移 |
@@ -391,7 +391,7 @@ export default defineConfig({
 | XT-05 | 状態3(既にライブラリ): 重複保存 UI が出ず、現ステータス・追加日・進捗・前回位置・「続きから開く ↗」・「ステータス変更 ▾」(PATCH が反映) |
 | XT-06 | 状態4(一般 PDF): 警告+「このタブのPDFを送信」明示クリックのみで送信(自動送信なしをネットワーク傍受で検証)・private 保存・書誌は推定表示 |
 | XT-07 | フッタ「直近の取り込み」3 件(処理中=進捗率/完了=時刻) |
-| XT-08 | 「訳 保存」ピル: 既定オフ(コンテントスクリプト非注入)→設定オンで arXiv abs のみ注入・保存後「✓ 保存済み」・非 arXiv ページに非注入 |
+| XT-08 | 「A 保存」ピル: 既定オフ(コンテントスクリプト非注入)→設定オンで arXiv abs のみ注入・保存後「✓ 保存済み」・非 arXiv ページに非注入 |
 | XT-09 | ツールバーアイコン琥珀ドット: 処理中/未読通知ありで `chrome.action.setBadgeBackgroundColor(#C49432)` 相当のバッジ状態(background の action 状態を service worker 経由で検証) |
 | XT-10 | 送信キュー永続: API 停止状態で保存→失敗キュー→コンテキスト再起動(persistent context 再作成)後もキューが残り、API 復旧で自動送信される(docs/08 §8) |
 
@@ -637,7 +637,7 @@ export default defineConfig({
 
 ## 7. 翻訳プレースホルダのプロパティテスト(Hypothesis)
 
-対象: `yakudoku_core/translation/placeholder.py` の `protect(block) -> ProtectedText` / `restore(protected, llm_output) -> RestoredInlines` / `validate(protected, llm_output) -> ValidationResult`(docs/03 §4)。
+対象: `alinea_core/translation/placeholder.py` の `protect(block) -> ProtectedText` / `restore(protected, llm_output) -> RestoredInlines` / `validate(protected, llm_output) -> ValidationResult`(docs/03 §4)。
 
 ### 7.1 生成規則(strategies 完全形)
 
@@ -697,7 +697,7 @@ mutation = st.sampled_from(["drop", "duplicate", "mutate_id", "break_bracket"])
 
 ### 8.1 第 1 層: FakeLLMProvider(決定的・既定)
 
-- 実装: `packages/llm/src/yakudoku_llm/testing/fake_provider.py`(plans/04 §2)。pytest の既定であり、**マーカーなしの全テストは Fake のみを使う**。
+- 実装: `packages/llm/src/alinea_llm/testing/fake_provider.py`(plans/04 §2)。pytest の既定であり、**マーカーなしの全テストは Fake のみを使う**。
 - 決定的応答規則(確定):
   - `generate`: 最終 user メッセージ中のプレースホルダトークン(`⟦…⟧`)を抽出し、固定テンプレート `「(訳) {先頭40文字} {トークンを出現逆順に連結}」` を返す(翻訳検証ロジックが実際に働く応答)。
   - `generate_structured`: `json_schema.name` をキーに固定 JSON を返すルックアップ表(`overview_figure_dsl_v1` → §14 の Rectified Flow DSL、`vocab_entry_v1` → boil down to の 8 フィールド、`article_v1` → 6 ブロック記事、`chat_answer_v1` → `[[ev:1]]` +根拠 1 件+outside_knowledge 1 段落)。未知スキーマは `SCHEMA_VALIDATION` エラー(テスト書き漏れの検出)。
@@ -729,15 +729,15 @@ mutation = st.sampled_from(["drop", "duplicate", "mutate_id", "break_bracket"])
 
 ### 8.4 E2E 用モック LLM サーバ
 
-- 実装: `packages/llm/src/yakudoku_llm/testing/mock_server.py`(FastAPI、ポート 8090)。§8.1 と同一の決定的応答規則を HTTP で提供する。エミュレートするエンドポイント: `POST /openai/v1/responses`・`POST /openai/v1/images/generations`(OpenAI)/ `POST /anthropic/v1/messages`(Anthropic、SSE 対応)/ `POST /google/v1beta/models/{model}:generateContent`・`:streamGenerateContent`・画像(Google)/ `POST /deepseek/chat/completions`(DeepSeek)/ `POST /xai/v1/chat/completions`・`/xai/v1/images/generations`(xAI)。
+- 実装: `packages/llm/src/alinea_llm/testing/mock_server.py`(FastAPI、ポート 8090)。§8.1 と同一の決定的応答規則を HTTP で提供する。エミュレートするエンドポイント: `POST /openai/v1/responses`・`POST /openai/v1/images/generations`(OpenAI)/ `POST /anthropic/v1/messages`(Anthropic、SSE 対応)/ `POST /google/v1beta/models/{model}:generateContent`・`:streamGenerateContent`・画像(Google)/ `POST /deepseek/chat/completions`(DeepSeek)/ `POST /xai/v1/chat/completions`・`/xai/v1/images/generations`(xAI)。
 - 接続方法: api/worker はプロバイダ別ベース URL 上書き環境変数(§15 ⚠-2)を `http://localhost:8090/{provider}` に設定して起動する。API キーは `test-stub` 固定。
-- arXiv・外部メタ取得も同サーバに同居させる: `GET /arxiv/abs/{id}`(フィクスチャ HTML)・`GET /arxiv/e-print/{id}`(フィクスチャ tar.gz)・`GET /arxiv/api/query`(Atom)・GitHub/YouTube oEmbed 相当。api/worker は `YAKUDOKU_ARXIV_BASE_URL=http://localhost:8090/arxiv` で参照する(§15 ⚠-3)。
+- arXiv・外部メタ取得も同サーバに同居させる: `GET /arxiv/abs/{id}`(フィクスチャ HTML)・`GET /arxiv/e-print/{id}`(フィクスチャ tar.gz)・`GET /arxiv/api/query`(Atom)・GitHub/YouTube oEmbed 相当。api/worker は `ALINEA_ARXIV_BASE_URL=http://localhost:8090/arxiv` で参照する(§15 ⚠-3)。
 
 ## 9. ビジュアルリグレッション(確定デザイン 16 画面)
 
 ### 9.1 運用方式(確定)
 
-- 方式: Playwright `expect(page).toHaveScreenshot()`。プロジェクト `visual`、実行は**必ず** Docker イメージ `mcr.microsoft.com/playwright:v1.53.2-noble` 内(フォントラスタライズ差の排除。ローカルも `pnpm --filter @yakudoku/web e2e:vr` が docker run でラップする)。フォントは Google Fonts をテスト時のみローカル同梱(`e2e/fixtures/fonts/` に woff2 を置き `context.route` で差し替え。CI の外部フォント取得を禁止し決定性を確保)。
+- 方式: Playwright `expect(page).toHaveScreenshot()`。プロジェクト `visual`、実行は**必ず** Docker イメージ `mcr.microsoft.com/playwright:v1.53.2-noble` 内(フォントラスタライズ差の排除。ローカルも `pnpm --filter @alinea/web e2e:vr` が docker run でラップする)。フォントは Google Fonts をテスト時のみローカル同梱(`e2e/fixtures/fonts/` に woff2 を置き `context.route` で差し替え。CI の外部フォント取得を禁止し決定性を確保)。
 - しきい値(確定): 全画面共通 `maxDiffPixelRatio: 0.001`(1440×900 = 1,296,000px 中 約 1,296px)+ ピクセル単位 `threshold: 0.2`。例外: VR-2a(PDF.js canvas)のみ `maxDiffPixelRatio: 0.002`。`animations: "disabled"`・`caret: "hide"`・日時表示要素は `data-vr-mask` 属性を付け `mask` オプションで塗りつぶす(「昨日 21:52」等の相対時刻)。シード日時は mock clock(`page.clock.setFixedTime("2026-07-06T09:00:00+09:00")`)で固定する。
 - 基準画像: `apps/web/e2e/vr/__screenshots__/`(VR-3a-1〜4 のみ `apps/extension/e2e/__screenshots__/`。Git LFS ではなく通常コミット。PNG 19 枚 = web 15 画面+拡張 4 状態 ≈ 数 MB)。**初回基準の採択手順**: 実装画面のスクリーンショットを確定デザイン(`論文読解システム デザイン.dc.html` の該当画面)と並置した比較シートを PR に添付し、デザイン抽出ファイル(extract/<画面ID>.md。plans/08 §1 と同一の参照)の数値との目視照合レビューを通ったものだけを基準化する。以後の更新は `--update-snapshots` + PR の before/after 差分画像レビュー必須(基準画像の無説明更新は CI の CODEOWNERS で `plans/12` 責任者レビューを強制)。
 - 対象状態はライトモード。ダークは VR-1c の 1 枚で代表する(全 16 画面×2 テーマはメンテコストが利益を超えるため。テーマ切替の正しさは VT-TOK-01 と PW-17 が担保)。
@@ -769,7 +769,7 @@ mutation = st.sampled_from(["drop", "duplicate", "mutate_id", "break_bracket"])
 
 ### 10.1 レンダラへの要求仕様(テストが強制する契約)
 
-`yakudoku_core/figures/svg_renderer.py` は以下を満たす(違反は PY-FIG-02 / HP-05 で検出):
+`alinea_core/figures/svg_renderer.py` は以下を満たす(違反は PY-FIG-02 / HP-05 で検出):
 
 1. 出力に**タイムスタンプ・乱数・環境依存値を含めない**(生成日時はメタデータに持たずDB 側 `generated_at` のみ)。
 2. 要素 ID は DSL から決定的に導出(`card-0` / `connector-0-1`)。
@@ -882,8 +882,8 @@ mutation = st.sampled_from(["drop", "duplicate", "mutate_id", "break_bracket"])
 
 ### 14.1 入口と配置(確定)
 
-- 実行: `uv run python -m yakudoku_api.seed --sample rectified-flow [--reset] [--scale N]`(plans/00 §8/§9 の呼び出しと同一。`--reset` は既存シードを削除して再投入、`--scale N` は PF 用にダミー論文を N 件複製)。
-- フィクスチャ配置: `apps/api/src/yakudoku_api/seed_data/rectified_flow/` に JSON、`assets/` にバイナリ。
+- 実行: `uv run python -m alinea_api.seed --sample rectified-flow [--reset] [--scale N]`(plans/00 §8/§9 の呼び出しと同一。`--reset` は既存シードを削除して再投入、`--scale N` は PF 用にダミー論文を N 件複製)。
+- フィクスチャ配置: `apps/api/src/alinea_api/seed_data/rectified_flow/` に JSON、`assets/` にバイナリ。
 
 ```
 seed_data/rectified_flow/
@@ -913,7 +913,7 @@ seed_data/rectified_flow/
 
 | エンティティ | 内容 |
 |---|---|
-| users | `dev@yakudoku.test`(主)・`member@yakudoku.test`(共有/担当用)。パスワードなし(メールリンク) |
+| users | `dev@alinea.test`(主)・`member@alinea.test`(共有/担当用)。パスワードなし(メールリンク) |
 | papers | (1) Rectified Flow(public・A・license `cc-by-4.0`)※実論文の実ライセンスに関わらずシードでは転載可経路のテストのため cc-by-4.0 を設定 (2) `sample-b.pdf` 由来 private 論文(B・license unknown — 転載不可経路)(3) `--scale` 時のダミー書誌 N 件 |
 | library_items | dev に 12 件(6 ステータス×2。タグ・優先度・締切・理解度・提案タグ・queue_order を分散)。Rectified Flow は status=reading・進捗 42%・前回位置 §2.1 |
 | translations | 自然訳 shared complete+直訳 partial+personal フォーク 1 unit(edited) |
@@ -923,7 +923,7 @@ seed_data/rectified_flow/
 | jobs | complete の ingest 1(タイムライン 3 段+処理ログ)+ translating_body 68% の進行中 1(PW-03 用) |
 | saved_filters | 「締切あり」1 件 |
 
-- ライセンス注記(確定): `document.json` は実論文の**抜粋+要約的短縮**(各セクション先頭 2 段落+全図表キャプション+数式)であり全文を含めない。全文での動作確認が必要な開発者は `python -m yakudoku_api.seed --sample rectified-flow --full` で実 arXiv から取得しローカル生成する(`--full` の生成物はコミット禁止・.gitignore 対象)。
+- ライセンス注記(確定): `document.json` は実論文の**抜粋+要約的短縮**(各セクション先頭 2 段落+全図表キャプション+数式)であり全文を含めない。全文での動作確認が必要な開発者は `python -m alinea_api.seed --sample rectified-flow --full` で実 arXiv から取得しローカル生成する(`--full` の生成物はコミット禁止・.gitignore 対象)。
 - 決定: pytest のファクトリ既定 content(§2.3 `make_revision`)・E2E・VR・PF はすべてこの同一フィクスチャを使う。テストデータの正を 1 箇所(seed_data)に集約し、期待値(「§2.1 ¶4」「式(5)」「図2」等)のドリフトを防ぐ。
 
 ## 15. ⚠ 基盤への追加要求
@@ -931,12 +931,12 @@ seed_data/rectified_flow/
 本書の作成にあたり基盤計画書(plans/00〜08)に以下の不足・不整合を発見した。**本書は各項の「本書の暫定」を前提に書かれている**。基盤側の修正時は本書も追随する。
 
 1. **⚠ 基盤への追加要求(plans/00)**: §4.5 と §8 のコメントが「plans/08 テスト計画」を参照しているが、plans/08 はデザインシステムである。参照先を本書 `plans/12-testing.md` に修正すること。
-2. **⚠ 基盤への追加要求(plans/04 §16)**: E2E・統合テストでプロバイダをローカルモック(§8.4)へ向けるためのベース URL 上書き環境変数が未定義。`YAKUDOKU_OPENAI_BASE_URL` / `YAKUDOKU_ANTHROPIC_BASE_URL` / `YAKUDOKU_GOOGLE_BASE_URL` / `YAKUDOKU_DEEPSEEK_BASE_URL` / `YAKUDOKU_XAI_BASE_URL`(未設定時は各 SDK 既定)を plans/04 §16 に追加すること。
-3. **⚠ 基盤への追加要求(plans/01 §8.4)**: arXiv アクセスのベース URL 上書き `YAKUDOKU_ARXIV_BASE_URL`(既定 `https://arxiv.org`)を追加すること(§5・§8.4 のフィクスチャサーバ利用に必須)。
+2. **⚠ 基盤への追加要求(plans/04 §16)**: E2E・統合テストでプロバイダをローカルモック(§8.4)へ向けるためのベース URL 上書き環境変数が未定義。`ALINEA_OPENAI_BASE_URL` / `ALINEA_ANTHROPIC_BASE_URL` / `ALINEA_GOOGLE_BASE_URL` / `ALINEA_DEEPSEEK_BASE_URL` / `ALINEA_XAI_BASE_URL`(未設定時は各 SDK 既定)を plans/04 §16 に追加すること。
+3. **⚠ 基盤への追加要求(plans/01 §8.4)**: arXiv アクセスのベース URL 上書き `ALINEA_ARXIV_BASE_URL`(既定 `https://arxiv.org`)を追加すること(§5・§8.4 のフィクスチャサーバ利用に必須)。
 4. **⚠ 基盤への追加要求(plans/01 §4.2 と plans/02 §4.13 の不整合)**: `jobs` テーブルの DDL が二重定義され、kind の値域(plans/01: `ingest_paper` 等 12 種 / plans/02: 7 種)・status 綴り(`cancelled`/`canceled`)・PK 型(TEXT ULID / UUID)が食い違う。plans/03 §1.7 の API `Job.kind`(13 種)とも一致しない。どちらかを正として統一すること。本書の暫定: **DB は plans/02、API 契約は plans/03 を正**とし、kind の写像はアプリ層に置く前提でテスト(PY-JOB-*)を記述した。
 5. **⚠ 基盤への追加要求(plans/02 §4.6 と plans/03 §1.6 の不整合)**: ステータス列挙が DB(`to_read/read_soon/reading/finished/revisit/on_hold`)と API(`planned/up_next/reading/done/reread/on_hold`)で異なるが、写像がどこにも確定していない。対応表(to_read↔planned, read_soon↔up_next, finished↔done, revisit↔reread)を plans/02 か 03 に明記すること。本書は PY-DB-05(DB 値)・PY-LIB-*(API 値)でこの対応表を前提にした。
-6. **⚠ 基盤への追加要求(plans/00 §2 と plans/04 §2 の不整合)**: LLM 抽象化層の配置が plans/00(`packages/py-core` 内 `yakudoku_core.llm`)と plans/04(`packages/llm` = `yakudoku_llm`)で食い違う。本書は **plans/04 を正**(`packages/llm`・`FakeLLMProvider` は `yakudoku_llm.testing`)としてテストパスを記述した。plans/00 §2 を修正すること。
-7. **⚠ 基盤への追加要求(plans/00 §9 と plans/02 §7 の不整合)**: シード入口が `python -m yakudoku_api.seed`(plans/00)と `apps/api/scripts/seed_dev.py`(plans/02)で食い違う。本書は plans/00 の **`python -m yakudoku_api.seed`** を正とした。
+6. **⚠ 基盤への追加要求(plans/00 §2 と plans/04 §2 の不整合)**: LLM 抽象化層の配置が plans/00(`packages/py-core` 内 `alinea_core.llm`)と plans/04(`packages/llm` = `alinea_llm`)で食い違う。本書は **plans/04 を正**(`packages/llm`・`FakeLLMProvider` は `alinea_llm.testing`)としてテストパスを記述した。plans/00 §2 を修正すること。
+7. **⚠ 基盤への追加要求(plans/00 §9 と plans/02 §7 の不整合)**: シード入口が `python -m alinea_api.seed`(plans/00)と `apps/api/scripts/seed_dev.py`(plans/02)で食い違う。本書は plans/00 の **`python -m alinea_api.seed`** を正とした。
 8. **⚠ 基盤への追加要求(plans/01 §6 と plans/03 §1.3 の不整合)**: CSRF 対策が「ダブルサブミット」(plans/01)と「Origin 検証のみ」(plans/03)で食い違う。PY-AUTH スイートは plans/03(Origin 検証)を前提に書いた。統一すること。
 9. **⚠ 基盤への追加要求(拡張のテスト用フック)**: ポップアップ E2E(§5.1)のため、`WXT_E2E=1` ビルド時のみ有効な `popup.html?tab_url=` の現在タブ上書きを apps/extension 実装に含めること(plans/00 §2 の apps/extension 構成に 1 ファイル `lib/e2e-hooks.ts` 追加)。
 
@@ -948,5 +948,5 @@ seed_data/rectified_flow/
 - [ ] CI(PR)が実 LLM・実 arXiv へ一切接続せず(ネットワーク遮断の record-mode=none とモックサーバのみ)、`RUN_LLM_SMOKE=1` なしで smoke が収集されない
 - [ ] VR の全 19 枚(web 15 画面+拡張ポップアップ 4 状態)が固定 Docker イメージ内で安定して再現し、`maxDiffPixelRatio 0.001`(2a のみ 0.002)で 10 回連続グリーン
 - [ ] §11 の検索コーパスで PY-SRCH-01 の期待結果表が全行成立する
-- [ ] `python -m yakudoku_api.seed --sample rectified-flow --reset` 後に PW-01〜22・VR-* が順不同で全通過する(テスト間独立性)
+- [ ] `python -m alinea_api.seed --sample rectified-flow --reset` 後に PW-01〜22・VR-* が順不同で全通過する(テスト間独立性)
 - [ ] §15 の基盤側修正が反映された時点で、本書の該当参照(ジョブ kind・ステータス写像・LLM パッケージパス)が追随更新されている

@@ -2,7 +2,7 @@
 
 import { useState, type CSSProperties } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { papersReingest, type LibraryItemSummary, type PipelineState } from "@yakudoku/api-client";
+import { papersReingest, type LibraryItemSummary, type PipelineState } from "@alinea/api-client";
 import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ProgressBar } from "@/components/ui/ProgressBar";

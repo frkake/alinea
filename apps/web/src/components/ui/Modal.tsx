@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { Z_INDEX } from "@yakudoku/tokens";
+import { Z_INDEX } from "@alinea/tokens";
 
 /** モーダル(plans/08 §5.11)。 */
 export interface ModalProps {

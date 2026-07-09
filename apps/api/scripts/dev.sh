@@ -11,11 +11,11 @@ health_ok() {
 }
 
 if health_ok; then
-  echo "Yakudoku API already running at ${health_url}; reusing it."
+  echo "Alinea API already running at ${health_url}; reusing it."
   while health_ok; do
     sleep 2
   done
-  echo "Existing Yakudoku API at ${health_url} stopped." >&2
+  echo "Existing Alinea API at ${health_url} stopped." >&2
   exit 1
 fi
 
@@ -25,4 +25,4 @@ if lsof -nP -iTCP:"$api_port" -sTCP:LISTEN >/dev/null 2>&1; then
   exit 1
 fi
 
-exec uv run --no-sync uvicorn yakudoku_api.main:app --reload --host "$api_host" --port "$api_port"
+exec uv run --no-sync uvicorn alinea_api.main:app --reload --host "$api_host" --port "$api_port"

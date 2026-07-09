@@ -104,7 +104,7 @@ export function SegmentedControl<T extends string>({
             aria-disabled={disabled}
             title={opt.title}
             tabIndex={selected ? 0 : -1}
-            className={selected ? "yk-seg-selected" : undefined}
+            className={selected ? "alinea-seg-selected" : undefined}
             style={style}
             onClick={() => {
               if (!disabled) onChange(opt.value);

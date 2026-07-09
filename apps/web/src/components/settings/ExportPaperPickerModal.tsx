@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { libraryItemsList } from "@yakudoku/api-client";
+import { libraryItemsList } from "@alinea/api-client";
 import { Modal } from "@/components/ui/Modal";
 import { triggerDownload } from "@/components/settings/download";
 

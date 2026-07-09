@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { collectionsList, tagsList } from "@yakudoku/api-client";
-import { STATUS_COLORS, STATUS_LABELS, type ReadingStatus } from "@yakudoku/tokens";
+import { collectionsList, tagsList } from "@alinea/api-client";
+import { STATUS_COLORS, STATUS_LABELS, type ReadingStatus } from "@alinea/tokens";
 
 const STATUS_ORDER: readonly ReadingStatus[] = [
   "planned",

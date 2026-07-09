@@ -12,10 +12,9 @@ test.describe("PW-01 ログイン→ダッシュボード", () => {
     await page.goto("/");
     await expect(page).toHaveURL(/\/dashboard$/);
 
-    // ヘッダのプロダクト名「訳読 / YAKUDOKU」(docs/00・VT-UI-01 の E2E 版)。
+    // ヘッダのプロダクト名「Alinea」(docs/00・VT-UI-01 の E2E 版)。
     const header = page.locator("header").first();
-    await expect(header.getByText("訳読", { exact: true })).toBeVisible();
-    await expect(header.getByText("YAKUDOKU", { exact: true })).toBeVisible();
+    await expect(header.getByText("Alinea", { exact: true })).toBeVisible();
 
     // 通知ベル。
     await expect(page.getByRole("button", { name: "通知" })).toBeVisible();

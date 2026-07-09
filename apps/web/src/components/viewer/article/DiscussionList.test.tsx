@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
-import type { DiscussionContentOut } from "@yakudoku/api-client";
+import type { DiscussionContentOut } from "@alinea/api-client";
 import { DiscussionList } from "@/components/viewer/article/DiscussionList";
 
 function discussion(overrides: Partial<DiscussionContentOut> = {}): DiscussionContentOut {

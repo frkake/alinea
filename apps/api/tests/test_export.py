@@ -10,7 +10,7 @@
 - PY-EXP-03(M2-15): CSV は UTF-8 BOM 付き・16 列ヘッダ固定(plans/03 §18 逐語)。
 - PY-EXP-04(M2-15): 全量 JSON(``POST /api/export/full`` → ``jobs.kind='export'``。
   ``GET /api/export/full/{job_id}`` は ``download_url`` を ``jobs.result`` から返す)。
-  実際のジョブ実行(zip 化・S3 アップロード)は :mod:`yakudoku_worker.tasks.export_user_data`
+  実際のジョブ実行(zip 化・S3 アップロード)は :mod:`alinea_worker.tasks.export_user_data`
   の責務(apps/worker/tests/test_export_bulk.py で検証)。本ファイルは API 層(ジョブ作成・
   状態取得)のみを検証し、完了状態は DB を直接更新して模す。
 - PY-ANN-03: 注釈一覧フィルタ(color/has_comment/placed=false)と Markdown エクスポート
@@ -29,25 +29,25 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest_asyncio
+from alinea_api.routers.export import _ExportCsvRow, render_csv
+from alinea_api.schemas.common import PaperBib
+from alinea_api.schemas.export import render_bibtex, render_bibtex_entry, unique_cite_key
+from alinea_api.services.session_service import create_session
+from alinea_api.services.user_service import purge_user, upsert_user_by_email
+from alinea_core.db.models import Job, User
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.routers.export import _ExportCsvRow, render_csv
-from yakudoku_api.schemas.common import PaperBib
-from yakudoku_api.schemas.export import render_bibtex, render_bibtex_entry, unique_cite_key
-from yakudoku_api.services.session_service import create_session
-from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
-from yakudoku_core.db.models import Job, User
 
 
 def _build_app() -> FastAPI:
     """本タスク所有ルータ(export)+依存先(annotations)をマウントしたアプリ。"""
-    from yakudoku_api.errors import register_exception_handlers
-    from yakudoku_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
-    from yakudoku_api.ratelimit import RateLimitMiddleware
-    from yakudoku_api.redis_client import get_redis
-    from yakudoku_api.routers import annotations, export
-    from yakudoku_api.settings import get_api_settings
+    from alinea_api.errors import register_exception_handlers
+    from alinea_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
+    from alinea_api.ratelimit import RateLimitMiddleware
+    from alinea_api.redis_client import get_redis
+    from alinea_api.routers import annotations, export
+    from alinea_api.settings import get_api_settings
 
     s = get_api_settings()
     app = FastAPI()
@@ -68,7 +68,7 @@ async def _noop_export_wakeup(_job_id: str) -> None:
 async def auth(
     db_session: AsyncSession, redis_client: Any
 ) -> AsyncIterator[tuple[AsyncClient, str]]:
-    from yakudoku_api.routers.export import get_export_job_wakeup
+    from alinea_api.routers.export import get_export_job_wakeup
 
     email = f"exp-{uuid.uuid4().hex}@example.com"
     user = await upsert_user_by_email(db_session, email, provider="email")

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import type { SearchFacets, SearchGroup, SearchHit } from "@yakudoku/api-client";
+import type { SearchFacets, SearchGroup, SearchHit } from "@alinea/api-client";
 import { Card } from "@/components/ui/Card";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -60,7 +60,7 @@ function PulseBar({ width }: { width: number }) {
         height: 10,
         borderRadius: 3,
         background: "var(--pr-bg-muted)",
-        animation: "yk-pulse 1.2s ease-in-out infinite",
+        animation: "alinea-pulse 1.2s ease-in-out infinite",
       }}
     />
   );
@@ -305,7 +305,7 @@ export function SearchHitRow({ hit, q }: SearchHitRowProps) {
             color: "var(--pr-text-en)",
             fontFamily: snippetFontVar(hit),
           }}
-          // サーバーがサニタイズ済み HTML(<mark class="yk-search-hit"> のみ。plans/03 §15.1)。
+          // サーバーがサニタイズ済み HTML(<mark class="alinea-search-hit"> のみ。plans/03 §15.1)。
           dangerouslySetInnerHTML={{ __html: hit.snippet }}
         />
         <span style={{ fontSize: 10, color: "var(--pr-text-muted)" }}>
@@ -406,7 +406,7 @@ function SearchResultsSkeleton({ count = 2 }: { count?: number }) {
                 height: 32,
                 borderRadius: 3,
                 background: "var(--pr-bg-muted)",
-                animation: "yk-pulse 1.2s ease-in-out infinite",
+                animation: "alinea-pulse 1.2s ease-in-out infinite",
                 flex: "none",
               }}
             />
@@ -425,7 +425,7 @@ function SearchResultsSkeleton({ count = 2 }: { count?: number }) {
                     height: 16,
                     borderRadius: 3,
                     background: "var(--pr-bg-muted)",
-                    animation: "yk-pulse 1.2s ease-in-out infinite",
+                    animation: "alinea-pulse 1.2s ease-in-out infinite",
                     flex: "none",
                   }}
                 />

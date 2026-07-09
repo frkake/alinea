@@ -7,10 +7,10 @@ plans/12 §8.1 の決定的応答規則を検証する。
 from __future__ import annotations
 
 import pytest
-from yakudoku_llm.errors import ErrorKind, ProviderChainExhausted, ProviderError
-from yakudoku_llm.router import LLMRouter, RetryConfig
-from yakudoku_llm.testing.fake_provider import FakeLLMProvider
-from yakudoku_llm.types import JsonSchemaSpec
+from alinea_llm.errors import ErrorKind, ProviderChainExhausted, ProviderError
+from alinea_llm.router import LLMRouter, RetryConfig
+from alinea_llm.testing.fake_provider import FakeLLMProvider
+from alinea_llm.types import JsonSchemaSpec
 
 
 async def _noop_sleep(_seconds: float) -> None:

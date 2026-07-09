@@ -1,4 +1,4 @@
-/* @yakudoku/tokens — css/theme.css(Tailwind v4。plans/08 §4.1 の逐語) */
+/* @alinea/tokens — css/theme.css(Tailwind v4。plans/08 §4.1 の逐語) */
 @theme inline {
   /* 既定パレット・フォントを無効化(トークン外の値を禁止) */
   --color-*: initial;

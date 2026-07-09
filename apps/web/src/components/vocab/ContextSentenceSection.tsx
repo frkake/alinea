@@ -1,6 +1,6 @@
 "use client";
 
-import type { VocabHighlight } from "@yakudoku/api-client";
+import type { VocabHighlight } from "@alinea/api-client";
 
 export interface ContextSentenceSectionProps {
   contextSentence: string;

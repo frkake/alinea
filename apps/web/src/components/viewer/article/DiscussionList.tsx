@@ -1,4 +1,4 @@
-import type { DiscussionContentOut } from "@yakudoku/api-client";
+import type { DiscussionContentOut } from "@alinea/api-client";
 
 /**
  * 「議論したい点」ブロック(1h §4.10)。VT-VIEW-16: `origin==='user_highlight'` の項目にのみ

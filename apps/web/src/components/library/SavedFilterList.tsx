@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { savedFiltersList } from "@yakudoku/api-client";
+import { savedFiltersList } from "@alinea/api-client";
 import { SidebarNav, type SidebarNavItem } from "@/components/ui/SidebarNav";
 
 /** サイドバー「保存フィルタ」節のクエリキー(AppNav・本コンポーネント間で共有)。 */

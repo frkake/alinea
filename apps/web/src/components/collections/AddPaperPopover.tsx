@@ -2,12 +2,12 @@
 
 import { useEffect, useState, type CSSProperties, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { libraryItemsList } from "@yakudoku/api-client";
+import { libraryItemsList } from "@alinea/api-client";
 import { Popover } from "@/components/ui/Popover";
 
 /**
  * 「+ 論文を追加」ポップオーバー(plans/09-screens/4b §5.6)。
- * 候補検索は既存の `GET /api/library-items?q=` を使う(`@yakudoku/api-client` に生成済み)。
+ * 候補検索は既存の `GET /api/library-items?q=` を使う(`@alinea/api-client` に生成済み)。
  */
 export interface AddPaperPopoverProps {
   open: boolean;

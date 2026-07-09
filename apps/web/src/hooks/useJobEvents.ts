@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { jobsGet, type JobOut, type Problem } from "@yakudoku/api-client";
+import { jobsGet, type JobOut, type Problem } from "@alinea/api-client";
 
 /**
  * ジョブ進捗 SSE の共通フック(plans/09-screens/1h §2.1 #13・§2.3 決定)。

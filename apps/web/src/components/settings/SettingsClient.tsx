@@ -9,7 +9,7 @@ import {
   settingsListApiKeys,
   settingsPutApiKey,
   settingsUpdate,
-} from "@yakudoku/api-client";
+} from "@alinea/api-client";
 import { useToast } from "@/components/ui/Toast";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Popover } from "@/components/ui/Popover";

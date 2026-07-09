@@ -16,21 +16,21 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest_asyncio
+from alinea_api.services.session_service import create_session
+from alinea_api.services.user_service import purge_user, upsert_user_by_email
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.services.session_service import create_session
-from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
 
 
 def _build_app() -> FastAPI:
     """本タスク所有ルータ(library_items)のみをマウントしたアプリ。"""
-    from yakudoku_api.errors import register_exception_handlers
-    from yakudoku_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
-    from yakudoku_api.ratelimit import RateLimitMiddleware
-    from yakudoku_api.redis_client import get_redis
-    from yakudoku_api.routers import library_items
-    from yakudoku_api.settings import get_api_settings
+    from alinea_api.errors import register_exception_handlers
+    from alinea_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
+    from alinea_api.ratelimit import RateLimitMiddleware
+    from alinea_api.redis_client import get_redis
+    from alinea_api.routers import library_items
+    from alinea_api.settings import get_api_settings
 
     s = get_api_settings()
     app = FastAPI()
@@ -67,7 +67,7 @@ async def auth(
 
 async def _mk_item(db: AsyncSession, uid: str, *, status: str = "reading") -> str:
     import factories as f
-    from yakudoku_core.db.models import User
+    from alinea_core.db.models import User
 
     owner = await db.get(User, uid)
     assert owner is not None

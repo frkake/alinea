@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { notesCreate, notesDelete, notesList, notesUpdate, type Note } from "@yakudoku/api-client";
+import { notesCreate, notesDelete, notesList, notesUpdate, type Note } from "@alinea/api-client";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { EvidenceChip } from "@/components/ui/EvidenceChip";
 import { useToast } from "@/components/ui/Toast";
@@ -59,8 +59,8 @@ export function NotesPanel() {
     const el = listRef.current?.querySelector<HTMLElement>(`[data-note-id="${pendingNoteId}"]`);
     if (el) {
       el.scrollIntoView({ block: "center" });
-      el.classList.add("yk-block-flash");
-      window.setTimeout(() => el.classList.remove("yk-block-flash"), 2000);
+      el.classList.add("alinea-block-flash");
+      window.setTimeout(() => el.classList.remove("alinea-block-flash"), 2000);
     }
     consumeNoteFocus();
     // eslint-disable-next-line react-hooks/exhaustive-deps

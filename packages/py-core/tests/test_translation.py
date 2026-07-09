@@ -19,9 +19,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_core.db.models import (
+from alinea_core.db.models import (
     DocumentRevision,
     Glossary,
     GlossaryTerm,
@@ -31,7 +29,7 @@ from yakudoku_core.db.models import (
     TranslationUnit,
     User,
 )
-from yakudoku_core.translation import (
+from alinea_core.translation import (
     TranslationSettings,
     build_snapshot,
     compute_progress,
@@ -48,11 +46,13 @@ from yakudoku_core.translation import (
     translate_block,
     translate_section,
 )
-from yakudoku_core.translation.pipeline import BlockToTranslate, strip_tokens
-from yakudoku_core.translation.placeholder import TOKEN_RE
-from yakudoku_core.translation.prompts.templates import TranslationBatchOut
-from yakudoku_llm.router import LLMRouter
-from yakudoku_llm.types import LLMRequest, LLMResponse, StreamEvent
+from alinea_core.translation.pipeline import BlockToTranslate, strip_tokens
+from alinea_core.translation.placeholder import TOKEN_RE
+from alinea_core.translation.prompts.templates import TranslationBatchOut
+from alinea_llm.router import LLMRouter
+from alinea_llm.types import LLMRequest, LLMResponse, StreamEvent
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # ---------------------------------------------------------------------------
 # 決定的スクリプトプロバイダ(構造化出力の translation_batch_v1 を返す)
@@ -535,7 +535,7 @@ async def test_translate_section_with_job_store_progress(db_session: AsyncSessio
     set_progress がセッション内の他 ORM(保持中の tset)を失効させると、次の属性
     アクセスが同期 lazy load になり MissingGreenlet で全翻訳ジョブが落ちていた。
     """
-    from yakudoku_core.jobs.store import JobStore
+    from alinea_core.jobs.store import JobStore
 
     content = _content(
         [
@@ -788,6 +788,6 @@ def test_resolve_translation_prefers_personal() -> None:
 @pytest.mark.parametrize("style", ["natural", "literal"])
 def test_batch_schema_name_stable(style: str) -> None:
     # system プリアンブルはスタイル別 2 系統(キャッシュ 2 系統。§15.2)
-    from yakudoku_core.translation import build_system_preamble
+    from alinea_core.translation import build_system_preamble
 
     assert "文体規定" in build_system_preamble(style)

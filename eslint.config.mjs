@@ -41,7 +41,7 @@ export default tseslint.config(
                 "親方向の相対 import は禁止。`@/` エイリアスを使ってください (plans/00 §6.3)。",
             },
             {
-              group: ["@yakudoku/web/*", "@yakudoku/extension/*"],
+              group: ["@alinea/web/*", "@alinea/extension/*"],
               message: "apps 間の import は禁止。共有物は packages/ へ (plans/00 §6.3)。",
             },
           ],

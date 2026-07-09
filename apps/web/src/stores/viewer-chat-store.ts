@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import type { Anchor } from "@yakudoku/api-client";
+import type { Anchor } from "@alinea/api-client";
 
 /**
  * 送信前の引用チップ(1a §3.3 pendingAnchors)。

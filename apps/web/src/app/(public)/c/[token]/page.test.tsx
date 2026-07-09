@@ -78,7 +78,7 @@ describe("generateMetadata", () => {
     fetchShareCollection.mockResolvedValueOnce(SAMPLE);
     const { generateMetadata } = await import("./page");
     const metadata = await generateMetadata({ params: Promise.resolve({ token: "x8Kf3qPw" }) });
-    expect(metadata.title).toBe("輪読会 2026-07 — 訳読で共有されたコレクション");
+    expect(metadata.title).toBe("輪読会 2026-07 — Alineaで共有されたコレクション");
     expect(metadata.robots).toEqual({ index: false, follow: false });
     expect(metadata.openGraph?.title).toBe("輪読会 2026-07");
   });
@@ -87,7 +87,7 @@ describe("generateMetadata", () => {
     fetchShareCollection.mockResolvedValueOnce(null);
     const { generateMetadata } = await import("./page");
     const metadata = await generateMetadata({ params: Promise.resolve({ token: "bad" }) });
-    expect(metadata.title).toBe("訳読 — 共有ページ");
+    expect(metadata.title).toBe("Alinea — 共有ページ");
     expect(metadata.robots).toEqual({ index: false, follow: false });
   });
 });

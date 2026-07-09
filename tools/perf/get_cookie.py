@@ -3,7 +3,7 @@
 依存は標準ライブラリのみ。dev シードユーザーでログインし、k6 に渡す Cookie を得る。
 使用: python tools/perf/get_cookie.py > cookie.txt
 環境: APP_BASE_URL(既定 http://localhost:3000)/ MAILPIT_URL(既定 http://localhost:8025)/
-      SEED_EMAIL(既定 dev@yakudoku.test)。
+      SEED_EMAIL(既定 dev@alinea.test)。
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import urllib.request
 
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:3000")
 MAILPIT_URL = os.environ.get("MAILPIT_URL", "http://localhost:8025")
-EMAIL = os.environ.get("SEED_EMAIL", "dev@yakudoku.test")
+EMAIL = os.environ.get("SEED_EMAIL", "dev@alinea.test")
 LINK_RE = re.compile(r"https?://\S+/api/auth/email/verify\?token=\S+")
 
 

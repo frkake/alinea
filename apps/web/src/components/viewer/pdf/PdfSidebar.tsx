@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { TocNode } from "@yakudoku/api-client";
+import type { TocNode } from "@alinea/api-client";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { TocRowGroup } from "@/components/viewer/TocTree";
 import { usePdfViewStore } from "@/stores/pdf-view-store";

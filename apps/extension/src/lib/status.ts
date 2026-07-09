@@ -1,5 +1,5 @@
-// 読書ステータスの型・ラベル・ドット色。値の正は @yakudoku/tokens(plans/08 §2)。
-import { STATUS_COLORS, STATUS_LABELS, type ReadingStatus } from "@yakudoku/tokens";
+// 読書ステータスの型・ラベル・ドット色。値の正は @alinea/tokens(plans/08 §2)。
+import { STATUS_COLORS, STATUS_LABELS, type ReadingStatus } from "@alinea/tokens";
 
 /** API の Status 値(plans/03 §1.6)。tokens の ReadingStatus と同一。 */
 export type Status = ReadingStatus;

@@ -305,7 +305,7 @@ Collection {
   description,               # 自由記述。「説明を編集」でインライン編集
   deadline,                  # 締切日。「締切 7/16 — 残り 10 日」表示、サイドバーにミニバッジ
   share: {                   # 閲覧用共有リンク(共有ページは 4c)
-    token,                   # 8文字英数(例 yakudoku.app/c/x8Kf3qPw)
+    token,                   # 8文字英数(例 alinea.app/c/x8Kf3qPw)
     status: none | active | revoked,   # 「発行済み」/「リンクを無効化」
     include_notes: bool      # 「共有ページにメモを含める」トグル(ON時は対象メモ件数を表示)
   }

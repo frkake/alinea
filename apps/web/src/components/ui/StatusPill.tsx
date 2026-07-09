@@ -1,14 +1,14 @@
 "use client";
 
 import { useRef, useState, type CSSProperties } from "react";
-import { STATUS_COLORS, STATUS_LABELS, type ReadingStatus } from "@yakudoku/tokens";
+import { STATUS_COLORS, STATUS_LABELS, type ReadingStatus } from "@alinea/tokens";
 import { cn } from "@/lib/cn";
 import { Popover } from "@/components/ui/Popover";
 
 /**
  * ステータスピル(plans/08 §5.2)。
- * NOTE: 型 ReadingStatus は本来 @yakudoku/api-client を正とするが(§5.2)、
- * 当パッケージ未実装のため単一ソースの @yakudoku/tokens から取得する(後続で差し替え)。
+ * NOTE: 型 ReadingStatus は本来 @alinea/api-client を正とするが(§5.2)、
+ * 当パッケージ未実装のため単一ソースの @alinea/tokens から取得する(後続で差し替え)。
  */
 export interface StatusPillProps {
   status: ReadingStatus;

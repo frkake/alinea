@@ -2,8 +2,8 @@
 
 import { useRef, useState, type CSSProperties, type TouchEvent } from "react";
 import { createPortal } from "react-dom";
-import { Z_INDEX } from "@yakudoku/tokens";
-import type { LicenseCard, PaperBib, RevisionInfo, TimelineEntry } from "@yakudoku/api-client";
+import { Z_INDEX } from "@alinea/tokens";
+import type { LicenseCard, PaperBib, RevisionInfo, TimelineEntry } from "@alinea/api-client";
 import { SidePanelTabs, type SidePanelTabId } from "@/components/ui/SidePanelTabs";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { AnnotationListPanel } from "@/components/viewer/AnnotationListPanel";

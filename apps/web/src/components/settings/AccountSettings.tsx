@@ -1,6 +1,6 @@
 "use client";
 
-import type { ApiKeyItem } from "@yakudoku/api-client";
+import type { ApiKeyItem } from "@alinea/api-client";
 import { Card } from "@/components/ui/Card";
 import { SettingsSection } from "@/components/settings/SettingsSection";
 import { SettingToggleRow } from "@/components/settings/SettingToggleRow";

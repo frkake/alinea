@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { articlesGenerate, type Problem } from "@yakudoku/api-client";
+import { articlesGenerate, type Problem } from "@alinea/api-client";
 import type { Preset } from "@/components/viewer/article/types";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";

@@ -3,8 +3,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
-import { libraryItemsUpdate, translationsSectionTranslate, type ViewerInit } from "@yakudoku/api-client";
-import { Z_INDEX, type ReadingStatus } from "@yakudoku/tokens";
+import { libraryItemsUpdate, translationsSectionTranslate, type ViewerInit } from "@alinea/api-client";
+import { Z_INDEX, type ReadingStatus } from "@alinea/tokens";
 import { useToast } from "@/components/ui/Toast";
 import { useFinishReadingStore } from "@/components/library/finishReadingStore";
 import { useViewerStore } from "@/stores/viewer-store";

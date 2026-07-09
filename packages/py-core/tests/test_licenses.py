@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from yakudoku_core.licenses import classify_license
+from alinea_core.licenses import classify_license
 
 
 def test_cc_by_allows_embed_with_credit() -> None:

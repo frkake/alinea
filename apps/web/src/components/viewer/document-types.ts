@@ -3,7 +3,7 @@
  *
  * OpenAPI 生成物では document レスポンスが `unknown`(生 JSON)なので、
  * py-core の DocumentContent / Block / Inline(docs/01 §4.1・§4.2)と同型を
- * ここでミラーする。翻訳ユニットの型は @yakudoku/api-client の TranslationUnitItem を使う。
+ * ここでミラーする。翻訳ユニットの型は @alinea/api-client の TranslationUnitItem を使う。
  */
 
 export type InlineType =

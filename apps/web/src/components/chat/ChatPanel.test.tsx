@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { chatListMessages, chatListThreads, type AnchorRef, type ChatMessage as ChatMessageData } from "@yakudoku/api-client";
+import { chatListMessages, chatListThreads, type AnchorRef, type ChatMessage as ChatMessageData } from "@alinea/api-client";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { ChatComposer, CHAT_DISCLAIMER } from "@/components/chat/ChatComposer";
@@ -10,8 +10,8 @@ import { QuickActionChips } from "@/components/chat/QuickActionChips";
 import { EvidenceHighlight } from "@/components/chat/EvidenceHighlight";
 import { useViewerStore } from "@/stores/viewer-store";
 
-vi.mock("@yakudoku/api-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@yakudoku/api-client")>();
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return {
     ...actual,
     chatListThreads: vi.fn(),

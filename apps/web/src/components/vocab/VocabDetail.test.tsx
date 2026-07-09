@@ -1,7 +1,7 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import type { VocabEntryDetail } from "@yakudoku/api-client";
+import type { VocabEntryDetail } from "@alinea/api-client";
 import { VocabDetail } from "@/components/vocab/VocabDetail";
 
 const vocabGet = vi.fn();
@@ -9,7 +9,7 @@ const vocabUpdate = vi.fn();
 const vocabRegenerate = vi.fn();
 const vocabReview = vi.fn();
 
-vi.mock("@yakudoku/api-client", () => ({
+vi.mock("@alinea/api-client", () => ({
   vocabGet: (...args: unknown[]) => vocabGet(...args),
   vocabUpdate: (...args: unknown[]) => vocabUpdate(...args),
   vocabRegenerate: (...args: unknown[]) => vocabRegenerate(...args),

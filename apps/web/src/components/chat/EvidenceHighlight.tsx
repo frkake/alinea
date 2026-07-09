@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, type ReactNode } from "react";
-import type { AnchorRef, EvidenceRef } from "@yakudoku/api-client";
+import type { AnchorRef, EvidenceRef } from "@alinea/api-client";
 import { EvidenceChip } from "@/components/ui/EvidenceChip";
 import { renderInlineMath } from "@/lib/katex-render";
 

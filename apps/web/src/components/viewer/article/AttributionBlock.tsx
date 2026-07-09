@@ -1,4 +1,4 @@
-import type { AttributionContentOut } from "@yakudoku/api-client";
+import type { AttributionContentOut } from "@alinea/api-client";
 
 /** 出典ブロック(1h §4.11)。`locked: true` — 削除不可・ホバーツールバー非表示。 */
 export function AttributionBlock({ attribution }: { attribution: AttributionContentOut }) {

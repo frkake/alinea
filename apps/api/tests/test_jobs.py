@@ -17,19 +17,19 @@ from typing import Any
 
 import factories
 import pytest_asyncio
-from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
-from yakudoku_api.routers.jobs import (
+from alinea_api.routers.jobs import (
     _job_event_frame,
     _job_state_frame,
     _parse_envelope,
     _translate_event,
 )
-from yakudoku_api.schemas.common import sse_json_frame
-from yakudoku_api.services.events import publish_event, read_events_since, stream_key
-from yakudoku_api.services.session_service import create_session
-from yakudoku_api.services.user_service import purge_user, upsert_user_by_email
-from yakudoku_core.jobs.store import JobStore
+from alinea_api.schemas.common import sse_json_frame
+from alinea_api.services.events import publish_event, read_events_since, stream_key
+from alinea_api.services.session_service import create_session
+from alinea_api.services.user_service import purge_user, upsert_user_by_email
+from alinea_core.jobs.store import JobStore
+from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
 import { FigureTableBlock } from "@/components/viewer/FigureTableBlock";
 import type { DocBlock } from "@/components/viewer/document-types";
-import type { TranslationUnitItem } from "@yakudoku/api-client";
+import type { TranslationUnitItem } from "@alinea/api-client";
 
 describe("FigureTableBlock", () => {
   test("renders a figure asset with its caption", () => {

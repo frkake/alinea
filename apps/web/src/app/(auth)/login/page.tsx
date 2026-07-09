@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type CSSProperties, type FormEvent } from "react";
+import { AlineaLogo } from "@/components/brand/AlineaLogo";
 import { Card } from "@/components/ui/Card";
 
 /**
@@ -59,38 +60,8 @@ export default function LoginPage() {
 
   return (
     <Card style={{ width: 380, padding: "28px 28px 24px" }}>
-      {/* ワードマーク */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          justifyContent: "center",
-          marginBottom: 6,
-        }}
-      >
-        <span
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 24,
-            height: 24,
-            borderRadius: 6,
-            background: "var(--pr-acc)",
-            color: "#FFFFFF",
-            fontSize: 12.5,
-            fontWeight: 700,
-          }}
-        >
-          訳
-        </span>
-        <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: "0.5px" }}>訳読</span>
-        <span
-          style={{ fontSize: 10, color: "var(--pr-text-faint)", letterSpacing: "1.2px" }}
-        >
-          YAKUDOKU
-        </span>
+      <div style={{ marginBottom: 6 }}>
+        <AlineaLogo markSize={24} wordSize={16} centered />
       </div>
       <p
         style={{

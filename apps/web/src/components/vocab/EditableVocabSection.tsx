@@ -179,7 +179,7 @@ function GeneratingPlaceholder() {
     height: 11,
     borderRadius: 3,
     background: "var(--pr-bg-muted)",
-    animation: "yk-pulse 1.2s ease-in-out infinite",
+    animation: "alinea-pulse 1.2s ease-in-out infinite",
   };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>

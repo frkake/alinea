@@ -17,15 +17,15 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 import pytest_asyncio
+from alinea_core.arxiv.fetch import RedisLike, arxiv_throttle, probe_latex_available
+from alinea_core.arxiv.ids import ArxivId, normalize_arxiv_id, parse_arxiv_url
+from alinea_core.arxiv.licenses import normalize_license_url
+from alinea_core.arxiv.metadata import fetch_metadata
+from alinea_core.settings import CoreSettings
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
-from yakudoku_core.arxiv.fetch import RedisLike, arxiv_throttle, probe_latex_available
-from yakudoku_core.arxiv.ids import ArxivId, normalize_arxiv_id, parse_arxiv_url
-from yakudoku_core.arxiv.licenses import normalize_license_url
-from yakudoku_core.arxiv.metadata import fetch_metadata
-from yakudoku_core.settings import CoreSettings
 
 # --------------------------------------------------------------------------- #
 # ID / URL 正規化(§3.1)
@@ -252,7 +252,7 @@ async def _noop_throttle(redis: RedisLike) -> None:
 @pytest.fixture
 def settings() -> CoreSettings:
     # ASGITransport はホストを無視しパスでルーティングするため任意の URL でよい
-    return CoreSettings(yakudoku_arxiv_base_url="http://arxiv.test")
+    return CoreSettings(alinea_arxiv_base_url="http://arxiv.test")
 
 
 @pytest_asyncio.fixture
@@ -359,7 +359,7 @@ async def test_fetch_metadata(settings: CoreSettings, http: httpx.AsyncClient) -
 
 
 async def test_fetch_metadata_not_found(settings: CoreSettings, http: httpx.AsyncClient) -> None:
-    from yakudoku_core.arxiv.fetch import FetchError
+    from alinea_core.arxiv.fetch import FetchError
 
     ref = ArxivId("0000.00000", None)
     with pytest.raises(FetchError) as exc:

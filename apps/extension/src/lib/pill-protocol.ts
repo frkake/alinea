@@ -1,4 +1,4 @@
-// arXiv ページ内「訳 保存」ピルと background 間のメッセージ契約(plans/10 §10.3)。
+// arXiv ページ内「A 保存」ピルと background 間のメッセージ契約(plans/10 §10.3)。
 // content script は API を直接呼ばない(same-site クッキー送信は拡張コンテキスト発が条件のため)。
 
 export interface PillCheckMessage {

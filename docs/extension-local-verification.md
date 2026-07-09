@@ -19,7 +19,7 @@ docker compose up -d --wait
 
 # マイグレーション + シード(初回のみ)
 cd apps/api && uv run alembic upgrade head && cd ../..
-uv run python -m yakudoku_api.seed --sample rectified-flow --reset
+uv run python -m alinea_api.seed --sample rectified-flow --reset
 
 # アプリ一式(web:3000 / api:8000 / worker / wxt dev）
 pnpm dev
@@ -31,21 +31,21 @@ pnpm dev
 
 ```bash
 # 実 arXiv を叩かずに検証する場合(決定的モック)
-uv run python -m yakudoku_llm.testing.mock_server --port 8090   # 別ターミナル
+uv run python -m alinea_llm.testing.mock_server --port 8090   # 別ターミナル
 # ワーカーはモック arXiv + FakeLLM で起動する
-YAKUDOKU_FAKE_LLM=1 YAKUDOKU_ARXIV_BASE_URL=http://localhost:8090/arxiv \
-  uv run arq yakudoku_worker.main.BulkWorker        # 別ターミナル
-YAKUDOKU_FAKE_LLM=1 YAKUDOKU_ARXIV_BASE_URL=http://localhost:8090/arxiv \
-  uv run arq yakudoku_worker.main.InteractiveWorker # 別ターミナル
+ALINEA_FAKE_LLM=1 ALINEA_ARXIV_BASE_URL=http://localhost:8090/arxiv \
+  uv run arq alinea_worker.main.BulkWorker        # 別ターミナル
+ALINEA_FAKE_LLM=1 ALINEA_ARXIV_BASE_URL=http://localhost:8090/arxiv \
+  uv run arq alinea_worker.main.InteractiveWorker # 別ターミナル
 ```
 
 ## 2. 拡張をビルド(unpacked ロード用)
 
 ```bash
 # Chrome / Edge 共通の chrome-mv3 出力
-pnpm --filter @yakudoku/extension build          # → apps/extension/.output/chrome-mv3
+pnpm --filter @alinea/extension build          # → apps/extension/.output/chrome-mv3
 # Edge 専用ビルドが要る場合
-pnpm --filter @yakudoku/extension build:edge     # → apps/extension/.output/edge-mv3
+pnpm --filter @alinea/extension build:edge     # → apps/extension/.output/edge-mv3
 ```
 
 > `pnpm dev`(`wxt`)の HMR 出力(`.output/chrome-mv3` を dev 用に生成)を使ってもよい。ストア審査前の
@@ -57,7 +57,7 @@ pnpm --filter @yakudoku/extension build:edge     # → apps/extension/.output/ed
 2. 右上の **デベロッパーモード** を ON。
 3. **「パッケージ化されていない拡張機能を読み込む」** をクリック。
 4. `apps/extension/.output/chrome-mv3` を選択。
-5. 拡張「訳読 — 論文をライブラリへ」が一覧に出て、ツールバーにアイコンが表示される。
+5. 拡張「Alinea — 論文をライブラリへ」が一覧に出て、ツールバーにアイコンが表示される。
 
 **Edge の場合**: `edge://extensions` → 開発者モード ON → 「展開して読み込み」で同じ
 `apps/extension/.output/chrome-mv3`(または `edge-mv3`)を選択する。
@@ -70,7 +70,7 @@ pnpm --filter @yakudoku/extension build:edge     # → apps/extension/.output/ed
 
 - [ ] 未ログイン状態でツールバーアイコンをクリック → ポップアップに **「保存にはログインが必要です。」**
       と **「ログイン」** ボタンが出る(状態0)。
-- [ ] `http://localhost:3000/login` を開き、`dev@yakudoku.test` でメールリンクログイン
+- [ ] `http://localhost:3000/login` を開き、`dev@alinea.test` でメールリンクログイン
       (リンクは Mailpit UI `http://localhost:8025` で確認)。ログイン後 `/library` に着地する。
 
 ### 4.2 保存(状態1 → 状態2)
@@ -112,7 +112,7 @@ pnpm --filter @yakudoku/extension build:edge     # → apps/extension/.output/ed
 
 ## 6. 既知の制約(M0 時点)
 
-- 一般ページ PDF の送信(状態4)・ページ内「訳 保存」ピル・送信キューの永続再送は M0-34〜36 では
+- 一般ページ PDF の送信(状態4)・ページ内「A 保存」ピル・送信キューの永続再送は M0-34〜36 では
   未実装(popup は該当時に「対応外」表示)。実装後に本チェックリストへ項目を追加する。
 - ツールバーアイコンの実クリックは自動 E2E では検証できないため(Playwright 制約)、本手順の 4.2 /
   4.4 のバッジ・実クリック確認が実機検証の要となる。

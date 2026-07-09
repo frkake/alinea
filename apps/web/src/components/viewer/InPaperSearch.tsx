@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { searchInPaper, type InPaperSearchItem } from "@yakudoku/api-client";
+import { searchInPaper, type InPaperSearchItem } from "@alinea/api-client";
 import { SearchBox } from "@/components/ui/SearchBox";
 import { Popover } from "@/components/ui/Popover";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -14,7 +14,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable;
 }
 
-/** クエリ一致部分を `.yk-search-hit` の `<mark>` で強調(viewer-shell §7)。 */
+/** クエリ一致部分を `.alinea-search-hit` の `<mark>` で強調(viewer-shell §7)。 */
 function highlightSnippet(snippet: string, query: string): ReactNode {
   if (!query) return snippet;
   const idx = snippet.toLowerCase().indexOf(query.toLowerCase());
@@ -22,7 +22,7 @@ function highlightSnippet(snippet: string, query: string): ReactNode {
   return (
     <>
       {snippet.slice(0, idx)}
-      <mark className="yk-search-hit">{snippet.slice(idx, idx + query.length)}</mark>
+      <mark className="alinea-search-hit">{snippet.slice(idx, idx + query.length)}</mark>
       {snippet.slice(idx + query.length)}
     </>
   );

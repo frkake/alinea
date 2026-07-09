@@ -4,7 +4,7 @@ import { describe, expect, test, vi } from "vitest";
 import { SavedFilterList } from "@/components/library/SavedFilterList";
 
 const savedFiltersList = vi.fn();
-vi.mock("@yakudoku/api-client", () => ({
+vi.mock("@alinea/api-client", () => ({
   savedFiltersList: (...args: unknown[]) => savedFiltersList(...args),
 }));
 

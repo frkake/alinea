@@ -10,11 +10,11 @@ import datetime as dt
 import re
 import xml.etree.ElementTree as ET
 
+from alinea_figures.dsl import Card, Connector, OverviewFigureDsl, OverviewFigureFooter
+from alinea_figures.overview_svg import render_overview_svg
+from alinea_figures.wrap import wrap_text
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
-from yakudoku_figures.dsl import Card, Connector, OverviewFigureDsl, OverviewFigureFooter
-from yakudoku_figures.overview_svg import render_overview_svg
-from yakudoku_figures.wrap import wrap_text
 
 SVG_NS = "{http://www.w3.org/2000/svg}"
 
@@ -59,7 +59,7 @@ def _dsl_strategy(draw: st.DrawFn) -> OverviewFigureDsl:
     ]
     connectors = [Connector(from_=0, to=1), Connector(from_=1, to=2)]
     date = draw(st.dates(min_value=dt.date(2020, 1, 1)))
-    footer = OverviewFigureFooter(generated_by="✦ AI 生成 · 訳読", date=date.isoformat())
+    footer = OverviewFigureFooter(generated_by="✦ AI 生成 · Alinea", date=date.isoformat())
     return OverviewFigureDsl(cards=cards, connectors=connectors, footer=footer)
 
 

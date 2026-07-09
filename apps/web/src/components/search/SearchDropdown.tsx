@@ -1,8 +1,8 @@
 "use client";
 
 import type { CSSProperties } from "react";
-import type { SearchHitWithPaper } from "@yakudoku/api-client";
-import { Z_INDEX } from "@yakudoku/tokens";
+import type { SearchHitWithPaper } from "@alinea/api-client";
+import { Z_INDEX } from "@alinea/tokens";
 import { SourceBadge } from "@/components/search/SourceBadge";
 import { jumpLabelForTarget, previewBadge, snippetFontVar } from "@/components/search/searchNav";
 
@@ -95,7 +95,7 @@ export function SearchPreviewItem({ hit, active, onClick, onMouseEnter }: Search
       </div>
       <div
         style={{ fontSize: 11.5, lineHeight: 1.7, color: "var(--pr-text-mid)", fontFamily: snippetFontVar(hit) }}
-        // サーバーがサニタイズ済み HTML(<mark class="yk-search-hit"> のみ。plans/03 §15.1)。
+        // サーバーがサニタイズ済み HTML(<mark class="alinea-search-hit"> のみ。plans/03 §15.1)。
         dangerouslySetInnerHTML={{ __html: hit.snippet }}
       />
       {active ? (

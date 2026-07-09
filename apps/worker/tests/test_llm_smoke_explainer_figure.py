@@ -16,18 +16,18 @@ import io
 import os
 from pathlib import Path
 
+import alinea_llm
 import pytest
-import yakudoku_llm
-from PIL import Image
-from yakudoku_llm.errors import ProviderChainExhausted
-from yakudoku_llm.providers import build_image_provider
-from yakudoku_llm.registry import ModelRegistry
-from yakudoku_llm.router import ImageChainEntry, ImageRouter
-from yakudoku_llm.routing import RoutingConfig
-from yakudoku_worker.tasks.generate_explainer_figure import (
+from alinea_llm.errors import ProviderChainExhausted
+from alinea_llm.providers import build_image_provider
+from alinea_llm.registry import ModelRegistry
+from alinea_llm.router import ImageChainEntry, ImageRouter
+from alinea_llm.routing import RoutingConfig
+from alinea_worker.tasks.generate_explainer_figure import (
     EXPLAINER_STYLE_PREAMBLE,
     build_explainer_prompt,
 )
+from PIL import Image
 
 pytestmark = pytest.mark.smoke
 
@@ -59,7 +59,7 @@ def _build_image_router() -> ImageRouter:
     """routing.yaml の explainer_image チェーンから、運営キーが設定されたプロバイダのみで
     実 ImageRouter を組む(SM-01 と同一の既定モデル解決規則)。
     """
-    llm_root = Path(yakudoku_llm.__file__).resolve().parents[2]
+    llm_root = Path(alinea_llm.__file__).resolve().parents[2]
     routing = RoutingConfig.from_yaml(llm_root / "routing.yaml")
     registry = ModelRegistry.from_yaml(llm_root / "models.yaml")
     keys = _operator_keys()

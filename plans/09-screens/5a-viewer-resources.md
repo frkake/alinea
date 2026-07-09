@@ -1,6 +1,6 @@
 # 画面 5a: ビューア リソースタブ
 
-> 対象読者と前提: 本書は「訳読 / YAKUDOKU — 論文読解ワークベンチ」のフロントエンド/バックエンド実装者向けに、確定デザイン画面 5a(論文ビューア — リソースタブ)を 1px の差分なく実装するための計画書である。機能仕様は docs/12(リソース)・docs/04(ビューア)を正、ピクセル値は抽出ファイル extract/5a.md を正とする。ビューアの共通骨格(ヘッダ・左レール・サイドパネル枠・キーマップ・読書位置保存)は plans/09-screens/viewer-shell.md が所有し、本書は viewer-shell §11 の分担表どおり **`ResourcesTab`(確定リソースカード 4 種・公式実装の自動検出カード・URL 追加フッター)** を所有する。共通コンポーネント名・トークン名は plans/08-design-system.md、API エンドポイント名・型名は plans/03-api.md、テーブルは plans/02-data-model.md のものをそのまま使う。技術スタック: Next.js 15(App Router)+ React 19 + TypeScript 5 + Tailwind CSS v4 + TanStack Query v5 + Zustand + `packages/api-client`(OpenAPI 生成 TS クライアント)。
+> 対象読者と前提: 本書は「Alinea — 論文読解ワークベンチ」のフロントエンド/バックエンド実装者向けに、確定デザイン画面 5a(論文ビューア — リソースタブ)を 1px の差分なく実装するための計画書である。機能仕様は docs/12(リソース)・docs/04(ビューア)を正、ピクセル値は抽出ファイル extract/5a.md を正とする。ビューアの共通骨格(ヘッダ・左レール・サイドパネル枠・キーマップ・読書位置保存)は plans/09-screens/viewer-shell.md が所有し、本書は viewer-shell §11 の分担表どおり **`ResourcesTab`(確定リソースカード 4 種・公式実装の自動検出カード・URL 追加フッター)** を所有する。共通コンポーネント名・トークン名は plans/08-design-system.md、API エンドポイント名・型名は plans/03-api.md、テーブルは plans/02-data-model.md のものをそのまま使う。技術スタック: Next.js 15(App Router)+ React 19 + TypeScript 5 + Tailwind CSS v4 + TanStack Query v5 + Zustand + `packages/api-client`(OpenAPI 生成 TS クライアント)。
 
 ## 1. 概要とルート
 
@@ -90,7 +90,7 @@ interface ResourceSuggestionCardProps {
 }
 
 // apps/web/src/components/viewer/panel/resources/ResourceCard.tsx
-import type { ResourceLink, ResKind } from '@yakudoku/api-client';
+import type { ResourceLink, ResKind } from '@alinea/api-client';
 interface ResourceCardProps {
   resource: ResourceLink;
   flash: boolean;                // 重複追加時の既存カードハイライト(§5.5)。2,000ms で親が false に戻す
@@ -120,7 +120,7 @@ interface ResourceNoteBoxProps {
 // apps/web/src/components/viewer/panel/resources/ResourceNoteEditor.tsx
 interface ResourceNoteEditorProps {
   initialNote: string;
-  toc: TocNode[];                          // §サジェスト候補(['viewer', liId] のキャッシュから)。型は plans/03 §6.1 の TocNode(@yakudoku/api-client)
+  toc: TocNode[];                          // §サジェスト候補(['viewer', liId] のキャッシュから)。型は plans/03 §6.1 の TocNode(@alinea/api-client)
   onSave: (note: string | null) => void;   // 空文字は null(メモ削除)に正規化して PATCH
   onCancel: () => void;
 }
@@ -309,7 +309,7 @@ html[data-theme="dark"] {
 
 ### 5.1 ローディング(決定。デザイン未描画)
 
-タブアクティブ化後、`['resources', liId]` 取得完了まで **`ResourceListSkeleton`**: カード形スケルトン 3 枚(height:62px、border-radius:8px、background:`var(--pr-bg-muted)`、`animation: yk-pulse 1.2s ease-in-out infinite`(opacity 1→0.55→1)、gap:9px)。フッターは即時描画するが「追加」ボタンは disabled(opacity:0.5)。300ms 未満で解決した場合もフラッシュ防止はしない(単純化を優先。決定)。
+タブアクティブ化後、`['resources', liId]` 取得完了まで **`ResourceListSkeleton`**: カード形スケルトン 3 枚(height:62px、border-radius:8px、background:`var(--pr-bg-muted)`、`animation: alinea-pulse 1.2s ease-in-out infinite`(opacity 1→0.55→1)、gap:9px)。フッターは即時描画するが「追加」ボタンは disabled(opacity:0.5)。300ms 未満で解決した場合もフラッシュ防止はしない(単純化を優先。決定)。
 
 ### 5.2 空状態(決定。デザイン未描画)
 

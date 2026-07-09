@@ -3,7 +3,7 @@
 import { useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
-import { libraryItemsUpdate, notesCreate, type LibraryItemSummary } from "@yakudoku/api-client";
+import { libraryItemsUpdate, notesCreate, type LibraryItemSummary } from "@alinea/api-client";
 import { Modal } from "@/components/ui/Modal";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { useToast } from "@/components/ui/Toast";

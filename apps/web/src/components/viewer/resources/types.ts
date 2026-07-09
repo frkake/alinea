@@ -1,8 +1,8 @@
 /**
  * リソースタブ(5a)の型(plans/03 §12.1 の完全形をそのまま使用)。
  *
- * `@yakudoku/api-client` は本エンドポイント群を未生成のため(main.py 未登録。deviations 参照)、
- * ここでローカル定義する。生成後はこのファイルを `@yakudoku/api-client` の re-export に差し替える。
+ * `@alinea/api-client` は本エンドポイント群を未生成のため(main.py 未登録。deviations 参照)、
+ * ここでローカル定義する。生成後はこのファイルを `@alinea/api-client` の re-export に差し替える。
  */
 
 export type ResKind = "github" | "youtube" | "slides" | "article";

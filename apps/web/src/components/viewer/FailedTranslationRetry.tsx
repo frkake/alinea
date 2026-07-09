@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { TranslationUnitItem } from "@yakudoku/api-client";
+import type { TranslationUnitItem } from "@alinea/api-client";
 import { useToast } from "@/components/ui/Toast";
 
 const RETRYABLE_FAILURE_FLAGS = new Set(["placeholder_mismatch", "provider_refusal", "context_overflow"]);

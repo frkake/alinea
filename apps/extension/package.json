@@ -1,5 +1,5 @@
 {
-  "name": "@yakudoku/extension",
+  "name": "@alinea/extension",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -16,8 +16,8 @@
     "e2e:report": "playwright show-report"
   },
   "dependencies": {
-    "@yakudoku/api-client": "workspace:*",
-    "@yakudoku/tokens": "workspace:*",
+    "@alinea/api-client": "workspace:*",
+    "@alinea/tokens": "workspace:*",
     "react": "19.1.0",
     "react-dom": "19.1.0"
   },

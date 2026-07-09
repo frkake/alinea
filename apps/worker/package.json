@@ -1,11 +1,11 @@
 {
-  "name": "@yakudoku/worker",
+  "name": "@alinea/worker",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "bash scripts/dev.sh",
-    "dev:watch": "PYTHONDONTWRITEBYTECODE=1 uv run --no-sync arq yakudoku_worker.main.InteractiveWorker --watch src & PYTHONDONTWRITEBYTECODE=1 uv run --no-sync arq yakudoku_worker.main.BulkWorker --watch src & wait",
-    "latex-pdf:backfill": "uv run --no-sync python -m yakudoku_worker.latex_pdf_backfill",
+    "dev:watch": "PYTHONDONTWRITEBYTECODE=1 uv run --no-sync arq alinea_worker.main.InteractiveWorker --watch src & PYTHONDONTWRITEBYTECODE=1 uv run --no-sync arq alinea_worker.main.BulkWorker --watch src & wait",
+    "latex-pdf:backfill": "uv run --no-sync python -m alinea_worker.latex_pdf_backfill",
     "lint": "uv run --no-sync ruff check .",
     "typecheck": "uv run --no-sync mypy .",
     "test": "uv run --no-sync pytest || test $? -eq 5"

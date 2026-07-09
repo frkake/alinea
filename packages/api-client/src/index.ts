@@ -1,5 +1,5 @@
 /**
- * @yakudoku/api-client — OpenAPI から生成した型付きクライアントの公開エントリ。
+ * @alinea/api-client — OpenAPI から生成した型付きクライアントの公開エントリ。
  *
  * 生成物(./generated)は @hey-api/openapi-ts が apps/api の openapi.json から出力する
  * (手編集禁止・CI の openapi-drift ジョブでドリフト検出。plans/00 §2・plans/03 §1.10)。

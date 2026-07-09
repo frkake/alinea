@@ -5,7 +5,7 @@ apps/web/e2e/vr/vr-m2.spec.ts からのみ ``uv run --no-sync python
 apps/web/e2e/scripts/seed_vocab_boil_down_to.py <user_email>`` として呼ばれる。
 
 §14 シード(``seed_data/rectified_flow/vocab.json`` の "boil down to" エントリ)は
-``yakudoku_api.seed`` から実際には投入されない(article.json/overview_dsl.json と同様の
+``alinea_api.seed`` から実際には投入されない(article.json/overview_dsl.json と同様の
 死んだ fixture。followups 参照)。VR-4d の基準画像はこの語彙(生成完了・mastered)の
 詳細パネル(6 セクション表示)を撮るため、本スクリプトが同一の値で直接 INSERT する
 (vocab.json の値をそのまま転記。E2E 側でのフィクショナルな追加内容は入れない)。
@@ -20,10 +20,10 @@ import json
 import sys
 import uuid
 
+from alinea_api.services.deadlines import today_jst
+from alinea_core.db.models import LibraryItem, Paper, User, VocabEntry
+from alinea_core.db.session import get_sessionmaker
 from sqlalchemy import select
-from yakudoku_api.services.deadlines import today_jst
-from yakudoku_core.db.models import LibraryItem, Paper, User, VocabEntry
-from yakudoku_core.db.session import get_sessionmaker
 
 TERM = "boil down to"
 
