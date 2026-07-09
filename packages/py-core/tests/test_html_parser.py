@@ -140,6 +140,38 @@ def test_citation_and_ref_targets() -> None:
     assert kinds["S1.F1"] == "figure"
 
 
+def test_author_year_citation_strips_latexml_bibliography_expansion() -> None:
+    doc = parse_arxiv_html(
+        """
+        <article class="ltx_document">
+          <section class="ltx_section" id="S1">
+            <h2 class="ltx_title">Intro</h2>
+            <div class="ltx_para"><p class="ltx_p">
+              Recent models
+              <cite class="ltx_cite ltx_citemacro_citet">
+                Achiam et al.(<a href="#bib.bib1">2023</a>)
+                <span class="ltx_bibblock">
+                  Achiam, Adler, Agarwal, Ahmad, Akkaya, Aleman, Almeida, Altenschmidt,
+                  Altman, Anadkat, et al.
+                </span>
+              </cite>
+              improved performance.
+            </p></div>
+          </section>
+          <section class="ltx_bibliography" id="bib">
+            <h2 class="ltx_title">References</h2>
+            <ul><li class="ltx_bibitem" id="bib.bib1">Achiam et al. 2023.</li></ul>
+          </section>
+        </article>
+        """
+    )
+    para = next(b for b in doc.blocks if b.type == "paragraph")
+    citation = next(il for il in para.inlines if il.t == "citation")
+    assert citation.ref == "bib.bib1"
+    assert citation.v == "Achiam et al. (2023)"
+    assert "Adler" not in citation.v
+
+
 def test_url_inline_keeps_href() -> None:
     doc = _doc()
     urls = [il for b in doc.blocks for il in b.inlines if il.t == "url"]

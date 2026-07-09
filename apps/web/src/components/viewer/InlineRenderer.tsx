@@ -46,8 +46,41 @@ function inlineOffsetLength(inline: Inline): number {
   }
 }
 
+function normalizeCitationText(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.;:)])/g, "$1")
+    .replace(/([([])\s+/g, "$1")
+    .trim();
+}
+
+function compactCitationValue(value: string | undefined): string | null {
+  const text = normalizeCitationText(value ?? "");
+  if (!text) return null;
+
+  const authorYear = text.match(
+    /^([A-Z][\p{L}'’-]+(?:\s+et\s+al\.?)?)\s*[, ]*\(?((?:19|20)\d{2})(?:\s*(?:\{[^})]{1,8}\}|[a-z]))?\)?/u,
+  );
+  if (authorYear) {
+    const author = normalizeCitationText(authorYear[1] ?? "").replace(/\bet\s+al\.?$/i, "et al.");
+    const year = authorYear[2] ?? "";
+    return `${author} (${year})`;
+  }
+
+  const looksExpanded = text.length > 72 || (text.match(/,/g)?.length ?? 0) >= 2;
+  if (looksExpanded) {
+    const rawReference = text.match(/^([A-Z][\p{L}'’-]+)\b.*?\b((?:19|20)\d{2})\b/u);
+    if (rawReference) {
+      return `${rawReference[1]} et al. (${rawReference[2]})`;
+    }
+  }
+
+  return text;
+}
+
 function displayCitationLabel(inline: Inline): string {
-  if (inline.v) return inline.v;
+  const label = compactCitationValue(inline.v);
+  if (label) return label;
   const ref = inline.ref ?? "";
   const match = ref.match(/([A-Za-z][A-Za-z-]+).*?((?:19|20)\d{2})/);
   if (match) {

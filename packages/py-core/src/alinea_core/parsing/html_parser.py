@@ -137,6 +137,31 @@ def _collapse(text: str | None) -> str:
     return _WS.sub(" ", text or "").strip()
 
 
+def _compact_citation_text(text: str | None) -> str:
+    """本文中引用の表示値から、LaTeXML が混ぜる書誌展開を落として短いラベルにする。"""
+    value = _collapse(text)
+    if not value:
+        return ""
+    value = re.sub(r"\s+([,.;:)])", r"\1", value)
+    value = re.sub(r"([([])\s+", r"\1", value)
+
+    author_year = re.match(
+        r"^([A-Z][A-Za-z'’.-]+(?:\s+et\s+al\.?)?)\s*[, ]*\(?"
+        r"((?:19|20)\d{2})(?:\s*(?:\{[^})]{1,8}\}|[a-z]))?\)?",
+        value,
+    )
+    if author_year:
+        author = re.sub(r"\bet\s+al\.?$", "et al.", author_year.group(1), flags=re.IGNORECASE)
+        return f"{author} ({author_year.group(2)})"
+
+    looks_expanded = len(value) > 72 or value.count(",") >= 2
+    if looks_expanded:
+        raw_reference = re.match(r"^([A-Z][A-Za-z'’.-]+)\b.*?\b((?:19|20)\d{2})\b", value)
+        if raw_reference:
+            return f"{raw_reference.group(1)} et al. ({raw_reference.group(2)})"
+    return value
+
+
 def _math_latex(node: LexborNode | None) -> str:
     """`<math>` から LaTeX を取り出す。annotation(application/x-tex)優先→alttext→本文。"""
     if node is None:
@@ -287,19 +312,26 @@ class _ArxivHtmlParser:
         if tag == "math":
             return [Inline(t="math_inline", v=_math_latex(node))]
         if tag == "cite" or "ltx_cite" in cls:
-            visible = _collapse(node.text())
+            visible = _compact_citation_text(node.text())
+            anchors = [a for a in node.css("a") if (a.attributes.get("href") or "").startswith("#")]
+
+            def cite_value(anchor: LexborNode) -> str:
+                anchor_text = _compact_citation_text(anchor.text())
+                if len(anchors) > 1:
+                    return anchor_text or visible
+                return visible or anchor_text
+
             cites = [
                 Inline(
                     t="citation",
                     ref=(a.attributes.get("href") or "")[1:],
-                    v=_collapse(a.text()) or visible,
+                    v=cite_value(a),
                 )
-                for a in node.css("a")
-                if (a.attributes.get("href") or "").startswith("#")
+                for a in anchors
             ]
             if cites:
                 return cites
-            txt = _collapse(node.text())
+            txt = visible
             return [Inline(t="text", v=txt)] if txt else []
         if tag == "a":
             return self._anchor(node, cls)
@@ -323,7 +355,7 @@ class _ArxivHtmlParser:
         href = node.attributes.get("href") or ""
         txt = _collapse(node.text())
         if href.startswith("#bib"):
-            return [Inline(t="citation", ref=href[1:], v=txt)]
+            return [Inline(t="citation", ref=href[1:], v=_compact_citation_text(txt))]
         if href.startswith("#"):
             target = href[1:]
             return [Inline(t="ref", kind=_ref_kind(target), ref=target, v=txt)]
