@@ -16,6 +16,7 @@ import { useToast } from "@/components/ui/Toast";
 import { IngestLogModal } from "@/components/viewer/IngestLogModal";
 import { ReingestConfirmModal } from "@/components/viewer/ReingestConfirmModal";
 import { CancelIngestConfirmModal } from "@/components/library/CancelIngestConfirmModal";
+import { AuthorGlyph, MetadataChip, SmartInlineLink } from "@/components/viewer/SmartInlineLink";
 import { useCancelIngest } from "@/hooks/useCancelIngest";
 
 export interface InfoPanelProps {
@@ -118,7 +119,11 @@ export function InfoPanel({
       ? { border: "rgba(101,148,113,0.4)", bg: "rgba(101,148,113,0.10)", title: "#4C7458" }
       : reuse === "forbidden"
         ? { border: "rgba(176,104,79,0.4)", bg: "rgba(176,104,79,0.10)", title: "var(--pr-warn)" }
-        : { border: "var(--pr-border-control)", bg: "var(--pr-bg-inset)", title: "var(--pr-text-mid)" };
+        : {
+            border: "var(--pr-border-control)",
+            bg: "var(--pr-bg-inset)",
+            title: "var(--pr-text-mid)",
+          };
 
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -158,7 +163,8 @@ export function InfoPanel({
       const problem = error as Partial<Problem> | undefined;
       toast({
         kind: "error",
-        message: problem?.code === "conflict" ? "再取り込みは既に実行中です" : "再取り込みに失敗しました",
+        message:
+          problem?.code === "conflict" ? "再取り込みは既に実行中です" : "再取り込みに失敗しました",
       });
     },
   });
@@ -181,7 +187,11 @@ export function InfoPanel({
 
     const onProgress = (event: MessageEvent<string>) => {
       try {
-        const data = JSON.parse(event.data) as { stage: string; status: string; progress_pct: number };
+        const data = JSON.parse(event.data) as {
+          stage: string;
+          status: string;
+          progress_pct: number;
+        };
         setJobProgress({ stage: data.stage, status: data.status, progressPct: data.progress_pct });
       } catch {
         // 破損フレームは無視する(P3: 黙って壊れない)。
@@ -246,33 +256,28 @@ export function InfoPanel({
         {/* (a) 書誌情報 */}
         <section style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={headingStyle}>書誌情報</div>
-          <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.55, color: "var(--pr-text)" }}>
+          <div
+            style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.55, color: "var(--pr-text)" }}
+          >
             {paper.title}
           </div>
-          <div style={{ fontSize: 11, color: "var(--pr-text-sub)", lineHeight: 1.6 }}>
-            {paper.authors.join(", ")}
-          </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 5, paddingTop: 2 }}>
-            {paper.venue ? <span style={{ ...chipStyle, color: "var(--pr-text-mid)" }}>{paper.venue}</span> : null}
+            {paper.authors.length > 0 ? (
+              <MetadataChip icon={<AuthorGlyph />} label="著者">
+                {paper.authors.join(", ")}
+              </MetadataChip>
+            ) : null}
+            {paper.venue ? (
+              <span style={{ ...chipStyle, color: "var(--pr-text-mid)" }}>{paper.venue}</span>
+            ) : null}
             {paper.arxiv_id ? (
-              <a
+              <SmartInlineLink
                 href={`https://arxiv.org/abs/${paper.arxiv_id}${paper.arxiv_version ?? ""}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ ...chipStyle, color: "var(--pr-acc)", fontWeight: 600, textDecoration: "none" }}
-              >
-                arXiv:{paper.arxiv_id} ↗
-              </a>
+                label={`arXiv:${paper.arxiv_id}`}
+              />
             ) : null}
             {paper.doi ? (
-              <a
-                href={`https://doi.org/${paper.doi}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ ...chipStyle, color: "var(--pr-acc)", fontWeight: 600, textDecoration: "none" }}
-              >
-                DOI ↗
-              </a>
+              <SmartInlineLink href={`https://doi.org/${paper.doi}`} label={`DOI:${paper.doi}`} />
             ) : null}
           </div>
         </section>
@@ -309,7 +314,10 @@ export function InfoPanel({
               {timelineRows.map((row, i) => {
                 const last = i === timelineRows.length - 1;
                 return (
-                  <div key={i} style={{ display: "flex", gap: 9, fontSize: 10.5, color: "var(--pr-text-sub)" }}>
+                  <div
+                    key={i}
+                    style={{ display: "flex", gap: 9, fontSize: 10.5, color: "var(--pr-text-sub)" }}
+                  >
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
                       <span
                         className={row.pulsing ? "alinea-pulse" : undefined}
@@ -322,7 +330,11 @@ export function InfoPanel({
                           ...(row.pulsing ? { animationDuration: "1.2s" } : {}),
                         }}
                       />
-                      {!last ? <span style={{ width: 1.5, flex: 1, background: "var(--pr-border-pane)" }} /> : null}
+                      {!last ? (
+                        <span
+                          style={{ width: 1.5, flex: 1, background: "var(--pr-border-pane)" }}
+                        />
+                      ) : null}
                     </div>
                     <div style={{ paddingBottom: last ? 0 : 10 }}>{row.content}</div>
                   </div>
@@ -388,8 +400,12 @@ export function InfoPanel({
               gap: 3,
             }}
           >
-            <div style={{ fontSize: 11.5, fontWeight: 700, color: licenseTone.title }}>{licenseCard.license}</div>
-            <div style={{ fontSize: 10, color: "var(--pr-text-sub)", lineHeight: 1.6 }}>{licenseCard.message}</div>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: licenseTone.title }}>
+              {licenseCard.license}
+            </div>
+            <div style={{ fontSize: 10, color: "var(--pr-text-sub)", lineHeight: 1.6 }}>
+              {licenseCard.message}
+            </div>
           </div>
         </section>
 
@@ -434,7 +450,11 @@ export function InfoPanel({
         onCancel={() => setReingestConfirmOpen(false)}
         onConfirm={() => reingestMutation.mutate()}
       />
-      <IngestLogModal open={ingestLogOpen} paperId={paper.id} onClose={() => setIngestLogOpen(false)} />
+      <IngestLogModal
+        open={ingestLogOpen}
+        paperId={paper.id}
+        onClose={() => setIngestLogOpen(false)}
+      />
       <CancelIngestConfirmModal
         open={cancelConfirmOpen}
         pending={cancelIngest.isPending}

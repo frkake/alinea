@@ -47,6 +47,43 @@ describe("FigureTableBlock", () => {
     expect(container.querySelector(".katex")).not.toBeNull();
   });
 
+  test("preserves colspan and rowspan from html tables", () => {
+    const block: DocBlock = {
+      id: "blk-html-table",
+      type: "table",
+      number: "3",
+      raw: '<table><tr><th colspan="2">Group</th><th>Score</th></tr><tr><td rowspan="2">A</td><td>x</td><td>1</td></tr><tr><td>y</td><td>2</td></tr></table>',
+      caption: [{ t: "text", v: "Merged cells." }],
+    };
+    const { container } = render(<FigureTableBlock block={block} />);
+
+    const group = screen.getByText("Group").closest("th");
+    const a = screen.getByText("A").closest("td");
+    expect(group).toHaveAttribute("colspan", "2");
+    expect(a).toHaveAttribute("rowspan", "2");
+    expect(container.querySelectorAll("tr")).toHaveLength(3);
+  });
+
+  test("preserves multicolumn and multirow from latex tables", () => {
+    const block: DocBlock = {
+      id: "blk-latex-table",
+      type: "table",
+      number: "4",
+      raw: String.raw`\begin{tabular}{ccc}
+        \multicolumn{2}{c}{Group} & Score \\
+        \multirow{2}{*}{A} & x & 1 \\
+         & y & 2 \\
+      \end{tabular}`,
+      caption: [{ t: "text", v: "Merged latex cells." }],
+    };
+    render(<FigureTableBlock block={block} />);
+
+    const group = screen.getByText("Group").closest("th");
+    const a = screen.getByText("A").closest("td");
+    expect(group).toHaveAttribute("colspan", "2");
+    expect(a).toHaveAttribute("rowspan", "2");
+  });
+
   test("cleans itemize and custom highlight commands inside latex table cells", () => {
     const block: DocBlock = {
       id: "blk-table",
@@ -96,6 +133,31 @@ describe("FigureTableBlock", () => {
     expect(screen.getByRole("table")).toBeInTheDocument();
     expect(screen.getByText("User - Objective")).toBeInTheDocument();
     expect(screen.getByText("Generate pytest tests")).toBeInTheDocument();
+  });
+
+  test("renders tcolorbox prompt tables as single-column table content", () => {
+    const block: DocBlock = {
+      id: "blk-prompt-table",
+      type: "table",
+      raw: String.raw`\begin{table}[h!]
+        \caption{Prompt}
+        \label{tab:prompt}
+        \begin{tcolorbox}[colframe=orange]
+        \small
+        \texttt{You are a master of literature searching.\\
+        Topic: \textbf{[Topic]}\\
+        Queries: \dots}
+        \end{tcolorbox}
+      \end{table}`,
+      caption: [{ t: "text", v: "Prompt." }],
+    };
+    const { container } = render(<FigureTableBlock block={block} />);
+
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(container.textContent).toContain("You are a master of literature searching.");
+    expect(container.textContent).toContain("Topic: [Topic]");
+    expect(container.textContent).not.toContain("\\texttt");
+    expect(container.textContent).not.toContain("tcolorbox");
   });
 
   test("rewrites arxiv relative image sources inside raw composite figures", () => {

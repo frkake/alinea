@@ -33,7 +33,7 @@ function unwrapKnownCommands(value: string): string {
     next = next
       .replace(/\\mybox(?:\[[^\]]*])?\{[^{}]*\}\{([^{}]*)\}/g, "$1")
       .replace(
-        /\\(?:textbf|textit|emph|mathrm|mathbf|mathit|operatorname|textsuperscript|textsubscript|underline|textsc|text)\{([^{}]*)\}/g,
+        /\\(?:textbf|textit|texttt|emph|mathrm|mathbf|mathit|operatorname|textsuperscript|textsubscript|underline|textsc|text)\{([^{}]*)\}/g,
         "$1",
       );
     if (next === prev) break;
@@ -48,6 +48,8 @@ function cleanLatexSegment(value: string): string {
     .replace(/LABEL:table:\\?[A-Za-z]*(?:\{\})?[A-Za-z0-9:_-]+/g, "the referenced table")
     .replace(/LABEL:(?:eq|equation):\\?[A-Za-z]*(?:\{\})?[A-Za-z0-9:_-]+/g, "the referenced equation")
     .replace(/\\(?:begin|end)\{(?:itemize|enumerate|description|center|flushleft|flushright)\}(?:\[[^\]]*])?/g, " ")
+    .replace(/\\(?:begin|end)\{[^{}]*\}(?:\[[^\]]*])?/g, " ")
+    .replace(/\\(?:texttt|textbf|textit|emph|underline|textsc|text)\{/g, "")
     .replace(/\\item(?:\[([^\]]+)])?/g, (_match, label: string | undefined) =>
       label ? ` ${label} ` : " • ",
     )

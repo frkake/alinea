@@ -106,4 +106,34 @@ describe("InlineRenderer citations", () => {
     expect(container.textContent).not.toContain("\\mathrm");
     expect(container.textContent).not.toContain("\\texttt");
   });
+
+  test("renders structured GitHub and Hugging Face URL inlines as provider chips", () => {
+    render(
+      <p>
+        <InlineRenderer
+          inlines={[
+            { t: "text", v: "Code " },
+            {
+              t: "url",
+              v: "github.com/gnobitab/RectifiedFlow",
+              href: "https://github.com/gnobitab/RectifiedFlow",
+            },
+            { t: "text", v: " model " },
+            {
+              t: "url",
+              v: "Hugging Face",
+              href: "https://huggingface.co/stabilityai/stable-diffusion-3-medium",
+            },
+          ]}
+        />
+      </p>,
+    );
+
+    expect(screen.getByRole("link", { name: "GitHub gnobitab/RectifiedFlow" })).toHaveTextContent(
+      "GH",
+    );
+    expect(
+      screen.getByRole("link", { name: "Hugging Face stabilityai/stable-diffusion-3-medium" }),
+    ).toHaveTextContent("HF");
+  });
 });

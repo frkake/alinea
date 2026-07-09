@@ -26,7 +26,9 @@ function headingBlock(overrides: Partial<ArticleBlockOut> = {}): ArticleBlockOut
     id: "ablk_1",
     type: "heading",
     content: { heading: { level: 2, text: "なぜ「直線」なのか" } },
-    evidence: [{ ref: 1, display: "§1", anchor: { revision_id: "rev_1", block_id: "blk-1", display: "§1" } }],
+    evidence: [
+      { ref: 1, display: "§1", anchor: { revision_id: "rev_1", block_id: "blk-1", display: "§1" } },
+    ],
     origin: "ai",
     locked: false,
     ...overrides,
@@ -44,7 +46,10 @@ function attributionBlock(): ArticleBlockOut {
   };
 }
 
-function renderBlock(block: ArticleBlockOut, client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+function renderBlock(
+  block: ArticleBlockOut,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   return {
     client,
     ...render(
@@ -99,6 +104,27 @@ describe("ArticleBlockItem hover toolbar (VT-VIEW-15)", () => {
     expect(screen.queryByText("✦ 書き直し指示")).not.toBeInTheDocument();
   });
 
+  test("attribution blocks render source metadata as chips", () => {
+    renderBlock({
+      ...attributionBlock(),
+      content: {
+        attribution: {
+          text: '出典: Xingchao Liu, Chengyue Gong, Qiang Liu. "Flow Straight and Fast." ICLR. arXiv:2209.03003 (2023) · ライセンス CC BY 4.0',
+        },
+      },
+    });
+
+    expect(screen.getByText("Flow Straight and Fast")).toBeInTheDocument();
+    expect(screen.getByText("著者")).toBeInTheDocument();
+    expect(screen.getByText("Xingchao Liu, Chengyue Gong, Qiang Liu")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "arXiv:2209.03003" })).toHaveAttribute(
+      "href",
+      "https://arxiv.org/abs/2209.03003",
+    );
+    expect(screen.getByText("ライセンス")).toBeInTheDocument();
+    expect(screen.getByText("CC BY 4.0")).toBeInTheDocument();
+  });
+
   test("focusing the block also shows the toolbar (keyboard a11y)", async () => {
     const { container } = renderBlock(headingBlock());
     const wrapper = container.querySelector("[data-block-id='ablk_1']") as HTMLElement;
@@ -142,7 +168,9 @@ describe("ArticleBlockItem hover toolbar (VT-VIEW-15)", () => {
     const block: ArticleBlockOut = {
       id: "ablk_2",
       type: "explainer_figure",
-      content: { explainer: { figure_id: "exf_1", image_url: "https://x/img.png", caption: "解説" } },
+      content: {
+        explainer: { figure_id: "exf_1", image_url: "https://x/img.png", caption: "解説" },
+      },
       evidence: [],
       origin: "ai",
       locked: false,
@@ -164,7 +192,11 @@ describe("ArticleBlockItem hover toolbar (VT-VIEW-15)", () => {
     const user = userEvent.setup();
     vi.mocked(articlesBlockRewrite).mockResolvedValue({ data: { job_id: "job_1" } } as never);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const other: ArticleBlockOut = { ...headingBlock(), id: "ablk_other", content: { heading: { level: 2, text: "other" } } };
+    const other: ArticleBlockOut = {
+      ...headingBlock(),
+      id: "ablk_other",
+      content: { heading: { level: 2, text: "other" } },
+    };
     const seedArticle = { blocks: [headingBlock(), other] } as unknown as Article;
     client.setQueryData(articleKeys.article("li_1"), seedArticle);
 

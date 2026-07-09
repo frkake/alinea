@@ -135,7 +135,13 @@ describe("InfoPanel (M1-21)", () => {
 
   test("renders bib, quality, license and export sections", async () => {
     renderWithClient(
-      <InfoPanel paper={paper()} revision={revision()} licenseCard={license()} ingestTimeline={TIMELINE} itemId="li_1" />,
+      <InfoPanel
+        paper={paper()}
+        revision={revision()}
+        licenseCard={license()}
+        ingestTimeline={TIMELINE}
+        itemId="li_1"
+      />,
     );
     expect(screen.getByText("Flow Straight and Fast")).toBeInTheDocument();
     expect(screen.getByText("Xingchao Liu, Chengyue Gong, Qiang Liu")).toBeInTheDocument();
@@ -162,7 +168,7 @@ describe("InfoPanel (M1-21)", () => {
         itemId="li_1"
       />,
     );
-    const link = screen.getByText("arXiv:2209.03003 ↗");
+    const link = screen.getByRole("link", { name: "arXiv:2209.03003" });
     expect(link).toHaveAttribute("href", "https://arxiv.org/abs/2209.03003v2");
   });
 
@@ -171,17 +177,33 @@ describe("InfoPanel (M1-21)", () => {
       data: { reading: { track_reading_time: false } },
     } as never);
     renderWithClient(
-      <InfoPanel paper={paper()} revision={revision()} licenseCard={license()} ingestTimeline={TIMELINE} itemId="li_1" />,
+      <InfoPanel
+        paper={paper()}
+        revision={revision()}
+        licenseCard={license()}
+        ingestTimeline={TIMELINE}
+        itemId="li_1"
+      />,
     );
-    expect(await screen.findByText("読書時間の記録はオフです(設定でオンにできます)")).toBeInTheDocument();
+    expect(
+      await screen.findByText("読書時間の記録はオフです(設定でオンにできます)"),
+    ).toBeInTheDocument();
   });
 
   test("footer note defaults to on when tracking setting is unavailable", async () => {
     vi.mocked(settingsGet).mockResolvedValue({ data: {} } as never);
     renderWithClient(
-      <InfoPanel paper={paper()} revision={revision()} licenseCard={license()} ingestTimeline={TIMELINE} itemId="li_1" />,
+      <InfoPanel
+        paper={paper()}
+        revision={revision()}
+        licenseCard={license()}
+        ingestTimeline={TIMELINE}
+        itemId="li_1"
+      />,
     );
-    expect(await screen.findByText("読書時間を記録しています(設定でオフにできます)")).toBeInTheDocument();
+    expect(
+      await screen.findByText("読書時間を記録しています(設定でオフにできます)"),
+    ).toBeInTheDocument();
   });
 
   test("quality level B shows the B description and inset badge", async () => {
@@ -217,26 +239,49 @@ describe("InfoPanel (M1-21)", () => {
     vi.mocked(papersIngestLog).mockResolvedValue({
       data: {
         entries: [
-          { at: "2026-07-02T21:04:12+09:00", stage: "fetching", level: "info", message: "arXiv から LaTeX ソース取得" },
+          {
+            at: "2026-07-02T21:04:12+09:00",
+            stage: "fetching",
+            level: "info",
+            message: "arXiv から LaTeX ソース取得",
+          },
           {
             at: "2026-07-02T21:05:30+09:00",
             stage: "fetching",
             level: "warn",
             message: "arXiv HTML にフォールバック(LaTeX 取得失敗: 404)",
           },
-          { at: "2026-07-02T21:06:00+09:00", stage: "structuring", level: "error", message: "図表抽出に失敗" },
+          {
+            at: "2026-07-02T21:06:00+09:00",
+            stage: "structuring",
+            level: "error",
+            message: "図表抽出に失敗",
+          },
         ],
       },
     } as never);
     renderWithClient(
-      <InfoPanel paper={paper()} revision={revision()} licenseCard={license()} ingestTimeline={TIMELINE} itemId="li_1" />,
+      <InfoPanel
+        paper={paper()}
+        revision={revision()}
+        licenseCard={license()}
+        ingestTimeline={TIMELINE}
+        itemId="li_1"
+      />,
     );
 
     await user.click(screen.getByText("処理ログ"));
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText("処理ログ")).toBeInTheDocument();
-    await waitFor(() => expect(papersIngestLog).toHaveBeenCalledWith({ path: { paper_id: "pap_1" }, throwOnError: true }));
-    expect(await screen.findByText("arXiv HTML にフォールバック(LaTeX 取得失敗: 404)")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(papersIngestLog).toHaveBeenCalledWith({
+        path: { paper_id: "pap_1" },
+        throwOnError: true,
+      }),
+    );
+    expect(
+      await screen.findByText("arXiv HTML にフォールバック(LaTeX 取得失敗: 404)"),
+    ).toBeInTheDocument();
     expect(screen.getByText("図表抽出に失敗")).toBeInTheDocument();
     expect(screen.getByText("warn")).toBeInTheDocument();
     expect(screen.getByText("error")).toBeInTheDocument();
@@ -245,7 +290,13 @@ describe("InfoPanel (M1-21)", () => {
   test("processing log modal shows an empty state when there are no entries", async () => {
     const user = userEvent.setup();
     renderWithClient(
-      <InfoPanel paper={paper()} revision={revision()} licenseCard={license()} ingestTimeline={TIMELINE} itemId="li_1" />,
+      <InfoPanel
+        paper={paper()}
+        revision={revision()}
+        licenseCard={license()}
+        ingestTimeline={TIMELINE}
+        itemId="li_1"
+      />,
     );
     await user.click(screen.getByText("処理ログ"));
     expect(await screen.findByText("ログはまだありません")).toBeInTheDocument();
@@ -254,7 +305,13 @@ describe("InfoPanel (M1-21)", () => {
   test("reingest: confirm modal shows verbatim copy and cancel closes without calling the API", async () => {
     const user = userEvent.setup();
     renderWithClient(
-      <InfoPanel paper={paper()} revision={revision()} licenseCard={license()} ingestTimeline={TIMELINE} itemId="li_1" />,
+      <InfoPanel
+        paper={paper()}
+        revision={revision()}
+        licenseCard={license()}
+        ingestTimeline={TIMELINE}
+        itemId="li_1"
+      />,
     );
     await user.click(screen.getByText("再取り込み"));
     expect(screen.getByText("再取り込みしますか?")).toBeInTheDocument();
@@ -274,14 +331,25 @@ describe("InfoPanel (M1-21)", () => {
     vi.mocked(papersReingest).mockResolvedValue({ data: { job_id: "job_9" } } as never);
 
     renderWithClient(
-      <InfoPanel paper={paper()} revision={revision()} licenseCard={license()} ingestTimeline={TIMELINE} itemId="li_1" />,
+      <InfoPanel
+        paper={paper()}
+        revision={revision()}
+        licenseCard={license()}
+        ingestTimeline={TIMELINE}
+        itemId="li_1"
+      />,
     );
 
     await user.click(screen.getByText("再取り込み"));
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "再取り込み" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "再取り込み" }),
+    );
 
     await waitFor(() =>
-      expect(papersReingest).toHaveBeenCalledWith({ path: { paper_id: "pap_1" }, throwOnError: true }),
+      expect(papersReingest).toHaveBeenCalledWith({
+        path: { paper_id: "pap_1" },
+        throwOnError: true,
+      }),
     );
     await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
     expect(MockEventSource.instances[0]?.url).toBe("/api/jobs/job_9/events");
@@ -297,7 +365,11 @@ describe("InfoPanel (M1-21)", () => {
     expect(await screen.findByText(/構造化中 — 42%/)).toBeInTheDocument();
 
     act(() => {
-      MockEventSource.instances[0]?.emit("done", { job_id: "job_9", status: "succeeded", result: {} });
+      MockEventSource.instances[0]?.emit("done", {
+        job_id: "job_9",
+        status: "succeeded",
+        result: {},
+      });
     });
 
     expect(await screen.findByText("再取り込みが完了しました")).toBeInTheDocument();
@@ -311,10 +383,18 @@ describe("InfoPanel (M1-21)", () => {
     vi.mocked(papersReingest).mockResolvedValue({ data: { job_id: "job_9" } } as never);
 
     renderWithClient(
-      <InfoPanel paper={paper()} revision={revision()} licenseCard={license()} ingestTimeline={TIMELINE} itemId="li_1" />,
+      <InfoPanel
+        paper={paper()}
+        revision={revision()}
+        licenseCard={license()}
+        ingestTimeline={TIMELINE}
+        itemId="li_1"
+      />,
     );
     await user.click(screen.getByText("再取り込み"));
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "再取り込み" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "再取り込み" }),
+    );
     await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
 
     act(() => {
@@ -339,10 +419,18 @@ describe("InfoPanel (M1-21)", () => {
     });
 
     renderWithClient(
-      <InfoPanel paper={paper()} revision={revision()} licenseCard={license()} ingestTimeline={TIMELINE} itemId="li_1" />,
+      <InfoPanel
+        paper={paper()}
+        revision={revision()}
+        licenseCard={license()}
+        ingestTimeline={TIMELINE}
+        itemId="li_1"
+      />,
     );
     await user.click(screen.getByText("再取り込み"));
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "再取り込み" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "再取り込み" }),
+    );
 
     expect(await screen.findByText("再取り込みは既に実行中です")).toBeInTheDocument();
   });
@@ -355,11 +443,19 @@ describe("InfoPanel (M1-21)", () => {
     vi.mocked(libraryItemsDelete).mockResolvedValue({} as never);
 
     renderWithClient(
-      <InfoPanel paper={paper()} revision={revision()} licenseCard={license()} ingestTimeline={TIMELINE} itemId="li_1" />,
+      <InfoPanel
+        paper={paper()}
+        revision={revision()}
+        licenseCard={license()}
+        ingestTimeline={TIMELINE}
+        itemId="li_1"
+      />,
     );
 
     await user.click(screen.getByText("再取り込み"));
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "再取り込み" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "再取り込み" }),
+    );
     await waitFor(() => expect(papersReingest).toHaveBeenCalledTimes(1));
 
     expect(screen.queryByText("再取り込み")).not.toBeInTheDocument();
@@ -370,7 +466,10 @@ describe("InfoPanel (M1-21)", () => {
     await user.click(screen.getByText("取り込みをキャンセル"));
 
     await waitFor(() =>
-      expect(libraryItemsDelete).toHaveBeenCalledWith({ path: { item_id: "li_1" }, throwOnError: true }),
+      expect(libraryItemsDelete).toHaveBeenCalledWith({
+        path: { item_id: "li_1" },
+        throwOnError: true,
+      }),
     );
     await waitFor(() => expect(routerPush).toHaveBeenCalledWith("/library"));
     expect(await screen.findByText("取り込みをキャンセルしました")).toBeInTheDocument();

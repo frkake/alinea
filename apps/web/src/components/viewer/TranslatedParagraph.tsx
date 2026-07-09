@@ -2,10 +2,17 @@
 
 import type { TranslationUnitItem } from "@alinea/api-client";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
+import {
+  isPaperFrontMatterBlock,
+  PaperFrontMatterBlock,
+} from "@/components/viewer/PaperFrontMatter";
 import { ParallelPopover } from "@/components/viewer/ParallelPopover";
 import { type PlacedHighlight } from "@/components/viewer/highlight-render";
 import { SKIP_OFFSET_ATTR, SOURCE_TEXT_ATTR } from "@/components/viewer/text-offset";
-import { TranslationInlineContent, hasTranslatedText } from "@/components/viewer/translation-content";
+import {
+  TranslationInlineContent,
+  hasTranslatedText,
+} from "@/components/viewer/translation-content";
 import type { DocBlock } from "@/components/viewer/document-types";
 
 // PlacedHighlight は BilingualPane・SourcePane(InlineRenderer 経由)とも共有するため
@@ -15,7 +22,12 @@ import type { DocBlock } from "@/components/viewer/document-types";
 export type { PlacedHighlight };
 
 /** text_ja が null で返る翻訳失敗系フラグ(plans/06 §12。1b §5.9)。 */
-const FAILURE_FLAGS = new Set(["placeholder_mismatch", "provider_refusal", "context_overflow", "untranslated"]);
+const FAILURE_FLAGS = new Set([
+  "placeholder_mismatch",
+  "provider_refusal",
+  "context_overflow",
+  "untranslated",
+]);
 
 export interface TranslatedParagraphProps {
   block: DocBlock;
@@ -58,8 +70,15 @@ export function TranslatedParagraph({
 }: TranslatedParagraphProps) {
   const inlines = block.inlines ?? [];
   const hasTranslation = hasTranslatedText(unit);
-  const failed =
-    !hasTranslation && (unit?.quality_flags ?? []).some((f) => FAILURE_FLAGS.has(f));
+  const failed = !hasTranslation && (unit?.quality_flags ?? []).some((f) => FAILURE_FLAGS.has(f));
+
+  if (isPaperFrontMatterBlock(block)) {
+    return (
+      <div className="alinea-paragraph" data-block-id={block.id}>
+        <PaperFrontMatterBlock block={block} />
+      </div>
+    );
+  }
 
   return (
     <div className="alinea-paragraph" data-block-id={block.id} style={{ position: "relative" }}>
@@ -139,7 +158,11 @@ export function TranslatedParagraph({
               {...{ [SOURCE_TEXT_ATTR]: "" }}
               style={{ fontFamily: "var(--pr-font-en)", color: "var(--pr-text-en)" }}
             >
-              <InlineRenderer inlines={inlines} onCitationClick={onCitationClick} onRefClick={onRefClick} />
+              <InlineRenderer
+                inlines={inlines}
+                onCitationClick={onCitationClick}
+                onRefClick={onRefClick}
+              />
             </span>{" "}
             {failed ? (
               <span

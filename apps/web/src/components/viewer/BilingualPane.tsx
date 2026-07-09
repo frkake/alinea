@@ -20,18 +20,33 @@ import {
   useFailedTranslationRetry,
 } from "@/components/viewer/FailedTranslationRetry";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
+import {
+  isPaperFrontMatterBlock,
+  PaperFrontMatterBlock,
+} from "@/components/viewer/PaperFrontMatter";
 import { ResumeBanner } from "@/components/viewer/ResumeBanner";
 import { SectionHeading } from "@/components/viewer/SectionHeading";
 import { TranslationColumnHeader } from "@/components/viewer/TranslationColumnHeader";
 import { type PlacedHighlight } from "@/components/viewer/highlight-render";
 import { isLatexSetupNoiseBlock } from "@/components/viewer/latex-noise";
-import { buildReferenceTargetMap, resolveReferenceTarget } from "@/components/viewer/reference-targets";
+import {
+  buildReferenceTargetMap,
+  resolveReferenceTarget,
+} from "@/components/viewer/reference-targets";
 import { sectionHeadingBlock } from "@/components/viewer/section-heading-block";
-import { TranslationInlineContent, hasTranslatedText } from "@/components/viewer/translation-content";
+import {
+  TranslationInlineContent,
+  hasTranslatedText,
+} from "@/components/viewer/translation-content";
 import type { DocBlock, DocSection, DocumentResponse } from "@/components/viewer/document-types";
 
 /** text_ja が null で返る翻訳失敗系フラグ(plans/06 §12)。 */
-const FAILURE_FLAGS = new Set(["placeholder_mismatch", "provider_refusal", "context_overflow", "untranslated"]);
+const FAILURE_FLAGS = new Set([
+  "placeholder_mismatch",
+  "provider_refusal",
+  "context_overflow",
+  "untranslated",
+]);
 
 export interface BilingualPaneProps {
   itemId: string;
@@ -77,7 +92,9 @@ function buildBlockSectionMap(sections: DocSection[]): Map<string, string> {
   return map;
 }
 
-function buildTocMap(toc: TocNode[]): Map<string, { number: string | null; titleJa: string | null }> {
+function buildTocMap(
+  toc: TocNode[],
+): Map<string, { number: string | null; titleJa: string | null }> {
   const map = new Map<string, { number: string | null; titleJa: string | null }>();
   const walk = (nodes: TocNode[]) => {
     for (const n of nodes) {
@@ -153,7 +170,8 @@ export function BilingualPane({
       if (!a.placed) continue;
       seq += 1;
       if (a.anchor.start == null || a.anchor.end == null) continue;
-      const map = a.anchor.side === "translation" ? translation : a.anchor.side === "source" ? source : null;
+      const map =
+        a.anchor.side === "translation" ? translation : a.anchor.side === "source" ? source : null;
       if (!map) continue;
       const list = map.get(a.anchor.block_id) ?? [];
       list.push({
@@ -281,7 +299,12 @@ export function BilingualPane({
         <button
           type="button"
           onClick={() => void docQuery.refetch()}
-          style={{ border: "none", background: "transparent", color: "var(--pr-acc)", cursor: "pointer" }}
+          style={{
+            border: "none",
+            background: "transparent",
+            color: "var(--pr-acc)",
+            cursor: "pointer",
+          }}
         >
           再読み込み
         </button>
@@ -310,7 +333,9 @@ export function BilingualPane({
   }
 
   return (
-    <div style={{ flex: 1, minWidth: 0, position: "relative", display: "flex", overflow: "hidden" }}>
+    <div
+      style={{ flex: 1, minWidth: 0, position: "relative", display: "flex", overflow: "hidden" }}
+    >
       {showBanner ? (
         <ResumeBanner
           sectionDisplay={lastPosition.section_display}
@@ -388,7 +413,12 @@ function SectionColumns({
     <section data-section-id={section.id}>
       {titleEn ? (
         <div data-block-id={headingBlock?.id}>
-          <SectionHeading number={number} titleJa={titleJa} titleEn={titleEn} variant={number ? "heading" : "label"} />
+          <SectionHeading
+            number={number}
+            titleJa={titleJa}
+            titleEn={titleEn}
+            variant={number ? "heading" : "label"}
+          />
         </div>
       ) : null}
       <div
@@ -403,43 +433,43 @@ function SectionColumns({
         {(section.blocks ?? [])
           .filter((block) => block.id !== headingBlock?.id && !isLatexSetupNoiseBlock(block))
           .map((block) => {
-          if (block.type === "paragraph") {
+            if (block.type === "paragraph") {
+              return (
+                <BilingualParagraph
+                  key={block.id}
+                  block={block}
+                  unit={unitMap.get(block.id) ?? null}
+                  onCitationClick={onCitationClick}
+                  onRefClick={onRefClick}
+                  sourceHighlights={highlightsBySide.source.get(block.id) ?? []}
+                  translationHighlights={highlightsBySide.translation.get(block.id) ?? []}
+                  onAnnotationClick={onAnnotationClick}
+                  searchHighlight={hlBlockId === block.id ? pendingHighlightQuery : null}
+                />
+              );
+            }
+            if (block.type === "equation") {
+              return (
+                <BilingualEquation
+                  key={block.id}
+                  block={block}
+                  referenced={chatEvidenceBlockId === block.id}
+                  referenceDisplay={chatEvidenceDisplay}
+                  onExplain={onExplainEquation}
+                />
+              );
+            }
             return (
-              <BilingualParagraph
-                key={block.id}
-                block={block}
-                unit={unitMap.get(block.id) ?? null}
-                onCitationClick={onCitationClick}
-                onRefClick={onRefClick}
-                sourceHighlights={highlightsBySide.source.get(block.id) ?? []}
-                translationHighlights={highlightsBySide.translation.get(block.id) ?? []}
-                onAnnotationClick={onAnnotationClick}
-                searchHighlight={hlBlockId === block.id ? pendingHighlightQuery : null}
-              />
+              <div key={block.id} style={{ gridColumn: "1 / -1" }}>
+                <OtherBlock
+                  block={block}
+                  unit={unitMap.get(block.id) ?? null}
+                  onCitationClick={onCitationClick}
+                  onRefClick={onRefClick}
+                />
+              </div>
             );
-          }
-          if (block.type === "equation") {
-            return (
-              <BilingualEquation
-                key={block.id}
-                block={block}
-                referenced={chatEvidenceBlockId === block.id}
-                referenceDisplay={chatEvidenceDisplay}
-                onExplain={onExplainEquation}
-              />
-            );
-          }
-          return (
-            <div key={block.id} style={{ gridColumn: "1 / -1" }}>
-              <OtherBlock
-                block={block}
-                unit={unitMap.get(block.id) ?? null}
-                onCitationClick={onCitationClick}
-                onRefClick={onRefClick}
-              />
-            </div>
-          );
-        })}
+          })}
       </div>
       {(section.sections ?? []).map((sub) => (
         <SectionColumns
@@ -492,6 +522,14 @@ export function BilingualParagraph({
   const hasTranslation = hasTranslatedText(unit);
   const failed = !hasTranslation && (unit?.quality_flags ?? []).some((f) => FAILURE_FLAGS.has(f));
 
+  if (isPaperFrontMatterBlock(block)) {
+    return (
+      <div data-block-id={block.id} data-side="source" style={{ gridColumn: "1 / -1" }}>
+        <PaperFrontMatterBlock block={block} />
+      </div>
+    );
+  }
+
   return (
     <>
       <div
@@ -537,7 +575,9 @@ export function BilingualParagraph({
             この段落の翻訳に失敗しました
           </span>
         ) : (
-          <span style={{ fontSize: 12, fontFamily: "var(--pr-font-ui)", color: "var(--pr-text-muted)" }}>
+          <span
+            style={{ fontSize: 12, fontFamily: "var(--pr-font-ui)", color: "var(--pr-text-muted)" }}
+          >
             翻訳中…
           </span>
         )}
@@ -614,7 +654,9 @@ function OtherBlock({
   onRefClick?: (ref: string, kind?: string | null) => void;
 }) {
   if (block.type === "heading") {
-    return <SectionHeading number={block.number ?? null} titleJa={null} titleEn={block.title ?? ""} />;
+    return (
+      <SectionHeading number={block.number ?? null} titleJa={null} titleEn={block.title ?? ""} />
+    );
   }
   if (block.type === "figure" || block.type === "table") {
     return (
@@ -654,9 +696,17 @@ function OtherBlock({
       }}
     >
       {text != null ? (
-        <TranslationInlineContent unit={unit} onCitationClick={onCitationClick} onRefClick={onRefClick} />
+        <TranslationInlineContent
+          unit={unit}
+          onCitationClick={onCitationClick}
+          onRefClick={onRefClick}
+        />
       ) : (
-        <InlineRenderer inlines={block.inlines ?? []} onCitationClick={onCitationClick} onRefClick={onRefClick} />
+        <InlineRenderer
+          inlines={block.inlines ?? []}
+          onCitationClick={onCitationClick}
+          onRefClick={onRefClick}
+        />
       )}
     </p>
   );
@@ -676,7 +726,10 @@ function PaneSkeleton() {
     />
   );
   return (
-    <div aria-hidden style={{ display: "grid", gridTemplateColumns: "1fr 1fr", columnGap: 34, rowGap: 18 }}>
+    <div
+      aria-hidden
+      style={{ display: "grid", gridTemplateColumns: "1fr 1fr", columnGap: 34, rowGap: 18 }}
+    >
       {[0, 1, 2, 3, 4, 5].map((i) => (
         <div key={i}>
           {bar("100%", 13)}

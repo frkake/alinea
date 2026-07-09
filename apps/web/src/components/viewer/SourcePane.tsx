@@ -2,17 +2,29 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { annotationsList, viewerGetDocument, type LastPosition, type TocNode } from "@alinea/api-client";
+import {
+  annotationsList,
+  viewerGetDocument,
+  type LastPosition,
+  type TocNode,
+} from "@alinea/api-client";
 import type { HighlightColor } from "@/components/ui/HighlightMark";
 import { useViewerStore } from "@/stores/viewer-store";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
 import { FigureTableBlock } from "@/components/viewer/FigureTableBlock";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
+import {
+  isPaperFrontMatterBlock,
+  PaperFrontMatterBlock,
+} from "@/components/viewer/PaperFrontMatter";
 import { ResumeBanner } from "@/components/viewer/ResumeBanner";
 import { SectionHeading } from "@/components/viewer/SectionHeading";
 import type { PlacedHighlight } from "@/components/viewer/highlight-render";
 import { isLatexSetupNoiseBlock } from "@/components/viewer/latex-noise";
-import { buildReferenceTargetMap, resolveReferenceTarget } from "@/components/viewer/reference-targets";
+import {
+  buildReferenceTargetMap,
+  resolveReferenceTarget,
+} from "@/components/viewer/reference-targets";
 import { sectionHeadingBlock } from "@/components/viewer/section-heading-block";
 import type { DocBlock, DocSection, DocumentResponse } from "@/components/viewer/document-types";
 
@@ -37,7 +49,9 @@ function buildBlockSectionMap(sections: DocSection[]): Map<string, string> {
   return map;
 }
 
-function buildTocMap(toc: TocNode[]): Map<string, { number: string | null; titleJa: string | null }> {
+function buildTocMap(
+  toc: TocNode[],
+): Map<string, { number: string | null; titleJa: string | null }> {
   const map = new Map<string, { number: string | null; titleJa: string | null }>();
   const walk = (nodes: TocNode[]) => {
     for (const n of nodes) {
@@ -197,7 +211,12 @@ export function SourcePane({
         <button
           type="button"
           onClick={() => void docQuery.refetch()}
-          style={{ border: "none", background: "transparent", color: "var(--pr-acc)", cursor: "pointer" }}
+          style={{
+            border: "none",
+            background: "transparent",
+            color: "var(--pr-acc)",
+            cursor: "pointer",
+          }}
         >
           再読み込み
         </button>
@@ -223,7 +242,9 @@ export function SourcePane({
   }
 
   return (
-    <div style={{ flex: 1, minWidth: 0, position: "relative", display: "flex", overflow: "hidden" }}>
+    <div
+      style={{ flex: 1, minWidth: 0, position: "relative", display: "flex", overflow: "hidden" }}
+    >
       {showBanner ? (
         <ResumeBanner
           sectionDisplay={lastPosition.section_display}
@@ -290,23 +311,28 @@ function SourceSection({
     <section data-section-id={section.id}>
       {titleEn ? (
         <div data-block-id={headingBlock?.id}>
-          <SectionHeading number={number} titleJa={null} titleEn={titleEn} variant={number ? "heading" : "label"} />
+          <SectionHeading
+            number={number}
+            titleJa={null}
+            titleEn={titleEn}
+            variant={number ? "heading" : "label"}
+          />
         </div>
       ) : null}
       {(section.blocks ?? [])
         .filter((block) => block.id !== headingBlock?.id && !isLatexSetupNoiseBlock(block))
         .map((block) => (
-        <SourceBlock
-          key={block.id}
-          block={block}
-          onExplainEquation={onExplainEquation}
-          onCitationClick={onCitationClick}
-          onRefClick={onRefClick}
-          highlights={highlightsByBlock.get(block.id) ?? []}
-          onAnnotationClick={onAnnotationClick}
-          searchHighlight={hlBlockId === block.id ? pendingHighlightQuery : null}
-        />
-      ))}
+          <SourceBlock
+            key={block.id}
+            block={block}
+            onExplainEquation={onExplainEquation}
+            onCitationClick={onCitationClick}
+            onRefClick={onRefClick}
+            highlights={highlightsByBlock.get(block.id) ?? []}
+            onAnnotationClick={onAnnotationClick}
+            searchHighlight={hlBlockId === block.id ? pendingHighlightQuery : null}
+          />
+        ))}
       {(section.sections ?? []).map((sub) => (
         <SourceSection
           key={sub.id}
@@ -344,6 +370,14 @@ function SourceBlock({
   /** 検索ヒット遷移の `?hl=`(plans/11 §7。遷移先ブロックのみ一発マーク)。 */
   searchHighlight?: string | null;
 }) {
+  if (isPaperFrontMatterBlock(block)) {
+    return (
+      <div data-block-id={block.id}>
+        <PaperFrontMatterBlock block={block} />
+      </div>
+    );
+  }
+
   if (block.type === "equation") {
     return (
       <div data-block-id={block.id}>

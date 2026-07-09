@@ -19,7 +19,31 @@ describe("renderArticleMarkdown (1h §4.7)", () => {
     expect(link).toHaveProperty("tagName", "A");
     expect(link).toHaveAttribute("href", "https://example.com/x");
     expect(link).toHaveAttribute("target", "_blank");
-    expect(link).toHaveAttribute("rel", "noopener");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  test("renders raw GitHub URLs and Hugging Face links as provider chips", () => {
+    render(
+      <div>
+        {renderArticleMarkdown(
+          "実装 https://github.com/gnobitab/RectifiedFlow と [HF](https://huggingface.co/stabilityai/stable-diffusion-3-medium)",
+          false,
+        )}
+      </div>,
+    );
+    const github = screen.getByRole("link", { name: "GitHub gnobitab/RectifiedFlow" });
+    expect(github).toHaveAttribute("href", "https://github.com/gnobitab/RectifiedFlow");
+    expect(github).toHaveTextContent("GH");
+    expect(github).toHaveTextContent("gnobitab/RectifiedFlow");
+
+    const hf = screen.getByRole("link", {
+      name: "Hugging Face stabilityai/stable-diffusion-3-medium",
+    });
+    expect(hf).toHaveAttribute(
+      "href",
+      "https://huggingface.co/stabilityai/stable-diffusion-3-medium",
+    );
+    expect(hf).toHaveTextContent("HF");
   });
 
   test("renders a simple bullet list as <ul><li>", () => {

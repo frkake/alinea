@@ -4,6 +4,7 @@ import { Fragment, type ReactNode } from "react";
 import { renderInlineMath } from "@/lib/katex-render";
 import { renderHighlightedText, type PlacedHighlight } from "@/components/viewer/highlight-render";
 import { cleanLatexDisplayText } from "@/components/viewer/latex-display-clean";
+import { SmartInlineLink } from "@/components/viewer/SmartInlineLink";
 import type { Inline } from "@/components/viewer/document-types";
 
 export interface InlineRendererProps {
@@ -262,15 +263,7 @@ export function InlineRenderer({
         );
       case "url":
         return (
-          <a
-            key={key}
-            href={inline.href ?? undefined}
-            target="_blank"
-            rel="noreferrer"
-            style={{ color: "var(--pr-acc)" }}
-          >
-            {inline.v || inline.href}
-          </a>
+          <SmartInlineLink key={key} href={inline.href ?? ""} label={inline.v || inline.href} />
         );
       default:
         return <Fragment key={key}>{inline.v}</Fragment>;
