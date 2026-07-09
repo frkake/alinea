@@ -162,6 +162,7 @@ export default function ViewerPage() {
         revisionId={revisionId}
         style={style}
         translationSetId={viewer.translation?.set_id ?? null}
+        translationStatus={viewer.translation?.status ?? null}
         toc={viewer.toc}
         summaryLines={viewer.library_item.summary_3line ?? null}
         lastPosition={viewer.last_position}
@@ -177,6 +178,7 @@ export default function ViewerPage() {
         revisionId={revisionId}
         style={style}
         translationSetId={viewer.translation?.set_id ?? null}
+        translationStatus={viewer.translation?.status ?? null}
         toc={viewer.toc}
         lastPosition={viewer.last_position}
         onExplainEquation={onExplainEquation}

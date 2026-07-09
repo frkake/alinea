@@ -11,6 +11,7 @@ import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 import { ResumeBanner } from "@/components/viewer/ResumeBanner";
 import { SectionHeading } from "@/components/viewer/SectionHeading";
 import type { PlacedHighlight } from "@/components/viewer/highlight-render";
+import { isLatexSetupNoiseBlock } from "@/components/viewer/latex-noise";
 import { buildReferenceTargetMap, resolveReferenceTarget } from "@/components/viewer/reference-targets";
 import { sectionHeadingBlock } from "@/components/viewer/section-heading-block";
 import type { DocBlock, DocSection, DocumentResponse } from "@/components/viewer/document-types";
@@ -292,7 +293,9 @@ function SourceSection({
           <SectionHeading number={number} titleJa={null} titleEn={titleEn} variant={number ? "heading" : "label"} />
         </div>
       ) : null}
-      {(section.blocks ?? []).filter((block) => block.id !== headingBlock?.id).map((block) => (
+      {(section.blocks ?? [])
+        .filter((block) => block.id !== headingBlock?.id && !isLatexSetupNoiseBlock(block))
+        .map((block) => (
         <SourceBlock
           key={block.id}
           block={block}

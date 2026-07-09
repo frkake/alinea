@@ -20,7 +20,7 @@ from arq import cron
 
 from alinea_worker.bootstrap import on_shutdown, on_startup
 from alinea_worker.cron import check_quality_promotions, send_deadline_reminders
-from alinea_worker.settings import BULK_QUEUE, INTERACTIVE_QUEUE, redis_settings
+from alinea_worker.settings import BULK_QUEUE, INTERACTIVE_QUEUE, env_int, redis_settings
 
 log = structlog.get_logger("alinea.worker")
 
@@ -162,7 +162,7 @@ class InteractiveWorker:
     functions: ClassVar[list[Any]] = [run_job]
     queue_name = INTERACTIVE_QUEUE
     redis_settings = redis_settings()
-    max_jobs = 20
+    max_jobs = env_int("ALINEA_WORKER_INTERACTIVE_MAX_JOBS", 20)
     job_timeout = 420
     on_startup = staticmethod(on_startup)
     on_shutdown = staticmethod(on_shutdown)
@@ -180,7 +180,7 @@ class BulkWorker:
     ]
     queue_name = BULK_QUEUE
     redis_settings = redis_settings()
-    max_jobs = 4
+    max_jobs = env_int("ALINEA_WORKER_BULK_MAX_JOBS", 8)
     job_timeout = 1800
     on_startup = staticmethod(on_startup)
     on_shutdown = staticmethod(on_shutdown)

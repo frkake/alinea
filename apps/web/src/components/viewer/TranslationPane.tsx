@@ -33,6 +33,7 @@ import { SelectionMenu } from "@/components/viewer/SelectionMenu";
 import { SummaryCard } from "@/components/viewer/SummaryCard";
 import { TranslatedParagraph, type PlacedHighlight } from "@/components/viewer/TranslatedParagraph";
 import { buildReferenceTargetMap, resolveReferenceTarget } from "@/components/viewer/reference-targets";
+import { isLatexSetupNoiseBlock } from "@/components/viewer/latex-noise";
 import { sectionHeadingBlock } from "@/components/viewer/section-heading-block";
 import { SOURCE_TEXT_ATTR, textOffsetWithin } from "@/components/viewer/text-offset";
 import { TranslationInlineContent } from "@/components/viewer/translation-content";
@@ -52,6 +53,7 @@ export interface TranslationPaneProps {
   revisionId: string;
   style: TranslationStyle;
   translationSetId: string | null;
+  translationStatus?: string | null;
   toc: TocNode[];
   summaryLines: string[] | null;
   lastPosition: LastPosition | null;
@@ -111,6 +113,7 @@ export function TranslationPane({
   revisionId,
   style,
   translationSetId,
+  translationStatus = null,
   toc,
   summaryLines,
   lastPosition,
@@ -222,7 +225,10 @@ export function TranslationPane({
   const doc = docQuery.data;
   const sectionIds = useMemo(() => collectSectionIds(doc?.sections ?? []), [doc]);
 
-  const unitMap = useQueries({
+  const shouldPollUnits = translationSetId != null && translationStatus !== "complete";
+  const unitsRefetchInterval: number | false = shouldPollUnits ? 2_500 : false;
+  const unitsStaleTime = shouldPollUnits ? 2_000 : 60_000;
+  const unitQueries = useQueries({
     queries: sectionIds.map((sid) => ({
       queryKey: ["units", revisionId, style, sid],
       queryFn: async () =>
@@ -233,17 +239,18 @@ export function TranslationPane({
             throwOnError: true,
           })
         ).data,
-      enabled: sectionIds.length > 0,
-      staleTime: 60_000,
+      enabled: Boolean(translationSetId) && sectionIds.length > 0,
+      staleTime: unitsStaleTime,
+      refetchInterval: unitsRefetchInterval,
     })),
-    combine: (results) => {
-      const map = new Map<string, TranslationUnitItem>();
-      for (const r of results) {
-        for (const item of r.data?.items ?? []) map.set(item.block_id, item);
-      }
-      return map;
-    },
   });
+  const unitMap = useMemo(() => {
+    const map = new Map<string, TranslationUnitItem>();
+    for (const r of unitQueries) {
+      for (const item of r.data?.items ?? []) map.set(item.block_id, item);
+    }
+    return map;
+  }, [unitQueries]);
 
   const failedRetry = useFailedTranslationRetry({
     itemId,
@@ -704,7 +711,9 @@ function SectionView({
         </div>
       ) : null}
       {summary}
-      {(section.blocks ?? []).filter((block) => block.id !== headingBlock?.id).map((block) => {
+      {(section.blocks ?? [])
+        .filter((block) => block.id !== headingBlock?.id && !isLatexSetupNoiseBlock(block))
+        .map((block) => {
         if (block.type === "paragraph") {
           paraOrdinal += 1;
           const label = `¶${paraOrdinal} / ${sectionLabel}`;
@@ -828,7 +837,7 @@ function BlockView({
           data-block-id={block.id}
           style={{
             fontSize: "var(--pr-content-font-size-px, 16.5px)",
-            lineHeight: 2.15,
+            lineHeight: 1.8,
             color: "var(--pr-text-body)",
             margin: "0 0 22px",
           }}

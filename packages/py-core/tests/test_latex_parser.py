@@ -170,6 +170,35 @@ def test_metadata_sections_skipped() -> None:
     assert "Xingchao Liu" not in joined  # author (title/author 除去)
 
 
+def test_latex_setup_commands_do_not_leak_into_body() -> None:
+    doc = parse_latex_source(
+        "main.tex",
+        {
+            "main.tex": (
+                r"\documentclass{article}"
+                r"\begin{document}"
+                r"\affiliation{ Microsoft Redmond USA }"
+                r"\definecolor{ForestGreen}{RGB}{34,139,34}"
+                r"\definecolor{Gray}{gray}{0.9}"
+                r"\newcommand{\CoverageEval}{{\textsc{CoverageEval}}}"
+                r"\newcommand{\hl}[2]{ #1 {▶#2◀} }"
+                r"\newcommand{\MICHELE}[1]{\textcolor{blue}{MICHELE{#1}}}"
+                r"\section{Intro}"
+                r"This paragraph is real body text and should remain."
+                r"\end{document}"
+            )
+        },
+    )
+    joined = " ".join(block_to_plain(b) for b in doc.blocks if b.type == "paragraph")
+    assert "This paragraph is real body text" in joined
+    assert "iation{" not in joined
+    assert "Microsoft Redmond" not in joined
+    assert "ForestGreen" not in joined
+    assert "CoverageEval" not in joined
+    assert "MICHELE" not in joined
+    assert "▶" not in joined
+
+
 def test_input_command_is_expanded_into_appendix_section() -> None:
     doc = _doc()
     sec_a = next(s for s in doc.sections if s.id == "sec-A")

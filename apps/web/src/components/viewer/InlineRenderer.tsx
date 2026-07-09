@@ -117,6 +117,45 @@ export function InlineRenderer({
 }: InlineRendererProps) {
   let offset = 0;
 
+  const renderCitationButton = (inline: Inline, key: string): ReactNode => {
+    const label = displayCitationLabel(inline);
+    return (
+      <button
+        key={key}
+        type="button"
+        onClick={() => inline.ref && onCitationClick?.(inline.ref)}
+        style={{
+          border: "none",
+          background: "transparent",
+          cursor: "pointer",
+          padding: 0,
+          font: "inherit",
+          color: "var(--pr-acc)",
+          fontWeight: 600,
+        }}
+      >
+        {label}
+      </button>
+    );
+  };
+
+  const renderCitationGroup = (items: Inline[], key: string): ReactNode => {
+    const labels = items.map(displayCitationLabel);
+    offset += `[ ${labels.join(", ")} ]`.length;
+    return (
+      <span key={key}>
+        {"[ "}
+        {items.map((inline, i) => (
+          <Fragment key={`${key}-cit-${i}`}>
+            {i > 0 ? ", " : null}
+            {renderCitationButton(inline, `${key}-btn-${i}`)}
+          </Fragment>
+        ))}
+        {" ]"}
+      </span>
+    );
+  };
+
   const renderInline = (inline: Inline, key: string): ReactNode => {
     if (inline.t === "emphasis" && inline.children?.length) {
       return <em key={key}>{renderList(inline.children, key)}</em>;
@@ -182,27 +221,8 @@ export function InlineRenderer({
             dangerouslySetInnerHTML={{ __html: renderInlineMath(inline.v ?? "") }}
           />
         );
-      case "citation": {
-        const label = displayCitationLabel(inline);
-        return (
-          <button
-            key={key}
-            type="button"
-            onClick={() => inline.ref && onCitationClick?.(inline.ref)}
-            style={{
-              border: "none",
-              background: "transparent",
-              cursor: "pointer",
-              padding: 0,
-              font: "inherit",
-              color: "var(--pr-acc)",
-              fontWeight: 600,
-            }}
-          >
-            {label}
-          </button>
-        );
-      }
+      case "citation":
+        return renderCitationButton(inline, key);
       case "ref": {
         const label = displayRefLabel(inline);
         if (inline.ref && onRefClick) {
@@ -254,8 +274,29 @@ export function InlineRenderer({
     }
   };
 
-  const renderList = (items: Inline[], prefix = "i"): ReactNode =>
-    items.map((inline, i) => renderInline(inline, `${prefix}-${i}`));
+  const renderList = (items: Inline[], prefix = "i"): ReactNode[] => {
+    const nodes: ReactNode[] = [];
+    for (let i = 0; i < items.length; i += 1) {
+      const inline = items[i];
+      if (inline?.t === "citation" && items[i + 1]?.t === "citation") {
+        const group: Inline[] = [inline];
+        let j = i + 1;
+        while (true) {
+          const next = items[j];
+          if (next?.t !== "citation") break;
+          group.push(next);
+          j += 1;
+        }
+        nodes.push(renderCitationGroup(group, `${prefix}-${i}`));
+        i = j - 1;
+        continue;
+      }
+      if (inline) {
+        nodes.push(renderInline(inline, `${prefix}-${i}`));
+      }
+    }
+    return nodes;
+  };
 
   return <>{renderList(inlines)}</>;
 }

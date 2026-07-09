@@ -24,6 +24,7 @@ import { ResumeBanner } from "@/components/viewer/ResumeBanner";
 import { SectionHeading } from "@/components/viewer/SectionHeading";
 import { TranslationColumnHeader } from "@/components/viewer/TranslationColumnHeader";
 import { type PlacedHighlight } from "@/components/viewer/highlight-render";
+import { isLatexSetupNoiseBlock } from "@/components/viewer/latex-noise";
 import { buildReferenceTargetMap, resolveReferenceTarget } from "@/components/viewer/reference-targets";
 import { sectionHeadingBlock } from "@/components/viewer/section-heading-block";
 import { TranslationInlineContent, hasTranslatedText } from "@/components/viewer/translation-content";
@@ -37,6 +38,7 @@ export interface BilingualPaneProps {
   revisionId: string;
   style: TranslationStyle;
   translationSetId: string | null;
+  translationStatus?: string | null;
   toc: TocNode[];
   lastPosition: LastPosition | null;
   /** 「✦ この式を説明」→ 引用を積んでチャットタブへ(1a §5.2)。 */
@@ -96,6 +98,7 @@ export function BilingualPane({
   revisionId,
   style,
   translationSetId,
+  translationStatus = null,
   toc,
   lastPosition,
   onExplainEquation,
@@ -176,7 +179,10 @@ export function BilingualPane({
   const doc = docQuery.data;
   const sectionIds = useMemo(() => collectSectionIds(doc?.sections ?? []), [doc]);
 
-  const unitMap = useQueries({
+  const shouldPollUnits = translationSetId != null && translationStatus !== "complete";
+  const unitsRefetchInterval: number | false = shouldPollUnits ? 2_500 : false;
+  const unitsStaleTime = shouldPollUnits ? 2_000 : 60_000;
+  const unitQueries = useQueries({
     queries: sectionIds.map((sid) => ({
       queryKey: ["units", revisionId, style, sid],
       queryFn: async () =>
@@ -187,17 +193,18 @@ export function BilingualPane({
             throwOnError: true,
           })
         ).data,
-      enabled: sectionIds.length > 0,
-      staleTime: 60_000,
+      enabled: Boolean(translationSetId) && sectionIds.length > 0,
+      staleTime: unitsStaleTime,
+      refetchInterval: unitsRefetchInterval,
     })),
-    combine: (results) => {
-      const map = new Map<string, TranslationUnitItem>();
-      for (const r of results) {
-        for (const item of r.data?.items ?? []) map.set(item.block_id, item);
-      }
-      return map;
-    },
   });
+  const unitMap = useMemo(() => {
+    const map = new Map<string, TranslationUnitItem>();
+    for (const r of unitQueries) {
+      for (const item of r.data?.items ?? []) map.set(item.block_id, item);
+    }
+    return map;
+  }, [unitQueries]);
 
   const failedRetry = useFailedTranslationRetry({
     itemId,
@@ -393,7 +400,9 @@ function SectionColumns({
           alignItems: "start",
         }}
       >
-        {(section.blocks ?? []).filter((block) => block.id !== headingBlock?.id).map((block) => {
+        {(section.blocks ?? [])
+          .filter((block) => block.id !== headingBlock?.id && !isLatexSetupNoiseBlock(block))
+          .map((block) => {
           if (block.type === "paragraph") {
             return (
               <BilingualParagraph
@@ -510,7 +519,7 @@ export function BilingualParagraph({
         style={{
           fontFamily: "var(--pr-jp)",
           fontSize: "var(--pr-content-font-size-px, 14.8px)",
-          lineHeight: 2.0,
+          lineHeight: 1.72,
           color: "var(--pr-text-body)",
         }}
       >
@@ -639,7 +648,7 @@ function OtherBlock({
     <p
       style={{
         fontSize: "var(--pr-content-font-size-px, 14.8px)",
-        lineHeight: 2.0,
+        lineHeight: 1.72,
         color: "var(--pr-text-body)",
         margin: 0,
       }}

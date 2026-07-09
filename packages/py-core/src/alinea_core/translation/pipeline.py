@@ -57,8 +57,8 @@ from alinea_core.translation.prompts import (
 
 # --- 確定値(plans/06 §3.3・§6・§12) --------------------------------------------
 
-BATCH_MAX_BLOCKS = 6
-BATCH_MAX_SOURCE_TOKENS = 2000
+BATCH_MAX_BLOCKS = 8
+BATCH_MAX_SOURCE_TOKENS = 2800
 MAX_OUTPUT_TOKENS = 4096
 MAX_RETRIES = 2  # 初回 + 再試行 2 回 = 計 3 回(docs/03 §4)
 CONTEXT_PREV_BLOCKS = 2
@@ -247,7 +247,7 @@ def estimate_source_tokens(text: str) -> int:
 
     plans/06 §3.3 は tiktoken ``o200k_base`` * 1.1 を指定するが、py-core は tiktoken を
     依存に持たない(deviations 参照)ため、決定的な文字数ヒューリスティック
-    ``ceil(len/4 * 1.1)`` で近似する。バッチ上限(6 ブロック / 2,000 トークン)の構造的保証
+    ``ceil(len/4 * 1.1)`` で近似する。バッチ上限の構造的保証
     という目的は満たす。
     """
     return math.ceil(len(text) / 4 * 1.1)
@@ -725,7 +725,7 @@ async def _retry_blocking_units(
     if not failed:
         return units
     retry_items = [item for item in items if item.encoded.block_id in failed]
-    retry_ctx = replace(ctx, reason="retry_failed", task="translation_retry")
+    retry_ctx = replace(ctx, reason="retry_failed", task="retranslation_escalation")
     retry_units = await translate_batch(
         router,
         retry_items,
@@ -956,6 +956,11 @@ def _translatable_block_ids(section: Section) -> list[str]:
     return [b.id for b in section.blocks if b.type in TRANSLATABLE_BLOCK_TYPES]
 
 
+def _task_for_section_reason(reason: str) -> str:
+    """明示的な失敗再試行は通常翻訳より強いルートに送る。"""
+    return "retranslation_escalation" if reason == "retry_failed" else "translation"
+
+
 async def translate_section(
     session: AsyncSession,
     translation_set_id: str,
@@ -1064,6 +1069,7 @@ async def translate_section(
             next_source_block=src_text.get(next_id) if next_id else None,
             reason=reason,
             instruction=instruction,
+            task=_task_for_section_reason(reason),
         )
         units = await translate_batch(
             router,

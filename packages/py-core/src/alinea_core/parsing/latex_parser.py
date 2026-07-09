@@ -486,6 +486,7 @@ _FRONTMATTER_CMDS = (
     "date",
     "thanks",
     "affil",
+    "affiliation",
     "thispagestyle",
     "pagestyle",
     "tableofcontents",
@@ -496,6 +497,38 @@ _FRONTMATTER_CMDS = (
     "IEEEauthorblockA",
 )
 
+_SETUP_CMDS = frozenset(
+    {
+        "addtolength",
+        "bibliographystyle",
+        "colorlet",
+        "DeclareMathOperator",
+        "DeclarePairedDelimiter",
+        "DeclareRobustCommand",
+        "DeclareTextFontCommand",
+        "def",
+        "definecolor",
+        "graphicspath",
+        "hypersetup",
+        "newcommand",
+        "newenvironment",
+        "newlength",
+        "newtheorem",
+        "providecommand",
+        "renewcommand",
+        "renewenvironment",
+        "setcounter",
+        "setlength",
+        "tikzset",
+    }
+)
+_SETUP_CMD_RE = re.compile(
+    r"\\("
+    + "|".join(sorted((re.escape(cmd) for cmd in _SETUP_CMDS), key=len, reverse=True))
+    + r")\*?(?![A-Za-z])"
+)
+_CONTROL_WORD_RE = re.compile(r"\\[A-Za-z]+\*?")
+
 
 def _strip_frontmatter_commands(text: str) -> str:
     out = text
@@ -503,7 +536,7 @@ def _strip_frontmatter_commands(text: str) -> str:
     while changed:
         changed = False
         for cmd in _FRONTMATTER_CMDS:
-            m = re.search(rf"\\{cmd}\*?", out)
+            m = re.search(rf"\\{cmd}\*?(?![A-Za-z])", out)
             if not m:
                 continue
             end = m.end()
@@ -516,6 +549,60 @@ def _strip_frontmatter_commands(text: str) -> str:
             out = out[: m.start()] + out[end:]
             changed = True
     return out
+
+
+def _consume_setup_command(text: str, start: int, cmd: str) -> int:
+    """本文中に残ったマクロ定義・色定義など、表示しない setup command 全体を読む。"""
+    i = start
+    while i < len(text) and text[i].isspace():
+        i += 1
+
+    if cmd == "def":
+        m = _CONTROL_WORD_RE.match(text, i)
+        if m:
+            i = m.end()
+        while i < len(text) and text[i] != "{":
+            i += 1
+        if i < len(text) and text[i] == "{":
+            try:
+                _body, i = _read_braced(text, i)
+            except LatexParseError:
+                return i
+        return i
+
+    consumed_group = False
+    while i < len(text):
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i < len(text) and text[i] == "[":
+            end = _matching_square(text, i)
+            if end is None:
+                return i
+            i = end + 1
+            consumed_group = True
+            continue
+        if i < len(text) and text[i] == "{":
+            try:
+                _body, i = _read_braced(text, i)
+            except LatexParseError:
+                return i
+            consumed_group = True
+            continue
+        break
+    return i if consumed_group else start
+
+
+def _strip_setup_commands(text: str) -> str:
+    out: list[str] = []
+    i = 0
+    while True:
+        m = _SETUP_CMD_RE.search(text, i)
+        if m is None:
+            out.append(text[i:])
+            break
+        out.append(text[i : m.start()])
+        i = _consume_setup_command(text, m.end(), m.group(1))
+    return "".join(out)
 
 
 # ============================================================================
@@ -1255,6 +1342,8 @@ class _LatexParser:
                 _arg, end = _read_optional_braced(text, pos)
                 return end, []
             return pos, []
+        if cmd in _SETUP_CMDS:
+            return _consume_setup_command(text, pos, cmd), []
         if cmd in _SPACE_CMDS:
             return pos, [Inline(t="text", v=" ")]
         # 未知コマンド: 引数があれば透過(内容だけ残す)、無ければ読み飛ばす。
@@ -1277,6 +1366,7 @@ def parse_latex_source(main_name: str, files: dict[str, str]) -> ParsedDocument:
     expanded = _resolve_bibliography(expanded, files)
     body = _extract_document_body(expanded)
     body = _strip_frontmatter_commands(body)
+    body = _strip_setup_commands(body)
     body, bib_inner = _extract_bibliography(body)
 
     parser = _LatexParser()

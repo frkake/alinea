@@ -97,6 +97,7 @@ class _ScriptProvider:
     def __init__(self, transform: Any = _echo_translate) -> None:
         self.transform = transform
         self.calls = 0
+        self.tasks: list[str] = []
 
     def _targets(self, req: LLMRequest) -> list[tuple[str, str, str]]:
         text = "".join(
@@ -106,6 +107,7 @@ class _ScriptProvider:
 
     async def generate_structured(self, req: LLMRequest) -> LLMResponse:
         self.calls += 1
+        self.tasks.append(str(req.metadata.get("task", "")))
         translations = [
             {"id": bid, "ja": self.transform(txt)} for (bid, _t, txt) in self._targets(req)
         ]
@@ -379,7 +381,7 @@ def test_make_batches_respects_max_blocks() -> None:
         for i in range(13)
     ]
     batches = make_batches(items)
-    assert [len(b) for b in batches] == [6, 6, 1]
+    assert [len(b) for b in batches] == [8, 5]
 
 
 # ===========================================================================
@@ -487,6 +489,46 @@ async def test_placeholder_fallback_persisted(db_session: AsyncSession) -> None:
     assert not row.content_ja  # 空リスト(原文フォールバック)
     # フォールバック行は表示可能扱いされない → 進捗に入らない
     assert result.progress_pct == 0
+
+
+async def test_blocking_retry_uses_configured_escalation_route(db_session: AsyncSession) -> None:
+    """回帰: 追加再送が未定義 task=translation_retry を使うと ingest が retry で止まる。"""
+    content = _content(
+        [_section("sec-1", "1", "Introduction", [_para_ref("blk-1", "See ", "eq-5", " here.")])]
+    )
+    _paper, _rev, tset = await _make_set(db_session, content=content)
+    provider = _ScriptProvider(_drop_tokens)
+    router = LLMRouter([("fake", "deepseek-v4-flash", provider)])
+
+    result = await translate_section(db_session, tset.id, "sec-1", router)
+
+    assert result.fallback == 1
+    assert "translation" in provider.tasks
+    assert "retranslation_escalation" in provider.tasks
+    assert "translation_retry" not in provider.tasks
+
+
+async def test_retry_failed_section_uses_escalation_route(db_session: AsyncSession) -> None:
+    """失敗分の明示リトライは通常翻訳ルートに戻さず、上位再翻訳ルートを使う。"""
+    content = _content(
+        [_section("sec-1", "1", "Introduction", [_para_ref("blk-1", "See ", "eq-5", " here.")])]
+    )
+    _paper, _rev, tset = await _make_set(db_session, content=content)
+    provider = _ScriptProvider(_drop_tokens)
+    router = LLMRouter([("fake", "deepseek-v4-flash", provider)])
+
+    result = await translate_section(
+        db_session,
+        tset.id,
+        "sec-1",
+        router,
+        block_ids=["blk-1"],
+        reason="retry_failed",
+    )
+
+    assert result.fallback == 1
+    assert provider.tasks
+    assert set(provider.tasks) == {"retranslation_escalation"}
 
 
 # ===========================================================================

@@ -118,7 +118,7 @@ export function TranslatedParagraph({
         style={{
           // 設定 4f の本文サイズ(既定 16.5px)。CSS 変数が未設定の間は既定値を維持する(§5.6)。
           fontSize: "var(--pr-content-font-size-px, 16.5px)",
-          lineHeight: 2.15,
+          lineHeight: 1.8,
           color: "var(--pr-text-body)",
           margin: `0 0 ${popOpen ? 8 : 22}px`,
           cursor: isMobile ? "pointer" : undefined,

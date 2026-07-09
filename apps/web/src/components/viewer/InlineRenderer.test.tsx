@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, test } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, test, vi } from "vitest";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 
 describe("InlineRenderer citations", () => {
@@ -39,5 +39,31 @@ describe("InlineRenderer citations", () => {
 
     expect(screen.getByRole("button", { name: "Dubey et al. (2024)" })).toBeInTheDocument();
     expect(screen.queryByText(/Jauhri/)).not.toBeInTheDocument();
+  });
+
+  test("formats consecutive citations as a bracketed comma-separated group", () => {
+    const onCitationClick = vi.fn();
+    const { container } = render(
+      <p>
+        <InlineRenderer
+          inlines={[
+            { t: "text", v: "Related work " },
+            { t: "citation", ref: "lu2024", v: "Lu et al. (2024)" },
+            { t: "citation", ref: "wang2023", v: "Wang et al. (2023)" },
+            { t: "text", v: " covers this." },
+          ]}
+          onCitationClick={onCitationClick}
+        />
+      </p>,
+    );
+
+    expect(container.textContent).toBe(
+      "Related work [ Lu et al. (2024), Wang et al. (2023) ] covers this.",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Lu et al. (2024)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Wang et al. (2023)" }));
+    expect(onCitationClick).toHaveBeenNthCalledWith(1, "lu2024");
+    expect(onCitationClick).toHaveBeenNthCalledWith(2, "wang2023");
   });
 });
