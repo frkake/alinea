@@ -7,10 +7,10 @@
     "node": "24.4.0"
   },
   "scripts": {
-    "predev": "docker compose up -d && docker compose up -d --wait db redis minio mailpit && pnpm --dir apps/api db:migrate && bash scripts/ensure-texlive-image.sh && pnpm --dir apps/worker latex-pdf:backfill",
+    "predev": "pnpm --filter @alinea/api-client build && pnpm --filter @alinea/tokens build && bash scripts/dev-docker.sh compose up -d && bash scripts/dev-docker.sh compose up -d --wait db redis minio mailpit && pnpm --dir apps/api db:migrate && bash scripts/ensure-texlive-image.sh && pnpm --dir apps/worker latex-pdf:backfill",
     "dev": "turbo dev",
     "dev:clean": "bash scripts/dev-clean.sh",
-    "dev:down": "docker compose stop",
+    "dev:down": "bash scripts/dev-docker.sh compose stop",
     "build": "turbo build",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",

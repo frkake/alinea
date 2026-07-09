@@ -15,11 +15,21 @@ fi
 
 image="${ALINEA_TEXLIVE_IMAGE:-${image_from_env_file:-alinea-texlive-ja:latest}}"
 
-if docker image inspect "$image" >/dev/null 2>&1; then
+docker_cmd=(bash scripts/dev-docker.sh)
+
+if "${docker_cmd[@]}" image inspect "$image" >/dev/null 2>&1; then
   echo "TeX Live image already exists: $image"
   exit 0
 fi
 
 echo "Building TeX Live image for Japanese PDF builds: $image"
 echo "This is a one-time setup and can take several minutes."
-docker build -f docker/texlive/Dockerfile -t "$image" .
+
+build_args=()
+for proxy_var in HTTP_PROXY HTTPS_PROXY FTP_PROXY NO_PROXY http_proxy https_proxy ftp_proxy no_proxy; do
+  if [[ -n "${!proxy_var:-}" ]]; then
+    build_args+=(--build-arg "$proxy_var")
+  fi
+done
+
+"${docker_cmd[@]}" build "${build_args[@]}" -f docker/texlive/Dockerfile -t "$image" .
