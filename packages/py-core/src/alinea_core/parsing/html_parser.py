@@ -46,7 +46,7 @@ _PATH_UNSAFE = re.compile(r"[^0-9A-Za-z-]")
 _SCRIPT_TAG = re.compile(r"<script\b[^>]*>.*?</script>", re.IGNORECASE | re.DOTALL)
 _EVENT_HANDLER_ATTR = re.compile(r"\s+on[a-zA-Z]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)")
 _JS_URL_ATTR = re.compile(
-    r"\s+(?:href|xlink:href)\s*=\s*(['\"])\s*javascript:[\s\S]*?\1", re.IGNORECASE
+    r"\s+(?:href|src|xlink:href)\s*=\s*(['\"])\s*javascript:[\s\S]*?\1", re.IGNORECASE
 )
 
 # reference_entry 構造化(plans/05 §4.2.1)。
@@ -120,8 +120,11 @@ def _classes(node: LexborNode) -> frozenset[str]:
 
 
 def _safe_inline_figure_html(html: str | None) -> str | None:
-    """arXiv HTML 内の inline SVG 図を本文表示用に最小限サニタイズして保持する。"""
-    if not html or "<svg" not in html.lower():
+    """arXiv HTML 内の複合図を本文表示用に最小限サニタイズして保持する。"""
+    if not html:
+        return None
+    lowered = html.lower()
+    if "<svg" not in lowered and "<img" not in lowered:
         return None
     cleaned = _SCRIPT_TAG.sub("", html)
     cleaned = _EVENT_HANDLER_ATTR.sub("", cleaned)
@@ -442,12 +445,19 @@ class _ArxivHtmlParser:
         return _merge_text(inlines), number
 
     def _figure(self, node: LexborNode) -> Block:
+        imgs = list(node.css("img"))
         img = node.css_first("img.ltx_graphics") or node.css_first("img")
         src = (img.attributes.get("src") if img is not None else None) or None
-        raw = None
-        if src is None:
+        visual = None
+        if len(imgs) > 1:
             visual = node.css_first(".ltx_flex_figure") or node.css_first("svg")
-            raw = _safe_inline_figure_html(visual.html if visual is not None else None)
+            if visual is None:
+                visual = node.css_first("table.ltx_tabular") or node.css_first("table")
+        elif src is None:
+            visual = node.css_first(".ltx_flex_figure") or node.css_first("svg")
+        raw = _safe_inline_figure_html(visual.html if visual is not None else None)
+        if raw is not None:
+            src = None
         caption, number = self._caption(node)
         return Block(
             id="",

@@ -287,6 +287,33 @@ def test_inline_svg_figure_raw_is_preserved() -> None:
     assert "chart" in fig.raw
 
 
+def test_composite_svg_figure_prefers_raw_over_first_image_asset() -> None:
+    doc = parse_arxiv_html(
+        """
+        <article class="ltx_document">
+          <section class="ltx_section">
+            <h2 class="ltx_title">Results</h2>
+            <figure id="S1.F1" class="ltx_figure">
+              <svg id="panel" width="120" height="60">
+                <foreignObject><img class="ltx_graphics" src="2607.00001v1/a.png"></foreignObject>
+                <foreignObject><img class="ltx_graphics" src="2607.00001v1/b.png"></foreignObject>
+              </svg>
+              <figcaption class="ltx_caption">
+                <span class="ltx_tag ltx_tag_figure">Figure 1: </span>Composite panel.
+              </figcaption>
+            </figure>
+          </section>
+        </article>
+        """
+    )
+    fig = next(b for b in doc.blocks if b.type == "figure")
+
+    assert fig.asset_key is None
+    assert fig.raw is not None
+    assert "2607.00001v1/a.png" in fig.raw
+    assert "2607.00001v1/b.png" in fig.raw
+
+
 def test_to_document_content_roundtrip() -> None:
     doc = _doc()
     content = doc.to_document_content()

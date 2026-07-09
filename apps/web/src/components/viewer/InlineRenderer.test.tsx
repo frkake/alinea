@@ -66,4 +66,44 @@ describe("InlineRenderer citations", () => {
     expect(onCitationClick).toHaveBeenNthCalledWith(1, "lu2024");
     expect(onCitationClick).toHaveBeenNthCalledWith(2, "wang2023");
   });
+
+  test("cleans unresolved latex labels in source text", () => {
+    const { container } = render(
+      <p>
+        <InlineRenderer
+          inlines={[
+            {
+              t: "text",
+              v: "As described in LABEL:section:\\mineru{}arch, the model has three parts.",
+            },
+          ]}
+        />
+      </p>,
+    );
+
+    expect(container.textContent).toBe(
+      "As described in the referenced section, the model has three parts.",
+    );
+    expect(container.textContent).not.toContain("\\mineru");
+    expect(container.textContent).not.toContain("LABEL:");
+  });
+
+  test("removes duplicated latex command text from parser-flattened algorithm lines", () => {
+    const { container } = render(
+      <p>
+        <InlineRenderer
+          inlines={[
+            {
+              t: "text",
+              v: "Grid size H×WH\\!\\times\\!W, sequence 𝒮\\mathcal{S}, prev←null\\mathrm{prev}\\leftarrow\\texttt{null}",
+            },
+          ]}
+        />
+      </p>,
+    );
+
+    expect(container.textContent).not.toContain("\\mathcal");
+    expect(container.textContent).not.toContain("\\mathrm");
+    expect(container.textContent).not.toContain("\\texttt");
+  });
 });

@@ -3,6 +3,7 @@
 import { Fragment, type ReactNode } from "react";
 import { renderInlineMath } from "@/lib/katex-render";
 import { renderHighlightedText, type PlacedHighlight } from "@/components/viewer/highlight-render";
+import { cleanLatexDisplayText } from "@/components/viewer/latex-display-clean";
 import type { Inline } from "@/components/viewer/document-types";
 
 export interface InlineRendererProps {
@@ -35,14 +36,16 @@ function inlineOffsetLength(inline: Inline): number {
     case "emphasis":
       return (
         inline.children?.reduce((sum, child) => sum + inlineOffsetLength(child), 0) ??
-        (inline.v ?? "").length
+        cleanLatexDisplayText(inline.v ?? "").length
       );
     case "citation":
       return displayCitationLabel(inline).length;
     case "footnote_ref":
       return (inline.v || inline.ref || "").length;
     default:
-      return (inline.v ?? "").length;
+      return inline.t === "text"
+        ? cleanLatexDisplayText(inline.v ?? "").length
+        : (inline.v ?? "").length;
   }
 }
 
@@ -162,7 +165,7 @@ export function InlineRenderer({
     }
 
     if (inline.t === "emphasis") {
-      const text = inline.v ?? "";
+      const text = cleanLatexDisplayText(inline.v ?? "");
       const start = offset;
       offset += text.length;
       const end = offset;
@@ -187,7 +190,7 @@ export function InlineRenderer({
     const end = offset;
 
     if (inline.t === "text") {
-      const text = inline.v ?? "";
+      const text = cleanLatexDisplayText(inline.v ?? "");
       if (highlights.length === 0 && !searchQuery) {
         return <Fragment key={key}>{text}</Fragment>;
       }

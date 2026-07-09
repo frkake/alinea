@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import re
 from typing import Any, cast
 
@@ -106,6 +108,21 @@ async def resolve_accessible_revision(
 
 def _as_content(revision: DocumentRevision) -> DocumentContent:
     return DocumentContent.model_validate(revision.content)
+
+
+def _document_etag(revision: DocumentRevision, section_id: str | None) -> str:
+    payload = json.dumps(
+        revision.content,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    digest = hashlib.sha256(payload).hexdigest()[:16]
+    parts = [str(revision.id)]
+    if section_id:
+        parts.append(section_id)
+    parts.append(digest)
+    return f'"{":".join(parts)}"'
 
 
 def _find_section(content: DocumentContent, section_id: str) -> Section | None:
@@ -822,7 +839,7 @@ async def get_document(
     section_id: str | None = Query(default=None),
 ) -> Response:
     revision, _paper = await resolve_accessible_revision(db, revision_id, user)
-    etag = f'"{revision_id}:{section_id}"' if section_id else f'"{revision_id}"'
+    etag = _document_etag(revision, section_id)
     if request.headers.get("if-none-match") == etag:
         return Response(
             status_code=304, headers={"ETag": etag, "Cache-Control": "private, max-age=0"}

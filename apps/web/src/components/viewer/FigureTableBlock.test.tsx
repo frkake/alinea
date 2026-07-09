@@ -47,6 +47,29 @@ describe("FigureTableBlock", () => {
     expect(container.querySelector(".katex")).not.toBeNull();
   });
 
+  test("cleans itemize and custom highlight commands inside latex table cells", () => {
+    const block: DocBlock = {
+      id: "blk-table",
+      type: "table",
+      number: "1",
+      raw: String.raw`\begin{tabularx}{\linewidth}{X}
+        \textbf{Chain of ideas}:
+        \begin{itemize}[nosep]
+          \item $I_{-1}$~\citep{paper2024}: improves \mybox{red!15}{idea generation}.
+        \end{itemize} \\
+      \end{tabularx}`,
+      caption: [{ t: "text", v: "Example." }],
+    };
+    const { container } = render(<FigureTableBlock block={block} />);
+
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(container.textContent).toContain("Chain of ideas");
+    expect(container.textContent).toContain("idea generation");
+    expect(container.textContent).not.toContain("\\begin");
+    expect(container.textContent).not.toContain("\\mybox");
+    expect(container.textContent).not.toContain("\\citep");
+  });
+
   test("renders inline SVG figure raw content when no asset URL exists", () => {
     const block: DocBlock = {
       id: "blk-svg",
@@ -58,6 +81,48 @@ describe("FigureTableBlock", () => {
     render(<FigureTableBlock block={block} />);
     expect(screen.getByRole("img", { name: "図3" })).toContainHTML("<svg");
     expect(screen.getByText("Inline chart.")).toBeInTheDocument();
+  });
+
+  test("renders a latex tabular embedded in a figure block", () => {
+    const block: DocBlock = {
+      id: "blk-fig-table",
+      type: "figure",
+      number: "5",
+      raw: "\\begin{tabular}{c} User - Objective \\\\ Generate pytest tests \\\\ \\end{tabular}",
+      caption: [{ t: "text", v: "Workflow example." }],
+    };
+    render(<FigureTableBlock block={block} />);
+
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(screen.getByText("User - Objective")).toBeInTheDocument();
+    expect(screen.getByText("Generate pytest tests")).toBeInTheDocument();
+  });
+
+  test("rewrites arxiv relative image sources inside raw composite figures", () => {
+    const block: DocBlock = {
+      id: "blk-svg",
+      type: "figure",
+      number: "3",
+      raw: '<svg><foreignObject><img src="2607.05247v1/figures/overview/cube_render_grid.png"></foreignObject></svg>',
+      caption: [{ t: "text", v: "Composite chart." }],
+    };
+    const { container } = render(<FigureTableBlock block={block} />);
+    expect(container.querySelector("img")).toHaveAttribute(
+      "src",
+      "https://arxiv.org/html/2607.05247v1/figures/overview/cube_render_grid.png",
+    );
+  });
+
+  test("rewrites stored asset keys inside raw composite figures", () => {
+    const block: DocBlock = {
+      id: "blk-svg",
+      type: "figure",
+      number: "3",
+      raw: '<svg><foreignObject><img src="figures/paper/rev/block.png"></foreignObject></svg>',
+      caption: [{ t: "text", v: "Composite chart." }],
+    };
+    const { container } = render(<FigureTableBlock block={block} />);
+    expect(container.querySelector("img")?.getAttribute("src")).toMatch(/^\/api\/assets\//);
   });
 
   test("uses the translated caption as the primary caption when a translated unit exists", () => {

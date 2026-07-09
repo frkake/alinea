@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import copy
 from collections.abc import AsyncIterator
 
 import pytest_asyncio
@@ -25,6 +26,7 @@ from alinea_core.db.models import (
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 
 class Seeded:
@@ -157,11 +159,14 @@ async def test_viewer_forbidden_for_other_user(
 # ---------------------------------------------------------------------------
 # §6.3 document(ETag / 304)
 # ---------------------------------------------------------------------------
-async def test_document_etag_roundtrip(auth_client: AsyncClient, seeded: Seeded) -> None:
+async def test_document_etag_roundtrip(
+    auth_client: AsyncClient, seeded: Seeded, db_session: AsyncSession
+) -> None:
     r = await auth_client.get(f"/api/revisions/{seeded.revision_id}/document")
     assert r.status_code == 200, r.text
     etag = r.headers.get("ETag")
-    assert etag == f'"{seeded.revision_id}"'
+    assert etag is not None
+    assert etag.startswith(f'"{seeded.revision_id}:')
     assert r.json()["revision_id"] == seeded.revision_id
     assert len(r.json()["sections"]) >= 1
 
@@ -170,12 +175,26 @@ async def test_document_etag_roundtrip(auth_client: AsyncClient, seeded: Seeded)
     )
     assert r2.status_code == 304
 
+    revision = await db_session.get(DocumentRevision, seeded.revision_id)
+    assert revision is not None
+    updated = copy.deepcopy(revision.content)
+    updated["sections"][0]["blocks"][0]["inlines"][0]["v"] = "Updated source text"
+    revision.content = updated
+    flag_modified(revision, "content")
+    await db_session.commit()
+
+    r_changed = await auth_client.get(
+        f"/api/revisions/{seeded.revision_id}/document", headers={"If-None-Match": etag}
+    )
+    assert r_changed.status_code == 200
+    assert r_changed.headers["ETag"] != etag
+
     # section_id で部分取得。
     r3 = await auth_client.get(
         f"/api/revisions/{seeded.revision_id}/document", params={"section_id": "sec-2"}
     )
     assert r3.status_code == 200
-    assert r3.headers["ETag"] == f'"{seeded.revision_id}:sec-2"'
+    assert r3.headers["ETag"].startswith(f'"{seeded.revision_id}:sec-2:')
     assert len(r3.json()["sections"]) == 1
     assert r3.json()["sections"][0]["id"] == "sec-2"
 

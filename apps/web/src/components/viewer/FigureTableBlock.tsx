@@ -5,6 +5,7 @@ import type { TranslationUnitItem } from "@alinea/api-client";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 import { TranslationInlineContent, hasTranslatedText } from "@/components/viewer/translation-content";
 import { renderInlineMath } from "@/lib/katex-render";
+import { cleanLatexDisplayTextOutsideMath } from "@/components/viewer/latex-display-clean";
 import type { DocBlock } from "@/components/viewer/document-types";
 
 interface TableCell {
@@ -63,41 +64,13 @@ function unwrapLatexCommands(value: string): string {
   return next;
 }
 
-function replaceLatexSymbols(value: string): string {
-  return value
-    .replace(/\\pm\b/g, "±")
-    .replace(/\\mp\b/g, "∓")
-    .replace(/\\times\b/g, "×")
-    .replace(/\\cdot\b/g, "·")
-    .replace(/\\leq?\b/g, "≤")
-    .replace(/\\geq?\b/g, "≥")
-    .replace(/\\neq\b/g, "≠")
-    .replace(/\\approx\b/g, "≈")
-    .replace(/\\infty\b/g, "∞")
-    .replace(/\\uparrow\b/g, "↑")
-    .replace(/\\downarrow\b/g, "↓")
-    .replace(/\\rightarrow\b|\\to\b/g, "→")
-    .replace(/\\leftarrow\b/g, "←")
-    .replace(/\\alpha\b/g, "α")
-    .replace(/\\beta\b/g, "β")
-    .replace(/\\gamma\b/g, "γ")
-    .replace(/\\delta\b/g, "δ")
-    .replace(/\\lambda\b/g, "λ")
-    .replace(/\\mu\b/g, "μ")
-    .replace(/\\pi\b/g, "π")
-    .replace(/\\sigma\b/g, "σ")
-    .replace(/\\theta\b/g, "θ");
-}
-
 function cleanLatexCell(value: string): string {
-  return replaceLatexSymbols(unwrapLatexCommands(value))
+  const structural = unwrapLatexCommands(value)
     .replace(/\\(?:multicolumn|multirow)\{[^{}]*\}\{[^{}]*\}\{([^{}]*)\}/g, "$1")
     .replace(/\\(?:hline|toprule|midrule|bottomrule|cmidrule)(?:\([^)]*\))?(?:\{[^{}]*\})?/g, "")
     .replace(/\\(?:addlinespace|smallskip|medskip|bigskip)\b/g, "")
-    .replace(/\\[%&_#$]/g, (m) => m.slice(1))
-    .replace(/\\textbackslash\b/g, "\\")
-    .replace(/\\,/g, " ")
-    .replace(/~/g, " ")
+    .replace(/\\textbackslash\b/g, "\\");
+  return cleanLatexDisplayTextOutsideMath(structural)
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -136,9 +109,42 @@ function parseTable(raw: string | null | undefined): TableRows | null {
   return parseHtmlTable(raw) ?? parseLatexTable(raw);
 }
 
+function encodeAssetId(storageKey: string): string {
+  const bytes = new TextEncoder().encode(storageKey);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function normalizeFigureHtmlSrc(src: string): string {
+  const trimmed = src.trim();
+  if (
+    !trimmed ||
+    trimmed.startsWith("data:") ||
+    trimmed.startsWith("http://") ||
+    trimmed.startsWith("https://") ||
+    trimmed.startsWith("/api/assets/")
+  ) {
+    return src;
+  }
+  if (/^(?:figures|renders|thumbnails)\//.test(trimmed)) {
+    return `/api/assets/${encodeAssetId(trimmed)}`;
+  }
+  if (/^\d{4}\.\d{4,5}v\d+\//.test(trimmed)) {
+    return `https://arxiv.org/html/${trimmed}`;
+  }
+  if (trimmed.startsWith("/html/")) {
+    return `https://arxiv.org${trimmed}`;
+  }
+  return src;
+}
+
 function renderableFigureHtml(raw: string | null | undefined): string | null {
-  if (!raw || !/<svg[\s>]/i.test(raw)) return null;
-  return raw;
+  if (!raw || !/(<svg[\s>]|<img[\s>])/i.test(raw)) return null;
+  return raw.replace(
+    /\bsrc\s*=\s*(["'])([^"']+)\1/gi,
+    (_match, quote: string, src: string) => `src=${quote}${normalizeFigureHtmlSrc(src)}${quote}`,
+  );
 }
 
 function looksLikeUndelimitedMath(text: string): boolean {
@@ -225,7 +231,7 @@ export function FigureTableBlock({
   onCitationClick,
   onRefClick,
 }: FigureTableBlockProps) {
-  const rows = block.type === "table" ? parseTable(block.raw) : null;
+  const rows = parseTable(block.raw);
   const figureHtml = block.type === "figure" && !block.asset_url ? renderableFigureHtml(block.raw) : null;
   const hasCaption = (block.caption ?? []).length > 0;
   const hasTranslation = showTranslatedCaption && hasTranslatedText(unit);
@@ -234,6 +240,7 @@ export function FigureTableBlock({
   return (
     <figure
       data-block-id={block.id}
+      data-block-type={block.type}
       style={{
         margin: "20px 0",
         padding: "12px 14px",
