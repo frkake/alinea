@@ -7,6 +7,7 @@ import gzip
 import io
 import multiprocessing as mp
 import tarfile
+import threading
 from collections.abc import AsyncIterator, Awaitable
 from types import SimpleNamespace
 from typing import Any
@@ -660,6 +661,72 @@ async def test_external_cancel_wins_race_with_enclosing_isolated_timeout(
 
     assert caught.value.args == ("external cancellation",)
     assert {child.pid for child in mp.active_children()} <= existing_children
+
+
+@pytest.mark.parametrize(
+    ("supervisor_failure", "expected_warnings"),
+    [
+        (False, []),
+        (
+            True,
+            [
+                (
+                    "isolated_worker_cancellation_cleanup_failed",
+                    {
+                        "code": "conversion_lifecycle",
+                        "error_type": "FigureAssetError",
+                    },
+                )
+            ],
+        ),
+    ],
+    ids=["normal-cancellation", "lifecycle-failure"],
+)
+async def test_isolated_cancellation_logs_drained_supervisor_failure_only(
+    monkeypatch: pytest.MonkeyPatch,
+    supervisor_failure: bool,
+    expected_warnings: list[tuple[str, dict[str, str]]],
+) -> None:
+    class RecordingLog:
+        def __init__(self) -> None:
+            self.warnings: list[tuple[str, dict[str, str]]] = []
+
+        def warning(self, event: str, **fields: str) -> None:
+            self.warnings.append((event, fields))
+
+    started = threading.Event()
+
+    def supervisor(
+        *_args: Any,
+        cancellation_event: threading.Event,
+        **_kwargs: Any,
+    ) -> object:
+        started.set()
+        cancellation_event.wait(timeout=1.0)
+        if supervisor_failure:
+            raise FigureAssetError(
+                "conversion_lifecycle",
+                "isolated worker could not be reaped",
+            )
+        return figure_assets._CANCELLED_ISOLATED_RESULT
+
+    recording_log = RecordingLog()
+    monkeypatch.setattr(figure_assets, "_run_isolated_worker", supervisor)
+    monkeypatch.setattr(figure_assets, "log", recording_log, raising=False)
+    task = asyncio.create_task(
+        figure_assets.isolated_figure_asset_payload(
+            SVG_BYTES,
+            source_name="figure.svg",
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 1.0)
+    task.cancel("external cancellation")
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+
+    assert caught.value.args == ("external cancellation",)
+    assert recording_log.warnings == expected_warnings
 
 
 @pytest.mark.parametrize(
@@ -1834,6 +1901,60 @@ async def test_staged_cleanup_deadline_cancels_and_drains_hanging_delete(
     assert completed_within_deadline is True
     assert storage.cancelled is True
     assert storage.cleanup_task is not None and storage.cleanup_task.done()
+
+
+@pytest.mark.parametrize(
+    ("terminal_state", "expected_error_type"),
+    [
+        ("error", "CleanupTerminalError"),
+        ("cancelled", "TimeoutError"),
+        ("success", "TimeoutError"),
+    ],
+)
+async def test_staged_cleanup_grace_preserves_only_real_terminal_error(
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_state: str,
+    expected_error_type: str,
+) -> None:
+    class CleanupTerminalError(RuntimeError):
+        pass
+
+    class TerminalStorage:
+        assets_bucket = "assets"
+
+        async def delete_many(self, _bucket: str, _keys: Any) -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError as exc:
+                if terminal_state == "error":
+                    raise CleanupTerminalError("delete failed during cancellation") from exc
+                if terminal_state == "success":
+                    return
+                raise
+
+    class RecordingLog:
+        def __init__(self) -> None:
+            self.warnings: list[tuple[str, dict[str, Any]]] = []
+
+        def warning(self, event: str, **fields: Any) -> None:
+            self.warnings.append((event, fields))
+
+    monkeypatch.setattr(worker_pipeline, "REVISION_ASSET_CLEANUP_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(worker_pipeline, "REVISION_ASSET_CLEANUP_CANCEL_GRACE_S", 0.05)
+    recording_log = RecordingLog()
+    monkeypatch.setattr(worker_pipeline, "log", recording_log)
+    original = RuntimeError("publication failed")
+
+    with pytest.raises(RuntimeError) as caught:
+        async with worker_pipeline._staged_revision_assets(TerminalStorage()) as uploaded_keys:
+            uploaded_keys.append("figures/test/revision/one.png")
+            raise original
+
+    assert caught.value is original
+    assert (
+        "revision_asset_cleanup_failed",
+        {"error_type": expected_error_type, "key_count": 1},
+    ) in recording_log.warnings
 
 
 async def test_external_cancel_wins_race_with_staged_cleanup_timeout() -> None:

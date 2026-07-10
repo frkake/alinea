@@ -28,9 +28,12 @@ from urllib.parse import SplitResult, unquote, urljoin, urlsplit, urlunsplit
 
 import fitz
 import httpx
+import structlog
 from alinea_core.ingest.thumbnail import render_thumbnail as _render_thumbnail_trusted
 from PIL import Image, UnidentifiedImageError
 from selectolax.lexbor import LexborHTMLParser
+
+log = structlog.get_logger("alinea.worker.figure_assets")
 
 SUPPORTED_EXTENSIONS = (
     ".pdf",
@@ -1513,7 +1516,9 @@ def _run_isolated_worker(
     raise FigureAssetError(crash_code, "isolated worker returned invalid data")
 
 
-async def _drain_isolated_thread_task(worker_task: asyncio.Task[object]) -> None:
+async def _drain_isolated_thread_task(
+    worker_task: asyncio.Task[object],
+) -> BaseException | None:
     """Retrieve a cooperative supervisor task despite repeated caller cancellation."""
 
     while not worker_task.done():
@@ -1523,8 +1528,9 @@ async def _drain_isolated_thread_task(worker_task: asyncio.Task[object]) -> None
             continue
         except BaseException:
             break
-    if not worker_task.cancelled():
-        worker_task.exception()
+    if worker_task.cancelled():
+        return asyncio.CancelledError()
+    return worker_task.exception()
 
 
 async def _run_isolated_worker_async(
@@ -1562,7 +1568,18 @@ async def _run_isolated_worker_async(
         return await asyncio.shield(worker_task)
     except asyncio.CancelledError as original_cancel:
         cancellation_event.set()
-        await _drain_isolated_thread_task(worker_task)
+        supervisor_error = await _drain_isolated_thread_task(worker_task)
+        if supervisor_error is not None:
+            code = (
+                supervisor_error.code
+                if isinstance(supervisor_error, FigureAssetError)
+                else "isolated_supervisor_error"
+            )
+            log.warning(
+                "isolated_worker_cancellation_cleanup_failed",
+                code=code,
+                error_type=type(supervisor_error).__name__,
+            )
         raise original_cancel
 
 

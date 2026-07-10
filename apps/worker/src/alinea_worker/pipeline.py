@@ -355,7 +355,9 @@ async def _drain_revision_cleanup_task(
             continue
 
     if cleanup.done():
-        _revision_cleanup_error(cleanup)
+        cleanup_error = _revision_cleanup_error(cleanup)
+        if cleanup_error is not None:
+            return cleanup_error
     else:
         _track_background_revision_cleanup(cleanup)
     return timeout_error

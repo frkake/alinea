@@ -86,3 +86,17 @@
 - [x] Run `git diff --check`; scan production diff for paper IDs, titles, authors, and source-fragment special cases.
 - [x] Request the same implementation reviewer and resolve all Critical, Important, and Minor findings.
 - [x] Commit the complete reviewed change as one scoped commit and report its hash and clean worktree.
+
+### Task 6: Preserve teardown diagnostics under original exceptions
+
+**Files:**
+
+- Modify: `apps/worker/src/alinea_worker/figure_assets.py`
+- Modify: `apps/worker/src/alinea_worker/pipeline.py`
+- Test: `apps/worker/tests/test_figure_assets.py`
+
+- [x] Add RED cleanup-deadline cases where cancellation produces a real exception, cancellation, or success; require the real exception only in the first case and stable `TimeoutError` in the latter two while preserving the publication error.
+- [x] Return the real terminal cleanup exception after the cancellation grace, but retain the stable cleanup timeout for a canceled or successful task.
+- [x] Add RED isolated-cancellation cases where the supervisor exits normally or raises `FigureAssetError("conversion_lifecycle", ...)`; require the original `CancelledError` in both cases, one structured warning only for the lifecycle failure, and no warning for normal cancellation.
+- [x] Return the drained supervisor exception and log its `code` and `error_type` at the cancellation owner before re-raising the original `CancelledError`.
+- [x] Run focused tests, the full figure test file, Python static checks, web smoke tests, the same quality reviewer, and commit the reviewed follow-up separately.
