@@ -460,8 +460,8 @@ async def test_delete_removes_unreferenced_public_paper_and_storage_objects(
     paper.owner_user_id = None
     paper_id = str(paper.id)
     revision_id = str(revision.id)
-    paper_thumbnail_key = f"thumbnails/{paper_id}/card.webp"
-    retina_thumbnail_key = f"thumbnails/{paper_id}/card@2x.webp"
+    paper_thumbnail_key = f"thumbnails/{paper_id}/{revision_id}/card.webp"
+    retina_thumbnail_key = f"thumbnails/{paper_id}/{revision_id}/card@2x.webp"
     item_thumbnail_key = f"thumbnails/{paper_id}/item.webp"
     figure_key = f"figures/{paper_id}/{revision_id}/fig-1.png"
     source_key = f"sources/{paper_id}/v1/original.pdf"
@@ -626,7 +626,9 @@ async def test_delete_cascades_related_personal_data(
     await factories.make_chat_message(db_session, thread=thread)
     await factories.make_note(db_session, library_item=item)
     await factories.make_annotation(db_session, library_item=item, anchor=anchor)
-    await factories.make_vocab_entry(db_session, user=user, library_item=item, context_anchor=anchor)
+    await factories.make_vocab_entry(
+        db_session, user=user, library_item=item, context_anchor=anchor
+    )
     await factories.make_resource_link(db_session, library_item=item)
     await factories.make_collection(db_session, user=user, entries_of=[item])
     article = await factories.make_article(db_session, library_item=item, with_blocks=True)
@@ -683,7 +685,9 @@ async def test_delete_cascades_related_personal_data(
     assert await _count(db_session, Annotation, Annotation.library_item_id == item_id) == 0
     assert await _count(db_session, VocabEntry, VocabEntry.library_item_id == item_id) == 0
     assert await _count(db_session, ResourceLink, ResourceLink.library_item_id == item_id) == 0
-    assert await _count(db_session, CollectionEntry, CollectionEntry.library_item_id == item_id) == 0
+    assert (
+        await _count(db_session, CollectionEntry, CollectionEntry.library_item_id == item_id) == 0
+    )
     assert await _count(db_session, Article, Article.id == article_id) == 0
     assert await _count(db_session, ArticleBlock, ArticleBlock.article_id == article_id) == 0
     assert await _count(db_session, ReadingSession, ReadingSession.library_item_id == item_id) == 0

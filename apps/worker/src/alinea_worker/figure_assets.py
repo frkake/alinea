@@ -27,6 +27,7 @@ from urllib.parse import SplitResult, unquote, urljoin, urlsplit, urlunsplit
 
 import fitz
 import httpx
+from alinea_core.ingest.thumbnail import render_thumbnail as _render_thumbnail_trusted
 from PIL import Image, UnidentifiedImageError
 from selectolax.lexbor import LexborHTMLParser
 
@@ -42,9 +43,9 @@ SUPPORTED_EXTENSIONS = (
     ".svg",
 )
 MAX_ASSET_BYTES = 32 * 1024 * 1024
-MAX_IMAGE_DIMENSION = 20_000
-MAX_IMAGE_PIXELS = 80_000_000
-MAX_IMAGE_FRAMES = 256
+MAX_IMAGE_DIMENSION = 12_000
+MAX_IMAGE_PIXELS = 25_000_000
+MAX_IMAGE_FRAMES = 128
 MAX_SVG_BYTES = 8 * 1024 * 1024
 MAX_SVG_ELEMENTS = 50_000
 MAX_SVG_DEPTH = 256
@@ -52,7 +53,7 @@ MAX_SVG_TEXT_CHARS = 2_000_000
 MAX_INLINE_SVG_HTML_BYTES = 8 * 1024 * 1024
 MAX_REDIRECTS = 3
 MAX_CONVERTED_BYTES = 32 * 1024 * 1024
-MAX_CONVERSION_MEMORY_BYTES = 768 * 1024 * 1024
+MAX_CONVERSION_MEMORY_BYTES = 512 * 1024 * 1024
 DEFAULT_CONVERSION_TIMEOUT_S = 15.0
 
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
@@ -67,13 +68,32 @@ _CSS_SIMPLE_SELECTOR_RE = re.compile(
     r"(?:(?:\*|[A-Za-z][A-Za-z0-9_-]*)(?:[.#][A-Za-z_][A-Za-z0-9_-]*)*"
     r"|(?:[.#][A-Za-z_][A-Za-z0-9_-]*)+)\Z"
 )
-_SAFE_CSS_VALUE_RE = re.compile(r"[\w\s#.,%+\-'\"/()]*\Z")
+_SAFE_CSS_VALUE_RE = re.compile(r"[\w\s#.,:%+\-'\"/()]*\Z")
 _CSS_DANGEROUS_RE = re.compile(
     r"@import\b|expression\s*\(|(?:behavior|-moz-binding)\s*:|javascript\s*:",
     re.IGNORECASE,
 )
 _SAFE_FRAGMENT_RE = re.compile(r"#[A-Za-z0-9_.:-]+\Z")
+_SAFE_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_.:-]+\Z")
+_SAFE_CLASS_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*\Z")
+_SAFE_ROLE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]*\Z")
+_SVG_TRANSFORM_FUNCTION_RE = re.compile(
+    r"(?P<name>matrix|translate|scale|rotate|skewX|skewY)\s*"
+    r"\((?P<arguments>[+\-0-9.eE,\s]+)\)"
+)
+_SVG_NUMBER_TOKEN_RE = re.compile(
+    r"(?P<number>[-+]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][-+]?\d+)?)"
+    r"(?:%|px|pt|pc|cm|mm|in|em|ex|rem|deg|rad|grad|turn)?\Z",
+    re.IGNORECASE,
+)
+_SVG_PATH_TOKEN_RE = re.compile(
+    r"(?P<command>[MmZzLlHhVvCcSsQqTtAa])"
+    r"|(?P<number>[-+]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][-+]?\d+)?)"
+    r"|(?P<separator>[,\s]+)"
+)
 _SVG_NAMESPACE = "http://www.w3.org/2000/svg"
+_XLINK_NAMESPACE = "http://www.w3.org/1999/xlink"
+_XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace"
 _SVG_ACTIVE_ELEMENTS = frozenset(
     {
         "animate",
@@ -93,6 +113,7 @@ _SVG_ACTIVE_ELEMENTS = frozenset(
         "video",
     }
 )
+_SVG_ACTIVE_ATTRIBUTES = frozenset({"base", "srcdoc"})
 _INLINE_ACTIVE_ELEMENTS = _SVG_ACTIVE_ELEMENTS | {"img"}
 _SAFE_CSS_FUNCTIONS = frozenset(
     {
@@ -117,16 +138,31 @@ _SAFE_CSS_FUNCTIONS = frozenset(
 )
 _SAFE_STYLE_PROPERTIES = frozenset(
     {
+        "alignment-baseline",
+        "baseline-shift",
+        "clip-path",
+        "clip-rule",
         "color",
+        "color-interpolation",
+        "color-interpolation-filters",
+        "dominant-baseline",
         "display",
         "fill",
         "fill-opacity",
         "fill-rule",
+        "filter",
         "font-family",
         "font-size",
         "font-style",
         "font-weight",
+        "letter-spacing",
+        "marker-end",
+        "marker-mid",
+        "marker-start",
+        "mask",
         "opacity",
+        "paint-order",
+        "shape-rendering",
         "stop-color",
         "stop-opacity",
         "stroke",
@@ -138,9 +174,166 @@ _SAFE_STYLE_PROPERTIES = frozenset(
         "stroke-opacity",
         "stroke-width",
         "text-anchor",
+        "text-decoration",
+        "text-rendering",
+        "transform",
+        "transform-origin",
+        "vector-effect",
         "visibility",
+        "word-spacing",
     }
 )
+_SVG_TRANSFORM_ATTRIBUTES = frozenset({"gradienttransform", "patterntransform", "transform"})
+_SVG_IDENTIFIER_VALUE_ATTRIBUTES = frozenset({"in", "in2", "result"})
+_SVG_ENUM_ATTRIBUTE_VALUES: dict[str, frozenset[str]] = {
+    "filterunits": frozenset({"objectBoundingBox", "userSpaceOnUse"}),
+    "gradientunits": frozenset({"objectBoundingBox", "userSpaceOnUse"}),
+    "lengthadjust": frozenset({"spacing", "spacingAndGlyphs"}),
+    "markerunits": frozenset({"strokeWidth", "userSpaceOnUse"}),
+    "mode": frozenset(
+        {
+            "color",
+            "color-burn",
+            "color-dodge",
+            "darken",
+            "difference",
+            "exclusion",
+            "hard-light",
+            "hue",
+            "lighten",
+            "luminosity",
+            "multiply",
+            "normal",
+            "overlay",
+            "saturation",
+            "screen",
+            "soft-light",
+        }
+    ),
+    "operator": frozenset(
+        {"arithmetic", "atop", "dilate", "erode", "in", "lighter", "out", "over", "xor"}
+    ),
+    "patterncontentunits": frozenset({"objectBoundingBox", "userSpaceOnUse"}),
+    "patternunits": frozenset({"objectBoundingBox", "userSpaceOnUse"}),
+    "primitiveunits": frozenset({"objectBoundingBox", "userSpaceOnUse"}),
+    "spreadmethod": frozenset({"pad", "reflect", "repeat"}),
+    "type": frozenset(
+        {
+            "discrete",
+            "fractalNoise",
+            "gamma",
+            "hueRotate",
+            "identity",
+            "linear",
+            "luminanceToAlpha",
+            "matrix",
+            "saturate",
+            "table",
+            "text/css",
+            "turbulence",
+        }
+    ),
+    "xchannelselector": frozenset({"A", "B", "G", "R"}),
+    "ychannelselector": frozenset({"A", "B", "G", "R"}),
+}
+_SVG_PRESERVE_ASPECT_RATIO_TOKENS = frozenset(
+    {
+        "defer",
+        "meet",
+        "none",
+        "slice",
+        "xMaxYMax",
+        "xMaxYMid",
+        "xMaxYMin",
+        "xMidYMax",
+        "xMidYMid",
+        "xMidYMin",
+        "xMinYMax",
+        "xMinYMid",
+        "xMinYMin",
+    }
+)
+_SVG_GEOMETRY_ATTRIBUTES = frozenset(
+    {
+        "azimuth",
+        "basefrequency",
+        "bias",
+        "by",
+        "cx",
+        "cy",
+        "d",
+        "diffuseconstant",
+        "divisor",
+        "dx",
+        "dy",
+        "elevation",
+        "exponent",
+        "filterunits",
+        "fx",
+        "fy",
+        "gradientunits",
+        "height",
+        "in",
+        "in2",
+        "intercept",
+        "kernelmatrix",
+        "kernelunitlength",
+        "lengthadjust",
+        "limitingconeangle",
+        "markerheight",
+        "markerunits",
+        "markerwidth",
+        "mode",
+        "numoctaves",
+        "offset",
+        "operator",
+        "order",
+        "orient",
+        "pathlength",
+        "patterncontentunits",
+        "patternunits",
+        "points",
+        "preserveaspectratio",
+        "primitiveunits",
+        "r",
+        "radius",
+        "refx",
+        "refy",
+        "result",
+        "rotate",
+        "rx",
+        "ry",
+        "scale",
+        "seed",
+        "slope",
+        "specularconstant",
+        "specularexponent",
+        "spreadmethod",
+        "stddeviation",
+        "surfacescale",
+        "tablevalues",
+        "targetx",
+        "targety",
+        "textlength",
+        "type",
+        "values",
+        "version",
+        "viewbox",
+        "width",
+        "x",
+        "x1",
+        "x2",
+        "xchannelselector",
+        "y",
+        "y1",
+        "y2",
+        "ychannelselector",
+        "z",
+    }
+)
+
+ET.register_namespace("", _SVG_NAMESPACE)
+ET.register_namespace("xlink", _XLINK_NAMESPACE)
 _RASTER_FORMATS: dict[str, tuple[str, str]] = {
     "PNG": ("png", "image/png"),
     "JPEG": ("jpg", "image/jpeg"),
@@ -174,6 +367,14 @@ class FigureAssetPayload:
 
 
 @dataclass(frozen=True)
+class ThumbnailPayload:
+    """Two WebP thumbnail sizes produced by an isolated child."""
+
+    card: bytes
+    retina: bytes
+
+
+@dataclass(frozen=True)
 class ResolvedLatexAsset:
     """The unique archive member selected for a LaTeX figure."""
 
@@ -190,7 +391,7 @@ class ResolvedLatexSource:
 
 
 PostscriptConverter = Callable[[bytes, str], bytes]
-FigurePayloadWorker = Callable[..., FigureAssetPayload]
+IsolatedWorker = Callable[..., object]
 AsyncPayloadLoader = Callable[[bytes, str, str | None], Awaitable[FigureAssetPayload]]
 BeforeRequest = Callable[[], Awaitable[None]]
 
@@ -411,13 +612,13 @@ def _check_input_size(data: bytes) -> None:
         raise FigureAssetError("asset_too_large", "figure payload exceeds the safe byte limit")
 
 
-def validate_image_payload(
+def _validate_image_payload_trusted(
     data: bytes,
     *,
     source_name: str = "",
     content_type: str | None = None,
 ) -> FigureAssetPayload:
-    """Decode a raster fully and derive its format from bytes, not metadata."""
+    """Trusted child/test decoder deriving raster format from bytes."""
 
     del source_name, content_type  # Deliberately untrusted hints.
     _check_input_size(data)
@@ -484,7 +685,11 @@ def _render_document(data: bytes, filetype: str) -> FigureAssetPayload:
         raise FigureAssetError(
             "invalid_figure_document", f"{filetype.upper()} figure could not be rendered"
         ) from exc
-    return validate_image_payload(rendered, source_name="rendered.png", content_type="image/png")
+    return _validate_image_payload_trusted(
+        rendered,
+        source_name="rendered.png",
+        content_type="image/png",
+    )
 
 
 def _is_svg(data: bytes) -> bool:
@@ -511,6 +716,93 @@ def _xml_name(value: str) -> tuple[str | None, str]:
 def _require_internal_fragment(value: str) -> None:
     if _SAFE_FRAGMENT_RE.fullmatch(value.strip()) is None:
         raise FigureAssetError("unsafe_vector", "SVG references must target an internal fragment")
+
+
+def _validate_svg_inert_text(value: str, *, max_chars: int = 65_536) -> None:
+    if len(value) > max_chars or any(
+        (ord(character) < 0x20 and character not in "\t\r\n") or ord(character) == 0x7F
+        for character in value
+    ):
+        raise FigureAssetError("unsafe_vector", "SVG attribute text is not accepted")
+
+
+def _validate_svg_identifier(value: str) -> None:
+    if _SAFE_IDENTIFIER_RE.fullmatch(value.strip()) is None:
+        raise FigureAssetError("unsafe_vector", "SVG identifier is not accepted")
+
+
+def _validate_svg_class_list(value: str) -> None:
+    tokens = value.split()
+    if not tokens or any(_SAFE_CLASS_RE.fullmatch(token) is None for token in tokens):
+        raise FigureAssetError("unsafe_vector", "SVG class list is not accepted")
+
+
+def _validate_svg_role_list(value: str) -> None:
+    tokens = value.split()
+    if not tokens or any(_SAFE_ROLE_RE.fullmatch(token) is None for token in tokens):
+        raise FigureAssetError("unsafe_vector", "SVG role is not accepted")
+
+
+def _validate_svg_transform(value: str) -> None:
+    clean = value.strip()
+    if clean == "none":
+        return
+    position = 0
+    matched = False
+    while position < len(clean):
+        while position < len(clean) and clean[position] in " \t\r\n,":
+            position += 1
+        if position == len(clean):
+            break
+        match = _SVG_TRANSFORM_FUNCTION_RE.match(clean, position)
+        if match is None or not any(character.isdigit() for character in match.group("arguments")):
+            raise FigureAssetError("unsafe_vector", "SVG transform is not accepted")
+        matched = True
+        position = match.end()
+    if not matched:
+        raise FigureAssetError("unsafe_vector", "SVG transform is not accepted")
+
+
+def _validate_svg_geometry(attribute: str, value: str) -> None:
+    _validate_svg_inert_text(value)
+    clean = value.strip()
+    if attribute == "d":
+        position = 0
+        while position < len(clean):
+            match = _SVG_PATH_TOKEN_RE.match(clean, position)
+            if match is None:
+                raise FigureAssetError("unsafe_vector", "SVG path data is not accepted")
+            number = match.group("number")
+            if number is not None and not math.isfinite(float(number)):
+                raise FigureAssetError("unsafe_vector", "SVG path number is not finite")
+            position = match.end()
+        return
+    if attribute in _SVG_IDENTIFIER_VALUE_ATTRIBUTES:
+        _validate_svg_identifier(clean)
+        return
+    if attribute == "preserveaspectratio":
+        tokens = clean.split()
+        if (
+            not tokens
+            or len(tokens) > 3
+            or any(token not in _SVG_PRESERVE_ASPECT_RATIO_TOKENS for token in tokens)
+        ):
+            raise FigureAssetError("unsafe_vector", "SVG aspect ratio is not accepted")
+        return
+    if attribute == "orient" and clean in {"auto", "auto-start-reverse"}:
+        return
+    allowed_values = _SVG_ENUM_ATTRIBUTE_VALUES.get(attribute)
+    if allowed_values is not None:
+        if clean not in allowed_values:
+            raise FigureAssetError("unsafe_vector", "SVG enumeration is not accepted")
+        return
+    tokens = clean.replace(",", " ").replace(";", " ").split()
+    if not tokens:
+        raise FigureAssetError("unsafe_vector", "SVG numeric geometry is not accepted")
+    for token in tokens:
+        match = _SVG_NUMBER_TOKEN_RE.fullmatch(token)
+        if match is None or not math.isfinite(float(match.group("number"))):
+            raise FigureAssetError("unsafe_vector", "SVG numeric geometry is not accepted")
 
 
 def _precheck_svg_css(value: str) -> str:
@@ -592,6 +884,8 @@ def _validate_svg_css(value: str, *, declarations: bool = False) -> None:
             if property_name.strip().casefold() not in _SAFE_STYLE_PROPERTIES:
                 raise FigureAssetError("unsafe_vector", "SVG style property is not accepted")
             _validate_svg_css_value(property_value)
+    else:
+        _validate_svg_css_value(without_comments)
 
     _validate_svg_css_references(without_comments)
 
@@ -708,7 +1002,9 @@ def _parse_limited_svg(text: str) -> ET.Element[str]:
     return root
 
 
-def _validate_svg_document(data: bytes) -> None:
+def _validate_svg_document(data: bytes) -> bytes:
+    """Return a passive, canonical SVG containing only rendering semantics."""
+
     text = _decode_and_precheck_svg(data)
     root = _parse_limited_svg(text)
 
@@ -716,25 +1012,67 @@ def _validate_svg_document(data: bytes) -> None:
     if root_name != "svg" or root_namespace not in {None, _SVG_NAMESPACE}:
         raise FigureAssetError("unsafe_vector", "vector document root is not safe SVG")
 
-    for element in root.iter():
+    elements = list(root.iter())
+    for element in elements:
         namespace, name = _xml_name(str(element.tag))
-        if namespace not in {None, _SVG_NAMESPACE} or name in _SVG_ACTIVE_ELEMENTS:
+        if name in _SVG_ACTIVE_ELEMENTS:
             raise FigureAssetError("unsafe_vector", "SVG contains an active element")
         for raw_attribute, value in element.attrib.items():
             _attribute_namespace, attribute = _xml_name(raw_attribute)
-            if attribute.startswith("on") or attribute == "base":
+            if attribute.startswith("on") or attribute in _SVG_ACTIVE_ATTRIBUTES:
                 raise FigureAssetError("unsafe_vector", "SVG contains an active attribute")
             if attribute in {"href", "src"}:
                 _require_internal_fragment(value)
-            _validate_svg_css(value, declarations=attribute == "style")
+        if namespace not in {None, _SVG_NAMESPACE}:
+            continue
+        for raw_attribute, value in list(element.attrib.items()):
+            attribute_namespace, attribute = _xml_name(raw_attribute)
+            if attribute in {"href", "src"}:
+                if attribute_namespace not in {None, _SVG_NAMESPACE, _XLINK_NAMESPACE}:
+                    del element.attrib[raw_attribute]
+                continue
+            if attribute_namespace not in {None, _SVG_NAMESPACE}:
+                if attribute_namespace == _XML_NAMESPACE and attribute in {"lang", "space"}:
+                    _validate_svg_inert_text(value, max_chars=256)
+                else:
+                    del element.attrib[raw_attribute]
+                continue
+            if attribute == "style":
+                _validate_svg_css(value, declarations=True)
+            elif attribute in _SAFE_STYLE_PROPERTIES:
+                _validate_svg_css(value)
+            elif attribute in _SVG_TRANSFORM_ATTRIBUTES:
+                _validate_svg_transform(value)
+            elif attribute == "id":
+                _validate_svg_identifier(value)
+            elif attribute == "class":
+                _validate_svg_class_list(value)
+            elif attribute == "role":
+                _validate_svg_role_list(value)
+            elif attribute.startswith("aria-"):
+                _validate_svg_inert_text(value, max_chars=4096)
+            elif attribute.startswith("data-"):
+                del element.attrib[raw_attribute]
+            elif attribute in _SVG_GEOMETRY_ATTRIBUTES:
+                _validate_svg_geometry(attribute, value)
+            else:
+                del element.attrib[raw_attribute]
         if name == "style":
             _validate_svg_stylesheet("".join(element.itertext()))
 
+    for parent in elements:
+        for child in list(parent):
+            child_namespace, _child_name = _xml_name(str(child.tag))
+            if child_namespace not in {None, _SVG_NAMESPACE}:
+                parent.remove(child)
+
+    return cast(bytes, ET.tostring(root, encoding="utf-8", short_empty_elements=True))
+
 
 def _render_svg(data: bytes) -> FigureAssetPayload:
-    _validate_svg_document(data)
+    sanitized = _validate_svg_document(data)
     try:
-        return _render_document(data, "svg")
+        return _render_document(sanitized, "svg")
     except FigureAssetError as exc:
         if exc.code in {"image_too_large", "asset_too_large", "unsafe_vector"}:
             raise
@@ -771,12 +1109,12 @@ def extract_inline_svg(raw_html: str) -> bytes:
     return svg_html.encode("utf-8")
 
 
-def inline_svg_payload(raw_html: str) -> FigureAssetPayload:
-    """Extract exactly one inert SVG from author HTML and rasterize it."""
+def _inline_svg_payload_trusted(raw_html: str) -> FigureAssetPayload:
+    """Trusted test helper; production extracts then uses the isolated API."""
 
     try:
         svg_bytes = extract_inline_svg(raw_html)
-        return figure_asset_payload(svg_bytes, source_name="inline.svg")
+        return _figure_asset_payload_trusted(svg_bytes, source_name="inline.svg")
     except FigureAssetError as exc:
         if exc.code in {"asset_too_large", "image_too_large"}:
             raise
@@ -802,7 +1140,7 @@ def _normalize_raster_to_png(payload: FigureAssetPayload) -> FigureAssetPayload:
         raise FigureAssetError(
             "conversion_failed", "converted figure could not be normalized to PNG"
         ) from exc
-    return validate_image_payload(
+    return _validate_image_payload_trusted(
         output.getvalue(), source_name="converted.png", content_type="image/png"
     )
 
@@ -827,7 +1165,7 @@ def _postscript_payload(
         code = "conversion_failed" if converter is not None else "conversion_unavailable"
         raise FigureAssetError(code, "PostScript raster conversion is unavailable") from exc
     try:
-        payload = validate_image_payload(
+        payload = _validate_image_payload_trusted(
             converted, source_name=f"converted.{source_format}", content_type="image/png"
         )
         return _normalize_raster_to_png(payload)
@@ -839,14 +1177,14 @@ def _postscript_payload(
         ) from exc
 
 
-def figure_asset_payload(
+def _figure_asset_payload_trusted(
     data: bytes,
     *,
     source_name: str,
     content_type: str | None = None,
     postscript_converter: PostscriptConverter | None = None,
 ) -> FigureAssetPayload:
-    """Convert a supported figure into a validated browser-display payload."""
+    """Trusted child/test decoder; production must use the async isolated API."""
 
     _check_input_size(data)
     normalized_name = source_name.split("?", 1)[0]
@@ -854,7 +1192,11 @@ def figure_asset_payload(
     normalized_content_type = (content_type or "").split(";", 1)[0].strip().lower()
     stripped = data[:1024].lstrip()
     if _is_supported_raster(data):
-        payload = validate_image_payload(data, source_name=source_name, content_type=content_type)
+        payload = _validate_image_payload_trusted(
+            data,
+            source_name=source_name,
+            content_type=content_type,
+        )
     elif stripped.startswith(b"%PDF-"):
         payload = _render_document(data, "pdf")
     elif _is_svg(data) or suffix == ".svg" or normalized_content_type == "image/svg+xml":
@@ -863,8 +1205,27 @@ def figure_asset_payload(
         source_format = "eps" if suffix == ".eps" or b"EPSF" in stripped[:128] else "ps"
         payload = _postscript_payload(data, source_format, postscript_converter)
     else:
-        payload = validate_image_payload(data, source_name=source_name, content_type=content_type)
+        raise FigureAssetError(
+            "unsupported_figure_format", "figure magic and declared format are unsupported"
+        )
     return replace(payload, source_size=len(data))
+
+
+def _thumbnail_payload_trusted(
+    data: bytes,
+    *,
+    source_name: str,
+    content_type: str | None = None,
+) -> ThumbnailPayload:
+    """Trusted child-only thumbnail decoder and renderer."""
+
+    validated = _validate_image_payload_trusted(
+        data,
+        source_name=source_name,
+        content_type=content_type,
+    )
+    card, retina = _render_thumbnail_trusted(validated.content)
+    return ThumbnailPayload(card=card, retina=retina)
 
 
 def conversion_requires_isolation(
@@ -919,24 +1280,29 @@ def _apply_conversion_resource_limits(timeout_s: float, max_output_bytes: int) -
     _set_child_rlimit(resource.RLIMIT_NOFILE, 64, 64)
 
 
-def _isolated_conversion_entry(
+def _isolated_worker_entry(
     connection: Connection,
     data: bytes,
     source_name: str,
     content_type: str | None,
     timeout_s: float,
     max_output_bytes: int,
-    worker: FigurePayloadWorker,
+    worker: IsolatedWorker,
 ) -> None:
     try:
         _apply_conversion_resource_limits(timeout_s, max_output_bytes)
-        payload = worker(data, source_name=source_name, content_type=content_type)
-        if not isinstance(payload, FigureAssetPayload):
+        result = worker(data, source_name=source_name, content_type=content_type)
+        if isinstance(result, FigureAssetPayload):
+            output_size = len(result.content)
+        elif isinstance(result, ThumbnailPayload):
+            output_size = len(result.card) + len(result.retina)
+        else:
             connection.send(("crash",))
-        elif len(payload.content) > max_output_bytes:
+            return
+        if output_size > max_output_bytes:
             connection.send(("oversize",))
         else:
-            connection.send(("ok", payload))
+            connection.send(("ok", result))
     except FigureAssetError as exc:
         connection.send(("figure_error", exc.code))
     except BaseException:
@@ -948,7 +1314,9 @@ def _isolated_conversion_entry(
         connection.close()
 
 
-def _terminate_and_reap(process: Any) -> None:
+def _terminate_and_reap(process: Any, *, failure_code: str) -> None:
+    """Stop and reap a disposable child or report a stable lifecycle failure."""
+
     try:
         if process.is_alive():
             process.terminate()
@@ -956,25 +1324,38 @@ def _terminate_and_reap(process: Any) -> None:
         if process.is_alive():
             process.kill()
             process.join(timeout=0.5)
-        elif process.exitcode is None:
+        if process.is_alive():
+            raise FigureAssetError(failure_code, "isolated worker could not be reaped")
+        if process.exitcode is None:
             process.join(timeout=0.5)
+            if process.exitcode is None:
+                raise FigureAssetError(failure_code, "isolated worker lifecycle is incomplete")
     except (AssertionError, ValueError):
         # A spawn/pickle failure can leave a Process object that never started.
         return
 
+    close = getattr(process, "close", None)
+    if callable(close):
+        close()
 
-def _run_isolated_conversion(
+
+def _run_isolated_worker(
     data: bytes,
     source_name: str,
     content_type: str | None,
     timeout_s: float,
     max_output_bytes: int,
-    worker: FigurePayloadWorker,
-) -> FigureAssetPayload:
+    worker: IsolatedWorker,
+    *,
+    timeout_code: str,
+    crash_code: str,
+    oversize_code: str,
+    lifecycle_code: str,
+) -> object:
     context = mp.get_context("spawn")
     receive_connection, send_connection = context.Pipe(duplex=False)
     process = context.Process(
-        target=_isolated_conversion_entry,
+        target=_isolated_worker_entry,
         args=(
             send_connection,
             data,
@@ -1015,23 +1396,25 @@ def _run_isolated_conversion(
                         message = received
                 break
     except Exception as exc:
-        raise FigureAssetError("conversion_crashed", "figure conversion could not start") from exc
+        raise FigureAssetError(crash_code, "isolated worker could not start") from exc
     finally:
-        _terminate_and_reap(process)
-        receive_connection.close()
-        send_connection.close()
+        try:
+            _terminate_and_reap(process, failure_code=lifecycle_code)
+        finally:
+            receive_connection.close()
+            send_connection.close()
 
     if timed_out:
-        raise FigureAssetError("conversion_timeout", "figure conversion deadline was exceeded")
+        raise FigureAssetError(timeout_code, "isolated worker deadline was exceeded")
     if not message or message[0] == "crash":
-        raise FigureAssetError("conversion_crashed", "figure conversion process failed")
+        raise FigureAssetError(crash_code, "isolated worker process failed")
     if message[0] == "oversize":
-        raise FigureAssetError("conversion_oversize", "converted figure exceeds the byte limit")
+        raise FigureAssetError(oversize_code, "isolated worker output exceeds the byte limit")
     if message[0] == "figure_error" and len(message) == 2 and isinstance(message[1], str):
-        raise FigureAssetError(message[1], "figure conversion rejected the input")
-    if message[0] == "ok" and len(message) == 2 and isinstance(message[1], FigureAssetPayload):
+        raise FigureAssetError(message[1], "isolated worker rejected the input")
+    if message[0] == "ok" and len(message) == 2:
         return message[1]
-    raise FigureAssetError("conversion_crashed", "figure conversion returned invalid data")
+    raise FigureAssetError(crash_code, "isolated worker returned invalid data")
 
 
 async def isolated_figure_asset_payload(
@@ -1041,7 +1424,7 @@ async def isolated_figure_asset_payload(
     content_type: str | None = None,
     timeout_s: float = DEFAULT_CONVERSION_TIMEOUT_S,
     max_output_bytes: int = MAX_CONVERTED_BYTES,
-    worker: FigurePayloadWorker = figure_asset_payload,
+    worker: IsolatedWorker = _figure_asset_payload_trusted,
 ) -> FigureAssetPayload:
     """Materialize a document figure in a bounded, disposable subprocess."""
 
@@ -1050,15 +1433,56 @@ async def isolated_figure_asset_payload(
         raise FigureAssetError("conversion_timeout", "figure conversion deadline is invalid")
     if max_output_bytes <= 0:
         raise FigureAssetError("conversion_oversize", "converted figure byte limit is invalid")
-    return await asyncio.to_thread(
-        _run_isolated_conversion,
+    result = await asyncio.to_thread(
+        _run_isolated_worker,
         data,
         source_name,
         content_type,
         timeout_s,
         min(max_output_bytes, MAX_CONVERTED_BYTES),
         worker,
+        timeout_code="conversion_timeout",
+        crash_code="conversion_crashed",
+        oversize_code="conversion_oversize",
+        lifecycle_code="conversion_lifecycle",
     )
+    if isinstance(result, FigureAssetPayload):
+        return result
+    raise FigureAssetError("conversion_crashed", "figure conversion returned invalid data")
+
+
+async def isolated_thumbnail_payload(
+    data: bytes,
+    *,
+    source_name: str = "thumbnail-source.png",
+    content_type: str | None = "image/png",
+    timeout_s: float = DEFAULT_CONVERSION_TIMEOUT_S,
+    max_output_bytes: int = MAX_CONVERTED_BYTES,
+    worker: IsolatedWorker = _thumbnail_payload_trusted,
+) -> ThumbnailPayload:
+    """Decode and render thumbnails in a bounded, disposable subprocess."""
+
+    _check_input_size(data)
+    if not math.isfinite(timeout_s) or timeout_s <= 0:
+        raise FigureAssetError("thumbnail_timeout", "thumbnail deadline is invalid")
+    if max_output_bytes <= 0:
+        raise FigureAssetError("thumbnail_oversize", "thumbnail byte limit is invalid")
+    result = await asyncio.to_thread(
+        _run_isolated_worker,
+        data,
+        source_name,
+        content_type,
+        timeout_s,
+        min(max_output_bytes, MAX_CONVERTED_BYTES),
+        worker,
+        timeout_code="thumbnail_timeout",
+        crash_code="thumbnail_crashed",
+        oversize_code="thumbnail_oversize",
+        lifecycle_code="thumbnail_lifecycle",
+    )
+    if isinstance(result, ThumbnailPayload):
+        return result
+    raise FigureAssetError("thumbnail_crashed", "thumbnail worker returned invalid data")
 
 
 def resolve_latex_source(
@@ -1092,7 +1516,7 @@ def resolve_latex_source(
     return ResolvedLatexSource(source_name, binary_files[source_name])
 
 
-def resolve_latex_asset(
+def _resolve_latex_asset_trusted(
     *,
     binary_files: Mapping[str, bytes],
     requested: str,
@@ -1100,7 +1524,7 @@ def resolve_latex_asset(
     graphicspaths: Sequence[str],
     postscript_converter: PostscriptConverter | None = None,
 ) -> ResolvedLatexAsset:
-    """Resolve exactly one safe archive member and validate its display payload."""
+    """Trusted test helper resolving and decoding one archive member synchronously."""
 
     source = resolve_latex_source(
         binary_files=binary_files,
@@ -1108,7 +1532,7 @@ def resolve_latex_asset(
         main_tex_name=main_tex_name,
         graphicspaths=graphicspaths,
     )
-    payload = figure_asset_payload(
+    payload = _figure_asset_payload_trusted(
         source.content,
         source_name=source.source_name,
         postscript_converter=postscript_converter,
@@ -1279,7 +1703,7 @@ async def fetch_html_asset(
                 content_type = response.headers.get("content-type")
                 if payload_loader is not None:
                     return await payload_loader(content, source_name, content_type)
-                return figure_asset_payload(
+                return await isolated_figure_asset_payload(
                     content,
                     source_name=source_name,
                     content_type=content_type,
@@ -1311,12 +1735,9 @@ __all__ = [
     "extract_graphicspaths",
     "extract_inline_svg",
     "fetch_html_asset",
-    "figure_asset_payload",
     "html_asset_url",
-    "inline_svg_payload",
     "isolated_figure_asset_payload",
+    "isolated_thumbnail_payload",
     "normalize_requested_asset",
-    "resolve_latex_asset",
     "resolve_latex_source",
-    "validate_image_payload",
 ]

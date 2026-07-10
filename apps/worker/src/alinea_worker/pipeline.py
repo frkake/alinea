@@ -16,9 +16,14 @@ ID を文字列で保持し、読み書きの直前に ``session.get`` で都度
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import hashlib
 import json
+import math
+import time
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -50,7 +55,7 @@ from alinea_core.document.plaintext import block_to_plain
 from alinea_core.ingest import assess_document_completeness, joblog, progress
 from alinea_core.ingest.bib_estimate import estimate_bibliography
 from alinea_core.ingest.reanchor import ReanchorStats, reanchor_paper
-from alinea_core.ingest.thumbnail import render_thumbnail, select_thumbnail_figure
+from alinea_core.ingest.thumbnail import select_thumbnail_figure
 from alinea_core.jobs.store import JobStore
 from alinea_core.parsing.html_parser import (
     PARSER_VERSION as HTML_PARSER_VERSION,
@@ -87,13 +92,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from alinea_worker import notify
 from alinea_worker.figure_assets import (
+    DEFAULT_CONVERSION_TIMEOUT_S,
     FigureAssetError,
     FigureAssetPayload,
-    conversion_requires_isolation,
     extract_inline_svg,
     fetch_html_asset,
-    figure_asset_payload,
     isolated_figure_asset_payload,
+    isolated_thumbnail_payload,
     resolve_latex_source,
 )
 from alinea_worker.latex_pdf import LatexPdfBuildError, build_latex_translation_pdfs_if_ready
@@ -142,6 +147,57 @@ SUMMARY_SYSTEM_PROMPT = (
 _MAX_SUGGESTED_TAGS = 5
 MAX_FIGURES_PER_DOCUMENT = 200
 MAX_TOTAL_FIGURE_MATERIALIZED_BYTES = 128 * 1024 * 1024
+# The arXiv politeness throttle is 3.1 s/request; leave enough bounded wall time
+# for the full 200-figure document cap plus conversion overhead.
+MAX_DOCUMENT_MATERIALIZATION_SECONDS = 660.0
+MAX_HTML_ASSET_FETCH_SECONDS = 45.0
+_INLINE_RESOURCE_FAILURE_CODES = frozenset(
+    {
+        "asset_too_large",
+        "conversion_crashed",
+        "conversion_lifecycle",
+        "conversion_oversize",
+        "conversion_timeout",
+        "figure_bytes_exceeded",
+        "image_too_large",
+        "materialization_timeout",
+        "thumbnail_crashed",
+        "thumbnail_lifecycle",
+        "thumbnail_oversize",
+        "thumbnail_timeout",
+    }
+)
+
+
+@dataclass(frozen=True)
+class MaterializationDeadline:
+    """One monotonic deadline shared by all figure work for a document."""
+
+    expires_at: float
+    clock: Callable[[], float]
+
+    @classmethod
+    def start(
+        cls,
+        *,
+        timeout_s: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> MaterializationDeadline:
+        if not math.isfinite(timeout_s) or timeout_s <= 0:
+            raise FigureAssetError(
+                "materialization_timeout", "document materialization deadline is invalid"
+            )
+        return cls(expires_at=clock() + timeout_s, clock=clock)
+
+    def remaining(self, operation_limit_s: float | None = None) -> float:
+        remaining_s = self.expires_at - self.clock()
+        if not math.isfinite(remaining_s) or remaining_s <= 0:
+            raise FigureAssetError(
+                "materialization_timeout", "document materialization deadline was exceeded"
+            )
+        if operation_limit_s is None:
+            return remaining_s
+        return min(remaining_s, operation_limit_s)
 
 
 async def _materialize_figure_payload(
@@ -150,26 +206,23 @@ async def _materialize_figure_payload(
     content_type: str | None = None,
     *,
     materialized_budget: int | None = None,
+    deadline: MaterializationDeadline | None = None,
 ) -> FigureAssetPayload:
     if materialized_budget is not None and len(data) >= materialized_budget:
         raise FigureAssetError(
             "figure_bytes_exceeded",
             "document figure bytes exceed the aggregate safe limit",
         )
-    if conversion_requires_isolation(
+    timeout_s = (
+        deadline.remaining(DEFAULT_CONVERSION_TIMEOUT_S)
+        if deadline is not None
+        else DEFAULT_CONVERSION_TIMEOUT_S
+    )
+    return await isolated_figure_asset_payload(
         data,
         source_name=source_name,
         content_type=content_type,
-    ):
-        return await isolated_figure_asset_payload(
-            data,
-            source_name=source_name,
-            content_type=content_type,
-        )
-    return figure_asset_payload(
-        data,
-        source_name=source_name,
-        content_type=content_type,
+        timeout_s=timeout_s,
     )
 
 
@@ -177,6 +230,7 @@ async def _materialize_inline_svg(
     raw_html: str,
     *,
     materialized_budget: int | None = None,
+    deadline: MaterializationDeadline | None = None,
 ) -> FigureAssetPayload:
     try:
         svg = extract_inline_svg(raw_html)
@@ -185,9 +239,10 @@ async def _materialize_inline_svg(
             "inline.svg",
             "image/svg+xml",
             materialized_budget=materialized_budget,
+            deadline=deadline,
         )
     except FigureAssetError as exc:
-        if exc.code in {"asset_too_large", "figure_bytes_exceeded", "image_too_large"}:
+        if exc.code in _INLINE_RESOURCE_FAILURE_CODES:
             raise
         raise FigureAssetError("unsafe_inline_figure", "inline SVG was rejected") from exc
     except Exception as exc:
@@ -197,24 +252,43 @@ async def _materialize_inline_svg(
 log = structlog.get_logger("alinea.worker.pipeline")
 
 
-async def _commit_with_asset_cleanup(
-    session: Any,
+@asynccontextmanager
+async def _staged_revision_assets(
     storage: Any,
-    uploaded_keys: list[str],
-) -> None:
-    """Commit DB state and best-effort remove new revision assets on failure."""
+    *,
+    restore_thumbnail_on_failure: Any | None = None,
+) -> AsyncIterator[list[str]]:
+    """Track immutable uploads and clean them after any failed publication phase."""
 
+    uploaded_keys: list[str] = []
+    previous_thumbnail_key = (
+        getattr(restore_thumbnail_on_failure, "thumbnail_key", None)
+        if restore_thumbnail_on_failure is not None
+        else None
+    )
     try:
-        await session.commit()
-    except Exception:
-        try:
-            await storage.delete_many(storage.assets_bucket, uploaded_keys)
-        except Exception as cleanup_error:
-            log.warning(
-                "revision_asset_cleanup_failed",
-                error_type=type(cleanup_error).__name__,
-                key_count=len(uploaded_keys),
+        yield uploaded_keys
+    except BaseException:
+        if restore_thumbnail_on_failure is not None:
+            try:
+                restore_thumbnail_on_failure.thumbnail_key = previous_thumbnail_key
+            except BaseException as restore_error:
+                log.warning(
+                    "revision_thumbnail_pointer_restore_failed",
+                    error_type=type(restore_error).__name__,
+                )
+        if uploaded_keys:
+            cleanup = asyncio.create_task(
+                storage.delete_many(storage.assets_bucket, uploaded_keys.copy())
             )
+            try:
+                await asyncio.shield(cleanup)
+            except BaseException as cleanup_error:
+                log.warning(
+                    "revision_asset_cleanup_failed",
+                    error_type=type(cleanup_error).__name__,
+                    key_count=len(uploaded_keys),
+                )
         raise
 
 
@@ -1835,27 +1909,35 @@ class IngestRun:
         self.content = content
 
         paper = await self._get_paper()
-        uploaded_keys: list[str] = []
-        figure_bytes, fig_warnings, figure_failures = await self._save_figures(
-            self.revision_id,
-            uploaded_keys=uploaded_keys,
+        materialization_deadline = MaterializationDeadline.start(
+            timeout_s=MAX_DOCUMENT_MATERIALIZATION_SECONDS
         )
-        warnings.extend(fig_warnings)
-        stats = {**stats, "figure_asset_failures": figure_failures}
-        revision.stats = stats
-        content = self.parsed.to_document_content()
-        revision.content = content.model_dump()
-        self.content = content
-        await rebuild_block_search_index(self.session, self.revision_id, content)
-        warnings.extend(
-            await self._make_thumbnail(
-                paper,
-                figure_bytes,
-                self.parsed.figures,
+        async with _staged_revision_assets(
+            self.deps.s3,
+            restore_thumbnail_on_failure=paper,
+        ) as uploaded_keys:
+            figure_bytes, fig_warnings, figure_failures = await self._save_figures(
+                self.revision_id,
                 uploaded_keys=uploaded_keys,
+                deadline=materialization_deadline,
             )
-        )
-        await _commit_with_asset_cleanup(self.session, self.deps.s3, uploaded_keys)
+            warnings.extend(fig_warnings)
+            stats = {**stats, "figure_asset_failures": figure_failures}
+            revision.stats = stats
+            content = self.parsed.to_document_content()
+            revision.content = content.model_dump()
+            self.content = content
+            await rebuild_block_search_index(self.session, self.revision_id, content)
+            warnings.extend(
+                await self._make_thumbnail(
+                    paper,
+                    figure_bytes,
+                    self.parsed.figures,
+                    uploaded_keys=uploaded_keys,
+                    deadline=materialization_deadline,
+                )
+            )
+            await self.session.commit()
 
         for warning in warnings:
             await self._log("structuring", "warn", warning)
@@ -1879,6 +1961,7 @@ class IngestRun:
         revision_id: str,
         *,
         uploaded_keys: list[str] | None = None,
+        deadline: MaterializationDeadline | None = None,
     ) -> tuple[dict[str, bytes], list[str], list[dict[str, str]]]:
         """図アセットを S3 に保存する(best-effort。失敗は warn で続行。§2.4)。"""
         out: dict[str, bytes] = {}
@@ -1888,11 +1971,14 @@ class IngestRun:
         if self.parsed is None or self.paper_id is None:
             return out, warnings, failures
         for figure_index, fig in enumerate(self.parsed.figures):
+            staged_key: str | None = None
             inline_raw = fig.raw
             if self.source_format == "arxiv_html":
                 # Author-controlled HTML is never retained in a new revision.
                 fig.raw = None
             try:
+                if deadline is not None:
+                    deadline.remaining()
                 if figure_index >= MAX_FIGURES_PER_DOCUMENT:
                     raise FigureAssetError("figure_limit_exceeded", "document has too many figures")
                 materialized_budget = MAX_TOTAL_FIGURE_MATERIALIZED_BYTES - materialized_bytes
@@ -1901,24 +1987,33 @@ class IngestRun:
                         "figure_bytes_exceeded",
                         "document figure bytes exceed the aggregate safe limit",
                     )
-                if fig.asset_key is None or not fig.asset_key.strip():
-                    if (
-                        self.source_format == "arxiv_html"
-                        and isinstance(inline_raw, str)
-                        and bool(inline_raw.strip())
-                    ):
+                payload: FigureAssetPayload | None = None
+                inline_failure: FigureAssetError | None = None
+                if (
+                    self.source_format == "arxiv_html"
+                    and isinstance(inline_raw, str)
+                    and bool(inline_raw.strip())
+                ):
+                    try:
                         payload = await _materialize_inline_svg(
                             inline_raw,
                             materialized_budget=materialized_budget,
+                            deadline=deadline,
                         )
-                    else:
-                        raise FigureAssetError(
-                            "missing_asset_key", "figure has no materializable asset"
-                        )
-                elif self.source_format == "latex":
+                    except FigureAssetError as exc:
+                        inline_failure = exc
+
+                source_key = (fig.asset_key or "").strip()
+                if payload is None and not source_key:
+                    if inline_failure is not None:
+                        raise inline_failure
+                    raise FigureAssetError(
+                        "missing_asset_key", "figure has no materializable asset"
+                    )
+                if payload is None and self.source_format == "latex":
                     resolved = resolve_latex_source(
                         binary_files=self.latex_binary_files,
-                        requested=fig.asset_key,
+                        requested=source_key,
                         main_tex_name=self.latex_main_tex_name,
                         graphicspaths=self.latex_graphicspaths,
                     )
@@ -1926,8 +2021,9 @@ class IngestRun:
                         resolved.content,
                         resolved.source_name,
                         materialized_budget=materialized_budget,
+                        deadline=deadline,
                     )
-                else:
+                elif payload is None:
                     if self.deps.http is None or self.ref is None:
                         raise FigureAssetError(
                             "source_not_found", "HTML figure source is not available"
@@ -1944,16 +2040,24 @@ class IngestRun:
                             source_name,
                             content_type,
                             materialized_budget=budget,
+                            deadline=deadline,
                         )
 
+                    fetch_timeout_s = (
+                        deadline.remaining(MAX_HTML_ASSET_FETCH_SECONDS)
+                        if deadline is not None
+                        else MAX_HTML_ASSET_FETCH_SECONDS
+                    )
                     payload = await fetch_html_asset(
                         self.deps.http,
                         base=_www_base(self.deps.settings),
                         versioned=self.ref.versioned,
-                        source=fig.asset_key,
+                        source=source_key,
                         payload_loader=load_with_budget,
                         before_request=self._throttle,
+                        total_timeout_s=fetch_timeout_s,
                     )
+                assert payload is not None
                 retained_bytes = payload.source_size or len(payload.content)
                 next_materialized_bytes = materialized_bytes + retained_bytes + len(payload.content)
                 if next_materialized_bytes > MAX_TOTAL_FIGURE_MATERIALIZED_BYTES:
@@ -1962,18 +2066,21 @@ class IngestRun:
                         "document figure bytes exceed the aggregate safe limit",
                     )
                 key = StorageKeys.figure(self.paper_id, revision_id, fig.id, payload.ext)
+                if uploaded_keys is not None:
+                    uploaded_keys.append(key)
+                    staged_key = key
                 await self.deps.s3.put(
                     self.deps.s3.assets_bucket,
                     key,
                     payload.content,
                     content_type=payload.content_type,
                 )
-                if uploaded_keys is not None:
-                    uploaded_keys.append(key)
                 fig.asset_key = key
                 out[fig.id] = payload.content
                 materialized_bytes = next_materialized_bytes
             except FigureAssetError as exc:
+                if staged_key is not None:
+                    raise
                 fig.asset_key = None
                 failures.append(
                     {
@@ -1984,6 +2091,8 @@ class IngestRun:
                 )
                 warnings.append(f"図の保存に失敗(続行): {fig.id} [{exc.code}]")
             except Exception as exc:
+                if staged_key is not None:
+                    raise
                 fig.asset_key = None
                 failures.append(
                     {
@@ -2004,35 +2113,48 @@ class IngestRun:
         figures: list[Block],
         *,
         uploaded_keys: list[str] | None = None,
+        deadline: MaterializationDeadline | None = None,
     ) -> list[str]:
-        if self.paper_id is None:
+        if self.paper_id is None or self.revision_id is None:
             return []
         selected = select_thumbnail_figure(figures)
         if selected is None or selected.id not in figure_bytes:
             return []  # 図なし → thumbnail_key は NULL のまま(§8 ③④)
         try:
-            card, card_2x = render_thumbnail(figure_bytes[selected.id])
-        except (OSError, ValueError) as exc:
-            return [f"サムネイル生成に失敗(続行): {exc}"]
-        new_thumbnail = paper.thumbnail_key is None
-        thumbnail_key = StorageKeys.thumbnail(self.paper_id)
-        retina_key = StorageKeys.thumbnail(self.paper_id, retina=True)
+            timeout_s = (
+                deadline.remaining(DEFAULT_CONVERSION_TIMEOUT_S)
+                if deadline is not None
+                else DEFAULT_CONVERSION_TIMEOUT_S
+            )
+            thumbnails = await isolated_thumbnail_payload(
+                figure_bytes[selected.id],
+                timeout_s=timeout_s,
+            )
+            card, card_2x = thumbnails.card, thumbnails.retina
+        except FigureAssetError as exc:
+            return [f"サムネイル生成に失敗(続行): [{exc.code}]"]
+        thumbnail_key = StorageKeys.thumbnail(self.paper_id, revision_id=self.revision_id)
+        retina_key = StorageKeys.thumbnail(
+            self.paper_id,
+            retina=True,
+            revision_id=self.revision_id,
+        )
+        if uploaded_keys is not None:
+            uploaded_keys.append(thumbnail_key)
         await self.deps.s3.put(
             self.deps.s3.assets_bucket,
             thumbnail_key,
             card,
             content_type="image/webp",
         )
-        if new_thumbnail and uploaded_keys is not None:
-            uploaded_keys.append(thumbnail_key)
+        if uploaded_keys is not None:
+            uploaded_keys.append(retina_key)
         await self.deps.s3.put(
             self.deps.s3.assets_bucket,
             retina_key,
             card_2x,
             content_type="image/webp",
         )
-        if new_thumbnail and uploaded_keys is not None:
-            uploaded_keys.append(retina_key)
         paper.thumbnail_key = thumbnail_key
         return []
 
@@ -2070,34 +2192,41 @@ class IngestRun:
 
         # 図・表・数式の切り出し画像は既にパーサが切り出し済み(HTTP 再取得不要)。
         # S3 保存後に block.asset_key を確定してから再シリアライズする(§6.6.3)。
-        uploaded_keys: list[str] = []
-        figure_bytes, fig_warnings, figure_failures = await self._save_pdf_assets(
-            self.revision_id,
-            uploaded_keys=uploaded_keys,
+        materialization_deadline = MaterializationDeadline.start(
+            timeout_s=MAX_DOCUMENT_MATERIALIZATION_SECONDS
         )
-        warnings.extend(fig_warnings)
-        stats = {**stats, "figure_asset_failures": figure_failures}
-        revision.stats = stats
-        revision.content = content.model_dump()
-        self.content = content
-
         paper = await self._get_paper()
-        abstract_text = _extract_pdf_abstract(content)
-        if abstract_text and not paper.abstract:
-            paper.abstract = abstract_text
-        if self.is_pdf_upload:
-            await self._apply_bib_estimate(paper, data)
-
-        await rebuild_block_search_index(self.session, self.revision_id, content)
-        warnings.extend(
-            await self._make_thumbnail(
-                paper,
-                figure_bytes,
-                self.parsed_pdf.figures,
+        async with _staged_revision_assets(
+            self.deps.s3,
+            restore_thumbnail_on_failure=paper,
+        ) as uploaded_keys:
+            figure_bytes, fig_warnings, figure_failures = await self._save_pdf_assets(
+                self.revision_id,
                 uploaded_keys=uploaded_keys,
             )
-        )
-        await _commit_with_asset_cleanup(self.session, self.deps.s3, uploaded_keys)
+            warnings.extend(fig_warnings)
+            stats = {**stats, "figure_asset_failures": figure_failures}
+            revision.stats = stats
+            revision.content = content.model_dump()
+            self.content = content
+
+            abstract_text = _extract_pdf_abstract(content)
+            if abstract_text and not paper.abstract:
+                paper.abstract = abstract_text
+            if self.is_pdf_upload:
+                await self._apply_bib_estimate(paper, data)
+
+            await rebuild_block_search_index(self.session, self.revision_id, content)
+            warnings.extend(
+                await self._make_thumbnail(
+                    paper,
+                    figure_bytes,
+                    self.parsed_pdf.figures,
+                    uploaded_keys=uploaded_keys,
+                    deadline=materialization_deadline,
+                )
+            )
+            await self.session.commit()
 
         for warning in warnings:
             await self._log("structuring", "warn", warning)
@@ -2124,6 +2253,7 @@ class IngestRun:
             return output, warnings, failures
         blocks_by_id = {b.id: b for b in self.parsed_pdf.blocks}
         for figure_index, (block_id, png) in enumerate(self.parsed_pdf.figure_images.items()):
+            staged_key: str | None = None
             block = blocks_by_id.get(block_id)
             if block is None:
                 continue
@@ -2137,19 +2267,24 @@ class IngestRun:
                         "document figure bytes exceed the aggregate safe limit",
                     )
                 key = StorageKeys.figure(self.paper_id, revision_id, block_id, "png")
+                if uploaded_keys is not None:
+                    uploaded_keys.append(key)
+                    staged_key = key
                 await self.deps.s3.put(
                     self.deps.s3.assets_bucket, key, png, content_type="image/png"
                 )
-                if uploaded_keys is not None:
-                    uploaded_keys.append(key)
                 block.asset_key = key
                 output[block_id] = png
                 materialized_bytes = next_materialized_bytes
             except FigureAssetError as exc:
+                if staged_key is not None:
+                    raise
                 block.asset_key = None
                 failures.append({"code": exc.code, "figure_id": block_id, "source": "pdf"})
                 warnings.append(f"図/表アセットの保存に失敗(続行): {block_id} [{exc.code}]")
             except Exception as exc:
+                if staged_key is not None:
+                    raise
                 block.asset_key = None
                 failures.append(
                     {"code": "figure_asset_error", "figure_id": block_id, "source": "pdf"}

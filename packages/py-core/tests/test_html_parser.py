@@ -256,7 +256,7 @@ def test_metadata_sections_skipped() -> None:
 
 def test_parser_version_and_quality() -> None:
     doc = _doc()
-    assert doc.parser_version == PARSER_VERSION == "html-1.1.0"
+    assert doc.parser_version == PARSER_VERSION == "html-1.2.0"
     assert doc.quality_level == "A"
     assert doc.source_format == "arxiv_html"
 

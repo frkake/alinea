@@ -21,7 +21,7 @@ from alinea_core.document.blocks import Block, DocumentContent, Section, Section
 from alinea_core.document.inlines import Inline
 from alinea_core.parsing.block_ids import assign_block_ids
 
-PARSER_VERSION = "html-1.1.0"
+PARSER_VERSION = "html-1.2.0"
 
 _WS = re.compile(r"\s+")
 
@@ -138,6 +138,20 @@ def _safe_inline_figure_html(html: str | None) -> str | None:
             if name in {"href", "src"} and not re.fullmatch(r"#[A-Za-z0-9_.:-]+", value):
                 return None
     return svgs[0].html
+
+
+def _is_safe_fallback_image(image: LexborNode, figure: LexborNode) -> bool:
+    """Accept an alternate raster only when it is outside active/SVG content."""
+
+    ancestor = image.parent
+    while ancestor is not None:
+        if ancestor == figure:
+            return True
+        tag = str(ancestor.tag or "").casefold()
+        if tag == "svg" or tag in _ACTIVE_INLINE_TAGS:
+            return False
+        ancestor = ancestor.parent
+    return False
 
 
 def _element_children(node: LexborNode) -> list[LexborNode]:
@@ -453,13 +467,15 @@ class _ArxivHtmlParser:
         return _merge_text(inlines), number
 
     def _figure(self, node: LexborNode) -> Block:
-        imgs = list(node.css("img"))
-        img = node.css_first("img.ltx_graphics") or node.css_first("img")
+        imgs = [image for image in node.css("img") if _is_safe_fallback_image(image, node)]
+        img = next((image for image in imgs if "ltx_graphics" in _classes(image)), None)
+        if img is None and imgs:
+            img = imgs[0]
         src = (img.attributes.get("src") if img is not None else None) or None
         visual = None
         svg = node.css_first("svg")
         if svg is not None:
-            visual = node.css_first(".ltx_flex_figure") or svg
+            visual = svg
         elif len(imgs) > 1:
             visual = node.css_first(".ltx_flex_figure") or node.css_first("svg")
             if visual is None:
@@ -467,7 +483,12 @@ class _ArxivHtmlParser:
         elif src is None:
             visual = node.css_first(".ltx_flex_figure") or node.css_first("svg")
         raw = _safe_inline_figure_html(visual.html if visual is not None else None)
-        if visual is not None:
+        if svg is not None and any(
+            str(element.tag or "").casefold() in _ACTIVE_INLINE_TAGS
+            for element in node.traverse(include_text=False)
+        ):
+            raw = None
+        if visual is not None and svg is None:
             src = None
         caption, number = self._caption(node)
         return Block(

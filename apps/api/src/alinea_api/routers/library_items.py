@@ -123,9 +123,7 @@ async def _article_storage_data(
 ) -> tuple[list[str], list[str], set[str]]:
     if not library_item_ids:
         return [], [], set()
-    rows = await db.execute(
-        select(Article.id).where(Article.library_item_id.in_(library_item_ids))
-    )
+    rows = await db.execute(select(Article.id).where(Article.library_item_id.in_(library_item_ids)))
     article_ids = list(rows.scalars())
     if not article_ids:
         return [], [], set()
@@ -170,8 +168,13 @@ async def _paper_storage_keys(db: DbDep, paper: Paper) -> tuple[set[str], set[st
 
     if paper.thumbnail_key:
         _add_storage_key(asset_keys, paper.thumbnail_key)
-        _add_storage_key(asset_keys, StorageKeys.thumbnail(str(paper.id)))
-        _add_storage_key(asset_keys, StorageKeys.thumbnail(str(paper.id), retina=True))
+        _add_storage_key(
+            asset_keys,
+            StorageKeys.thumbnail_retina_sibling(
+                paper.thumbnail_key,
+                paper_id=str(paper.id),
+            ),
+        )
     return source_keys, asset_keys
 
 

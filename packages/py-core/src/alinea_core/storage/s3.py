@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from typing import Any
 
@@ -16,6 +17,8 @@ import aioboto3
 from botocore.config import Config
 
 from alinea_core.settings import CoreSettings, get_settings
+
+_STORAGE_KEY_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 
 
 class StorageKeys:
@@ -52,8 +55,29 @@ class StorageKeys:
         return f"figures/{paper_id}/{revision_id}/{block_id}.{ext}"
 
     @staticmethod
-    def thumbnail(paper_id: str, retina: bool = False) -> str:
-        return f"thumbnails/{paper_id}/card{'@2x' if retina else ''}.webp"
+    def thumbnail(
+        paper_id: str,
+        retina: bool = False,
+        *,
+        revision_id: str | None = None,
+    ) -> str:
+        revision_path = f"/{revision_id}" if revision_id is not None else ""
+        return f"thumbnails/{paper_id}{revision_path}/card{'@2x' if retina else ''}.webp"
+
+    @staticmethod
+    def thumbnail_retina_sibling(key: str, *, paper_id: str) -> str | None:
+        """Derive retina only from an exact legacy/current base-thumbnail key."""
+
+        if _STORAGE_KEY_SEGMENT_RE.fullmatch(paper_id) is None:
+            return None
+        parts = key.split("/")
+        if parts[:2] != ["thumbnails", paper_id] or parts[-1:] != ["card.webp"]:
+            return None
+        if len(parts) == 3:
+            return f"thumbnails/{paper_id}/card@2x.webp"
+        if len(parts) == 4 and _STORAGE_KEY_SEGMENT_RE.fullmatch(parts[2]) is not None:
+            return f"thumbnails/{paper_id}/{parts[2]}/card@2x.webp"
+        return None
 
     @staticmethod
     def overview_svg(article_id: str, version: int) -> str:
