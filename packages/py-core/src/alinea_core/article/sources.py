@@ -22,6 +22,7 @@ from alinea_core.db.models import (
     LibraryItem,
     Note,
     Paper,
+    ResourceLink,
     TranslationUnit,
     User,
 )
@@ -36,6 +37,7 @@ BODY_BUDGET = 50_000
 NOTES_BUDGET = 6_000
 ANNOTATIONS_BUDGET = 4_000
 CHAT_BUDGET = 10_000
+RESOURCES_BUDGET = 8_000
 
 _COLOR_LABEL: dict[str, str] = {
     "important": "重要",
@@ -112,6 +114,7 @@ class ArticleSources:
     figures_text: str
     notes_text: str
     annotations_text: str
+    resources_text: str = ""
     annotation_refs: list[AnnotationRef] = field(default_factory=list)
     chat_text: str = ""
     block_ids: set[str] = field(default_factory=set)
@@ -403,6 +406,42 @@ async def _chat_text(session: AsyncSession, library_item_id: str) -> str:
     return "# チャット履歴\n" + "\n".join(reversed_selected)
 
 
+async def _resources_text(session: AsyncSession, library_item_id: str) -> str:
+    rows = (
+        (
+            await session.execute(
+                select(ResourceLink)
+                .where(
+                    ResourceLink.library_item_id == library_item_id,
+                    ResourceLink.status == "active",
+                )
+                .order_by(ResourceLink.official.desc(), ResourceLink.updated_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    lines: list[str] = []
+    for row in rows:
+        meta = row.meta if isinstance(row.meta, dict) else {}
+        details = ", ".join(
+            f"{key}={value}" for key, value in meta.items() if value not in (None, "", [])
+        )
+        parts = [
+            f"[{row.kind}] {row.title or row.url}",
+            f"URL: {row.url}",
+            f"公式: {'yes' if row.official else 'no'}",
+        ]
+        if details:
+            parts.append(f"メタデータ: {details}")
+        if row.note_md:
+            parts.append(f"ユーザーメモ: {row.note_md}")
+        lines.append(" | ".join(parts))
+    if not lines:
+        return ""
+    return "# 追加リソース\n" + _truncate_head_to_budget(lines, RESOURCES_BUDGET)
+
+
 async def collect_article_sources(
     session: AsyncSession,
     *,
@@ -436,6 +475,7 @@ async def collect_article_sources(
         session, str(library_item.id), rows_by_id
     )
     chat_text = await _chat_text(session, str(library_item.id))
+    resources_text = await _resources_text(session, str(library_item.id))
 
     return ArticleSources(
         library_item=library_item,
@@ -451,6 +491,7 @@ async def collect_article_sources(
         figures_text=figures_text,
         notes_text=notes_text,
         annotations_text=annotations_text,
+        resources_text=resources_text,
         annotation_refs=annotation_refs,
         chat_text=chat_text,
         block_ids={r.block_id for r in rows},
@@ -464,6 +505,7 @@ __all__ = [
     "BODY_BUDGET",
     "CHAT_BUDGET",
     "NOTES_BUDGET",
+    "RESOURCES_BUDGET",
     "AnnotationRef",
     "ArticleSources",
     "FigureInfo",

@@ -428,6 +428,10 @@ export type ArticleOut = {
      */
     disclaimer: string;
     /**
+     * Available Presets
+     */
+    available_presets?: Array<'beginner' | 'implementer' | 'researcher' | 'reading_group'>;
+    /**
      * Overview Figure
      */
     overview_figure?: {
@@ -7337,7 +7341,12 @@ export type ArticlesGetData = {
          */
         item_id: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * Preset
+         */
+        preset?: ('beginner' | 'implementer' | 'researcher' | 'reading_group') | null;
+    };
     url: '/api/library-items/{item_id}/article';
 };
 

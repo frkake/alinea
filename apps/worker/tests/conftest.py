@@ -225,7 +225,13 @@ class ScriptProvider:
         spec = req.json_schema
         if spec is not None and spec.name == "summary_3line_v1":
             data: dict[str, Any] = {
-                "summary_lines": ["課題の要約行", "手法の要約行", "結果の要約行"],
+                "summary_lines": [
+                    "課題: 課題の要約",
+                    "提案: 手法の要約",
+                    "仕組み: 仕組みの要約",
+                    "検証: 検証の要約",
+                    "結果: 結果の要約",
+                ],
                 "suggested_tags": ["distillation", "solver"],
             }
         else:

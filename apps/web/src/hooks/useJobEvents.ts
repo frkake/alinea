@@ -51,6 +51,45 @@ export function useJobEvents<TResult = unknown>(
       source = null;
     };
 
+    const handleSnapshot = (job: JobOut): boolean => {
+      if (job.status === "succeeded") {
+        const result = (job as unknown as { result?: TResult }).result ?? null;
+        stop();
+        optionsRef.current.onDone?.(result);
+        return true;
+      }
+      if (job.status === "failed") {
+        stop();
+        optionsRef.current.onError?.((job.error as Partial<Problem> | undefined) ?? {});
+        return true;
+      }
+      optionsRef.current.onProgress?.({
+        job_id: job.id,
+        status: job.status,
+        stage: job.stage,
+        progress_pct: job.progress_pct,
+        detail: job.detail,
+      });
+      return false;
+    };
+
+    const syncCurrent = async (): Promise<void> => {
+      const res = await jobsGet({ path: { job_id: jobId } });
+      if (closed) return;
+      if (res.response?.status === 404) {
+        stop();
+        optionsRef.current.onError?.(
+          (res.error as Partial<Problem> | undefined) ?? {
+            status: 404,
+            code: "not_found",
+            title: "ジョブが見つかりません",
+          },
+        );
+        return;
+      }
+      if (res.data) handleSnapshot(res.data);
+    };
+
     const poll = () => {
       if (closed) return;
       pollTimer = setTimeout(() => {
@@ -76,24 +115,7 @@ export function useJobEvents<TResult = unknown>(
               poll();
               return;
             }
-            if (job.status === "succeeded") {
-              const result = (job as unknown as { result?: TResult }).result ?? null;
-              stop();
-              optionsRef.current.onDone?.(result);
-              return;
-            }
-            if (job.status === "failed") {
-              stop();
-              optionsRef.current.onError?.((job.error as Partial<Problem> | undefined) ?? {});
-              return;
-            }
-            optionsRef.current.onProgress?.({
-              job_id: job.id,
-              status: job.status,
-              stage: job.stage,
-              progress_pct: job.progress_pct,
-              detail: job.detail,
-            });
+            if (handleSnapshot(job)) return;
             poll();
           },
           () => {
@@ -105,6 +127,7 @@ export function useJobEvents<TResult = unknown>(
 
     if (typeof EventSource === "undefined") {
       // SSE 非対応環境(テスト・一部ブラウザ): 即ポーリングへ(P3: 黙って壊れない)。
+      void syncCurrent().catch(() => undefined);
       poll();
       return stop;
     }
@@ -154,6 +177,9 @@ export function useJobEvents<TResult = unknown>(
     source.addEventListener("progress", onProgress as EventListener);
     source.addEventListener("done", onDone as EventListener);
     source.addEventListener("error", onErrorEvent);
+    void syncCurrent().catch(() => {
+      // SSE が生きていれば継続できる。接続失敗時は既存のフォールバックが処理する。
+    });
 
     return stop;
   }, [jobId]);

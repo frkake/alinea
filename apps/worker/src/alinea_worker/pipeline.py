@@ -97,7 +97,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from alinea_worker import notify
 from alinea_worker.latex_pdf import LatexPdfBuildError, build_latex_translation_pdfs_if_ready
 
-# ✦3行要約 + 提案タグ(plans/07 §3.1・plans/05 §11.1。1 呼び出しで生成)。
+# 論文概要 + 提案タグ(1 呼び出しで生成)。DB フィールド名は後方互換のため summary_lines のまま。
 SUMMARY_SCHEMA_NAME = "summary_3line_v1"
 SUMMARY_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -106,9 +106,9 @@ SUMMARY_JSON_SCHEMA: dict[str, Any] = {
     "properties": {
         "summary_lines": {
             "type": "array",
-            "minItems": 3,
-            "maxItems": 3,
-            "items": {"type": "string", "maxLength": 60},
+            "minItems": 4,
+            "maxItems": 6,
+            "items": {"type": "string", "maxLength": 240},
         },
         "suggested_tags": {
             "type": "array",
@@ -118,12 +118,13 @@ SUMMARY_JSON_SCHEMA: dict[str, Any] = {
     },
 }
 SUMMARY_SYSTEM_PROMPT = (
-    "あなたは学術論文の要約者です。与えられた論文を次の 3 行で要約してください。\n"
-    "1 行目: 課題(この論文が解こうとしている問題)\n"
-    "2 行目: 手法(提案アプローチの核心)\n"
-    "3 行目: 結果(主要な成果。数値は本文にあるものだけを使う)\n"
-    "各行は日本語 60 文字以内。行頭に番号や記号を付けない(表示側が ① ② ③ を付ける)。"
-    "本文にない数値・主張を作らない。\n"
+    "あなたは学術論文の編集者です。この概要だけを読めば、論文が何を問題とし、何を提案し、"
+    "どう検証し、何が分かったかを具体的に説明できる内容にしてください。\n"
+    "summary_lines は次のラベルで始まる日本語 4〜6 項目です: "
+    "課題、提案、仕組み、検証、結果、限界。仕組みまたは限界は情報が乏しい場合のみ省略できます。\n"
+    "各項目は『ラベル: 本文』形式で、固有の手法名、比較対象、データセット、評価指標、重要な数値を"
+    "素材にある範囲で具体的に含めてください。宣伝文句や『高性能を達成』だけの抽象表現は禁止です。"
+    "本文にない数値・主張を作らないでください。\n"
     "あわせて、この論文の主題を表す提案タグを suggested_tags に最大 5 件挙げてください"
     "(英語小文字の短い名詞。例: distillation, solver)。"
 )

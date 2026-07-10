@@ -27,35 +27,53 @@ const PRESET_INCLUDE_MATH_DEFAULT: Record<Preset, boolean> = {
 
 export interface ArticleGenerateCTAProps {
   libraryItemId: string;
+  preset?: Preset;
   onGenerated: () => void;
 }
 
 /** 記事未生成(404)時の生成 CTA(1h §5.2)。 */
-export function ArticleGenerateCTA({ libraryItemId, onGenerated }: ArticleGenerateCTAProps) {
+function pendingJobKey(libraryItemId: string, preset: Preset): string {
+  return `alinea-article-job:${libraryItemId}:${preset}`;
+}
+
+export function ArticleGenerateCTA({ libraryItemId, preset: fixedPreset, onGenerated }: ArticleGenerateCTAProps) {
   const toast = useToast();
-  const [preset, setPreset] = useState<Preset>("beginner");
-  const [includeMath, setIncludeMath] = useState(PRESET_INCLUDE_MATH_DEFAULT.beginner);
+  const [selectedPreset, setSelectedPreset] = useState<Preset>(fixedPreset ?? "beginner");
+  const preset = fixedPreset ?? selectedPreset;
+  const [includeMath, setIncludeMath] = useState(PRESET_INCLUDE_MATH_DEFAULT[preset]);
   const [toggleTouched, setToggleTouched] = useState(false);
-  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobId, setJobId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return window.localStorage.getItem(pendingJobKey(libraryItemId, preset));
+  });
   const [progressPct, setProgressPct] = useState(0);
+  const [progressStage, setProgressStage] = useState("素材を準備しています");
   const [submitting, setSubmitting] = useState(false);
 
   useJobEvents(jobId, {
-    onProgress: (e) => setProgressPct(e.progress_pct),
+    onProgress: (e) => {
+      setProgressPct(e.progress_pct);
+      setProgressStage(
+        e.detail ||
+          ({
+            queued: "生成を開始します",
+            collecting_sources: "本文・メモ・追加リソースを集めています",
+            generating: "読者タイプに合わせて記事を執筆しています",
+            rendering: "図と記事レイアウトを仕上げています",
+          }[e.stage ?? ""] ?? "記事を生成しています"),
+      );
+    },
     onDone: () => {
+      window.localStorage.removeItem(pendingJobKey(libraryItemId, preset));
       setJobId(null);
       onGenerated();
     },
     onError: (problem: Partial<Problem>) => {
+      window.localStorage.removeItem(pendingJobKey(libraryItemId, preset));
       setJobId(null);
       toast({ kind: "error", message: problem.title ?? "記事の生成に失敗しました" });
     },
   });
-
-  const onPresetChange = (next: Preset) => {
-    setPreset(next);
-    if (!toggleTouched) setIncludeMath(PRESET_INCLUDE_MATH_DEFAULT[next]);
-  };
 
   const onSubmit = async () => {
     if (submitting || jobId) return;
@@ -67,6 +85,7 @@ export function ArticleGenerateCTA({ libraryItemId, onGenerated }: ArticleGenera
         throwOnError: true,
       });
       setProgressPct(0);
+      window.localStorage.setItem(pendingJobKey(libraryItemId, preset), res.data.job_id);
       setJobId(res.data.job_id);
     } catch (err) {
       const problem = err as Partial<Problem> | undefined;
@@ -76,13 +95,22 @@ export function ArticleGenerateCTA({ libraryItemId, onGenerated }: ArticleGenera
     }
   };
 
+  const onPresetChange = (next: Preset) => {
+    setSelectedPreset(next);
+    if (!toggleTouched) setIncludeMath(PRESET_INCLUDE_MATH_DEFAULT[next]);
+  };
+
   if (jobId) {
     return (
       <div style={{ marginTop: 120, display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
         <span style={{ fontSize: 12, color: "var(--pr-a)" }}>✦ 記事を生成しています… {progressPct}%</span>
+        <span style={{ fontSize: 11, color: "var(--pr-text-sub)" }}>{progressStage}</span>
         <div style={{ width: 260 }}>
           <ProgressBar value={progressPct} color="accent" />
         </div>
+        <span style={{ fontSize: 10.5, color: "var(--pr-text-muted)" }}>
+          他の画面を開いても生成は続きます
+        </span>
       </div>
     );
   }
@@ -93,13 +121,19 @@ export function ArticleGenerateCTA({ libraryItemId, onGenerated }: ArticleGenera
         title="この論文の記事はまだありません"
         description="訳文・メモ・チャット履歴から、AI がブログ風の読み物を構成します。"
       />
-      <SegmentedControl
-        ariaLabel="記事のプリセット"
-        size="lg"
-        options={PRESET_OPTIONS}
-        value={preset}
-        onChange={onPresetChange}
-      />
+      {fixedPreset ? (
+        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--pr-text)" }}>
+          {PRESET_OPTIONS.find((option) => option.value === preset)?.label}の記事を生成
+        </div>
+      ) : (
+        <SegmentedControl
+          ariaLabel="記事のプリセット"
+          size="lg"
+          options={PRESET_OPTIONS}
+          value={preset}
+          onChange={onPresetChange}
+        />
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <Toggle
           ariaLabel="数式を含める"

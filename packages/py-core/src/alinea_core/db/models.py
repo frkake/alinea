@@ -522,7 +522,11 @@ class Article(Base):
     model: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     created_at: Mapped[dt.datetime] = _now()
     updated_at: Mapped[dt.datetime] = _now()
-    __table_args__ = (UniqueConstraint("library_item_id", name="uq_articles_library_item"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "library_item_id", "preset", name="uq_articles_library_item_preset"
+        ),
+    )
 
 
 class ArticleBlock(Base):

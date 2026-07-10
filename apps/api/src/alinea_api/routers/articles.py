@@ -58,6 +58,7 @@ from alinea_api.schemas.articles import (
     ArticleRegenerateRequest,
     ArticleVersionItemOut,
     ArticleVersionsResponse,
+    Preset,
 )
 from alinea_api.schemas.viewer import asset_url
 
@@ -112,10 +113,30 @@ def _valid_uuid(value: str) -> bool:
     return True
 
 
-async def _article_for_item(db: AsyncSession, library_item_id: str) -> Article | None:
-    return (
-        await db.execute(select(Article).where(Article.library_item_id == library_item_id))
-    ).scalar_one_or_none()
+async def _articles_for_item(db: AsyncSession, library_item_id: str) -> list[Article]:
+    rows = (
+        (
+            await db.execute(
+                select(Article)
+                .where(Article.library_item_id == library_item_id)
+                .order_by(Article.generated_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows)
+
+
+async def _article_for_item(
+    db: AsyncSession, library_item_id: str, preset: Preset | None = None
+) -> Article | None:
+    stmt = select(Article).where(Article.library_item_id == library_item_id)
+    if preset is not None:
+        stmt = stmt.where(Article.preset == preset)
+    else:
+        stmt = stmt.order_by(Article.generated_at.desc()).limit(1)
+    return (await db.execute(stmt)).scalar_one_or_none()
 
 
 async def _owned_article(db: DbDep, user: User, article_id: str) -> tuple[Article, LibraryItem]:
@@ -223,6 +244,7 @@ async def _build_article_out(
         for b in blocks
     ]
     overview = await _overview_figure_ref(db, str(article.id))
+    variants = await _articles_for_item(db, str(article.library_item_id))
     return ArticleOut(
         id=str(article.id),
         library_item_id=str(article.library_item_id),
@@ -232,6 +254,7 @@ async def _build_article_out(
         version=article.version,
         generated_at=article.generated_at.isoformat(),
         disclaimer=build_disclaimer(article.generated_at),
+        available_presets=[row.preset for row in variants],
         overview_figure=overview,
         blocks=out_blocks,
     )
@@ -245,9 +268,11 @@ async def _build_article_out(
     response_model=ArticleOut,
     operation_id="articles_get",
 )
-async def get_article(item_id: str, user: CurrentUser, db: DbDep) -> ArticleOut:
+async def get_article(
+    item_id: str, user: CurrentUser, db: DbDep, preset: Preset | None = None
+) -> ArticleOut:
     item = await resolve_owned_library_item(db, item_id, user)
-    article = await _article_for_item(db, str(item.id))
+    article = await _article_for_item(db, str(item.id), preset)
     if article is None:
         raise ProblemException("not_found")
     _paper, revision = await _paper_and_revision(db, item)
@@ -273,7 +298,7 @@ async def generate_article(
     wakeup: ArticlesJobWakeupDep,
 ) -> ArticleJobResponse:
     item = await resolve_owned_library_item(db, item_id, user)
-    existing = await _article_for_item(db, str(item.id))
+    existing = await _article_for_item(db, str(item.id), body.preset)
     if existing is not None:
         raise ProblemException("conflict", detail="記事は既に生成されています")
     # 論文に取り込み済みリビジョンが無ければ素材収集できない(§4.2)。
@@ -323,6 +348,11 @@ async def regenerate_article(
 ) -> ArticleJobResponse:
     article, item = await _owned_article(db, user, article_id)
     await check_quota(db, str(user.id), "article", settings=settings, cache=r)
+
+    if body.preset is not None and body.preset != article.preset:
+        existing_variant = await _article_for_item(db, str(item.id), body.preset)
+        if existing_variant is not None:
+            raise ProblemException("conflict", detail="この読者タイプの記事は既にあります")
 
     payload: dict[str, Any] = {"op": "regenerate", "article_id": str(article.id)}
     if body.instruction:

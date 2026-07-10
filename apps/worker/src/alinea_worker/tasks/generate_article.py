@@ -453,6 +453,22 @@ async def _run_generate(ctx: dict[str, Any], store: JobStore, job: Job) -> None:
     preset = str(payload.get("preset", "beginner"))
     include_math = bool(payload.get("include_math", PRESET_INCLUDE_MATH_DEFAULT.get(preset, False)))
 
+    existing = (
+        await session.execute(
+            select(Article).where(
+                Article.library_item_id == str(item.id), Article.preset == preset
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        job.article_id = str(existing.id)
+        await session.commit()
+        await store.succeed(
+            str(job.id),
+            {"article_id": str(existing.id), "version": existing.version, "preset": preset},
+        )
+        return
+
     await store.checkpoint(str(job.id), "collecting_sources", progress=10)
     sources = await collect_article_sources(
         session,
@@ -520,6 +536,7 @@ async def _run_regenerate(ctx: dict[str, Any], store: JobStore, job: Job) -> Non
     article, item, paper, revision, user = await _load_article_context(session, article_id)
 
     preset = str(payload.get("preset") or article.preset)
+    creates_variant = preset != article.preset
     if payload.get("include_math") is not None:
         include_math = bool(payload["include_math"])
     elif payload.get("preset") is not None:
@@ -564,15 +581,29 @@ async def _run_regenerate(ctx: dict[str, Any], store: JobStore, job: Job) -> Non
     )
 
     await store.checkpoint(str(job.id), "rendering", progress=80)
-    article.title = normalized.title
-    article.preset = preset
-    article.include_math = include_math
-    article.version = article.version + 1
-    article.generated_at = dt.datetime.now(dt.UTC)
-    article.provider = resp.provider
-    article.model = resp.model
-    if instruction:
-        article.instructions_history = [*instructions_history, instruction]
+    if creates_variant:
+        article = Article(
+            id=str(uuid.uuid4()),
+            library_item_id=str(item.id),
+            title=normalized.title,
+            preset=preset,
+            include_math=include_math,
+            version=1,
+            provider=resp.provider,
+            model=resp.model,
+            instructions_history=[instruction] if instruction else [],
+        )
+        session.add(article)
+        job.article_id = str(article.id)
+    else:
+        article.title = normalized.title
+        article.include_math = include_math
+        article.version = article.version + 1
+        article.generated_at = dt.datetime.now(dt.UTC)
+        article.provider = resp.provider
+        article.model = resp.model
+        if instruction:
+            article.instructions_history = [*instructions_history, instruction]
     await session.flush()
     rows = await _replace_blocks(session, article, normalized, paper)
     await _save_snapshot(
@@ -584,9 +615,13 @@ async def _run_regenerate(ctx: dict[str, Any], store: JobStore, job: Job) -> Non
         instruction=instruction or None,
     )
 
-    # 図の生成(§4.5 step8): 再生成時は概要図を作り直さない(独自の「✦ 書き直し指示」導線を
-    # 持つため — §5.3 の決定)。解説図は version-aware に同期する(image_brief_en から組み立てた
-    # プロンプトが現行版と同一の slot は再利用し、変わった slot・新規 slot のみ新版を生成)。
+    if creates_variant:
+        await _generate_overview_figure_v1(
+            ctx, store, article=article, sources=sources, user=user, job=job
+        )
+
+    # 同じ読者タイプの再生成では概要図を維持する。別タイプへの変更は新しい記事として作成し、
+    # その記事専用の概要図・解説図を初回生成する。
     explainer_briefs = _explainer_briefs_from_normalized(normalized.blocks)
     await _generate_explainer_figures(
         ctx,
@@ -595,7 +630,7 @@ async def _run_regenerate(ctx: dict[str, Any], store: JobStore, job: Job) -> Non
         sources=sources,
         job=job,
         briefs=explainer_briefs,
-        is_regenerate=True,
+        is_regenerate=not creates_variant,
     )
 
     await session.commit()

@@ -100,7 +100,11 @@ _ARTICLE_BLOCK_SYSTEM_TEMPLATE = (
     "7. explainer_figure(解説図)は最大 2 個。image_brief_en には描いてほしい"
     "概念図・比喩の視覚的内容を英語で書く。文字・数字・数式を画像に含める指示を"
     "書かない(重要な情報はすべて caption_ja に書く)。\n"
-    "9. 数式の扱い: {math_rule}"
+    "9. 数式の扱い: {math_rule}\n"
+    "10. 抽象的な要約で済ませず、手法の構成要素、処理手順、学習/推論条件、データセット、"
+    "ベースライン、評価指標、アブレーション、失敗例、限界を素材にある範囲で具体的に書く。\n"
+    "11. 研究者向けでは再現・批判的検討に必要な細部を優先し、主張ごとに根拠を付ける。"
+    "追加リソースは論文本文と区別し、実装上の補足や著者説明として明示して活用する。"
 )
 
 
@@ -118,7 +122,7 @@ def build_article_block_system_prompt(*, include_math: bool) -> str:
 
 
 def build_material_text(sources: ArticleSources) -> str:
-    """§4.2 の素材一式(書誌 → ✦3行要約 → 訳文本文 → 図表リスト → メモ → 注釈 → チャット履歴)。"""
+    """記事生成に使う全素材。追加リソースも生成時点の内容を取り込む。"""
     parts = [
         sources.bibliography_text,
         sources.summary_text,
@@ -127,6 +131,7 @@ def build_material_text(sources: ArticleSources) -> str:
         sources.notes_text,
         sources.annotations_text,
         sources.chat_text,
+        sources.resources_text,
     ]
     return "\n\n".join(p for p in parts if p)
 

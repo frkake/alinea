@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { LastPosition } from "@alinea/api-client";
@@ -12,7 +12,14 @@ import { articleKeys, fetchArticle, isArticleNotFound } from "@/components/viewe
 import { ArticleGenerateCTA } from "@/components/viewer/article/ArticleGenerateCTA";
 import { ArticleSkeleton } from "@/components/viewer/article/ArticleSkeleton";
 import { ArticleBody } from "@/components/viewer/article/ArticleBody";
-import type { AnchorRef } from "@/components/viewer/article/types";
+import type { AnchorRef, Preset } from "@/components/viewer/article/types";
+
+const ARTICLE_TABS: ReadonlyArray<{ value: Preset; label: string }> = [
+  { value: "beginner", label: "初学者向け" },
+  { value: "implementer", label: "実装者向け" },
+  { value: "researcher", label: "研究者向け" },
+  { value: "reading_group", label: "輪読会向け" },
+];
 
 export interface ArticlePaneProps {
   libraryItemId: string;
@@ -36,18 +43,28 @@ export function ArticlePane({ libraryItemId, revisionId, lastPosition }: Article
   const setPanel = useViewerStore((s) => s.setPanel);
   const selection = useViewerStore((s) => s.selection);
   const setSelection = useViewerStore((s) => s.setSelection);
+  const activePreset = useViewerStore((s) => s.activeArticlePreset);
+  const setActivePreset = useViewerStore((s) => s.setActiveArticlePreset);
+  const [availablePresets, setAvailablePresets] = useState<Preset[]>([]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const didInitialScroll = useRef(false);
 
   const articleQuery = useQuery({
-    queryKey: articleKeys.article(libraryItemId),
-    queryFn: () => fetchArticle(libraryItemId),
+    queryKey: articleKeys.article(libraryItemId, activePreset),
+    queryFn: () => fetchArticle(libraryItemId, activePreset),
     retry: false,
     staleTime: Infinity,
   });
 
   const article = articleQuery.data;
+
+  useEffect(() => {
+    if (!article) return;
+    setAvailablePresets(article.available_presets ?? [article.preset]);
+  }, [article]);
+
+  const selectedPreset = activePreset ?? article?.preset ?? "beginner";
 
   // 再訪時の即時スクロール(1h §2.1 #15 決定): 前回位置バナーは出さず該当ブロック先頭へ即時
   // スクロールする。ブロック ID が現行記事に存在しない(記事再生成で ID が変わった)場合は
@@ -162,29 +179,78 @@ export function ArticlePane({ libraryItemId, revisionId, lastPosition }: Article
         overflowY: "auto",
       }}
     >
-      {articleQuery.isLoading ? (
-        <ArticleSkeleton />
-      ) : articleQuery.isError && isArticleNotFound(articleQuery.error) ? (
-        <ArticleGenerateCTA
-          libraryItemId={libraryItemId}
-          onGenerated={() => void qc.invalidateQueries({ queryKey: articleKeys.article(libraryItemId) })}
-        />
-      ) : articleQuery.isError ? (
-        <div style={{ marginTop: 120 }}>
-          <EmptyState
-            title="読み込みに失敗しました"
-            description="時間をおいて再度お試しください。"
-            action={{ label: "再試行", onClick: () => void articleQuery.refetch() }}
-          />
+      <div style={{ width: "100%", minWidth: 0 }}>
+        <div
+          role="tablist"
+          aria-label="読者タイプ別の記事"
+          style={{
+            position: "sticky",
+            top: 0,
+            zIndex: 4,
+            display: "flex",
+            justifyContent: "center",
+            gap: 4,
+            padding: "10px 16px",
+            background: "color-mix(in srgb, var(--pr-bg-app) 94%, transparent)",
+            borderBottom: "1px solid var(--pr-border-hair)",
+            backdropFilter: "blur(8px)",
+          }}
+        >
+          {ARTICLE_TABS.map((tab) => {
+            const selected = tab.value === selectedPreset;
+            const generated = availablePresets.includes(tab.value);
+            return (
+              <button
+                key={tab.value}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                onClick={() => setActivePreset(tab.value)}
+                style={{
+                  border: selected ? "1px solid var(--pr-a)" : "1px solid var(--pr-border-control)",
+                  borderRadius: 999,
+                  padding: "6px 12px",
+                  background: selected ? "var(--pr-a-soft)" : "var(--pr-bg-card)",
+                  color: selected ? "var(--pr-a)" : "var(--pr-text-sub)",
+                  fontSize: 11.5,
+                  fontWeight: selected ? 700 : 500,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                {tab.label}{generated ? " ✓" : " ＋"}
+              </button>
+            );
+          })}
         </div>
-      ) : article ? (
-        <ArticleBody
-          article={article}
-          libraryItemId={libraryItemId}
-          revisionId={revisionId}
-          onJumpToAnchor={onJumpToAnchor}
-        />
-      ) : null}
+        <div style={{ display: "flex", justifyContent: "center" }}>
+          {articleQuery.isLoading ? (
+            <ArticleSkeleton />
+          ) : articleQuery.isError && isArticleNotFound(articleQuery.error) ? (
+            <ArticleGenerateCTA
+              key={selectedPreset}
+              libraryItemId={libraryItemId}
+              preset={selectedPreset}
+              onGenerated={() => void qc.invalidateQueries({ queryKey: articleKeys.all(libraryItemId) })}
+            />
+          ) : articleQuery.isError ? (
+            <div style={{ marginTop: 120 }}>
+              <EmptyState
+                title="読み込みに失敗しました"
+                description="時間をおいて再度お試しください。"
+                action={{ label: "再試行", onClick: () => void articleQuery.refetch() }}
+              />
+            </div>
+          ) : article ? (
+            <ArticleBody
+              article={article}
+              libraryItemId={libraryItemId}
+              revisionId={revisionId}
+              onJumpToAnchor={onJumpToAnchor}
+            />
+          ) : null}
+        </div>
+      </div>
       {selection ? (
         <SelectionMenu
           milestone="M0"

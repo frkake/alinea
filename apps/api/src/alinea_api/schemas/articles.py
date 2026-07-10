@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 Preset = Literal["beginner", "implementer", "researcher", "reading_group"]
 ArticleBlockType = Literal[
@@ -113,6 +113,7 @@ class ArticleOut(BaseModel):
     version: int
     generated_at: str
     disclaimer: str
+    available_presets: list[Preset] = Field(default_factory=list)
     # M2-05 の担当(全体概要図)。未生成の間は常に null(§4.5 step8 は本レーンの対象外)。
     overview_figure: dict[str, Any] | None = None
     blocks: list[ArticleBlockOut]

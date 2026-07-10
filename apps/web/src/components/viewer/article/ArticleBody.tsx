@@ -34,7 +34,7 @@ export function ArticleBody({ article, libraryItemId, revisionId, onJumpToAnchor
     onProgress: (e) => setOverviewProgressPct(e.progress_pct),
     onDone: () => {
       setOverviewJobId(null);
-      void qc.invalidateQueries({ queryKey: articleKeys.article(libraryItemId) });
+      void qc.invalidateQueries({ queryKey: articleKeys.article(libraryItemId, article.preset) });
       void qc.invalidateQueries({ queryKey: articleKeys.overviewFigure(article.id) });
     },
     onError: (problem: Partial<Problem>) => {
@@ -63,7 +63,7 @@ export function ArticleBody({ article, libraryItemId, revisionId, onJumpToAnchor
         path: { article_id: article.id, version },
         throwOnError: true,
       });
-      void qc.invalidateQueries({ queryKey: articleKeys.article(libraryItemId) });
+      void qc.invalidateQueries({ queryKey: articleKeys.article(libraryItemId, article.preset) });
       void qc.invalidateQueries({ queryKey: articleKeys.overviewFigure(article.id) });
       toast({ kind: "success", message: "✓ 版を復元しました" });
     } catch {
@@ -105,6 +105,7 @@ export function ArticleBody({ article, libraryItemId, revisionId, onJumpToAnchor
           key={block.id}
           libraryItemId={libraryItemId}
           articleId={article.id}
+          preset={article.preset}
           block={block}
           revisionId={revisionId}
           includeMath={article.include_math}

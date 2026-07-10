@@ -35,8 +35,10 @@ from alinea_core.arxiv.fetch import FetchError
 from alinea_core.arxiv.ids import ArxivId
 from alinea_core.arxiv.metadata import ArxivMeta
 from alinea_core.db.models import (
+    Article,
     BlockSearchIndex,
     DocumentRevision,
+    ExplainerFigure,
     Job,
     LibraryItem,
     Paper,
@@ -821,6 +823,52 @@ async def test_legacy_asset_key_serves_when_referenced_by_revision(
     assert r.headers["content-type"].startswith("image/png")
     assert r.headers["content-disposition"] == 'inline; filename="fig-1.png"'
     assert r.content == _MINIMAL_PDF
+
+
+async def test_generated_article_figure_asset_serves_for_owner(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+    fake_storage: None,
+) -> None:
+    user = await _login(client, db_session, redis_client, unique_email)
+    paper = Paper(arxiv_id=_rand_arxiv(), title="Generated Figure Paper", visibility="public")
+    db_session.add(paper)
+    await db_session.flush()
+    created_papers.append(paper.id)
+    item = LibraryItem(user_id=user.id, paper_id=paper.id, status="reading")
+    db_session.add(item)
+    await db_session.flush()
+    article = Article(
+        library_item_id=item.id,
+        title="Researcher article",
+        preset="researcher",
+        include_math=True,
+    )
+    db_session.add(article)
+    await db_session.flush()
+    figure_id = str(uuid.uuid4())
+    key = f"renders/explainer/{figure_id}/v1.png"
+    db_session.add(
+        ExplainerFigure(
+            id=figure_id,
+            article_id=article.id,
+            slot=0,
+            version=1,
+            provider="google",
+            model="gemini-3.1-flash-image",
+            prompt="test",
+            image_storage_key=key,
+            caption="test",
+        )
+    )
+    await db_session.commit()
+
+    r = await client.get(f"/api/assets/{encode_asset_id(key)}", follow_redirects=False)
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("image/png")
 
 
 async def test_asset_bad_id_404(

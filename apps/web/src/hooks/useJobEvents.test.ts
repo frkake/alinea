@@ -82,6 +82,30 @@ describe("useJobEvents", () => {
     expect(MockEventSource.instances[0]?.closed).toBe(true);
   });
 
+  test("immediately syncs the current status so progress is not stuck at 0%", async () => {
+    vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
+    vi.mocked(jobsGet).mockResolvedValue({
+      data: {
+        id: "job_1",
+        kind: "article",
+        status: "running",
+        stage: "generating",
+        progress_pct: 40,
+        detail: null,
+      },
+    } as never);
+    const onProgress = vi.fn();
+
+    renderHook(() => useJobEvents("job_1", { onProgress }));
+
+    await waitFor(() =>
+      expect(onProgress).toHaveBeenCalledWith(
+        expect.objectContaining({ stage: "generating", progress_pct: 40 }),
+      ),
+    );
+    expect(jobsGet).toHaveBeenCalledWith({ path: { job_id: "job_1" } });
+  });
+
   test("treats a data-bearing `error` event as a terminal semantic error (Problem)", async () => {
     vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
     const onError = vi.fn();

@@ -12,7 +12,14 @@ from __future__ import annotations
 
 import posixpath
 
-from alinea_core.db.models import DocumentRevision, Paper
+from alinea_core.db.models import (
+    Article,
+    DocumentRevision,
+    ExplainerFigure,
+    LibraryItem,
+    OverviewFigure,
+    Paper,
+)
 from fastapi import APIRouter, Query
 from fastapi.responses import Response
 from sqlalchemy import String, cast, select
@@ -52,6 +59,29 @@ async def _authorize_asset_key(key: str, user: CurrentUser, db: DbDep) -> None:
         if paper is None:
             raise ProblemException("not_found")
         await assert_paper_access(db, paper, str(user.id))
+        return
+
+    article_owner = await db.scalar(
+        select(LibraryItem.user_id)
+        .join(Article, Article.library_item_id == LibraryItem.id)
+        .join(ExplainerFigure, ExplainerFigure.article_id == Article.id)
+        .where(ExplainerFigure.image_storage_key == key)
+        .limit(1)
+    )
+    if article_owner is None:
+        article_owner = await db.scalar(
+            select(LibraryItem.user_id)
+            .join(Article, Article.library_item_id == LibraryItem.id)
+            .join(OverviewFigure, OverviewFigure.article_id == Article.id)
+            .where(
+                (OverviewFigure.image_storage_key == key)
+                | (OverviewFigure.svg_storage_key == key)
+            )
+            .limit(1)
+        )
+    if article_owner is not None:
+        if str(article_owner) != str(user.id):
+            raise ProblemException("not_found")
         return
 
     # 旧データ互換: `figures/fig-1.png` や `fig-1.png` のような paper_id を含まない

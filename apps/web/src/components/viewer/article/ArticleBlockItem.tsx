@@ -6,7 +6,7 @@ import { articlesBlockRewrite, figuresRegenerateExplainer, type ArticleBlockOut 
 import { useToast } from "@/components/ui/Toast";
 import { useJobEvents } from "@/hooks/useJobEvents";
 import { articleKeys } from "@/components/viewer/article/queries";
-import type { Article } from "@/components/viewer/article/types";
+import type { Article, Preset } from "@/components/viewer/article/types";
 import { ArticleBlockHover } from "@/components/viewer/article/ArticleBlockHover";
 import { RewriteInstructionPopover } from "@/components/viewer/article/RewriteInstructionPopover";
 import { EvidencePopover } from "@/components/viewer/article/EvidencePopover";
@@ -25,6 +25,7 @@ const FLASH_MS = 1200;
 export interface ArticleBlockItemProps {
   libraryItemId: string;
   articleId: string;
+  preset?: Preset;
   block: ArticleBlockOut;
   revisionId: string;
   includeMath: boolean;
@@ -39,6 +40,7 @@ export interface ArticleBlockItemProps {
 export function ArticleBlockItem({
   libraryItemId,
   articleId,
+  preset = "beginner",
   block,
   revisionId,
   includeMath,
@@ -64,16 +66,16 @@ export function ArticleBlockItem({
       setJobId(null);
       if (isExplainer) {
         // §5.5 例外: result.block を持たないため記事全体を invalidate する。
-        void qc.invalidateQueries({ queryKey: articleKeys.article(libraryItemId) });
+        void qc.invalidateQueries({ queryKey: articleKeys.article(libraryItemId, preset) });
       } else if (result?.block) {
         const updatedBlock = result.block;
-        qc.setQueryData<Article>(articleKeys.article(libraryItemId), (prev) =>
+        qc.setQueryData<Article>(articleKeys.article(libraryItemId, preset), (prev) =>
           prev
             ? { ...prev, blocks: prev.blocks.map((b) => (b.id === updatedBlock.id ? updatedBlock : b)) }
             : prev,
         );
       } else {
-        void qc.invalidateQueries({ queryKey: articleKeys.article(libraryItemId) });
+        void qc.invalidateQueries({ queryKey: articleKeys.article(libraryItemId, preset) });
       }
       setFlash(true);
       flashTimer.current = setTimeout(() => setFlash(false), FLASH_MS);

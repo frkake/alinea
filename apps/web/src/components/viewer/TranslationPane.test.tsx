@@ -50,7 +50,7 @@ describe("SummaryCard (VT-VIEW-02)", () => {
       "少ステップで高品質生成。",
     ];
     render(<SummaryCard lines={lines} onDetailedSummary={vi.fn()} />);
-    expect(screen.getByText("3行要約")).toBeInTheDocument();
+    expect(screen.getByText("論文概要")).toBeInTheDocument();
     expect(screen.getByText("AI生成")).toBeInTheDocument();
     expect(screen.getByText("詳細要約 →")).toBeInTheDocument();
     for (const line of lines) {

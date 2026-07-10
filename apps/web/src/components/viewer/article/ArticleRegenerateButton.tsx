@@ -23,10 +23,11 @@ export function ArticleRegenerateButton({ itemId }: { itemId: string }) {
   const [jobId, setJobId] = useState<string | null>(null);
 
   const setArticleRegenState = useViewerStore((s) => s.setArticleRegenState);
+  const activePreset = useViewerStore((s) => s.activeArticlePreset);
 
   const articleQuery = useQuery({
-    queryKey: articleKeys.article(itemId),
-    queryFn: () => fetchArticle(itemId),
+    queryKey: articleKeys.article(itemId, activePreset),
+    queryFn: () => fetchArticle(itemId, activePreset),
     retry: false,
     staleTime: Infinity,
   });
@@ -37,7 +38,7 @@ export function ArticleRegenerateButton({ itemId }: { itemId: string }) {
       setJobId(null);
       setArticleRegenState({ regenerating: false, progressPct: 0 });
       const article = articleQuery.data;
-      void qc.invalidateQueries({ queryKey: articleKeys.article(itemId) });
+      void qc.invalidateQueries({ queryKey: articleKeys.article(itemId, article?.preset ?? activePreset) });
       if (article) void qc.invalidateQueries({ queryKey: articleKeys.articleVersions(article.id) });
       toast({ kind: "success", message: `✓ 記事を再生成しました(版 ${(article?.version ?? 0) + 1})` });
     },

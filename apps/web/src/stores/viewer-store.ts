@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import type { SidePanelTabId } from "@/components/ui/SidePanelTabs";
+import type { Preset } from "@/components/viewer/article/types";
 
 /** 翻訳スタイル(plans/03 §7)。オンデマンド生成対象は literal のみ。 */
 export type TranslationStyle = "natural" | "literal";
@@ -72,6 +73,7 @@ interface ViewerStoreState {
    */
   articleRegenerating: boolean;
   articleRegenProgressPct: number;
+  activeArticlePreset: Preset | null;
 
   // ブックマーク切替シグナル(viewer-shell §10 キー `b`。0 起点で +1。1b が実処理を担う)
   bookmarkToggleSignal: number;
@@ -105,6 +107,7 @@ interface ViewerStoreState {
   }): void;
   setCurrentBlock(blockId: string, sectionId: string): void;
   setArticleRegenState(state: { regenerating: boolean; progressPct?: number }): void;
+  setActiveArticlePreset(preset: Preset): void;
   requestScroll(target: PendingScrollTarget): void;
   consumeScroll(): void;
   openSearch(query?: string): void;
@@ -193,6 +196,7 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
   bookmarkToggleSignal: 0,
   articleRegenerating: false,
   articleRegenProgressPct: 0,
+  activeArticlePreset: null,
   selection: null,
   pendingAnnotationId: null,
   pendingNoteId: null,
@@ -205,6 +209,7 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
     const tocRaw = readLocal(`alinea-toc-open:${itemId}`);
     const styleRaw = readLocal(`alinea-viewer-style:${itemId}`);
     const panelRaw = readSession(`alinea-viewer-panel:${itemId}`);
+    const articlePresetRaw = readLocal(`alinea-article-preset:${itemId}`);
 
     let panelOpen = true;
     let activeTab: SidePanelTabId = "chat";
@@ -225,6 +230,11 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
       literalStatus: "unknown",
       literalJobId: null,
       literalSetId: null,
+      activeArticlePreset: (["beginner", "implementer", "researcher", "reading_group"] as const).includes(
+        articlePresetRaw as Preset,
+      )
+        ? (articlePresetRaw as Preset)
+        : null,
       // 論文が変わるので前の論文の記事再生成表示は引き継がない。
       articleRegenerating: false,
       articleRegenProgressPct: 0,
@@ -269,6 +279,11 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
       articleRegenerating: regenerating,
       articleRegenProgressPct: progressPct === undefined ? s.articleRegenProgressPct : progressPct,
     }));
+  },
+  setActiveArticlePreset(preset) {
+    const itemId = get().itemId;
+    if (itemId) writeLocal(`alinea-article-preset:${itemId}`, preset);
+    set({ activeArticlePreset: preset });
   },
 
   requestScroll(target) {

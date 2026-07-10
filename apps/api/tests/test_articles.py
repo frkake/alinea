@@ -262,6 +262,24 @@ async def test_generate_article_conflicts_when_article_exists(
     assert resp.json()["code"] == "conflict"
 
 
+async def test_generate_article_allows_a_different_audience_variant(
+    article_ctx: SimpleNamespace,
+) -> None:
+    from alinea_core.db.models import LibraryItem
+
+    item = await article_ctx.db.get(LibraryItem, article_ctx.item_id)
+    assert item is not None
+    await factories.make_article(article_ctx.db, library_item=item, preset="beginner")
+    await article_ctx.db.commit()
+
+    resp = await article_ctx.client.post(
+        f"/api/library-items/{article_ctx.item_id}/article", json={"preset": "researcher"}
+    )
+    assert resp.status_code == 202, resp.text
+    job = await _job_for(article_ctx.db, resp.json()["job_id"])
+    assert job.payload["preset"] == "researcher"
+
+
 async def test_regenerate_enqueues_job_with_instruction_and_bumps_none_yet(
     article_ctx: SimpleNamespace,
 ) -> None:
