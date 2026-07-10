@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
 from typing import Any
@@ -12,6 +12,25 @@ from alinea_core.document.plaintext import block_to_plain
 from alinea_core.translation.pipeline import TRANSLATABLE_BLOCK_TYPES
 
 _PARAGRAPH_TYPES = frozenset({"paragraph", "list", "quote", "theorem"})
+
+
+def _is_bare_pdf_reference(plain: str, manifest_files: Collection[str]) -> bool:
+    """Return whether an entire visible block unambiguously names a manifest PDF."""
+    candidate = plain.strip()
+    if not candidate:
+        return False
+
+    manifest_pdf_paths = {
+        str(PurePosixPath(name)) for name in manifest_files if name.lower().endswith(".pdf")
+    }
+    manifest_pdf_basenames = {PurePosixPath(name).name for name in manifest_pdf_paths}
+    normalized_candidate = str(PurePosixPath(candidate))
+
+    if normalized_candidate in manifest_pdf_paths or normalized_candidate in manifest_pdf_basenames:
+        return True
+    return not any(char.isspace() for char in candidate) and (
+        PurePosixPath(normalized_candidate).name in manifest_pdf_basenames
+    )
 
 
 @dataclass(frozen=True)
@@ -73,14 +92,10 @@ def assess_document_completeness(
         binary_files = binary_files.keys()
     elif not isinstance(binary_files, list | tuple | set | frozenset):
         binary_files = ()
-    binary_pdfs = {
-        PurePosixPath(name).name
-        for name in binary_files
-        if isinstance(name, str) and name.lower().endswith(".pdf")
-    }
+    manifest_files = tuple(name for name in binary_files if isinstance(name, str))
 
     if 0 < len(visible_blocks) <= 3 and all(
-        PurePosixPath(plain).name in binary_pdfs for _block, plain in visible_blocks
+        _is_bare_pdf_reference(plain, manifest_files) for _block, plain in visible_blocks
     ):
         return report(False, "embedded_pdf_wrapper")
     if unresolved_figures > 0:

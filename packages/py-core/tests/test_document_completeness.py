@@ -1,3 +1,4 @@
+import alinea_core.ingest.completeness as completeness_module
 import pytest
 from alinea_core import ingest
 from alinea_core.document.blocks import Block, BlockType, DocumentContent, Section, SectionHeading
@@ -22,6 +23,51 @@ def _doc(*blocks: Block) -> DocumentContent:
 
 def _text_block(block_id: str, block_type: BlockType, text: str) -> Block:
     return Block(id=block_id, type=block_type, inlines=[{"t": "text", "v": text}])
+
+
+@pytest.mark.parametrize(
+    ("plain", "manifest_files", "expected"),
+    [
+        pytest.param("body.pdf", ("nested/body.pdf",), True, id="basename"),
+        pytest.param("./body.pdf", ("nested/body.pdf",), True, id="dot-relative"),
+        pytest.param("papers/body.pdf", ("nested/body.pdf",), True, id="other-directory"),
+        pytest.param(
+            "stored files/body copy.pdf",
+            ("stored files/body copy.pdf",),
+            True,
+            id="exact-path-with-spaces",
+        ),
+        pytest.param(
+            "body copy.pdf",
+            ("stored files/body copy.pdf",),
+            True,
+            id="exact-basename-with-spaces",
+        ),
+        pytest.param("See papers/body.pdf", ("nested/body.pdf",), False, id="prose-prefix"),
+        pytest.param(
+            "Results are in papers/body.pdf.",
+            ("nested/body.pdf",),
+            False,
+            id="sentence-punctuation",
+        ),
+        pytest.param(
+            "Read papers/body.pdf now",
+            ("nested/body.pdf",),
+            False,
+            id="prose-around-path",
+        ),
+        pytest.param(
+            "other/body copy.pdf",
+            ("stored files/body copy.pdf",),
+            False,
+            id="spaced-basename-in-different-path",
+        ),
+        pytest.param("other.pdf", ("nested/body.pdf",), False, id="different-pdf"),
+        pytest.param("", ("nested/body.pdf",), False, id="empty"),
+    ],
+)
+def test_is_bare_pdf_reference(plain: str, manifest_files: tuple[str, ...], expected: bool) -> None:
+    assert completeness_module._is_bare_pdf_reference(plain, manifest_files) is expected
 
 
 def test_rejects_single_embedded_pdf_filename() -> None:
@@ -92,6 +138,73 @@ def test_meaningful_heading_before_pdf_reference_is_not_a_wrapper() -> None:
 
     assert report.code != "embedded_pdf_wrapper"
     assert report.accepted
+
+
+@pytest.mark.parametrize(
+    "paragraphs",
+    [
+        pytest.param(("See papers/body.pdf",), id="one-prose-block"),
+        pytest.param(
+            ("See papers/body.pdf", "Also papers/body.pdf"),
+            id="two-prose-blocks",
+        ),
+        pytest.param(("Results are in papers/body.pdf.",), id="sentence-punctuation"),
+    ],
+)
+def test_pdf_mentions_in_free_text_are_not_wrappers(paragraphs: tuple[str, ...]) -> None:
+    blocks = tuple(
+        _text_block(f"p{index}", "paragraph", paragraph)
+        for index, paragraph in enumerate(paragraphs, start=1)
+    )
+    report = assess_document_completeness(
+        _doc(*blocks),
+        pdf_text="",
+        source_manifest={"binary_files": ["nested/body.pdf"]},
+    )
+
+    assert report.code != "embedded_pdf_wrapper"
+
+
+@pytest.mark.parametrize(
+    ("references", "manifest_files"),
+    [
+        pytest.param(
+            ("body.pdf", "./body.pdf"),
+            ("nested/body.pdf",),
+            id="same-basename",
+        ),
+        pytest.param(
+            ("papers/body.pdf", "appendix/supp.pdf"),
+            ("nested/body.pdf", "assets/supp.pdf"),
+            id="distinct-basenames",
+        ),
+    ],
+)
+def test_rejects_multiple_path_only_pdf_blocks(
+    references: tuple[str, ...], manifest_files: tuple[str, ...]
+) -> None:
+    blocks = tuple(
+        _text_block(f"p{index}", "paragraph", reference)
+        for index, reference in enumerate(references, start=1)
+    )
+    report = assess_document_completeness(
+        _doc(*blocks),
+        pdf_text="",
+        source_manifest={"binary_files": manifest_files},
+    )
+
+    assert report.code == "embedded_pdf_wrapper"
+
+
+def test_rejects_exact_manifest_pdf_path_with_spaces() -> None:
+    reference = "stored files/body copy.pdf"
+    report = assess_document_completeness(
+        _doc(_text_block("p1", "paragraph", reference)),
+        pdf_text="",
+        source_manifest={"binary_files": [reference]},
+    )
+
+    assert report.code == "embedded_pdf_wrapper"
 
 
 def test_empty_parser_blocks_do_not_hide_embedded_pdf_wrapper() -> None:
