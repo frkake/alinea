@@ -4,6 +4,10 @@ worker(apps/worker)と api(apps/api)から共用する。arq タスク駆動そ�
 apps/worker/src/alinea_worker/pipeline.py が担う。
 """
 
+from alinea_core.ingest.completeness import (
+    DocumentCompleteness,
+    assess_document_completeness,
+)
 from alinea_core.ingest.dedupe import (
     FUZZY_TITLE_THRESHOLD,
     PaperBibView,
@@ -48,9 +52,11 @@ __all__ = [
     "FIXED_STAGE_PROGRESS",
     "FUZZY_TITLE_THRESHOLD",
     "STAGE_ORDER",
+    "DocumentCompleteness",
     "PaperBibView",
     "ReanchorStats",
     "append_log",
+    "assess_document_completeness",
     "body_progress",
     "build_timeline",
     "count_active_body_jobs",
