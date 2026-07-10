@@ -284,6 +284,14 @@ def _embedded_pdf_identity(
     return source, digest
 
 
+_EMBEDDED_PDF_PROVENANCE_KEYS = (
+    "embedded_pdf_source",
+    "embedded_pdf_sha256",
+    "embedded_pdf_container_sha256",
+    "embedded_pdf_container_storage_key",
+)
+
+
 def _is_missing_s3_object(exc: ClientError) -> bool:
     error = exc.response.get("Error", {})
     return str(error.get("Code") or "") in {"NoSuchKey", "404", "NotFound"}
@@ -434,6 +442,7 @@ class IngestRun:
         self._candidate_completeness: dict[str, Any] | None = None
         self._candidate_storage_key: str | None = None
         self._candidate_sha256: str | None = None
+        self._candidate_provenance_validation_required = False
         self.style: str = "natural"
         self._settings_obj: TranslationSettings | None = None
 
@@ -976,6 +985,7 @@ class IngestRun:
     ) -> None:
         self.source_format = candidate.source_format
         self.content = candidate.content
+        self._candidate_provenance_validation_required = True
         self._candidate_failures = failures
         self._candidate_diagnostics = [dict(item) for item in candidate.diagnostics]
         self._candidate_completeness = completeness or candidate.report.as_dict()
@@ -993,6 +1003,45 @@ class IngestRun:
         else:
             self.parsed = candidate.parsed
             self.parsed_pdf = None
+
+    def _selected_embedded_pdf_provenance(self) -> dict[str, str] | None:
+        try:
+            embedded_pdf = _embedded_pdf_identity(self._candidate_diagnostics)
+        except ValueError as exc:
+            raise FetchError("parse_error", "selected source diagnostics are invalid") from exc
+        if embedded_pdf is None:
+            return None
+        if (
+            self.source_format != "pdf"
+            or self._candidate_storage_key is None
+            or self._candidate_sha256 is None
+        ):
+            raise FetchError("parse_error", "selected embedded source identity is incomplete")
+        return {
+            "embedded_pdf_source": embedded_pdf[0],
+            "embedded_pdf_sha256": embedded_pdf[1],
+            "embedded_pdf_container_sha256": self._candidate_sha256,
+            "embedded_pdf_container_storage_key": self._candidate_storage_key,
+        }
+
+    def _validate_revision_candidate_provenance(self, revision: DocumentRevision) -> None:
+        if not self._candidate_provenance_validation_required:
+            return
+        expected = self._selected_embedded_pdf_provenance()
+        stats = revision.stats if isinstance(revision.stats, dict) else {}
+        if expected is None:
+            if any(key in stats for key in _EMBEDDED_PDF_PROVENANCE_KEYS):
+                raise FetchError(
+                    "parse_error",
+                    "selected source does not match existing embedded revision provenance",
+                )
+            return
+        actual = {key: stats.get(key) for key in expected}
+        if revision.source_format != "pdf" or actual != expected:
+            raise FetchError(
+                "parse_error",
+                "selected embedded source does not match existing revision provenance",
+            )
 
     @staticmethod
     def _checkpoint_candidate_failures(checkpoint: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1507,13 +1556,6 @@ class IngestRun:
             failures = [dict(item) for item in _HISTORICAL_CANDIDATE_FAILURES]
         stats["candidate_failures"] = failures
         stats["completeness"] = completeness
-        diagnostics = self._candidate_diagnostics
-        parsing_checkpoint = self.ckpt.get("parsing")
-        if not diagnostics and isinstance(parsing_checkpoint, dict):
-            diagnostics = self._checkpoint_candidate_diagnostics(parsing_checkpoint)
-        embedded_pdf = _embedded_pdf_identity(diagnostics)
-        if embedded_pdf is not None:
-            stats["embedded_pdf_source"] = embedded_pdf[0]
         revision.stats = stats
         await self.session.commit()
         if not completeness.get("accepted"):
@@ -1533,6 +1575,7 @@ class IngestRun:
     async def _finalize_revision(
         self, revision: DocumentRevision, *, adopt_from_revision_id: str | None
     ) -> None:
+        self._validate_revision_candidate_provenance(revision)
         self._restore_revision(revision)
         await self._ensure_revision_diagnostics(revision)
         paper = await self._get_paper()
@@ -1559,6 +1602,7 @@ class IngestRun:
         checkpoint_candidate: SourceCandidate | None = None
         parse_ck: dict[str, Any] = {}
         if self.is_pdf_upload:
+            self._candidate_provenance_validation_required = True
             raw_parse_ck = self.ckpt.get("parsing")
             if raw_parse_ck is not None and not isinstance(raw_parse_ck, dict):
                 raise FetchError("parse_error", "parsing checkpoint is not an object")
@@ -1601,6 +1645,7 @@ class IngestRun:
                 ):
                     raise FetchError("parse_error", "parsing checkpoint identity is invalid")
                 self.source_format = str(checkpoint_format)
+                self._candidate_provenance_validation_required = True
                 self._candidate_failures = self._checkpoint_candidate_failures(parse_ck)
                 self._candidate_diagnostics = self._checkpoint_candidate_diagnostics(parse_ck)
                 checkpoint_completeness = parse_ck.get("completeness")
@@ -1619,11 +1664,6 @@ class IngestRun:
                     embedded_pdf = _embedded_pdf_identity(self._candidate_diagnostics)
                     if embedded_pdf is not None:
                         checkpoint_candidate = await self._load_checkpoint_candidate(parse_ck)
-                        if (existing.stats or {}).get("embedded_pdf_source") != embedded_pdf[0]:
-                            raise FetchError(
-                                "parse_error",
-                                "parsing checkpoint source does not match revision provenance",
-                            )
                     adopt_from = parse_ck.get("adopt_from_revision_id")
                     await self._finalize_revision(
                         existing,
@@ -1892,9 +1932,9 @@ class IngestRun:
         stats["translatable_blocks"] = len(scope.in_scope_block_ids)
         stats["candidate_failures"] = self._candidate_failures
         stats["completeness"] = self._candidate_completeness
-        embedded_pdf = _embedded_pdf_identity(self._candidate_diagnostics)
-        if embedded_pdf is not None:
-            stats["embedded_pdf_source"] = embedded_pdf[0]
+        embedded_pdf_provenance = self._selected_embedded_pdf_provenance()
+        if embedded_pdf_provenance is not None:
+            stats.update(embedded_pdf_provenance)
 
         revision = DocumentRevision(
             paper_id=self.paper_id,
