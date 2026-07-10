@@ -15,6 +15,7 @@ import multiprocessing as mp
 import posixpath
 import re
 import sys
+import threading
 import time
 import warnings
 import xml.etree.ElementTree as ET
@@ -68,6 +69,7 @@ _CSS_SIMPLE_SELECTOR_RE = re.compile(
     r"(?:(?:\*|[A-Za-z][A-Za-z0-9_-]*)(?:[.#][A-Za-z_][A-Za-z0-9_-]*)*"
     r"|(?:[.#][A-Za-z_][A-Za-z0-9_-]*)+)\Z"
 )
+_CSS_PROPERTY_NAME_RE = re.compile(r"-{0,2}[A-Za-z_][A-Za-z0-9_-]*\Z")
 _SAFE_CSS_VALUE_RE = re.compile(r"[\w\s#.,:%+\-'\"/()]*\Z")
 _CSS_DANGEROUS_RE = re.compile(
     r"@import\b|expression\s*\(|(?:behavior|-moz-binding)\s*:|javascript\s*:",
@@ -77,12 +79,17 @@ _SAFE_FRAGMENT_RE = re.compile(r"#[A-Za-z0-9_.:-]+\Z")
 _SAFE_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_.:-]+\Z")
 _SAFE_CLASS_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*\Z")
 _SAFE_ROLE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]*\Z")
+_SVG_NUMBER_PATTERN = r"[-+]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][-+]?\d+)?"
 _SVG_TRANSFORM_FUNCTION_RE = re.compile(
     r"(?P<name>matrix|translate|scale|rotate|skewX|skewY)\s*"
-    r"\((?P<arguments>[+\-0-9.eE,\s]+)\)"
+    r"\((?P<arguments>[^()]*)\)"
 )
+_SVG_TRANSFORM_ARGUMENTS_RE = re.compile(
+    rf"\s*{_SVG_NUMBER_PATTERN}(?:(?:\s*,\s*|\s+){_SVG_NUMBER_PATTERN})*\s*\Z"
+)
+_SVG_RAW_NUMBER_RE = re.compile(_SVG_NUMBER_PATTERN)
 _SVG_NUMBER_TOKEN_RE = re.compile(
-    r"(?P<number>[-+]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][-+]?\d+)?)"
+    rf"(?P<number>{_SVG_NUMBER_PATTERN})"
     r"(?:%|px|pt|pc|cm|mm|in|em|ex|rem|deg|rad|grad|turn)?\Z",
     re.IGNORECASE,
 )
@@ -184,6 +191,14 @@ _SAFE_STYLE_PROPERTIES = frozenset(
     }
 )
 _SVG_TRANSFORM_ATTRIBUTES = frozenset({"gradienttransform", "patterntransform", "transform"})
+_SVG_TRANSFORM_ARITIES: dict[str, frozenset[int]] = {
+    "matrix": frozenset({6}),
+    "translate": frozenset({1, 2}),
+    "scale": frozenset({1, 2}),
+    "rotate": frozenset({1, 3}),
+    "skewX": frozenset({1}),
+    "skewY": frozenset({1}),
+}
 _SVG_IDENTIFIER_VALUE_ATTRIBUTES = frozenset({"in", "in2", "result"})
 _SVG_ENUM_ATTRIBUTE_VALUES: dict[str, frozenset[str]] = {
     "filterunits": frozenset({"objectBoundingBox", "userSpaceOnUse"}),
@@ -340,6 +355,7 @@ _RASTER_FORMATS: dict[str, tuple[str, str]] = {
     "WEBP": ("webp", "image/webp"),
     "GIF": ("gif", "image/gif"),
 }
+_CANCELLED_ISOLATED_RESULT = object()
 
 
 class FigureAssetError(Exception):
@@ -755,7 +771,15 @@ def _validate_svg_transform(value: str) -> None:
         if position == len(clean):
             break
         match = _SVG_TRANSFORM_FUNCTION_RE.match(clean, position)
-        if match is None or not any(character.isdigit() for character in match.group("arguments")):
+        if match is None:
+            raise FigureAssetError("unsafe_vector", "SVG transform is not accepted")
+        arguments = match.group("arguments")
+        if _SVG_TRANSFORM_ARGUMENTS_RE.fullmatch(arguments) is None:
+            raise FigureAssetError("unsafe_vector", "SVG transform is not accepted")
+        numbers = [float(number.group(0)) for number in _SVG_RAW_NUMBER_RE.finditer(arguments)]
+        if len(numbers) not in _SVG_TRANSFORM_ARITIES[match.group("name")] or not all(
+            math.isfinite(number) for number in numbers
+        ):
             raise FigureAssetError("unsafe_vector", "SVG transform is not accepted")
         matched = True
         position = match.end()
@@ -832,6 +856,50 @@ def _validate_svg_css_references(value: str) -> None:
             raise FigureAssetError("unsafe_vector", "SVG CSS function is not accepted")
 
 
+def _is_css_identifier_character(character: str) -> bool:
+    return character.isalnum() or character in {"-", "_"}
+
+
+def _validate_svg_css_finite_numbers(value: str) -> None:
+    """Reject non-finite CSS numbers without interpreting IDs or color tokens as numbers."""
+
+    url_spans = iter((match.start(), match.end()) for match in _CSS_URL_RE.finditer(value))
+    next_url = next(url_spans, None)
+    position = 0
+    quote: str | None = None
+    while position < len(value):
+        if next_url is not None and position == next_url[0]:
+            position = next_url[1]
+            next_url = next(url_spans, None)
+            continue
+        character = value[position]
+        if quote is not None:
+            if character == quote:
+                quote = None
+            position += 1
+            continue
+        if character in {'"', "'"}:
+            quote = character
+            position += 1
+            continue
+        if character == "#":
+            position += 1
+            while position < len(value) and _is_css_identifier_character(value[position]):
+                position += 1
+            continue
+        match = _SVG_RAW_NUMBER_RE.match(value, position)
+        if match is None or (position > 0 and _is_css_identifier_character(value[position - 1])):
+            position += 1
+            continue
+        if not math.isfinite(float(match.group(0))):
+            raise FigureAssetError("unsafe_vector", "SVG CSS number is not finite")
+        position = match.end()
+        while position < len(value) and (
+            value[position] == "%" or _is_css_identifier_character(value[position])
+        ):
+            position += 1
+
+
 def _validate_svg_css_value(value: str) -> None:
     clean = value.strip()
     if not clean:
@@ -866,28 +934,35 @@ def _validate_svg_css_value(value: str) -> None:
             functions.pop()
     if quote is not None or functions:
         raise FigureAssetError("unsafe_vector", "SVG style value is unbalanced")
+    _validate_svg_css_finite_numbers(clean)
 
 
-def _validate_svg_css(value: str, *, declarations: bool = False) -> None:
+def _sanitize_svg_css_value(value: str) -> str:
     without_comments = _precheck_svg_css(value)
-
-    if declarations:
-        if "{" in without_comments or "}" in without_comments:
-            raise FigureAssetError("unsafe_vector", "SVG style declaration is invalid")
-        for declaration in without_comments.split(";"):
-            clean = declaration.strip()
-            if not clean:
-                continue
-            if ":" not in clean:
-                raise FigureAssetError("unsafe_vector", "SVG style declaration is invalid")
-            property_name, property_value = clean.split(":", 1)
-            if property_name.strip().casefold() not in _SAFE_STYLE_PROPERTIES:
-                raise FigureAssetError("unsafe_vector", "SVG style property is not accepted")
-            _validate_svg_css_value(property_value)
-    else:
-        _validate_svg_css_value(without_comments)
-
+    _validate_svg_css_value(without_comments)
     _validate_svg_css_references(without_comments)
+    return without_comments.strip()
+
+
+def _sanitize_svg_css_declarations(value: str) -> str:
+    without_comments = _precheck_svg_css(value)
+    if "{" in without_comments or "}" in without_comments:
+        raise FigureAssetError("unsafe_vector", "SVG style declaration is invalid")
+    sanitized: list[str] = []
+    for declaration in without_comments.split(";"):
+        clean = declaration.strip()
+        if not clean:
+            continue
+        if ":" not in clean:
+            raise FigureAssetError("unsafe_vector", "SVG style declaration is invalid")
+        raw_property_name, property_value = clean.split(":", 1)
+        property_name = raw_property_name.strip().casefold()
+        if _CSS_PROPERTY_NAME_RE.fullmatch(property_name) is None:
+            raise FigureAssetError("unsafe_vector", "SVG style property is invalid")
+        if property_name not in _SAFE_STYLE_PROPERTIES:
+            continue
+        sanitized.append(f"{property_name}:{_sanitize_svg_css_value(property_value)}")
+    return ";".join(sanitized)
 
 
 def _validate_svg_css_selector(selector: str) -> None:
@@ -911,23 +986,28 @@ def _validate_svg_css_selector(selector: str) -> None:
             previous_was_combinator = False
 
 
-def _validate_svg_stylesheet(value: str) -> None:
+def _sanitize_svg_stylesheet(value: str) -> str:
     stylesheet = _precheck_svg_css(value)
     position = 0
+    sanitized_rules: list[str] = []
     while position < len(stylesheet):
         while position < len(stylesheet) and stylesheet[position].isspace():
             position += 1
         if position == len(stylesheet):
-            return
+            break
         open_brace = stylesheet.find("{", position)
         if open_brace < 0:
             raise FigureAssetError("unsafe_vector", "SVG stylesheet rule is invalid")
         close_brace = stylesheet.find("}", open_brace + 1)
         if close_brace < 0 or "{" in stylesheet[open_brace + 1 : close_brace]:
             raise FigureAssetError("unsafe_vector", "SVG stylesheet rule is invalid")
-        _validate_svg_css_selector(stylesheet[position:open_brace])
-        _validate_svg_css(stylesheet[open_brace + 1 : close_brace], declarations=True)
+        selector = stylesheet[position:open_brace].strip()
+        _validate_svg_css_selector(selector)
+        declarations = _sanitize_svg_css_declarations(stylesheet[open_brace + 1 : close_brace])
+        if declarations:
+            sanitized_rules.append(f"{selector}{{{declarations}}}")
         position = close_brace + 1
+    return "".join(sanitized_rules)
 
 
 def _decode_and_precheck_svg(data: bytes) -> str:
@@ -1038,11 +1118,15 @@ def _validate_svg_document(data: bytes) -> bytes:
                     del element.attrib[raw_attribute]
                 continue
             if attribute == "style":
-                _validate_svg_css(value, declarations=True)
-            elif attribute in _SAFE_STYLE_PROPERTIES:
-                _validate_svg_css(value)
+                sanitized_style = _sanitize_svg_css_declarations(value)
+                if sanitized_style:
+                    element.attrib[raw_attribute] = sanitized_style
+                else:
+                    del element.attrib[raw_attribute]
             elif attribute in _SVG_TRANSFORM_ATTRIBUTES:
                 _validate_svg_transform(value)
+            elif attribute in _SAFE_STYLE_PROPERTIES:
+                element.attrib[raw_attribute] = _sanitize_svg_css_value(value)
             elif attribute == "id":
                 _validate_svg_identifier(value)
             elif attribute == "class":
@@ -1058,7 +1142,9 @@ def _validate_svg_document(data: bytes) -> bytes:
             else:
                 del element.attrib[raw_attribute]
         if name == "style":
-            _validate_svg_stylesheet("".join(element.itertext()))
+            element.text = _sanitize_svg_stylesheet("".join(element.itertext()))
+            for child in list(element):
+                element.remove(child)
 
     for parent in elements:
         for child in list(parent):
@@ -1347,6 +1433,7 @@ def _run_isolated_worker(
     max_output_bytes: int,
     worker: IsolatedWorker,
     *,
+    cancellation_event: threading.Event,
     timeout_code: str,
     crash_code: str,
     oversize_code: str,
@@ -1369,32 +1456,39 @@ def _run_isolated_worker(
     )
     message: tuple[object, ...] | None = None
     timed_out = False
+    cancelled = False
     try:
-        process.start()
-        send_connection.close()
-        deadline = time.monotonic() + timeout_s
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                timed_out = True
-                break
-            if receive_connection.poll(min(0.05, remaining)):
-                try:
-                    received = receive_connection.recv()
-                except EOFError:
+        if cancellation_event.is_set():
+            cancelled = True
+        else:
+            process.start()
+            send_connection.close()
+            deadline = time.monotonic() + timeout_s
+            while True:
+                if cancellation_event.is_set():
+                    cancelled = True
                     break
-                if isinstance(received, tuple):
-                    message = received
-                break
-            if not process.is_alive():
-                if receive_connection.poll(0.05):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                if receive_connection.poll(min(0.05, remaining)):
                     try:
                         received = receive_connection.recv()
                     except EOFError:
                         break
                     if isinstance(received, tuple):
                         message = received
-                break
+                    break
+                if not process.is_alive():
+                    if receive_connection.poll(0.05):
+                        try:
+                            received = receive_connection.recv()
+                        except EOFError:
+                            break
+                        if isinstance(received, tuple):
+                            message = received
+                    break
     except Exception as exc:
         raise FigureAssetError(crash_code, "isolated worker could not start") from exc
     finally:
@@ -1404,6 +1498,8 @@ def _run_isolated_worker(
             receive_connection.close()
             send_connection.close()
 
+    if cancelled:
+        return _CANCELLED_ISOLATED_RESULT
     if timed_out:
         raise FigureAssetError(timeout_code, "isolated worker deadline was exceeded")
     if not message or message[0] == "crash":
@@ -1415,6 +1511,59 @@ def _run_isolated_worker(
     if message[0] == "ok" and len(message) == 2:
         return message[1]
     raise FigureAssetError(crash_code, "isolated worker returned invalid data")
+
+
+async def _drain_isolated_thread_task(worker_task: asyncio.Task[object]) -> None:
+    """Retrieve a cooperative supervisor task despite repeated caller cancellation."""
+
+    while not worker_task.done():
+        try:
+            await asyncio.shield(worker_task)
+        except asyncio.CancelledError:
+            continue
+        except BaseException:
+            break
+    if not worker_task.cancelled():
+        worker_task.exception()
+
+
+async def _run_isolated_worker_async(
+    data: bytes,
+    source_name: str,
+    content_type: str | None,
+    timeout_s: float,
+    max_output_bytes: int,
+    worker: IsolatedWorker,
+    *,
+    timeout_code: str,
+    crash_code: str,
+    oversize_code: str,
+    lifecycle_code: str,
+) -> object:
+    cancellation_event = threading.Event()
+    worker_task = asyncio.create_task(
+        asyncio.to_thread(
+            _run_isolated_worker,
+            data,
+            source_name,
+            content_type,
+            timeout_s,
+            max_output_bytes,
+            worker,
+            cancellation_event=cancellation_event,
+            timeout_code=timeout_code,
+            crash_code=crash_code,
+            oversize_code=oversize_code,
+            lifecycle_code=lifecycle_code,
+        ),
+        name="alinea-isolated-worker-supervisor",
+    )
+    try:
+        return await asyncio.shield(worker_task)
+    except asyncio.CancelledError as original_cancel:
+        cancellation_event.set()
+        await _drain_isolated_thread_task(worker_task)
+        raise original_cancel
 
 
 async def isolated_figure_asset_payload(
@@ -1433,8 +1582,7 @@ async def isolated_figure_asset_payload(
         raise FigureAssetError("conversion_timeout", "figure conversion deadline is invalid")
     if max_output_bytes <= 0:
         raise FigureAssetError("conversion_oversize", "converted figure byte limit is invalid")
-    result = await asyncio.to_thread(
-        _run_isolated_worker,
+    result = await _run_isolated_worker_async(
         data,
         source_name,
         content_type,
@@ -1467,8 +1615,7 @@ async def isolated_thumbnail_payload(
         raise FigureAssetError("thumbnail_timeout", "thumbnail deadline is invalid")
     if max_output_bytes <= 0:
         raise FigureAssetError("thumbnail_oversize", "thumbnail byte limit is invalid")
-    result = await asyncio.to_thread(
-        _run_isolated_worker,
+    result = await _run_isolated_worker_async(
         data,
         source_name,
         content_type,

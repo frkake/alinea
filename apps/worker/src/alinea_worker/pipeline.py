@@ -151,6 +151,9 @@ MAX_TOTAL_FIGURE_MATERIALIZED_BYTES = 128 * 1024 * 1024
 # for the full 200-figure document cap plus conversion overhead.
 MAX_DOCUMENT_MATERIALIZATION_SECONDS = 660.0
 MAX_HTML_ASSET_FETCH_SECONDS = 45.0
+REVISION_ASSET_CLEANUP_TIMEOUT_S = 5.0
+REVISION_ASSET_CLEANUP_CANCEL_GRACE_S = 1.0
+REVISION_ASSET_CLEANUP_CANCEL_POLL_S = 0.05
 _INLINE_RESOURCE_FAILURE_CODES = frozenset(
     {
         "asset_too_large",
@@ -289,6 +292,73 @@ async def _materialize_inline_svg(
 
 
 log = structlog.get_logger("alinea.worker.pipeline")
+_BACKGROUND_REVISION_CLEANUPS: set[asyncio.Task[None]] = set()
+
+
+def _revision_cleanup_error(cleanup: asyncio.Task[None]) -> BaseException | None:
+    if cleanup.cancelled():
+        return None
+    return cleanup.exception()
+
+
+def _retrieve_background_revision_cleanup(cleanup: asyncio.Task[None]) -> None:
+    _BACKGROUND_REVISION_CLEANUPS.discard(cleanup)
+    cleanup_error = _revision_cleanup_error(cleanup)
+    if cleanup_error is not None:
+        log.warning(
+            "revision_asset_background_cleanup_failed",
+            error_type=type(cleanup_error).__name__,
+        )
+
+
+def _track_background_revision_cleanup(cleanup: asyncio.Task[None]) -> None:
+    _BACKGROUND_REVISION_CLEANUPS.add(cleanup)
+    cleanup.add_done_callback(_retrieve_background_revision_cleanup)
+
+
+async def _drain_revision_cleanup_task(
+    cleanup: asyncio.Task[None],
+) -> BaseException | None:
+    """Wait through caller cancellation, bounding and retrieving owned cleanup.
+
+    The production S3 client has request timeouts and is cancellation-cooperative.
+    Tracking is the final fallback for a dependency that suppresses cancellation.
+    """
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + REVISION_ASSET_CLEANUP_TIMEOUT_S
+    while not cleanup.done():
+        remaining_s = deadline - loop.time()
+        if remaining_s <= 0:
+            break
+        try:
+            await asyncio.wait({cleanup}, timeout=remaining_s)
+        except asyncio.CancelledError:
+            continue
+        if not cleanup.done():
+            break
+
+    if cleanup.done():
+        return _revision_cleanup_error(cleanup)
+
+    timeout_error = TimeoutError("revision asset cleanup deadline was exceeded")
+    cancellation_deadline = loop.time() + REVISION_ASSET_CLEANUP_CANCEL_GRACE_S
+    while not cleanup.done() and loop.time() < cancellation_deadline:
+        cleanup.cancel()
+        remaining_s = cancellation_deadline - loop.time()
+        try:
+            await asyncio.wait(
+                {cleanup},
+                timeout=min(REVISION_ASSET_CLEANUP_CANCEL_POLL_S, remaining_s),
+            )
+        except asyncio.CancelledError:
+            continue
+
+    if cleanup.done():
+        _revision_cleanup_error(cleanup)
+    else:
+        _track_background_revision_cleanup(cleanup)
+    return timeout_error
 
 
 @asynccontextmanager
@@ -318,11 +388,11 @@ async def _staged_revision_assets(
                 )
         if uploaded_keys:
             cleanup = asyncio.create_task(
-                storage.delete_many(storage.assets_bucket, uploaded_keys.copy())
+                storage.delete_many(storage.assets_bucket, uploaded_keys.copy()),
+                name="alinea-revision-asset-cleanup",
             )
-            try:
-                await asyncio.shield(cleanup)
-            except BaseException as cleanup_error:
+            cleanup_error = await _drain_revision_cleanup_task(cleanup)
+            if cleanup_error is not None:
                 log.warning(
                     "revision_asset_cleanup_failed",
                     error_type=type(cleanup_error).__name__,
@@ -2254,6 +2324,7 @@ class IngestRun:
             figure_bytes, fig_warnings, figure_failures = await self._save_pdf_assets(
                 self.revision_id,
                 uploaded_keys=uploaded_keys,
+                deadline=materialization_deadline,
             )
             warnings.extend(fig_warnings)
             stats = {**stats, "figure_asset_failures": figure_failures}
@@ -2294,6 +2365,7 @@ class IngestRun:
         revision_id: str,
         *,
         uploaded_keys: list[str] | None = None,
+        deadline: MaterializationDeadline | None = None,
     ) -> tuple[dict[str, bytes], list[str], list[dict[str, str]]]:
         """図・表・数式の切り出し PNG を S3 へ保存し block.asset_key を確定する(§6.6.3)。"""
         output: dict[str, bytes] = {}
@@ -2309,23 +2381,46 @@ class IngestRun:
             if block is None:
                 continue
             try:
+                if deadline is not None:
+                    deadline.remaining()
                 if figure_index >= MAX_FIGURES_PER_DOCUMENT:
                     raise FigureAssetError("figure_limit_exceeded", "document has too many figures")
-                next_materialized_bytes = materialized_bytes + len(png) * 2
+                materialized_budget = MAX_TOTAL_FIGURE_MATERIALIZED_BYTES - materialized_bytes
+                if materialized_budget <= 0:
+                    raise FigureAssetError(
+                        "figure_bytes_exceeded",
+                        "document figure bytes exceed the aggregate safe limit",
+                    )
+                payload = await _materialize_figure_payload(
+                    png,
+                    f"{block_id}.png",
+                    "image/png",
+                    materialized_budget=materialized_budget,
+                    deadline=deadline,
+                )
+                next_materialized_bytes = materialized_bytes + len(png) + len(payload.content)
                 if next_materialized_bytes > MAX_TOTAL_FIGURE_MATERIALIZED_BYTES:
                     raise FigureAssetError(
                         "figure_bytes_exceeded",
                         "document figure bytes exceed the aggregate safe limit",
                     )
-                key = StorageKeys.figure(self.paper_id, revision_id, block_id, "png")
+                key = StorageKeys.figure(
+                    self.paper_id,
+                    revision_id,
+                    block_id,
+                    payload.ext,
+                )
                 if uploaded_keys is not None:
                     uploaded_keys.append(key)
                     staged_key = key
                 await self.deps.s3.put(
-                    self.deps.s3.assets_bucket, key, png, content_type="image/png"
+                    self.deps.s3.assets_bucket,
+                    key,
+                    payload.content,
+                    content_type=payload.content_type,
                 )
                 block.asset_key = key
-                output[block_id] = png
+                output[block_id] = payload.content
                 materialized_bytes = next_materialized_bytes
             except FigureAssetError as exc:
                 if staged_key is not None:

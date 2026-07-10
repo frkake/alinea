@@ -7,7 +7,7 @@ import gzip
 import io
 import multiprocessing as mp
 import tarfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from types import SimpleNamespace
 from typing import Any
 
@@ -89,6 +89,48 @@ def _isolated_sleep_worker(
     del source_name, content_type
     time.sleep(5)
     return FigureAssetPayload(b"x", "png", "image/png", 1, 1)
+
+
+async def _cancel_twice_and_require_isolated_reap(awaitable: Awaitable[Any]) -> None:
+    existing_children = {child.pid for child in mp.active_children()}
+    existing_tasks = asyncio.all_tasks()
+    task = asyncio.create_task(awaitable)
+    loop = asyncio.get_running_loop()
+    start_deadline = loop.time() + 2.0
+    while loop.time() < start_deadline:
+        if {child.pid for child in mp.active_children()} - existing_children:
+            break
+        await asyncio.sleep(0.01)
+    assert {child.pid for child in mp.active_children()} - existing_children
+
+    promptly_reaped = False
+    unexpected_pending: set[asyncio.Task[Any]] = set()
+    second_cancel_delivered = False
+    try:
+        task.cancel("first cancellation")
+        await asyncio.sleep(0)
+        second_cancel_delivered = task.cancel("second cancellation")
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await task
+        assert caught.value.args == ("first cancellation",)
+        await asyncio.sleep(0.1)
+        promptly_reaped = {child.pid for child in mp.active_children()} <= existing_children
+        current = asyncio.current_task()
+        unexpected_pending = {
+            candidate
+            for candidate in asyncio.all_tasks() - existing_tasks
+            if candidate is not current and not candidate.done()
+        }
+    finally:
+        cleanup_deadline = loop.time() + 2.0
+        while loop.time() < cleanup_deadline:
+            if {child.pid for child in mp.active_children()} <= existing_children:
+                break
+            await asyncio.sleep(0.02)
+
+    assert second_cancel_delivered is True
+    assert promptly_reaped is True
+    assert unexpected_pending == set()
 
 
 def _isolated_crash_worker(
@@ -505,6 +547,121 @@ async def test_thumbnail_timeout_is_stable_and_child_is_reaped() -> None:
     assert {child.pid for child in mp.active_children()} <= existing_children
 
 
+@pytest.mark.parametrize("path", ["figure", "thumbnail", "fetch"])
+async def test_isolated_materialization_cancellation_reaps_before_propagating(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    if path == "figure":
+        await _cancel_twice_and_require_isolated_reap(
+            figure_assets.isolated_figure_asset_payload(
+                SVG_BYTES,
+                source_name="figure.svg",
+                timeout_s=0.5,
+                worker=_isolated_sleep_worker,
+            )
+        )
+        return
+    if path == "thumbnail":
+        await _cancel_twice_and_require_isolated_reap(
+            figure_assets.isolated_thumbnail_payload(
+                _raster_bytes("PNG"),
+                timeout_s=0.5,
+                worker=_isolated_sleep_worker,
+            )
+        )
+        return
+
+    original_isolated = figure_assets.isolated_figure_asset_payload
+
+    async def slow_isolated(
+        data: bytes,
+        *,
+        source_name: str,
+        content_type: str | None = None,
+        **_kwargs: Any,
+    ) -> FigureAssetPayload:
+        return await original_isolated(
+            data,
+            source_name=source_name,
+            content_type=content_type,
+            timeout_s=0.5,
+            worker=_isolated_sleep_worker,
+        )
+
+    async def image_response(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=_raster_bytes("PNG"), headers={"content-type": "image/png"}
+        )
+
+    monkeypatch.setattr(figure_assets, "isolated_figure_asset_payload", slow_isolated)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(image_response)) as client:
+        await _cancel_twice_and_require_isolated_reap(
+            fetch_html_asset(
+                client,
+                base="https://assets.invalid",
+                versioned="test-version",
+                source="figure.png",
+                total_timeout_s=2.0,
+            )
+        )
+
+
+async def test_isolated_outer_timeout_remains_timeout_and_reaps_child() -> None:
+    existing_children = {child.pid for child in mp.active_children()}
+
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.05):
+            await figure_assets.isolated_figure_asset_payload(
+                SVG_BYTES,
+                source_name="figure.svg",
+                timeout_s=0.5,
+                worker=_isolated_sleep_worker,
+            )
+
+    assert {child.pid for child in mp.active_children()} <= existing_children
+
+
+async def test_external_cancel_wins_race_with_enclosing_isolated_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    existing_children = {child.pid for child in mp.active_children()}
+    original_reap = figure_assets._terminate_and_reap
+
+    def delayed_reap(process: Any, *, failure_code: str) -> None:
+        original_reap(process, failure_code=failure_code)
+        import time
+
+        time.sleep(0.1)
+
+    monkeypatch.setattr(figure_assets, "_terminate_and_reap", delayed_reap)
+
+    async def convert() -> FigureAssetPayload:
+        async with asyncio.timeout(0.05):
+            return await figure_assets.isolated_figure_asset_payload(
+                SVG_BYTES,
+                source_name="figure.svg",
+                timeout_s=0.5,
+                worker=_isolated_sleep_worker,
+            )
+
+    task = asyncio.create_task(convert())
+    loop = asyncio.get_running_loop()
+    start_deadline = loop.time() + 2.0
+    while loop.time() < start_deadline:
+        if {child.pid for child in mp.active_children()} - existing_children:
+            break
+        await asyncio.sleep(0.01)
+    assert {child.pid for child in mp.active_children()} - existing_children
+    task.cancel("external cancellation")
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+
+    assert caught.value.args == ("external cancellation",)
+    assert {child.pid for child in mp.active_children()} <= existing_children
+
+
 @pytest.mark.parametrize(
     ("worker", "data"),
     [
@@ -781,6 +938,175 @@ def test_svg_geometry_attributes_reject_invalid_semantic_syntax_before_render(
         "_render_document",
         lambda _data, filetype: rendered.append(filetype),
     )
+
+    with pytest.raises(FigureAssetError) as caught:
+        figure_asset_payload(source, source_name="figure.svg")
+
+    assert caught.value.code == "unsafe_vector"
+    assert rendered == []
+
+
+@pytest.mark.parametrize(
+    "transform",
+    [
+        "translate(1e999 0)",
+        "matrix(1 0 0 1 0)",
+        "translate(1 2 3)",
+        "scale(1 2 3)",
+        "rotate(1 2)",
+        "skewX(1 2)",
+        "skewY(1 2)",
+    ],
+    ids=[
+        "non-finite",
+        "matrix-arity",
+        "translate-arity",
+        "scale-arity",
+        "rotate-arity",
+        "skew-x-arity",
+        "skew-y-arity",
+    ],
+)
+def test_svg_transform_requires_finite_arguments_and_function_arity_before_render(
+    monkeypatch: pytest.MonkeyPatch,
+    transform: str,
+) -> None:
+    source = f"""<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+<g transform="{transform}"><rect width="5" height="5"/></g></svg>""".encode()
+    rendered: list[bytes] = []
+
+    def capture_render(data: bytes, _filetype: str) -> FigureAssetPayload:
+        rendered.append(data)
+        return validate_image_payload(_raster_bytes("PNG"))
+
+    monkeypatch.setattr(figure_assets, "_render_document", capture_render)
+
+    with pytest.raises(FigureAssetError) as caught:
+        figure_asset_payload(source, source_name="figure.svg")
+
+    assert caught.value.code == "unsafe_vector"
+    assert rendered == []
+
+
+@pytest.mark.parametrize(
+    "attribute",
+    [
+        'stroke-width="1e999"',
+        'style="opacity:1e999"',
+    ],
+    ids=["presentation-attribute", "style-declaration"],
+)
+def test_svg_css_rejects_non_finite_numeric_tokens_before_render(
+    monkeypatch: pytest.MonkeyPatch,
+    attribute: str,
+) -> None:
+    source = f"""<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+<rect width="5" height="5" {attribute}/></svg>""".encode()
+    rendered: list[bytes] = []
+
+    def capture_render(data: bytes, _filetype: str) -> FigureAssetPayload:
+        rendered.append(data)
+        return validate_image_payload(_raster_bytes("PNG"))
+
+    monkeypatch.setattr(figure_assets, "_render_document", capture_render)
+
+    with pytest.raises(FigureAssetError) as caught:
+        figure_asset_payload(source, source_name="figure.svg")
+
+    assert caught.value.code == "unsafe_vector"
+    assert rendered == []
+
+
+def test_svg_css_numeric_lexer_ignores_fragments_colors_and_identifier_digits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = b"""<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+<defs><linearGradient id="plot-1e999"><stop offset="0" stop-color="#1e9999"/></linearGradient></defs>
+<rect id="series1e999" width="5" height="5" fill="url(#plot-1e999)"
+ stroke="#1e9999" stroke-width="1.5px" style="opacity:.5;transform:translate(2px, 1px)"/>
+</svg>"""
+    rendered: list[bytes] = []
+
+    def capture_render(data: bytes, _filetype: str) -> FigureAssetPayload:
+        rendered.append(data)
+        return validate_image_payload(_raster_bytes("PNG"))
+
+    monkeypatch.setattr(figure_assets, "_render_document", capture_render)
+
+    payload = figure_asset_payload(source, source_name="figure.svg")
+
+    assert payload.ext == "png"
+    assert len(rendered) == 1
+    assert b"plot-1e999" in rendered[0]
+    assert b"#1e9999" in rendered[0]
+    assert b"series1e999" in rendered[0]
+
+
+@pytest.mark.parametrize(
+    ("style_markup", "kept"),
+    [
+        (
+            '<rect style="font-variation-settings:normal;fill:red" width="5" height="5"/>',
+            b"fill:red",
+        ),
+        (
+            """<style>.plot{font-variation-settings:normal;-inkscape-font-specification:'Sans';
+fill:#1e9999;stroke-width:1px}</style><rect class="plot" width="5" height="5"/>""",
+            b"stroke-width:1px",
+        ),
+        (
+            '<rect style="unknown-resource:url(https://resource.invalid/a);fill:navy" width="5" height="5"/>',
+            b"fill:navy",
+        ),
+    ],
+    ids=["common-unknown-attribute", "recent-inkscape-stylesheet", "unknown-external-url"],
+)
+def test_svg_css_rebuild_drops_unknown_inert_declarations_and_keeps_safe_ones(
+    monkeypatch: pytest.MonkeyPatch,
+    style_markup: str,
+    kept: bytes,
+) -> None:
+    source = f"""<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+{style_markup}</svg>""".encode()
+    rendered: list[bytes] = []
+
+    def capture_render(data: bytes, _filetype: str) -> FigureAssetPayload:
+        rendered.append(data)
+        return validate_image_payload(_raster_bytes("PNG"))
+
+    monkeypatch.setattr(figure_assets, "_render_document", capture_render)
+
+    payload = figure_asset_payload(source, source_name="figure.svg")
+
+    assert payload.ext == "png"
+    assert len(rendered) == 1
+    assert kept in rendered[0]
+    assert b"font-variation-settings" not in rendered[0]
+    assert b"inkscape-font-specification" not in rendered[0]
+    assert b"unknown-resource" not in rendered[0]
+    assert b"resource.invalid" not in rendered[0]
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        "unknown-property:javascript:alert(1);fill:red",
+        "behavior:url(#internal);fill:red",
+    ],
+)
+def test_svg_css_dangerous_precheck_runs_before_unknown_declarations_are_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+    style: str,
+) -> None:
+    source = f"""<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+<rect style="{style}" width="5" height="5"/></svg>""".encode()
+    rendered: list[bytes] = []
+
+    def capture_render(data: bytes, _filetype: str) -> FigureAssetPayload:
+        rendered.append(data)
+        return validate_image_payload(_raster_bytes("PNG"))
+
+    monkeypatch.setattr(figure_assets, "_render_document", capture_render)
 
     with pytest.raises(FigureAssetError) as caught:
         figure_asset_payload(source, source_name="figure.svg")
@@ -1409,6 +1735,224 @@ async def test_staged_assets_cleanup_after_cancellation_preserves_cancellation()
     assert storage.deletes == [("assets", [new_key])]
 
 
+@pytest.mark.parametrize("cleanup_fails", [False, True], ids=["success", "failure"])
+async def test_staged_cleanup_finishes_through_repeated_cancellation(
+    cleanup_fails: bool,
+) -> None:
+    class BlockingStorage:
+        assets_bucket = "assets"
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.finished = False
+            self.cleanup_task: asyncio.Task[Any] | None = None
+
+        async def delete_many(self, _bucket: str, _keys: Any) -> None:
+            self.cleanup_task = asyncio.current_task()
+            self.started.set()
+            await self.release.wait()
+            self.finished = True
+            if cleanup_fails:
+                raise RuntimeError("cleanup failed")
+
+    storage = BlockingStorage()
+    new_key = "figures/test/revision/one.png"
+
+    async def publish() -> None:
+        async with worker_pipeline._staged_revision_assets(storage) as uploaded_keys:
+            uploaded_keys.append(new_key)
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(publish())
+    await asyncio.sleep(0)
+    task.cancel("first cancellation")
+    await storage.started.wait()
+    task.cancel("second cancellation")
+    await asyncio.sleep(0)
+    still_waiting_after_second_cancel = not task.done()
+    storage.release.set()
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+    assert caught.value.args == ("first cancellation",)
+    if storage.cleanup_task is not None:
+        await asyncio.gather(storage.cleanup_task, return_exceptions=True)
+
+    assert still_waiting_after_second_cancel is True
+    assert storage.finished is True
+    assert storage.cleanup_task is not None and storage.cleanup_task.done()
+
+
+async def test_staged_cleanup_deadline_cancels_and_drains_hanging_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class HangingStorage:
+        assets_bucket = "assets"
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.cancelled = False
+            self.cleanup_task: asyncio.Task[Any] | None = None
+
+        async def delete_many(self, _bucket: str, _keys: Any) -> None:
+            self.cleanup_task = asyncio.current_task()
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.cancelled = True
+
+    monkeypatch.setattr(
+        worker_pipeline,
+        "REVISION_ASSET_CLEANUP_TIMEOUT_S",
+        0.05,
+        raising=False,
+    )
+    storage = HangingStorage()
+    original = RuntimeError("publication failed")
+
+    async def publish() -> None:
+        async with worker_pipeline._staged_revision_assets(storage) as uploaded_keys:
+            uploaded_keys.append("figures/test/revision/one.png")
+            raise original
+
+    task = asyncio.create_task(publish())
+    await storage.started.wait()
+    await asyncio.sleep(0.1)
+    completed_within_deadline = task.done()
+    if not task.done():
+        task.cancel()
+    with pytest.raises(RuntimeError) as caught:
+        await task
+    assert caught.value is original
+
+    if storage.cleanup_task is not None and not storage.cleanup_task.done():
+        storage.cleanup_task.cancel()
+        await asyncio.gather(storage.cleanup_task, return_exceptions=True)
+
+    assert completed_within_deadline is True
+    assert storage.cancelled is True
+    assert storage.cleanup_task is not None and storage.cleanup_task.done()
+
+
+async def test_external_cancel_wins_race_with_staged_cleanup_timeout() -> None:
+    class SlowStorage:
+        assets_bucket = "assets"
+
+        def __init__(self) -> None:
+            self.cleanup_started = asyncio.Event()
+            self.cleanup_finished = False
+
+        async def delete_many(self, _bucket: str, _keys: Any) -> None:
+            self.cleanup_started.set()
+            await asyncio.sleep(0.1)
+            self.cleanup_finished = True
+
+    storage = SlowStorage()
+    entered = asyncio.Event()
+
+    async def publish() -> None:
+        async with asyncio.timeout(0.05):
+            async with worker_pipeline._staged_revision_assets(storage) as uploaded_keys:
+                uploaded_keys.append("figures/test/revision/one.png")
+                entered.set()
+                await asyncio.Event().wait()
+
+    task = asyncio.create_task(publish())
+    await entered.wait()
+    task.cancel("external cancellation")
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+
+    assert caught.value.args == ("external cancellation",)
+    assert storage.cleanup_finished is True
+
+
+async def test_staged_cleanup_suppression_is_bounded_tracked_and_retrieved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CancellationSuppressingStorage:
+        assets_bucket = "assets"
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.cleanup_task: asyncio.Task[Any] | None = None
+            self.suppressed_cancellations = 0
+
+        async def delete_many(self, _bucket: str, _keys: Any) -> None:
+            self.cleanup_task = asyncio.current_task()
+            self.started.set()
+            while not self.release.is_set():
+                try:
+                    await self.release.wait()
+                except asyncio.CancelledError:
+                    self.suppressed_cancellations += 1
+
+    class RecordingLog:
+        def __init__(self) -> None:
+            self.warnings: list[tuple[str, dict[str, Any]]] = []
+
+        def warning(self, event: str, **fields: Any) -> None:
+            self.warnings.append((event, fields))
+
+    monkeypatch.setattr(worker_pipeline, "REVISION_ASSET_CLEANUP_TIMEOUT_S", 0.02)
+    monkeypatch.setattr(
+        worker_pipeline,
+        "REVISION_ASSET_CLEANUP_CANCEL_GRACE_S",
+        0.03,
+        raising=False,
+    )
+    recording_log = RecordingLog()
+    monkeypatch.setattr(worker_pipeline, "log", recording_log)
+    storage = CancellationSuppressingStorage()
+    original = RuntimeError("publication failed")
+
+    async def publish() -> None:
+        async with worker_pipeline._staged_revision_assets(storage) as uploaded_keys:
+            uploaded_keys.append("figures/test/revision/one.png")
+            raise original
+
+    task = asyncio.create_task(publish())
+    await storage.started.wait()
+    completed_within_bound = True
+    caught_error: BaseException | None = None
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=0.3)
+    except RuntimeError as exc:
+        caught_error = exc
+    except TimeoutError:
+        completed_within_bound = False
+
+    tracked_while_pending = storage.cleanup_task in getattr(
+        worker_pipeline,
+        "_BACKGROUND_REVISION_CLEANUPS",
+        set(),
+    )
+    storage.release.set()
+    if storage.cleanup_task is not None:
+        await asyncio.gather(storage.cleanup_task, return_exceptions=True)
+    if not task.done():
+        await asyncio.gather(task, return_exceptions=True)
+    await asyncio.sleep(0)
+
+    assert completed_within_bound is True
+    assert caught_error is original
+    assert storage.suppressed_cancellations >= 1
+    assert tracked_while_pending is True
+    assert storage.cleanup_task not in getattr(
+        worker_pipeline,
+        "_BACKGROUND_REVISION_CLEANUPS",
+        set(),
+    )
+    assert (
+        "revision_asset_cleanup_failed",
+        {"error_type": "TimeoutError", "key_count": 1},
+    ) in recording_log.warnings
+
+
 async def test_cleanup_failure_does_not_replace_commit_failure() -> None:
     error = RuntimeError("database commit failed")
     storage = _RecordingStorage()
@@ -1520,6 +2064,18 @@ def _figure_run(
     run.ref = None
     run.deps = SimpleNamespace(s3=storage, http=None, redis=None)
     return run, storage
+
+
+def _pdf_figure_run(
+    figure_images: dict[str, bytes],
+) -> tuple[IngestRun, _RecordingStorage, list[Block]]:
+    run = object.__new__(IngestRun)
+    storage = _RecordingStorage()
+    blocks = [Block(id=block_id, type="figure") for block_id in figure_images]
+    run.paper_id = "paper-id"
+    run.parsed_pdf = SimpleNamespace(blocks=blocks, figure_images=figure_images)
+    run.deps = SimpleNamespace(s3=storage)
+    return run, storage, blocks
 
 
 async def test_first_figure_put_failure_is_cleaned_by_revision_stage() -> None:
@@ -2159,6 +2715,163 @@ async def test_pdf_pipeline_applies_aggregate_figure_byte_limit(
     assert storage.puts == []
     assert block.asset_key is None
     assert failures[0]["code"] == "figure_bytes_exceeded"
+
+
+async def test_pdf_assets_use_isolated_payload_bytes_extension_and_content_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = b"raw extracted figure"
+    canonical = b"canonical validated payload"
+    run, storage, blocks = _pdf_figure_run({"fig-derived": source})
+    calls: list[tuple[bytes, str, str | None]] = []
+
+    async def isolated(
+        data: bytes,
+        *,
+        source_name: str,
+        content_type: str | None = None,
+        **_kwargs: Any,
+    ) -> FigureAssetPayload:
+        calls.append((data, source_name, content_type))
+        return FigureAssetPayload(
+            canonical,
+            "jpg",
+            "image/jpeg",
+            4,
+            3,
+            source_size=len(data),
+        )
+
+    monkeypatch.setattr(worker_pipeline, "isolated_figure_asset_payload", isolated)
+
+    output, warnings, failures = await run._save_pdf_assets("revision-id")
+
+    expected_key = StorageKeys.figure("paper-id", "revision-id", "fig-derived", "jpg")
+    assert calls == [(source, "fig-derived.png", "image/png")]
+    assert output == {"fig-derived": canonical}
+    assert blocks[0].asset_key == expected_key
+    assert storage.puts == [("assets", expected_key, canonical, "image/jpeg")]
+    assert warnings == []
+    assert failures == []
+
+
+async def test_pdf_asset_rejects_malformed_png_without_upload() -> None:
+    run, storage, blocks = _pdf_figure_run({"fig-malformed": b"\x89PNG\r\n\x1a\ntruncated"})
+
+    output, _warnings, failures = await run._save_pdf_assets("revision-id")
+
+    assert output == {}
+    assert storage.puts == []
+    assert blocks[0].asset_key is None
+    assert failures[0]["code"] == "invalid_image"
+
+
+async def test_pdf_asset_applies_individual_source_byte_limit_before_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _raster_bytes("PNG")
+    run, storage, blocks = _pdf_figure_run({"fig-oversize": source})
+    monkeypatch.setattr(figure_assets, "MAX_ASSET_BYTES", len(source) - 1)
+
+    output, _warnings, failures = await run._save_pdf_assets("revision-id")
+
+    assert output == {}
+    assert storage.puts == []
+    assert blocks[0].asset_key is None
+    assert failures[0]["code"] == "asset_too_large"
+
+
+async def test_pdf_asset_records_isolated_conversion_timeout_without_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run, storage, blocks = _pdf_figure_run({"fig-timeout": _raster_bytes("PNG")})
+
+    async def timeout(*_args: Any, **_kwargs: Any) -> FigureAssetPayload:
+        raise FigureAssetError("conversion_timeout", "conversion timed out")
+
+    monkeypatch.setattr(worker_pipeline, "isolated_figure_asset_payload", timeout)
+
+    output, _warnings, failures = await run._save_pdf_assets("revision-id")
+
+    assert output == {}
+    assert storage.puts == []
+    assert blocks[0].asset_key is None
+    assert failures[0]["code"] == "conversion_timeout"
+
+
+async def test_pdf_asset_aggregate_budget_counts_source_and_canonical_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = b"source-ten"
+    canonical = b"canonical-output-is-longer"
+    run, storage, blocks = _pdf_figure_run({"fig-budget": source})
+
+    async def isolated(data: bytes, **_kwargs: Any) -> FigureAssetPayload:
+        return FigureAssetPayload(
+            canonical,
+            "png",
+            "image/png",
+            4,
+            3,
+            source_size=1,
+        )
+
+    monkeypatch.setattr(worker_pipeline, "isolated_figure_asset_payload", isolated)
+    monkeypatch.setattr(
+        worker_pipeline,
+        "MAX_TOTAL_FIGURE_MATERIALIZED_BYTES",
+        len(source) + len(canonical) - 1,
+    )
+
+    output, _warnings, failures = await run._save_pdf_assets("revision-id")
+
+    assert output == {}
+    assert storage.puts == []
+    assert blocks[0].asset_key is None
+    assert failures[0]["code"] == "figure_bytes_exceeded"
+
+
+async def test_pdf_asset_document_deadline_stops_later_isolated_materialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [10.0]
+    png = _raster_bytes("PNG")
+    run, storage, blocks = _pdf_figure_run({"fig-first": png, "fig-later": png})
+    calls: list[str] = []
+
+    async def isolated(
+        data: bytes,
+        *,
+        source_name: str,
+        **_kwargs: Any,
+    ) -> FigureAssetPayload:
+        calls.append(source_name)
+        now[0] += 1.1
+        return FigureAssetPayload(
+            data,
+            "png",
+            "image/png",
+            16,
+            12,
+            source_size=len(data),
+        )
+
+    monkeypatch.setattr(worker_pipeline, "isolated_figure_asset_payload", isolated)
+    deadline = worker_pipeline.MaterializationDeadline.start(
+        timeout_s=1.0,
+        clock=lambda: now[0],
+    )
+
+    output, _warnings, failures = await run._save_pdf_assets(
+        "revision-id",
+        deadline=deadline,
+    )
+
+    assert calls == ["fig-first.png"]
+    assert set(output) == {"fig-first"}
+    assert len(storage.puts) == 1
+    assert blocks[1].asset_key is None
+    assert failures[0]["code"] == "materialization_timeout"
 
 
 async def test_thumbnail_upload_switches_pointer_and_retains_previous_history(
