@@ -151,7 +151,11 @@ export function ArticleBlockItem({
       break;
     case "figure_embed":
       content = block.content.figure ? (
-        <FigureEmbedBlock figure={block.content.figure} />
+        <FigureEmbedBlock
+          figure={block.content.figure}
+          anchor={block.evidence[0]?.anchor ?? null}
+          onJumpToAnchor={onJumpToAnchor}
+        />
       ) : block.content.figure_link_card ? (
         <FigureLinkCardBlock
           card={block.content.figure_link_card}

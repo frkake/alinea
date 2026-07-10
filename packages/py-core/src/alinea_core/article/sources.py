@@ -8,9 +8,11 @@
 from __future__ import annotations
 
 import functools
+import re
 from dataclasses import dataclass, field
 
 import tiktoken
+from selectolax.parser import HTMLParser
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -87,6 +89,7 @@ class FigureInfo:
     caption_ja: str | None
     asset_key: str | None
     policy: str  # LicensePolicy.figure_embed の値
+    table_rows: list[list[str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -269,6 +272,21 @@ def _figures(
             and not (set(unit.quality_flags or []) & BLOCKING_FLAGS)
         ):
             caption_ja = str(unit.text_ja)
+        table_rows: list[list[str]] | None = None
+        if blk.type == "table" and blk.raw:
+            parsed_rows: list[list[str]] = []
+            for row in HTMLParser(blk.raw).css("tr"):
+                cells = [
+                    re.sub(
+                        r"\\[A-Za-z]+",
+                        "",
+                        " ".join(cell.text(separator=" ", strip=True).split()),
+                    ).strip()
+                    for cell in row.css("th, td")
+                ]
+                if cells:
+                    parsed_rows.append(cells)
+            table_rows = parsed_rows or None
         out.append(
             FigureInfo(
                 block_id=blk.id,
@@ -277,6 +295,7 @@ def _figures(
                 caption_en=inline_to_plain(blk.caption),
                 caption_ja=caption_ja,
                 asset_key=blk.asset_key,
+                table_rows=table_rows,
                 policy=policy.figure_embed,
             )
         )

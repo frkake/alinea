@@ -147,7 +147,9 @@ def block_content_to_wire(
         return {
             "figure": {
                 "figure_block_id": content.get("figure_block_id", ""),
+                "kind": content.get("kind", "figure"),
                 "image_url": _asset_url(content.get("asset_key")),
+                "table_rows": content.get("table_rows"),
                 "caption_ja": content.get("caption_ja", ""),
                 "credit": content.get("credit", ""),
                 "license_badge": content.get("license_badge", ""),

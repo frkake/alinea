@@ -5,7 +5,7 @@
 (`RUN_LLM_SMOKE=1 uv run pytest -m smoke`)からのみ実プロバイダへ到達する。
 
 判定は plans/12 §8.3 の「機械判定可能な必要条件」のみ: PNG としてデコード可能・1536x1024・
-プロンプトに文字排除指示(``EXPLAINER_STYLE_PREAMBLE``。plans/07 §6.2 逐語)が含まれた状態で
+プロンプトに技術模式図の構成指示(``EXPLAINER_STYLE_PREAMBLE``)が含まれた状態で
 生成が成功すること。DB・S3 は使わず(``generate_explainer_figure.build_explainer_prompt`` と
 ``ImageRouter`` を直接使う)、ネットワークは実画像プロバイダのみに限定する。
 """
@@ -76,7 +76,7 @@ def _build_image_router() -> ImageRouter:
 
 
 async def test_sm04_explainer_image_generation_succeeds() -> None:
-    """SM-04: 解説図 1 枚実生成。PNG デコード可能・1536x1024・文字排除指示を含むプロンプト。"""
+    """SM-04: 解説図 1 枚実生成。PNG デコード可能・1536x1024・技術図指示を含む。"""
     _skip_unless_enabled()
     router = _build_image_router()
 
@@ -87,7 +87,8 @@ async def test_sm04_explainer_image_generation_succeeds() -> None:
     )
     prompt = build_explainer_prompt(image_brief_en)
     assert EXPLAINER_STYLE_PREAMBLE in prompt
-    assert "NO text" in prompt and "NO letters" in prompt
+    assert "technical explanatory schematic" in prompt
+    assert "3 to 7 visually distinct components" in prompt
 
     try:
         result = await router.generate(prompt, task="explainer_image")

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
@@ -41,6 +42,7 @@ from alinea_core.document.plaintext import article_block_to_plain
 from alinea_core.jobs.store import JobStore
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends
+from selectolax.parser import HTMLParser
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -227,14 +229,18 @@ async def _build_article_out(
     db: AsyncSession, article: Article, revision: DocumentRevision
 ) -> ArticleOut:
     blocks = await _current_blocks(db, str(article.id))
-    resolver = EvidenceDisplayResolver(DocumentContent.model_validate(revision.content))
+    document = DocumentContent.model_validate(revision.content)
+    resolver = EvidenceDisplayResolver(document)
+    source_blocks = {block.id: block for _section, block in document.iter_blocks()}
     explainer_lookup = await _explainer_lookup(db, str(article.id))
     out_blocks = [
         ArticleBlockOut.model_validate(
             build_article_block_wire(
                 pk=b.id,
                 type_=b.type,
-                content=b.content or {},
+                content=_enrich_figure_content(b.content or {}, source_blocks)
+                if b.type == "figure_embed"
+                else (b.content or {}),
                 evidence_anchors=b.evidence_anchors or [],
                 origin=b.origin,
                 resolver=resolver,
@@ -258,6 +264,31 @@ async def _build_article_out(
         overview_figure=overview,
         blocks=out_blocks,
     )
+
+
+def _enrich_figure_content(
+    content: dict[str, Any], source_blocks: dict[str, Any]
+) -> dict[str, Any]:
+    block_id = str(content.get("figure_block_id", ""))
+    source = source_blocks.get(block_id)
+    if source is None:
+        return content
+    enriched = {**content, "kind": source.type}
+    if source.type != "table" or content.get("table_rows") or not source.raw:
+        return enriched
+    rows: list[list[str]] = []
+    for row in HTMLParser(source.raw).css("tr"):
+        cells = [
+            re.sub(
+                r"\\[A-Za-z]+",
+                "",
+                " ".join(cell.text(separator=" ", strip=True).split()),
+            ).strip()
+            for cell in row.css("th, td")
+        ]
+        if cells:
+            rows.append(cells)
+    return {**enriched, "table_rows": rows or None}
 
 
 # ---------------------------------------------------------------------------

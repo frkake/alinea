@@ -119,7 +119,10 @@ describe("ArticlePane", () => {
   test("shows the generate CTA on 404, generates on submit, and renders the article once the job completes", async () => {
     vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
     const user = userEvent.setup();
-    vi.mocked(articlesGet).mockRejectedValueOnce(notFound()).mockResolvedValueOnce({ data: article() } as never);
+    vi.mocked(articlesGet)
+      .mockRejectedValueOnce(notFound())
+      .mockRejectedValueOnce(notFound())
+      .mockResolvedValueOnce({ data: article() } as never);
     vi.mocked(articlesGenerate).mockResolvedValue({ data: { job_id: "job_1" } } as never);
 
     renderPane();

@@ -1233,9 +1233,17 @@ export type FigureContentOut = {
      */
     figure_block_id: string;
     /**
+     * Kind
+     */
+    kind?: 'figure' | 'table';
+    /**
      * Image Url
      */
     image_url: string;
+    /**
+     * Table Rows
+     */
+    table_rows?: Array<Array<string>> | null;
     /**
      * Caption Ja
      */

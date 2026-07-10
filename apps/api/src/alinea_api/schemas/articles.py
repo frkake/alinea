@@ -51,7 +51,9 @@ class QuoteContentOut(BaseModel):
 
 class FigureContentOut(BaseModel):
     figure_block_id: str
+    kind: Literal["figure", "table"] = "figure"
     image_url: str
+    table_rows: list[list[str]] | None = None
     caption_ja: str
     credit: str
     license_badge: str

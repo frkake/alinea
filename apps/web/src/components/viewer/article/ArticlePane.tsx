@@ -166,6 +166,15 @@ export function ArticlePane({ libraryItemId, revisionId, lastPosition }: Article
     setSelection(null);
   };
 
+  const revealGeneratedArticle = async () => {
+    for (const delayMs of [0, 300, 700, 1500, 2500]) {
+      if (delayMs > 0) await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+      const result = await articleQuery.refetch();
+      if (result.data) return;
+    }
+    void qc.invalidateQueries({ queryKey: articleKeys.all(libraryItemId) });
+  };
+
   return (
     <div
       ref={scrollRef}
@@ -231,7 +240,7 @@ export function ArticlePane({ libraryItemId, revisionId, lastPosition }: Article
               key={selectedPreset}
               libraryItemId={libraryItemId}
               preset={selectedPreset}
-              onGenerated={() => void qc.invalidateQueries({ queryKey: articleKeys.all(libraryItemId) })}
+              onGenerated={() => void revealGeneratedArticle()}
             />
           ) : articleQuery.isError ? (
             <div style={{ marginTop: 120 }}>

@@ -310,7 +310,8 @@ async def test_py_fig_05_single_regenerate_reuses_persisted_image_brief_en(
         )
     ).scalar_one()
     assert "a straight path between two distributions" in current.prompt
-    assert "キャプションはブリーフと異なる文言" not in current.prompt
+    assert "Japanese caption context" in current.prompt
+    assert "キャプションはブリーフと異なる文言" in current.prompt
 
 
 # --------------------------------------------------------------------------- #
@@ -449,17 +450,20 @@ async def test_sync_skips_slot_on_provider_chain_exhausted(db_session: AsyncSess
 # --------------------------------------------------------------------------- #
 # PY-FIG-06: 画像生成プロンプト仕様(テンプレート契約テスト)
 # --------------------------------------------------------------------------- #
-def test_py_fig_06_prompt_forbids_text_and_preserves_caption_separately() -> None:
-    prompt = build_explainer_prompt("a straight path between two distributions")
-    assert "NO text" in prompt
-    assert "NO letters" in prompt
-    assert "NO digits" in prompt
+def test_py_fig_06_prompt_requires_concrete_technical_schematic() -> None:
+    prompt = build_explainer_prompt(
+        "Samples pass through a noise encoder and consistency head to produce audio tokens",
+        caption_ja="ノイズ入力から音声トークンまでの処理経路。",
+    )
+    assert "technical explanatory schematic" in prompt
+    assert "concrete inputs, processing stages, outputs" in prompt
+    assert "3 to 7 visually distinct components" in prompt
+    assert "abstract symbols or atmospheric decoration" in prompt
+    assert "1 to 5 short English labels" in prompt
     assert "NO formulas" in prompt
-    assert "NO labels" in prompt
-    # 重要情報(用語・数値)はプロンプトではなくキャプション側に置く方針(caption は別引数)。
-    assert "FID" not in prompt
     assert EXPLAINER_STYLE_PREAMBLE in prompt
-    assert "Concept to illustrate: a straight path between two distributions" in prompt
+    assert "Japanese caption context" in prompt
+    assert "ノイズ入力から音声トークンまでの処理経路。" in prompt
 
 
 def test_py_fig_06_instruction_appends_verbatim_japanese_template() -> None:

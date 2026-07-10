@@ -43,20 +43,46 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 log = structlog.get_logger("alinea.worker")
 
-#: 画像プロンプト構成規則(plans/07 §6.2 逐語)。
-#: 概要図ラスターモード(§5.5)も同一プリアンブルを再利用する。
+#: 解説図を論文固有の技術模式図として生成するための共通プリアンブル。
 EXPLAINER_STYLE_PREAMBLE = (
-    "Flat editorial illustration for a calm, scholarly reading app. "
+    "Precise technical explanatory schematic for a scholarly paper. "
     "Muted low-saturation palette: dusty slate blue (#3E5C76), warm beige (#F4F3EF), "
     "soft sage green (#659471), charcoal gray (#2B2E33) on an off-white background (#FBFAF7). "
-    "Clean geometric shapes, thin lines, generous whitespace, subtle depth. "
-    "Strictly NO text, NO letters, NO digits, NO formulas, NO labels, NO watermarks, NO logos."
+    "Use clean geometric components, distinct stages, meaningful directional arrows, consistent "
+    "visual encoding, generous whitespace, and a clear left-to-right or top-to-bottom "
+    "reading order. "
+    "Prefer architecture diagrams, data-flow diagrams, or side-by-side comparisons over decorative "
+    "illustrations. Do not use people, scenery, clouds, mist, balance scales, gears, or other "
+    "generic metaphors unless they are literal parts of the method. Include only 1 to 5 short "
+    "English labels "
+    "for paper-specific components when labels improve comprehension. NO paragraphs, NO decorative "
+    "text, NO unsupported numbers, NO formulas, NO watermarks, NO logos."
 )
 
 
-def build_explainer_prompt(image_brief_en: str, *, instruction: str | None = None) -> str:
-    """plans/07 §6.2 逐語。``instruction`` があれば §6.1 の逐語テンプレートを追記する。"""
-    prompt = f"{EXPLAINER_STYLE_PREAMBLE}\n\nConcept to illustrate: {image_brief_en}"
+def build_explainer_prompt(
+    image_brief_en: str,
+    *,
+    caption_ja: str | None = None,
+    instruction: str | None = None,
+) -> str:
+    """論文固有の構成と因果関係が一目で分かる技術図プロンプトを組み立てる。"""
+    prompt = (
+        f"{EXPLAINER_STYLE_PREAMBLE}\n\n"
+        "Primary objective: make the paper's mechanism understandable without guessing.\n"
+        f"Paper-specific diagram brief: {image_brief_en}\n"
+        "Composition requirements:\n"
+        "- Show the concrete inputs, processing stages, outputs, and comparison conditions "
+        "named in the brief.\n"
+        "- Use 3 to 7 visually distinct components and connect every dependency with an "
+        "explicit arrow.\n"
+        "- Make the main novelty or causal relationship visually dominant.\n"
+        "- If the brief describes alternatives or baselines, place them in aligned "
+        "side-by-side panels.\n"
+        "- Do not replace technical components with abstract symbols or atmospheric decoration."
+    )
+    if caption_ja:
+        prompt += f"\nJapanese caption context (use for meaning, not as image text): {caption_ja}"
     if instruction:
         prompt += (
             "\n\nRevision request — follow this Japanese instruction from the user: "
@@ -133,7 +159,7 @@ async def _generate_and_store(
     if image_router is None:
         raise RuntimeError("no image provider configured (ctx['image_router'] is None)")
 
-    prompt = build_explainer_prompt(image_brief_en)
+    prompt = build_explainer_prompt(image_brief_en, caption_ja=caption)
     result = await image_router.generate(
         prompt,
         task="explainer_image",
@@ -248,7 +274,10 @@ async def sync_explainer_figures_for_regenerate(
     updated: dict[int, ExplainerFigure] = {}
     for brief in briefs:
         current = await _current_explainer_figure(session, str(article.id), brief.slot)
-        candidate_prompt = build_explainer_prompt(brief.image_brief_en)
+        candidate_prompt = build_explainer_prompt(
+            brief.image_brief_en,
+            caption_ja=current.caption if current is not None else brief.caption_ja,
+        )
         evidence_wire = resolve_evidence_wire(list(brief.evidence), sources)
         if current is not None and current.prompt == candidate_prompt:
             # 再利用: image_brief_en 不変 → 画像は生成し直さず、キャプション・根拠のみ更新する。
@@ -372,6 +401,7 @@ async def run_explainer_figure_job(ctx: dict[str, Any], store: JobStore, job: Jo
     image_brief_en = await _find_explainer_image_brief_en(session, str(article.id), current.slot)
     prompt = build_explainer_prompt(
         image_brief_en or current.caption or "the concept of this figure",
+        caption_ja=current.caption,
         instruction=str(instruction) if instruction else None,
     )
 
