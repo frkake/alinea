@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from _summary_contract import assert_summary_lines_contract
 from alinea_core.db.models import DocumentRevision, LibraryItem, Paper, TranslationSet, User
 from alinea_core.document.blocks import DocumentContent
 from alinea_core.ingest import build_timeline
@@ -146,10 +147,7 @@ async def test_pdf_upload_ingest_reaches_complete_quality_b(
     assert paper.thumbnail_key  # Figure 1 からサムネイル生成(§8)
     assert paper.abstract  # Abstract セクションから抽出(§6.5 固定見出し)
     assert paper.abstract_ja
-    assert paper.summary_lines is not None
-    summary_items = [line.split(": ", 1) for line in paper.summary_lines]
-    assert [item[0] for item in summary_items] == ["課題", "提案", "仕組み", "検証", "結果"]
-    assert all(len(item) == 2 and item[1] for item in summary_items)
+    assert_summary_lines_contract(paper.summary_lines)
 
     # private 論文の翻訳セットは personal スコープ(plans/06 §9.2)。
     tset = await _personal_set(db_session, str(rev.id), ids["user_id"])
