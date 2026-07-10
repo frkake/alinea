@@ -18,13 +18,20 @@ _SCHEME_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 def _is_local_archive_relative_path(value: str) -> bool:
     """Return whether a path stays in the logical, relative archive namespace."""
-    return not PurePosixPath(value).is_absolute() and _SCHEME_PREFIX_RE.match(value) is None
+    candidate = value.strip()
+    return (
+        bool(candidate)
+        and "\\" not in value
+        and not any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
+        and not PurePosixPath(candidate).is_absolute()
+        and _SCHEME_PREFIX_RE.match(candidate) is None
+    )
 
 
 def _is_bare_pdf_reference(plain: str, manifest_files: Collection[str]) -> bool:
     """Return whether an entire visible block unambiguously names a manifest PDF."""
     candidate = plain.strip()
-    if not candidate or not _is_local_archive_relative_path(candidate):
+    if not _is_local_archive_relative_path(plain):
         return False
 
     manifest_pdf_paths = {

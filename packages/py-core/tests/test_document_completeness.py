@@ -82,6 +82,36 @@ def _text_block(block_id: str, block_type: BlockType, text: str) -> Block:
             id="drive-prefix",
         ),
         pytest.param(
+            r"\\host\share\body.pdf",
+            ("nested/body.pdf", r"\\host\share\body.pdf"),
+            False,
+            id="windows-network-path",
+        ),
+        pytest.param(
+            r"\\?\C:\body.pdf",
+            ("nested/body.pdf", r"\\?\C:\body.pdf"),
+            False,
+            id="windows-device-path",
+        ),
+        pytest.param(
+            r"folder\body.pdf",
+            ("nested/body.pdf", r"folder\body.pdf"),
+            False,
+            id="windows-relative-path",
+        ),
+        pytest.param(
+            "folder/\x00body.pdf",
+            ("nested/body.pdf", "folder/\x00body.pdf"),
+            False,
+            id="nul-character",
+        ),
+        pytest.param(
+            "folder/\x7fbody.pdf",
+            ("nested/body.pdf", "folder/\x7fbody.pdf"),
+            False,
+            id="del-character",
+        ),
+        pytest.param(
             "Results are in papers/body.pdf.",
             ("nested/body.pdf",),
             False,
