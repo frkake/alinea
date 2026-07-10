@@ -42,8 +42,9 @@ export function EvidenceChip({ anchor, label, size = "inline", onJump }: Evidenc
       : {
           display: "inline-flex",
           alignItems: "center",
-          height: size === "header" ? 17 : 16,
-          padding: "0 6px",
+          minHeight: size === "header" ? 19 : 18,
+          maxWidth: "100%",
+          padding: "2px 6px",
           border: "1px solid var(--pr-acc-m)",
           color: "var(--pr-acc)",
           background: "var(--pr-acc-s)",
@@ -53,6 +54,10 @@ export function EvidenceChip({ anchor, label, size = "inline", onJump }: Evidenc
           verticalAlign: 2,
           cursor: "pointer",
           fontFamily: "inherit",
+          lineHeight: 1.35,
+          textAlign: "left",
+          whiteSpace: "normal",
+          overflowWrap: "anywhere",
         };
   return (
     <button

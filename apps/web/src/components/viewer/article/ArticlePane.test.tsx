@@ -39,7 +39,8 @@ function article(overrides: Partial<ArticleOut> = {}): ArticleOut {
     include_math: false,
     version: 1,
     generated_at: "2026-07-06T00:00:00Z",
-    disclaimer: "訳文・メモ・チャット履歴から自動構成 · 2026-07-06 · 元の論文とは別物です — 根拠チップから原文へ",
+    disclaimer:
+      "訳文・メモ・チャット履歴から自動構成 · 2026-07-06 · 元の論文とは別物です — 根拠チップから原文へ",
     overview_figure: null,
     blocks: [
       {
@@ -147,7 +148,8 @@ describe("ArticlePane", () => {
   test("renders the article title, meta row, and blocks (heading/quote/attribution)", async () => {
     vi.mocked(articlesGet).mockResolvedValue({ data: article() } as never);
     renderPane();
-    expect(await screen.findByText("Rectified Flow を読む")).toBeInTheDocument();
+    const title = await screen.findByText("Rectified Flow を読む");
+    expect(title.parentElement).toHaveStyle({ width: "100%", maxWidth: "760px", minWidth: "0" });
     expect(screen.getByText("AI生成")).toBeInTheDocument();
     expect(screen.getByText("なぜ「直線」なのか")).toBeInTheDocument();
     expect(screen.getByText(/Straight paths are computationally attractive/)).toBeInTheDocument();
@@ -162,6 +164,9 @@ describe("ArticlePane", () => {
 
     await user.click(screen.getByText("原文で見る →"));
     expect(replaceMock).toHaveBeenCalledWith("/papers/li_1?mode=source", { scroll: false });
-    expect(useViewerStore.getState().pendingScrollTarget).toEqual({ kind: "block", blockId: "blk-2-2-p1" });
+    expect(useViewerStore.getState().pendingScrollTarget).toEqual({
+      kind: "block",
+      blockId: "blk-2-2-p1",
+    });
   });
 });

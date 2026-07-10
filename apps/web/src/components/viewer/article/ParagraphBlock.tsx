@@ -26,9 +26,19 @@ export function ParagraphBlock({
     >
       {renderArticleMarkdown(markdown, includeMath)}
       {evidence.length > 0 ? (
-        <span style={{ marginLeft: 6, display: "inline-flex", gap: 4 }}>
+        <div
+          data-testid="article-evidence-chips"
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "flex-start",
+            gap: 4,
+            minWidth: 0,
+            marginTop: 8,
+          }}
+        >
           <ArticleEvidenceChips evidence={evidence} onJumpToAnchor={onJumpToAnchor} size="inline" />
-        </span>
+        </div>
       ) : null}
     </div>
   );

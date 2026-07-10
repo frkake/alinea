@@ -227,12 +227,20 @@ export function ArticlePane({ libraryItemId, revisionId, lastPosition }: Article
                   fontFamily: "inherit",
                 }}
               >
-                {tab.label}{generated ? " ✓" : " ＋"}
+                {tab.label}
+                {generated ? " ✓" : " ＋"}
               </button>
             );
           })}
         </div>
-        <div style={{ display: "flex", justifyContent: "center" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            minWidth: 0,
+            padding: "0 16px",
+          }}
+        >
           {articleQuery.isLoading ? (
             <ArticleSkeleton />
           ) : articleQuery.isError && isArticleNotFound(articleQuery.error) ? (

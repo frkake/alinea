@@ -2,7 +2,11 @@
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { figuresRestoreOverviewVersion, figuresRewriteOverview, type Problem } from "@alinea/api-client";
+import {
+  figuresRestoreOverviewVersion,
+  figuresRewriteOverview,
+  type Problem,
+} from "@alinea/api-client";
 import { useToast } from "@/components/ui/Toast";
 import { useJobEvents } from "@/hooks/useJobEvents";
 import { useViewerStore } from "@/stores/viewer-store";
@@ -11,7 +15,11 @@ import { ArticleMetaRow } from "@/components/viewer/article/ArticleMetaRow";
 import { ArticleRegenBanner } from "@/components/viewer/article/ArticleRegenBanner";
 import { OverviewFigureFrame } from "@/components/viewer/article/OverviewFigureFrame";
 import { ArticleBlockItem } from "@/components/viewer/article/ArticleBlockItem";
-import { asOverviewFigureRef, type AnchorRef, type Article } from "@/components/viewer/article/types";
+import {
+  asOverviewFigureRef,
+  type AnchorRef,
+  type Article,
+} from "@/components/viewer/article/types";
 
 export interface ArticleBodyProps {
   article: Article;
@@ -20,8 +28,13 @@ export interface ArticleBodyProps {
   onJumpToAnchor: (anchor: AnchorRef) => void;
 }
 
-/** 記事本体(1h §3.1 `ArticleBody`。760px カラム)。 */
-export function ArticleBody({ article, libraryItemId, revisionId, onJumpToAnchor }: ArticleBodyProps) {
+/** 記事本体(1h §3.1 `ArticleBody`。最大 760px のレスポンシブカラム)。 */
+export function ArticleBody({
+  article,
+  libraryItemId,
+  revisionId,
+  onJumpToAnchor,
+}: ArticleBodyProps) {
   const qc = useQueryClient();
   const toast = useToast();
   const [overviewJobId, setOverviewJobId] = useState<string | null>(null);
@@ -74,7 +87,17 @@ export function ArticleBody({ article, libraryItemId, revisionId, onJumpToAnchor
   const overviewFigure = asOverviewFigureRef(article.overview_figure);
 
   return (
-    <div style={{ width: 760, padding: "34px 0 64px", display: "flex", flexDirection: "column", gap: 16 }}>
+    <div
+      style={{
+        width: "100%",
+        maxWidth: 760,
+        minWidth: 0,
+        padding: "34px 0 64px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 16,
+      }}
+    >
       <div
         style={{
           fontSize: 27,
@@ -88,7 +111,9 @@ export function ArticleBody({ article, libraryItemId, revisionId, onJumpToAnchor
         {article.title}
       </div>
       <ArticleMetaRow disclaimer={article.disclaimer} />
-      {articleRegenerating ? <ArticleRegenBanner kind="regenerate" progressPct={articleRegenProgressPct} /> : null}
+      {articleRegenerating ? (
+        <ArticleRegenBanner kind="regenerate" progressPct={articleRegenProgressPct} />
+      ) : null}
       {overviewFigure ? (
         <OverviewFigureFrame
           figure={overviewFigure}
