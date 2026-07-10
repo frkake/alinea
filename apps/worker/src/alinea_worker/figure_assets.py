@@ -63,6 +63,11 @@ _XML_DECLARATION_RE = re.compile(r"\A<\?xml(?:\s+[^?]*)?\?>", re.IGNORECASE)
 _CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _CSS_URL_RE = re.compile(r"url\s*\(\s*(?P<target>[^)]*?)\s*\)", re.IGNORECASE)
 _CSS_FUNCTION_RE = re.compile(r"(?P<name>[-A-Za-z][-_A-Za-z0-9]*)\s*\(")
+_CSS_SIMPLE_SELECTOR_RE = re.compile(
+    r"(?:(?:\*|[A-Za-z][A-Za-z0-9_-]*)(?:[.#][A-Za-z_][A-Za-z0-9_-]*)*"
+    r"|(?:[.#][A-Za-z_][A-Za-z0-9_-]*)+)\Z"
+)
+_SAFE_CSS_VALUE_RE = re.compile(r"[\w\s#.,%+\-'\"/()]*\Z")
 _CSS_DANGEROUS_RE = re.compile(
     r"@import\b|expression\s*\(|(?:behavior|-moz-binding)\s*:|javascript\s*:",
     re.IGNORECASE,
@@ -85,11 +90,10 @@ _SVG_ACTIVE_ELEMENTS = frozenset(
         "object",
         "script",
         "set",
-        "style",
         "video",
     }
 )
-_INLINE_ACTIVE_ELEMENTS = _SVG_ACTIVE_ELEMENTS | {"img", "style"}
+_INLINE_ACTIVE_ELEMENTS = _SVG_ACTIVE_ELEMENTS | {"img"}
 _SAFE_CSS_FUNCTIONS = frozenset(
     {
         "hsl",
@@ -188,6 +192,7 @@ class ResolvedLatexSource:
 PostscriptConverter = Callable[[bytes, str], bytes]
 FigurePayloadWorker = Callable[..., FigureAssetPayload]
 AsyncPayloadLoader = Callable[[bytes, str, str | None], Awaitable[FigureAssetPayload]]
+BeforeRequest = Callable[[], Awaitable[None]]
 
 
 def _has_control(value: str) -> bool:
@@ -508,7 +513,7 @@ def _require_internal_fragment(value: str) -> None:
         raise FigureAssetError("unsafe_vector", "SVG references must target an internal fragment")
 
 
-def _validate_svg_css(value: str, *, declarations: bool = False) -> None:
+def _precheck_svg_css(value: str) -> str:
     if "\\" in value:
         raise FigureAssetError("unsafe_vector", "SVG CSS escapes are not accepted")
     without_comments = _CSS_COMMENT_RE.sub("", value)
@@ -518,22 +523,14 @@ def _validate_svg_css(value: str, *, declarations: bool = False) -> None:
         raise FigureAssetError("unsafe_vector", "SVG CSS contains active content")
     if "@" in without_comments:
         raise FigureAssetError("unsafe_vector", "SVG CSS at-rules are not accepted")
+    return without_comments
 
-    if declarations:
-        for declaration in without_comments.split(";"):
-            clean = declaration.strip()
-            if not clean:
-                continue
-            if ":" not in clean:
-                raise FigureAssetError("unsafe_vector", "SVG style declaration is invalid")
-            property_name, _property_value = clean.split(":", 1)
-            if property_name.strip().casefold() not in _SAFE_STYLE_PROPERTIES:
-                raise FigureAssetError("unsafe_vector", "SVG style property is not accepted")
 
-    unmatched = _CSS_URL_RE.sub("", without_comments)
+def _validate_svg_css_references(value: str) -> None:
+    unmatched = _CSS_URL_RE.sub("", value)
     if re.search(r"url\s*\(", unmatched, re.IGNORECASE) is not None:
         raise FigureAssetError("unsafe_vector", "SVG CSS contains an invalid URL")
-    for match in _CSS_URL_RE.finditer(without_comments):
+    for match in _CSS_URL_RE.finditer(value):
         target = match.group("target").strip()
         if len(target) >= 2 and target[0] == target[-1] and target[0] in {'"', "'"}:
             target = target[1:-1].strip()
@@ -541,6 +538,102 @@ def _validate_svg_css(value: str, *, declarations: bool = False) -> None:
     for match in _CSS_FUNCTION_RE.finditer(unmatched):
         if match.group("name").casefold() not in _SAFE_CSS_FUNCTIONS:
             raise FigureAssetError("unsafe_vector", "SVG CSS function is not accepted")
+
+
+def _validate_svg_css_value(value: str) -> None:
+    clean = value.strip()
+    if not clean:
+        raise FigureAssetError("unsafe_vector", "SVG style value is empty")
+    if _SAFE_CSS_VALUE_RE.fullmatch(clean) is None:
+        raise FigureAssetError("unsafe_vector", "SVG style value is not accepted")
+
+    quote: str | None = None
+    functions: list[str] = []
+    for position, character in enumerate(clean):
+        if quote is not None:
+            if character == quote:
+                quote = None
+            continue
+        if character in {'"', "'"}:
+            quote = character
+            continue
+        if character == "(":
+            end = position
+            while end > 0 and clean[end - 1].isspace():
+                end -= 1
+            start = end
+            while start > 0 and (clean[start - 1].isalnum() or clean[start - 1] in {"-", "_"}):
+                start -= 1
+            function_name = clean[start:end].casefold()
+            if function_name != "url" and function_name not in _SAFE_CSS_FUNCTIONS:
+                raise FigureAssetError("unsafe_vector", "SVG CSS function is not accepted")
+            functions.append(function_name)
+        elif character == ")":
+            if not functions:
+                raise FigureAssetError("unsafe_vector", "SVG style value is unbalanced")
+            functions.pop()
+    if quote is not None or functions:
+        raise FigureAssetError("unsafe_vector", "SVG style value is unbalanced")
+
+
+def _validate_svg_css(value: str, *, declarations: bool = False) -> None:
+    without_comments = _precheck_svg_css(value)
+
+    if declarations:
+        if "{" in without_comments or "}" in without_comments:
+            raise FigureAssetError("unsafe_vector", "SVG style declaration is invalid")
+        for declaration in without_comments.split(";"):
+            clean = declaration.strip()
+            if not clean:
+                continue
+            if ":" not in clean:
+                raise FigureAssetError("unsafe_vector", "SVG style declaration is invalid")
+            property_name, property_value = clean.split(":", 1)
+            if property_name.strip().casefold() not in _SAFE_STYLE_PROPERTIES:
+                raise FigureAssetError("unsafe_vector", "SVG style property is not accepted")
+            _validate_svg_css_value(property_value)
+
+    _validate_svg_css_references(without_comments)
+
+
+def _validate_svg_css_selector(selector: str) -> None:
+    for item in selector.split(","):
+        clean = item.strip()
+        if not clean:
+            raise FigureAssetError("unsafe_vector", "SVG CSS selector is invalid")
+        normalized = re.sub(r"\s*>\s*", " > ", clean)
+        tokens = normalized.split()
+        if not tokens or tokens[0] == ">" or tokens[-1] == ">":
+            raise FigureAssetError("unsafe_vector", "SVG CSS selector is invalid")
+        previous_was_combinator = False
+        for part in tokens:
+            if part == ">":
+                if previous_was_combinator:
+                    raise FigureAssetError("unsafe_vector", "SVG CSS selector is invalid")
+                previous_was_combinator = True
+                continue
+            if _CSS_SIMPLE_SELECTOR_RE.fullmatch(part) is None:
+                raise FigureAssetError("unsafe_vector", "SVG CSS selector is not accepted")
+            previous_was_combinator = False
+
+
+def _validate_svg_stylesheet(value: str) -> None:
+    stylesheet = _precheck_svg_css(value)
+    position = 0
+    while position < len(stylesheet):
+        while position < len(stylesheet) and stylesheet[position].isspace():
+            position += 1
+        if position == len(stylesheet):
+            return
+        open_brace = stylesheet.find("{", position)
+        if open_brace < 0:
+            raise FigureAssetError("unsafe_vector", "SVG stylesheet rule is invalid")
+        close_brace = stylesheet.find("}", open_brace + 1)
+        if close_brace < 0 or "{" in stylesheet[open_brace + 1 : close_brace]:
+            raise FigureAssetError("unsafe_vector", "SVG stylesheet rule is invalid")
+        _validate_svg_css_selector(stylesheet[position:open_brace])
+        _validate_svg_css(stylesheet[open_brace + 1 : close_brace], declarations=True)
+        position = close_brace + 1
 
 
 def _decode_and_precheck_svg(data: bytes) -> str:
@@ -635,7 +728,7 @@ def _validate_svg_document(data: bytes) -> None:
                 _require_internal_fragment(value)
             _validate_svg_css(value, declarations=attribute == "style")
         if name == "style":
-            _validate_svg_css("".join(element.itertext()))
+            _validate_svg_stylesheet("".join(element.itertext()))
 
 
 def _render_svg(data: bytes) -> FigureAssetPayload:
@@ -1131,12 +1224,15 @@ async def fetch_html_asset(
     max_bytes: int = MAX_ASSET_BYTES,
     total_timeout_s: float = 45.0,
     payload_loader: AsyncPayloadLoader | None = None,
+    before_request: BeforeRequest | None = None,
 ) -> FigureAssetPayload:
     """Fetch one same-origin HTML figure with bounded redirects and bytes."""
 
     async def _fetch() -> FigureAssetPayload:
         url = html_asset_url(base, versioned, source)
         for redirect_count in range(MAX_REDIRECTS + 1):
+            if before_request is not None:
+                await before_request()
             async with http.stream(
                 "GET",
                 url,

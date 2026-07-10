@@ -199,6 +199,19 @@ _VALID_INLINE_SVG_HTML = b"""<!doctype html><html><body><article class="ltx_docu
 <figure id="S1.F1" class="ltx_figure"><svg width="20" height="10">
 <rect width="20" height="10" fill="blue"></rect></svg></figure>
 </section></article></body></html>"""
+_VALID_INLINE_SVG_STYLE_ATTRIBUTE_HTML = _VALID_INLINE_SVG_HTML.replace(
+    b'<rect width="20" height="10" fill="blue"></rect>',
+    b'<rect width="20" height="10" style="fill:red"></rect>',
+)
+_VALID_INLINE_SVG_STYLE_ELEMENT_HTML = _VALID_INLINE_SVG_HTML.replace(
+    b'<rect width="20" height="10" fill="blue"></rect>',
+    b'<style>rect{fill:red}</style><rect width="20" height="10"></rect>',
+)
+_UNSAFE_INLINE_SVG_STYLE_HTML = _VALID_INLINE_SVG_HTML.replace(
+    b'<rect width="20" height="10" fill="blue"></rect>',
+    b"<style>@import url(https://example.org/tracker.css);</style>"
+    b'<rect width="20" height="10"></rect>',
+)
 _VALID_STALE_HTML = _VALID_STORED_HTML.replace(b"The stored candidate", b"The stale duplicate")
 _PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
@@ -1645,10 +1658,20 @@ async def test_ingest_falls_back_to_html_and_logs_warning_when_latex_unavailable
     assert any("LaTeX" in row.get("message", "") for row in warn_entries)
 
 
+@pytest.mark.parametrize(
+    "html_body",
+    [
+        _VALID_INLINE_SVG_HTML,
+        _VALID_INLINE_SVG_STYLE_ATTRIBUTE_HTML,
+        _VALID_INLINE_SVG_STYLE_ELEMENT_HTML,
+    ],
+    ids=["presentation-attribute", "style-attribute", "style-element"],
+)
 async def test_html_inline_svg_is_rasterized_and_raw_is_not_persisted(
     db_session: AsyncSession,
     router: LLMRouter,
     seed_ingest_job: Any,
+    html_body: bytes,
 ) -> None:
     ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
     transport = httpx.ASGITransport(
@@ -1656,7 +1679,7 @@ async def test_html_inline_svg_is_rasterized_and_raw_is_not_persisted(
             eprint_status=404,
             eprint_body=b"",
             html_status=200,
-            html_body=_VALID_INLINE_SVG_HTML,
+            html_body=html_body,
         )
     )
     async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
@@ -1691,6 +1714,58 @@ async def test_html_inline_svg_is_rasterized_and_raw_is_not_persisted(
     assert revision.stats["figure_asset_failures"] == []
     stored = await S3Storage().get(S3Storage().assets_bucket, figure.asset_key)
     assert stored.startswith(b"\x89PNG")
+
+
+async def test_unsafe_inline_svg_css_failure_does_not_persist_raw(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+) -> None:
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=404,
+            eprint_body=b"",
+            html_status=200,
+            html_body=_UNSAFE_INLINE_SVG_STYLE_HTML,
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    figure = next(
+        block
+        for _section, block in DocumentContent.model_validate(revision.content).iter_blocks()
+        if block.type == "figure"
+    )
+    assert figure.raw is None
+    assert figure.asset_key is None
+    assert revision.stats["figure_asset_failures"] == [
+        {
+            "code": "unsafe_inline_figure",
+            "figure_id": figure.id,
+            "source": "arxiv_html",
+        }
+    ]
 
 
 async def test_reingest_creates_repaired_revision_after_html_parser_rollout(

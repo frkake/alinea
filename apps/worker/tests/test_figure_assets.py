@@ -475,6 +475,8 @@ def test_svg_structural_validator_allows_internal_gradient_and_use_fragment() ->
         'style="fill:var(--author-value)"',
         'fill="image-set(url(#gradient) 1x)"',
         'style="fill:i\\6d age-set(url(#gradient) 1x)"',
+        'style="fill:red[unexpected]"',
+        'style="fill:rgb(0,0,0"',
     ],
 )
 def test_svg_css_rejects_non_allowlisted_resource_functions_before_render(
@@ -507,6 +509,53 @@ def test_svg_style_attribute_allows_safe_colors_numbers_and_internal_gradient() 
     payload = figure_asset_payload(source, source_name="figure.svg")
 
     assert payload.ext == "png"
+
+
+@pytest.mark.parametrize(
+    "stylesheet",
+    [
+        "rect{fill:red}",
+        "rect{}",
+        ".plot, #mark{fill:red}",
+        "g > rect.plot{fill:red}",
+    ],
+    ids=["declaration", "empty", "selector-list", "child-selector"],
+)
+def test_svg_stylesheet_allows_safe_selector_property_and_value(stylesheet: str) -> None:
+    source = f"""<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+<style>{stylesheet}</style><rect width="20" height="10"/>
+</svg>""".encode()
+
+    payload = figure_asset_payload(source, source_name="figure.svg")
+
+    assert payload.ext == "png"
+    assert payload.content.startswith(b"\x89PNG")
+
+
+@pytest.mark.parametrize(
+    "stylesheet",
+    [
+        "rect[href]{fill:red}",
+        "rect:hover{fill:red}",
+        "rect{fill:url(https://example.org/tracker.png)}",
+        "rect{fill:image-set(url(#gradient) 1x)}",
+        "rect{fill:var(--author-color)}",
+        "rect{fill:r\\65 d}",
+        "rect{fill:red[unexpected]}",
+        "rect{fill:rgb(0,0,0}",
+    ],
+)
+def test_svg_stylesheet_rejects_non_allowlisted_selectors_and_values(
+    stylesheet: str,
+) -> None:
+    source = f"""<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+<style>{stylesheet}</style><rect width="20" height="10"/>
+</svg>""".encode()
+
+    with pytest.raises(FigureAssetError) as caught:
+        figure_asset_payload(source, source_name="figure.svg")
+
+    assert caught.value.code == "unsafe_vector"
 
 
 def test_svg_enforces_dedicated_byte_limit_before_parsing(
@@ -840,6 +889,42 @@ async def test_fetch_html_asset_validates_bytes_and_safe_redirects(
     assert direct.content_type == redirected.content_type == "image/png"
 
 
+async def test_fetch_html_asset_calls_hook_once_immediately_before_each_get() -> None:
+    events: list[str] = []
+    png = _raster_bytes("PNG")
+
+    async def redirect(_request: Any) -> RedirectResponse:
+        events.append("get:redirect")
+        return RedirectResponse("final.png", status_code=302)
+
+    async def final(_request: Any) -> Response:
+        events.append("get:final")
+        return Response(png, media_type="image/png")
+
+    async def before_request() -> None:
+        events.append("throttle")
+
+    app = Starlette(
+        routes=[
+            Route("/html/2401.00001v2/redirect.png", redirect),
+            Route("/html/2401.00001v2/final.png", final),
+        ]
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://arxiv.org"
+    ) as client:
+        payload = await fetch_html_asset(
+            client,
+            base="https://arxiv.org",
+            versioned="2401.00001v2",
+            source="redirect.png",
+            before_request=before_request,
+        )
+
+    assert payload.ext == "png"
+    assert events == ["throttle", "get:redirect", "throttle", "get:final"]
+
+
 async def test_fetch_html_asset_rejects_cross_origin_redirect(
     figure_http: httpx.AsyncClient,
 ) -> None:
@@ -1030,6 +1115,34 @@ async def test_pipeline_uploads_only_canonical_validated_figure_payload() -> Non
     assert [(bucket, key, content_type) for bucket, key, _body, content_type in storage.puts] == [
         ("assets", expected_key, "image/png")
     ]
+
+
+async def test_pipeline_throttles_each_html_get_without_double_throttling_initial_request(
+    figure_http: httpx.AsyncClient,
+) -> None:
+    fig = Block(id="fig-html", type="figure", asset_key="redirect.png")
+    run, storage = _figure_run(fig, {}, source_format="arxiv_html")
+    throttle_calls: list[object] = []
+    redis = object()
+
+    async def throttle(received_redis: object) -> None:
+        throttle_calls.append(received_redis)
+
+    run.ref = SimpleNamespace(versioned="2401.00001v2")
+    run.deps = SimpleNamespace(
+        s3=storage,
+        http=figure_http,
+        redis=redis,
+        throttle=throttle,
+        settings=SimpleNamespace(alinea_arxiv_base_url="https://arxiv.org"),
+    )
+
+    output, warnings, failures = await run._save_figures("revision-id")
+
+    assert throttle_calls == [redis, redis]
+    assert output[fig.id].startswith(b"\x89PNG")
+    assert warnings == []
+    assert failures == []
 
 
 @pytest.mark.parametrize(
@@ -1338,6 +1451,52 @@ async def test_pipeline_rasterizes_safe_inline_html_figure_and_clears_raw() -> N
     ]
     assert warnings == []
     assert failures == []
+
+
+@pytest.mark.parametrize(
+    "svg_body",
+    [
+        '<rect width="10" height="10" style="fill:red"/>',
+        '<style>rect{fill:red}</style><rect width="10" height="10"/>',
+    ],
+    ids=["style-attribute", "style-element"],
+)
+async def test_pipeline_rasterizes_safe_inline_css_and_drops_raw(svg_body: str) -> None:
+    parsed = parse_arxiv_html(
+        f"""<article class="ltx_document"><section class="ltx_section">
+<h2 class="ltx_title">Result</h2><figure id="fig-inline-css" class="ltx_figure">
+<svg width="10" height="10">{svg_body}</svg>
+</figure></section></article>"""
+    )
+    fig = parsed.figures[0]
+    assert fig.raw is not None
+    run, storage = _figure_run(fig, {}, source_format="arxiv_html")
+
+    output, warnings, failures = await run._save_figures("revision-id")
+
+    assert fig.raw is None
+    assert fig.asset_key is not None and fig.asset_key.endswith(".png")
+    assert output[fig.id].startswith(b"\x89PNG")
+    assert len(storage.puts) == 1
+    assert warnings == []
+    assert failures == []
+
+
+async def test_pipeline_rejects_unsafe_inline_stylesheet_and_drops_raw() -> None:
+    fig = Block(
+        id="fig-unsafe-css",
+        type="figure",
+        raw="<svg><style>@import url(https://example.org/tracker.css);</style><rect/></svg>",
+    )
+    run, storage = _figure_run(fig, {}, source_format="arxiv_html")
+
+    output, _warnings, failures = await run._save_figures("revision-id")
+
+    assert fig.raw is None
+    assert fig.asset_key is None
+    assert output == {}
+    assert storage.puts == []
+    assert failures[0]["code"] == "unsafe_inline_figure"
 
 
 async def test_pipeline_rejects_legacy_active_inline_html_without_upload() -> None:

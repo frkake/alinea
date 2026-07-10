@@ -1932,7 +1932,6 @@ class IngestRun:
                         raise FigureAssetError(
                             "source_not_found", "HTML figure source is not available"
                         )
-                    await self._throttle()
 
                     async def load_with_budget(
                         data: bytes,
@@ -1953,6 +1952,7 @@ class IngestRun:
                         versioned=self.ref.versioned,
                         source=fig.asset_key,
                         payload_loader=load_with_budget,
+                        before_request=self._throttle,
                     )
                 retained_bytes = payload.source_size or len(payload.content)
                 next_materialized_bytes = materialized_bytes + retained_bytes + len(payload.content)

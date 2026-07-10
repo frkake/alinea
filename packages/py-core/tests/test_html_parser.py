@@ -288,6 +288,27 @@ def test_inline_svg_figure_raw_is_preserved() -> None:
 
 
 @pytest.mark.parametrize(
+    "svg_body",
+    [
+        '<rect width="10" height="10" style="fill:red"></rect>',
+        '<style>rect{fill:red}</style><rect width="10" height="10"></rect>',
+    ],
+    ids=["style-attribute", "style-element"],
+)
+def test_inline_svg_safe_css_is_preserved_for_worker_validation(svg_body: str) -> None:
+    doc = parse_arxiv_html(
+        f"""<article class="ltx_document"><section class="ltx_section">
+<h2 class="ltx_title">Results</h2><figure class="ltx_figure">
+<svg width="10" height="10">{svg_body}</svg></figure></section></article>"""
+    )
+    fig = doc.figures[0]
+
+    assert fig.asset_key is None
+    assert fig.raw is not None
+    assert "fill:red" in fig.raw
+
+
+@pytest.mark.parametrize(
     "visual",
     [
         '<iframe srcdoc="&lt;script&gt;document.body.dataset.pwned=1&lt;/script&gt;"></iframe>',

@@ -43,7 +43,7 @@ _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 # 見出しタグ番号から除く前置ラベル語(付録は番号 "A" に正規化。plans/05 §4.2)。
 _LABEL_WORD = re.compile(r"^(?:appendix|appendices|section|chapter|part)\s+", re.IGNORECASE)
 _PATH_UNSAFE = re.compile(r"[^0-9A-Za-z-]")
-_ACTIVE_INLINE_TAGS = frozenset({"embed", "foreignobject", "iframe", "object", "script", "style"})
+_ACTIVE_INLINE_TAGS = frozenset({"embed", "foreignobject", "iframe", "object", "script"})
 
 # reference_entry 構造化(plans/05 §4.2.1)。
 _ARXIV_RE = re.compile(
@@ -133,7 +133,7 @@ def _safe_inline_figure_html(html: str | None) -> str | None:
         for raw_name, raw_value in element.attributes.items():
             name = str(raw_name).rsplit(":", 1)[-1].casefold()
             value = str(raw_value or "").strip()
-            if name.startswith("on") or name in {"srcdoc", "style"}:
+            if name.startswith("on") or name == "srcdoc":
                 return None
             if name in {"href", "src"} and not re.fullmatch(r"#[A-Za-z0-9_.:-]+", value):
                 return None
