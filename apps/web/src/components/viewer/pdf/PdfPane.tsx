@@ -13,6 +13,7 @@ import { PDF_PAGE_GAP_PX, PdfCanvas, spreadPages } from "./PdfCanvas";
 import { buildPdfSyncMap } from "./sync-map";
 import { computeFitScale } from "./geometry";
 import { usePdfDocument, usePdfDocumentContext } from "./use-pdf-document";
+import type { PdfTranslationStyle } from "./use-pdf-document";
 
 export interface PdfPaneProps {
   itemId: string;
@@ -22,6 +23,7 @@ export interface PdfPaneProps {
   initialPage: number;
   /** `viewer.last_position.mode==='pdf'` の場合の block_id(§5.10 優先順③)。 */
   lastPositionBlockId?: string | null;
+  translationStyle?: PdfTranslationStyle;
   onOpenInTranslation: (blockId: string) => void;
 }
 
@@ -89,6 +91,7 @@ export function PdfPane({
   revisionId,
   initialPage,
   lastPositionBlockId = null,
+  translationStyle = "natural",
   onOpenInTranslation,
 }: PdfPaneProps) {
   const router = useRouter();
@@ -105,7 +108,7 @@ export function PdfPane({
   const spreadFirstPageSide = usePdfViewStore((s) => s.spreadFirstPageSide);
   const documentMode = usePdfViewStore((s) => s.documentMode);
   const bilingualMode = documentMode === "bilingual";
-  const translatedPdf = usePdfDocument(paperId, bilingualMode, "translated");
+  const translatedPdf = usePdfDocument(paperId, bilingualMode, "translated", translationStyle);
   const selectedBlockId = usePdfViewStore((s) => s.selectedBlockId);
   const resetForItem = usePdfViewStore((s) => s.resetForItem);
   const setPage = usePdfViewStore((s) => s.setPage);
@@ -136,7 +139,7 @@ export function PdfPane({
   const syncMap = useMemo(() => buildPdfSyncMap(docQuery.data), [docQuery.data]);
   const disabledSyncMap = useMemo(() => buildPdfSyncMap(undefined), []);
   const visibleSyncMap = documentMode === "translated" ? disabledSyncMap : syncMap;
-  const translatedAvailable = usePdfAvailability(paperId, "translated");
+  const translatedAvailable = usePdfAvailability(paperId, "translated", translationStyle);
   const bilingualAvailable = translatedAvailable;
   const activePageCount = bilingualMode ? maxPageCount(pdf.numPages, translatedPdf.numPages) : pdf.numPages;
   const pdfLoading = pdf.loading || (bilingualMode && translatedPdf.loading);

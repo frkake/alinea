@@ -1414,7 +1414,7 @@ class IngestRun:
             )
             return
         if not outcome.built:
-            if outcome.skipped_reason not in {"not_latex", "already_built"}:
+            if outcome.skipped_reason not in {"not_latex", "not_shared", "already_built"}:
                 await self._log(
                     "translating_body",
                     "warn",

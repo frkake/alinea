@@ -11,6 +11,7 @@ arXiv e-print(tar.gz / 単一ファイル gzip)→ 品質 A 構造化。PY-PARSE
 
 from __future__ import annotations
 
+import gzip
 from pathlib import Path
 
 import pytest
@@ -57,6 +58,14 @@ def test_extracts_single_file_gzip_without_tar() -> None:
     archive = extract_latex_archive(_SINGLE_GZ.read_bytes())
     assert list(archive.text_files) == ["main.tex"]
     assert "\\documentclass" in archive.text_files["main.tex"]
+
+
+def test_extract_keeps_raw_comments_for_later_latex_rebuild() -> None:
+    source = "% keep this layout comment\n\\documentclass{article}\n\\begin{document}x\\end{document}"
+    archive = extract_latex_archive(gzip.compress(source.encode()))
+
+    assert "% keep this layout comment" not in archive.text_files["main.tex"]
+    assert "% keep this layout comment" in archive.raw_text_files["main.tex"]
 
 
 def test_parse_arxiv_latex_handles_single_file_gzip() -> None:

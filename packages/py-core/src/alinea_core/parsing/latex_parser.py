@@ -59,11 +59,20 @@ class LatexParseError(Exception):
 class LatexArchive:
     """e-print 展開結果。テキスト(.tex/.bbl/.cls/.sty)とバイナリ(図等)を分けて保持する。"""
 
-    __slots__ = ("binary_files", "text_files")
+    __slots__ = ("binary_files", "raw_text_files", "text_files")
 
-    def __init__(self, text_files: dict[str, str], binary_files: dict[str, bytes]) -> None:
+    def __init__(
+        self,
+        text_files: dict[str, str],
+        binary_files: dict[str, bytes],
+        raw_text_files: dict[str, str] | None = None,
+    ) -> None:
         self.text_files = text_files
         self.binary_files = binary_files
+        # Parsing uses comment-stripped text, but rebuilding must retain comments:
+        # a trailing ``%`` can suppress a layout-significant newline in a macro or
+        # style file.  Two-argument construction remains compatible for tests.
+        self.raw_text_files = raw_text_files or dict(text_files)
 
 
 def _collapse(text: str | None) -> str:
@@ -93,6 +102,7 @@ def extract_latex_archive(archive: bytes) -> LatexArchive:
     try:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:*") as tar:
             text_files: dict[str, str] = {}
+            raw_text_files: dict[str, str] = {}
             binary_files: dict[str, bytes] = {}
             for member in tar.getmembers():
                 if not member.isfile():
@@ -103,21 +113,24 @@ def extract_latex_archive(archive: bytes) -> LatexArchive:
                     continue
                 data = fh.read()
                 if name.lower().endswith(_TEXT_EXTS):
-                    text_files[name] = _strip_comments(_decode(data))
+                    decoded = _decode(data)
+                    raw_text_files[name] = decoded
+                    text_files[name] = _strip_comments(decoded)
                 else:
                     binary_files[name] = data
             if text_files:
-                return LatexArchive(text_files, binary_files)
+                return LatexArchive(text_files, binary_files, raw_text_files)
     except tarfile.ReadError:
         pass
     try:
         raw = gzip.decompress(archive)
     except OSError:
         raw = archive
-    text = _strip_comments(_decode(raw))
+    raw_text = _decode(raw)
+    text = _strip_comments(raw_text)
     if "\\documentclass" not in text:
         raise LatexParseError("no_main_tex", "no .tex content found in e-print archive")
-    return LatexArchive({"main.tex": text}, {})
+    return LatexArchive({"main.tex": text}, {}, {"main.tex": raw_text})
 
 
 def select_main_tex(text_files: dict[str, str]) -> tuple[str, str]:

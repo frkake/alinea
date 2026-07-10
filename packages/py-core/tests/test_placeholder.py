@@ -47,7 +47,7 @@ text_fragment = st.text(
 )
 
 # トークン安全な id/ref 値(TOKEN_RE の id 文字集合内。# は連番付与と衝突するため除外)
-safe_ref = st.text(alphabet="abcdefghijklmnopqrstuvwxyz0123456789-_.", min_size=1, max_size=10)
+safe_ref = st.text(alphabet="abcdefghijklmnopqrstuvwxyz0123456789-_.:", min_size=1, max_size=10)
 
 
 @st.composite
@@ -111,7 +111,7 @@ def messy_output(draw: DrawFn, tokens: list[str]) -> str:
 
 
 # 独立実装 oracle(正規表現。plans/12 §7.2 HP-04)
-_ORACLE_RE = re.compile(r"⟦/?(?:MATH|CIT|REF|FN|URL|CODE|EM):[A-Za-z0-9_.#-]+⟧")
+_ORACLE_RE = re.compile(r"⟦/?(?:MATH|CIT|REF|FN|URL|CODE|EM):[A-Za-z0-9_.#:-]+⟧")
 
 
 def _expected_multiset(tokens: list[dict[str, Any]]) -> Counter[str]:
@@ -224,6 +224,16 @@ def test_duplicate_ref_gets_hash_suffix() -> None:
     )
     assert [te.token for te in enc.tokens] == ["⟦REF:fig-2⟧", "⟦REF:fig-2#2⟧"]
     assert verify_tokens(enc, enc.text).ok
+
+
+def test_latex_colon_ref_roundtrips() -> None:
+    """LaTeX で標準的な ``fig:name`` を常に検証可能にする。"""
+    inline = {"t": "ref", "kind": "figure", "ref": "fig:overview"}
+    enc = protect([{"t": "text", "v": "See "}, inline])
+
+    assert enc.text.endswith("⟦REF:fig:overview⟧")
+    assert verify_tokens(enc, enc.text).ok
+    assert [item for item in restore(enc, enc.text) if item["t"] != "text"] == [inline]
 
 
 def test_unknown_inline_type_protected_as_code() -> None:

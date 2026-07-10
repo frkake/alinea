@@ -94,6 +94,12 @@ LaTeX PDF ビルドを有効にするホストでは、worker が参照する Do
 docker build -f docker/texlive/Dockerfile -t alinea-texlive-ja:latest .
 ```
 
+日本語 PDF は原文の LaTeX プロジェクトをテンプレートとし、文書クラス、用紙・段組・マージン、
+図表、数式、参照、脚注、独自 `.cls` / `.sty` を保ったまま翻訳文だけを差し替え、LuaLaTeX +
+LuaTeX-ja + Noto CJK でコンパイルする。日英の文字幅の違いによる改行・ページ数の変化は許容し、
+画像のピクセル一致ではなく、同一の LaTeX レイアウト・スタイルの維持を品質基準とする。
+イメージビルド中に日本語のスモーク PDF を実コンパイルし、フォントと LuaTeX-ja の欠落をデプロイ前に検出する。
+
 worker コンテナ内からビルドする構成では Docker socket を worker に渡すか、同等のコンテナ実行基盤を用意する。worker は `--pull never` で実行するため、未ビルドの環境では日本語PDF生成だけが警告でスキップされる。
 
 ## 3. prod Docker Compose と Caddyfile

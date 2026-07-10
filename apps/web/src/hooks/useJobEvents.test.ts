@@ -121,4 +121,38 @@ describe("useJobEvents", () => {
     expect(onDone).toHaveBeenCalled();
     vi.useRealTimers();
   });
+
+  test("stops polling when the job no longer exists", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
+    vi.mocked(jobsGet).mockResolvedValue({
+      data: undefined,
+      error: { status: 404, code: "not_found", title: "見つかりません" },
+      response: { status: 404 },
+    } as never);
+    const onError = vi.fn();
+    renderHook(() => useJobEvents("missing_job", { onError }));
+
+    await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    const source = firstInstance();
+    act(() => {
+      source.dispatchConnError();
+      source.dispatchConnError();
+      source.dispatchConnError();
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(jobsGet).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 404, code: "not_found" }),
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    expect(jobsGet).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
 });

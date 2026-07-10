@@ -57,6 +57,20 @@ export function useJobEvents<TResult = unknown>(
         void jobsGet({ path: { job_id: jobId } }).then(
           (res) => {
             if (closed) return;
+            if (res.response?.status === 404) {
+              // DB の再作成などで画面側に古い job_id が残っていても、存在しない
+              // ジョブが復活することはない。ポーリングを終端し、呼び出し元の
+              // pending 状態を解除する。
+              stop();
+              optionsRef.current.onError?.(
+                (res.error as Partial<Problem> | undefined) ?? {
+                  status: 404,
+                  code: "not_found",
+                  title: "ジョブが見つかりません",
+                },
+              );
+              return;
+            }
             const job: JobOut | undefined = res.data;
             if (!job) {
               poll();

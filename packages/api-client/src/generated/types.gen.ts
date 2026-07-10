@@ -3075,6 +3075,30 @@ export type RetranslateResponse = {
 };
 
 /**
+ * RetryFailedTranslationsRequest
+ */
+export type RetryFailedTranslationsRequest = {
+    /**
+     * Section Id
+     */
+    section_id?: string | null;
+};
+
+/**
+ * RetryFailedTranslationsResponse
+ */
+export type RetryFailedTranslationsResponse = {
+    /**
+     * Job Ids
+     */
+    job_ids: Array<string>;
+    /**
+     * Block Count
+     */
+    block_count: number;
+};
+
+/**
  * RevisionInfo
  */
 export type RevisionInfo = {
@@ -4997,6 +5021,10 @@ export type PapersPdfData = {
          * Variant
          */
         variant?: string;
+        /**
+         * Style
+         */
+        style?: string;
     };
     url: '/api/papers/{paper_id}/pdf';
 };
@@ -5429,6 +5457,36 @@ export type TranslationsSectionTranslateResponses = {
 };
 
 export type TranslationsSectionTranslateResponse = TranslationsSectionTranslateResponses[keyof TranslationsSectionTranslateResponses];
+
+export type TranslationsRetryFailedData = {
+    body: RetryFailedTranslationsRequest;
+    path: {
+        /**
+         * Set Id
+         */
+        set_id: string;
+    };
+    query?: never;
+    url: '/api/translation-sets/{set_id}/retry-failed';
+};
+
+export type TranslationsRetryFailedErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type TranslationsRetryFailedError = TranslationsRetryFailedErrors[keyof TranslationsRetryFailedErrors];
+
+export type TranslationsRetryFailedResponses = {
+    /**
+     * Successful Response
+     */
+    202: RetryFailedTranslationsResponse;
+};
+
+export type TranslationsRetryFailedResponse = TranslationsRetryFailedResponses[keyof TranslationsRetryFailedResponses];
 
 export type TranslationsRetranslateData = {
     body: RetranslateRequest;

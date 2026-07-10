@@ -68,6 +68,7 @@ export function ViewerShell({
   const requestScroll = useViewerStore((s) => s.requestScroll);
   const openSearch = useViewerStore((s) => s.openSearch);
   const activeSectionId = useViewerStore((s) => s.activeSectionId);
+  const translationStyle = useViewerStore((s) => s.style);
   const pdfDocumentMode = usePdfViewStore((s) => s.documentMode);
 
   const isMobile = useIsMobile();
@@ -173,7 +174,10 @@ export function ViewerShell({
 
   const progressPct = viewer.translation?.progress_pct ?? 0;
   const pdfFetchMode = pdfDocumentMode === "translated" ? "translated" : "source";
-  const pdfVariantQuery = pdfFetchMode === "source" ? "" : `?variant=${pdfFetchMode}`;
+  const pdfVariantQuery =
+    pdfFetchMode === "source"
+      ? ""
+      : `?variant=${pdfFetchMode}&style=${translationStyle}`;
   const pdfDownloadLabel =
     pdfFetchMode === "source" ? "原文PDF" : "日本語PDF";
 
@@ -205,7 +209,11 @@ export function ViewerShell({
       />
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
         {effectiveMode === "pdf" ? (
-          <PdfDocumentProvider paperId={paperId} variant={pdfFetchMode}>
+          <PdfDocumentProvider
+            paperId={paperId}
+            variant={pdfFetchMode}
+            style={translationStyle}
+          >
             <PdfSidebar
               toc={viewer.toc}
               activeSectionId={activeSectionId}
@@ -225,6 +233,7 @@ export function ViewerShell({
               lastPositionBlockId={
                 viewer.last_position?.mode === "pdf" ? viewer.last_position.block_id : null
               }
+              translationStyle={translationStyle}
               onOpenInTranslation={onOpenInTranslation}
             />
           </PdfDocumentProvider>

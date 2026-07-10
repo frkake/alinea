@@ -180,6 +180,7 @@ async def paper_pdf(
     db: DbDep,
     storage: StorageDep,
     variant: str = Query(default="source", pattern="^(source|translated)$"),
+    style: str = Query(default="natural", pattern="^(natural|literal)$"),
 ) -> Response:
     paper = await db.get(Paper, paper_id)
     if paper is None:
@@ -187,11 +188,18 @@ async def paper_pdf(
     await assert_paper_access(db, paper, str(user.id))
 
     kinds = _PDF_VARIANT_KINDS.get(variant, _PDF_KINDS)
+    conditions = [SourceAsset.paper_id == paper_id, SourceAsset.kind.in_(kinds)]
+    if variant == "translated":
+        conditions.append(SourceAsset.storage_key.endswith(f"/translated-{style}.pdf"))
+        if paper.latest_revision_id:
+            revision = await db.get(DocumentRevision, str(paper.latest_revision_id))
+            if revision is not None:
+                conditions.append(SourceAsset.source_version == revision.source_version)
     asset = (
         (
             await db.execute(
                 select(SourceAsset)
-                .where(SourceAsset.paper_id == paper_id, SourceAsset.kind.in_(kinds))
+                .where(*conditions)
                 .order_by(SourceAsset.created_at.desc())
                 .limit(1)
             )

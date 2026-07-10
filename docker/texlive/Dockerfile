@@ -10,4 +10,12 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* \
   && fc-cache -f
 
+COPY docker/texlive/smoke-ja.tex /tmp/alinea-smoke-ja.tex
+
+RUN cd /tmp \
+  && latexmk -lualatex -interaction=nonstopmode -halt-on-error alinea-smoke-ja.tex \
+  && test -s /tmp/alinea-smoke-ja.pdf \
+  && latexmk -C alinea-smoke-ja.tex \
+  && rm -f /tmp/alinea-smoke-ja.tex
+
 WORKDIR /work

@@ -15,6 +15,7 @@ import type { PdfDocumentMode } from "@/stores/pdf-view-store";
 import type { PdfViewportLike } from "./geometry";
 
 export type PdfFetchVariant = Exclude<PdfDocumentMode, "bilingual">;
+export type PdfTranslationStyle = "natural" | "literal";
 
 /** pdf.js `RenderTask` の最小インターフェース(キャンセル可能な描画)。 */
 export interface PdfRenderTask {
@@ -54,7 +55,8 @@ export interface UsePdfDocumentResult {
 }
 
 const qk = {
-  pdfData: (paperId: string, variant: PdfFetchVariant) => ["pdf-data", paperId, variant] as const,
+  pdfData: (paperId: string, variant: PdfFetchVariant, style: PdfTranslationStyle) =>
+    ["pdf-data", paperId, variant, style] as const,
 };
 
 /**
@@ -65,11 +67,12 @@ export function usePdfDocument(
   paperId: string | null,
   enabled: boolean,
   variant: PdfFetchVariant = "source",
+  style: PdfTranslationStyle = "natural",
 ): UsePdfDocumentResult {
   const pdfQuery = useQuery({
-    queryKey: qk.pdfData(paperId ?? "", variant),
+    queryKey: qk.pdfData(paperId ?? "", variant, style),
     queryFn: async () => {
-      const params = variant === "source" ? "" : `?variant=${variant}`;
+      const params = variant === "source" ? "" : `?variant=${variant}&style=${style}`;
       const res = await fetch(`/api/papers/${paperId}/pdf${params}`, { credentials: "include" });
       if (!res.ok) {
         const err = new Error(`pdf fetch failed: ${res.status}`) as Error & { status?: number };
@@ -166,6 +169,7 @@ const PdfDocumentContext = createContext<UsePdfDocumentResult | null>(null);
 export interface PdfDocumentProviderProps {
   paperId: string;
   variant?: PdfFetchVariant;
+  style?: PdfTranslationStyle;
   children: ReactNode;
 }
 
@@ -173,9 +177,10 @@ export interface PdfDocumentProviderProps {
 export function PdfDocumentProvider({
   paperId,
   variant = "source",
+  style = "natural",
   children,
 }: PdfDocumentProviderProps) {
-  const value = usePdfDocument(paperId, true, variant);
+  const value = usePdfDocument(paperId, true, variant, style);
   return <PdfDocumentContext.Provider value={value}>{children}</PdfDocumentContext.Provider>;
 }
 

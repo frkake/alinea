@@ -28,8 +28,9 @@ from typing import Any
 import xxhash
 from pydantic import BaseModel
 
-# ⟦KIND:id⟧(開始/終了の両形式を捕捉。id 文字集合は plans/06 §4.2 の逐語)
-TOKEN_RE = re.compile(r"⟦(/?)(MATH|CIT|REF|FN|URL|CODE|EM):([A-Za-z0-9_.#-]+)⟧")
+# ⟦KIND:id⟧(開始/終了の両形式を捕捉)。LaTeX の label で一般的な
+# ``fig:overview`` / ``eq:loss`` をそのまま REF id として保護できるよう ``:`` も許可する。
+TOKEN_RE = re.compile(r"⟦(/?)(MATH|CIT|REF|FN|URL|CODE|EM):([A-Za-z0-9_.#:-]+)⟧")
 # トークンを取り除いた後に残る裸の括弧(改変・破損の検出用)
 BRACKET_RE = re.compile(r"[⟦⟧]")
 

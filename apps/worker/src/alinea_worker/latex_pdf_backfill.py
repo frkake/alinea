@@ -1,4 +1,4 @@
-"""Backfill translated PDFs for completed LaTeX translation sets."""
+"""Build missing or stale translated PDFs for completed LaTeX translation sets."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import datetime as dt
 from collections.abc import Sequence
 from typing import Any
 
-from alinea_core.db.models import DocumentRevision, SourceAsset, TranslationSet
+from alinea_core.db.models import DocumentRevision, SourceAsset, TranslationSet, TranslationUnit
 from alinea_core.db.session import get_sessionmaker
 from alinea_core.settings import get_settings
 from alinea_core.storage.s3 import S3Storage
@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from alinea_worker.latex_pdf import (
     PDF_BUILD_VERSION,
     LatexPdfBuildError,
+    _translation_units_digest,
     build_latex_translation_pdfs_if_ready,
 )
 
@@ -28,15 +29,6 @@ _FAILURE_DETAIL_LIMIT = 1200
 async def _candidate_set_ids(
     session: AsyncSession, *, paper_id: str | None, limit: int | None
 ) -> list[str]:
-    translated_exists = (
-        select(SourceAsset.id)
-        .where(
-            SourceAsset.paper_id == DocumentRevision.paper_id,
-            SourceAsset.source_version == DocumentRevision.source_version,
-            SourceAsset.kind == "translated_pdf",
-        )
-        .exists()
-    )
     latex_asset_exists = (
         select(SourceAsset.id)
         .where(
@@ -51,9 +43,9 @@ async def _candidate_set_ids(
         .join(DocumentRevision, DocumentRevision.id == TranslationSet.revision_id)
         .where(
             TranslationSet.status == "complete",
+            TranslationSet.scope == "shared",
             DocumentRevision.source_format == "latex",
             latex_asset_exists,
-            ~translated_exists,
         )
         .order_by(TranslationSet.updated_at.desc())
     )
@@ -63,12 +55,30 @@ async def _candidate_set_ids(
         stmt = stmt.limit(limit)
     candidates: list[str] = []
     for set_id, style, stats in (await session.execute(stmt)).all():
+        units = {
+            unit.block_id: unit
+            for unit in (
+                await session.execute(
+                    select(TranslationUnit).where(TranslationUnit.set_id == set_id)
+                )
+            ).scalars()
+        }
+        translation_digest = _translation_units_digest(units)
+        success = ((stats or {}).get("translated_pdf") or {}).get(style)
+        if (
+            isinstance(success, dict)
+            and success.get("build_version") == PDF_BUILD_VERSION
+            and success.get("translation_set_id") == str(set_id)
+            and success.get("translation_digest") == translation_digest
+        ):
+            continue
         failures = (stats or {}).get("translated_pdf_failures") or {}
         failure = failures.get(style)
         if (
             isinstance(failure, dict)
             and failure.get("build_version") == PDF_BUILD_VERSION
             and failure.get("translation_set_id") == str(set_id)
+            and failure.get("translation_digest") == translation_digest
         ):
             continue
         candidates.append(str(set_id))
@@ -86,9 +96,16 @@ async def _record_build_failure(
         return
     stats = dict(revision.stats or {})
     failures: dict[str, Any] = dict(stats.get("translated_pdf_failures") or {})
+    units = {
+        unit.block_id: unit
+        for unit in (
+            await session.execute(select(TranslationUnit).where(TranslationUnit.set_id == set_id))
+        ).scalars()
+    }
     failures[tset.style] = {
         "build_version": PDF_BUILD_VERSION,
         "translation_set_id": set_id,
+        "translation_digest": _translation_units_digest(units),
         "code": exc.kind,
         "detail": _compact_failure_detail(exc.detail),
         "failed_at": dt.datetime.now(dt.UTC).isoformat(),
@@ -115,7 +132,7 @@ def _compact_failure_detail(detail: dict[str, Any]) -> dict[str, Any]:
 async def backfill_latex_translation_pdfs(
     *, paper_id: str | None = None, limit: int | None = None
 ) -> int:
-    """Build missing translated PDFs. Returns the number of built sets."""
+    """Build missing or stale translated PDFs. Returns the number of built sets."""
 
     settings = get_settings()
     maker = get_sessionmaker()
@@ -124,9 +141,11 @@ async def backfill_latex_translation_pdfs(
     async with maker() as session:
         set_ids = await _candidate_set_ids(session, paper_id=paper_id, limit=limit)
         if not set_ids:
-            print("No missing LaTeX translated PDFs.")
+            print("No missing or stale LaTeX translated PDFs.")
             return 0
-        print(f"Found {len(set_ids)} completed LaTeX translation set(s) missing PDFs.")
+        print(
+            f"Found {len(set_ids)} completed LaTeX translation set(s) with missing or stale PDFs."
+        )
         for set_id in set_ids:
             try:
                 outcome = await build_latex_translation_pdfs_if_ready(
@@ -141,10 +160,7 @@ async def backfill_latex_translation_pdfs(
                 continue
             if outcome.built:
                 built += 1
-                print(
-                    "built "
-                    f"set={set_id} translated={outcome.translated_key}"
-                )
+                print(f"built set={set_id} translated={outcome.translated_key}")
             else:
                 print(f"skip set={set_id} reason={outcome.skipped_reason}")
     return built

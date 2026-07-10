@@ -1,0 +1,14 @@
+\documentclass[twocolumn]{article}
+\usepackage{iftex}
+\ifLuaTeX
+  \usepackage{luatexja}
+  \usepackage{luatexja-fontspec}
+  \IfFontExistsTF{Noto Serif CJK JP}{\setmainjfont{Noto Serif CJK JP}}{}
+  \IfFontExistsTF{Noto Sans CJK JP}{\setsansjfont{Noto Sans CJK JP}}{}
+  \IfFontExistsTF{Noto Sans Mono CJK JP}{\setmonojfont{Noto Sans Mono CJK JP}}{}
+\else
+  \PackageError{alinea-ja-pdf}{LuaLaTeX is required for Japanese PDF output}{}
+\fi
+\begin{document}
+日本語PDFのフォントと縦書きではない通常の横書きを検証します。
+\end{document}

@@ -725,6 +725,13 @@ async def test_paper_pdf_streams_translated_variant(
     assert r.headers["content-disposition"] == 'inline; filename="paper-translated.pdf"'
     assert r.content == _MINIMAL_PDF
 
+    literal = await client.get(
+        f"/api/papers/{paper.id}/pdf",
+        params={"variant": "translated", "style": "literal"},
+        follow_redirects=False,
+    )
+    assert literal.status_code == 404
+
 
 async def test_paper_pdf_missing_asset_404(
     client: AsyncClient,

@@ -326,6 +326,12 @@ async def run_translation_job(ctx: dict[str, Any], store: JobStore, job: Job) ->
         },
     )
 
+    # Retry/on-demand jobs can turn the final blocked unit into a usable translation
+    # after the initial ingest has already finished. Rebuild only when quality progress
+    # reaches 100; the PDF builder's translation digest makes duplicate calls cheap.
+    if reason != "initial" and result.progress_pct >= 100:
+        await _build_latex_translation_pdf_after_complete(ctx, store, None, str(payload["set_id"]))
+
     # arq 経路の完了確定(plans/05 §11.3): 初回全文翻訳の最後のジョブが親 ingest
     # ジョブと翻訳セットを complete にする(advisory lock で競合安全)。
     ingest_job_id = payload.get("ingest_job_id")
@@ -364,12 +370,12 @@ async def run_translation_job(ctx: dict[str, Any], store: JobStore, job: Job) ->
 async def _build_latex_translation_pdf_after_complete(
     ctx: dict[str, Any],
     store: JobStore,
-    ingest_job_id: str,
+    ingest_job_id: str | None,
     set_id: str,
 ) -> None:
     settings = ctx.get("settings") or get_settings()
     storage = ctx.get("s3") or S3Storage(settings)
-    ingest_job = await store.session.get(Job, ingest_job_id)
+    ingest_job = await store.session.get(Job, ingest_job_id) if ingest_job_id else None
     try:
         outcome = await build_latex_translation_pdfs_if_ready(
             store.session,
@@ -391,7 +397,7 @@ async def _build_latex_translation_pdf_after_complete(
     if ingest_job is None:
         return
     if not outcome.built:
-        if outcome.skipped_reason not in {"not_latex", "already_built"}:
+        if outcome.skipped_reason not in {"not_latex", "not_shared", "already_built"}:
             await joblog.log(
                 store.session,
                 ingest_job,
