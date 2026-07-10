@@ -30,6 +30,7 @@ def _text_block(block_id: str, block_type: BlockType, text: str) -> Block:
     [
         pytest.param("body.pdf", ("nested/body.pdf",), True, id="basename"),
         pytest.param("./body.pdf", ("nested/body.pdf",), True, id="dot-relative"),
+        pytest.param("../body.pdf", ("nested/body.pdf",), True, id="parent-relative"),
         pytest.param("papers/body.pdf", ("nested/body.pdf",), True, id="other-directory"),
         pytest.param(
             "stored files/body copy.pdf",
@@ -44,6 +45,42 @@ def _text_block(block_id: str, block_type: BlockType, text: str) -> Block:
             id="exact-basename-with-spaces",
         ),
         pytest.param("See papers/body.pdf", ("nested/body.pdf",), False, id="prose-prefix"),
+        pytest.param(
+            "https://example.org/body.pdf",
+            ("nested/body.pdf", "https://example.org/body.pdf"),
+            False,
+            id="https-uri",
+        ),
+        pytest.param(
+            "http://example.org/body.pdf",
+            ("nested/body.pdf", "http://example.org/body.pdf"),
+            False,
+            id="http-uri",
+        ),
+        pytest.param(
+            "s3://bucket/body.pdf",
+            ("nested/body.pdf", "s3://bucket/body.pdf"),
+            False,
+            id="s3-uri",
+        ),
+        pytest.param(
+            "/absolute/body.pdf",
+            ("nested/body.pdf", "/absolute/body.pdf"),
+            False,
+            id="absolute-path",
+        ),
+        pytest.param(
+            "//host/share/body.pdf",
+            ("nested/body.pdf", "//host/share/body.pdf"),
+            False,
+            id="network-path",
+        ),
+        pytest.param(
+            "C:/body.pdf",
+            ("nested/body.pdf", "C:/body.pdf"),
+            False,
+            id="drive-prefix",
+        ),
         pytest.param(
             "Results are in papers/body.pdf.",
             ("nested/body.pdf",),

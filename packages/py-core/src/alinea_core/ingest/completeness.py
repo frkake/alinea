@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
@@ -12,16 +13,24 @@ from alinea_core.document.plaintext import block_to_plain
 from alinea_core.translation.pipeline import TRANSLATABLE_BLOCK_TYPES
 
 _PARAGRAPH_TYPES = frozenset({"paragraph", "list", "quote", "theorem"})
+_SCHEME_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def _is_local_archive_relative_path(value: str) -> bool:
+    """Return whether a path stays in the logical, relative archive namespace."""
+    return not PurePosixPath(value).is_absolute() and _SCHEME_PREFIX_RE.match(value) is None
 
 
 def _is_bare_pdf_reference(plain: str, manifest_files: Collection[str]) -> bool:
     """Return whether an entire visible block unambiguously names a manifest PDF."""
     candidate = plain.strip()
-    if not candidate:
+    if not candidate or not _is_local_archive_relative_path(candidate):
         return False
 
     manifest_pdf_paths = {
-        str(PurePosixPath(name)) for name in manifest_files if name.lower().endswith(".pdf")
+        str(PurePosixPath(name))
+        for name in manifest_files
+        if name.lower().endswith(".pdf") and _is_local_archive_relative_path(name)
     }
     manifest_pdf_basenames = {PurePosixPath(name).name for name in manifest_pdf_paths}
     normalized_candidate = str(PurePosixPath(candidate))
