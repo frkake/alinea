@@ -17,6 +17,8 @@ ID を文字列で保持し、読み書きの直前に ``session.get`` で都度
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import posixpath
 from dataclasses import dataclass
 from typing import Any
@@ -57,17 +59,9 @@ from alinea_core.parsing.html_parser import (
 )
 from alinea_core.parsing.html_parser import (
     ParsedDocument,
-    parse_arxiv_html,
 )
 from alinea_core.parsing.latex_parser import (
     PARSER_VERSION as LATEX_PARSER_VERSION,
-)
-from alinea_core.parsing.latex_parser import (
-    LatexParseError,
-    extract_latex_archive,
-    parse_arxiv_latex,
-    parse_latex_source,
-    select_main_tex,
 )
 from alinea_core.parsing.pdf_parser import (
     PARSER_VERSION as PDF_PARSER_VERSION,
@@ -89,6 +83,7 @@ from alinea_core.translation.pipeline import (
     translate_block,
     translate_section,
 )
+from botocore.exceptions import ClientError
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -96,6 +91,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from alinea_worker import notify
 from alinea_worker.latex_pdf import LatexPdfBuildError, build_latex_translation_pdfs_if_ready
+from alinea_worker.source_candidates import (
+    CandidateUnavailable,
+    SourceCandidate,
+    load_original_pdf,
+    parse_html_candidate,
+    parse_latex_candidate,
+    parse_pdf_candidate,
+)
 
 # 論文概要 + 提案タグ(1 呼び出しで生成)。DB フィールド名は後方互換のため summary_lines のまま。
 SUMMARY_SCHEMA_NAME = "summary_3line_v1"
@@ -226,6 +229,17 @@ def _to_date(value: str | None) -> dt.date | None:
         return None
 
 
+def _is_pdf_like(data: bytes) -> bool:
+    """Perform the shallow validation required before retaining an original PDF."""
+
+    return len(data) >= 8 and data[:1024].lstrip().startswith(b"%PDF-")
+
+
+def _is_missing_s3_object(exc: ClientError) -> bool:
+    error = exc.response.get("Error", {})
+    return str(error.get("Code") or "") in {"NoSuchKey", "NoSuchBucket", "404", "NotFound"}
+
+
 def _clean_latex_asset_path(value: str) -> str:
     path = value.strip().strip("{}").replace("\\", "/")
     path = path.split("#", 1)[0].split("?", 1)[0].strip()
@@ -349,6 +363,11 @@ class IngestRun:
             if self.is_pdf_upload
             else normalize_arxiv_id(self.payload.arxiv_id or self.payload.url or "")
         )
+        self._allow_latest_pdf_alias = (
+            self.ref is not None
+            and self.ref.version is None
+            and self.payload.requested_version is None
+        )
         self.source_version: str = ""
         self.source_format: str = "pdf_upload" if self.is_pdf_upload else "arxiv_html"
         self.revision_id: str | None = None
@@ -359,6 +378,9 @@ class IngestRun:
         self.latex_binary_files: dict[str, bytes] = {}
         self.latex_main_tex_name: str | None = None
         self._pdf_bytes: bytes | None = None
+        self._pdf_text: str | None = None
+        self._candidate_failures: list[dict[str, Any]] = []
+        self._candidate_completeness: dict[str, Any] | None = None
         self.style: str = "natural"
         self._settings_obj: TranslationSettings | None = None
 
@@ -366,13 +388,15 @@ class IngestRun:
     def parser_version(self) -> str:
         """取得優先順位 LaTeX > HTML > PDF(plans/05 §1.3・§5・M2-01)。
 
-        ``source_format`` は fetching 段で確定するため(`_stage_fetching`)、parsing/structuring
-        段(そのあと)から読む本プロパティは常に実際に使ったパーサと一致する。
+        ``source_format`` は候補受理時に確定するため、structuring から読む本プロパティは
+        常に実際に使ったパーサと一致する。
         """
         if self.is_pdf_upload:
             return PDF_PARSER_VERSION
         if self.source_format == "latex":
             return LATEX_PARSER_VERSION
+        if self.source_format == "pdf":
+            return PDF_PARSER_VERSION
         return HTML_PARSER_VERSION
 
     # -- ORM 取得(都度フレッシュ) ---------------------------------------
@@ -499,11 +523,27 @@ class IngestRun:
         return (await self.session.execute(stmt)).scalars().first()
 
     async def _stage_fetching(self) -> None:
-        # 冪等: checkpoint 済みなら再取得しない(§2.3。S3 に原本が残っている)。
+        # pdf_upload は従来どおり API が先行保存した原本だけを確認する。
         fetch_ck = self.ckpt.get("fetching")
         if fetch_ck and fetch_ck.get("source_version"):
             self.source_version = str(fetch_ck["source_version"])
             self.source_format = str(fetch_ck.get("source_format", "arxiv_html"))
+            if self.is_pdf_upload:
+                return
+
+            # arXiv の再開時も原本 PDF 不変条件を再確認する。資産行が stale でも
+            # canonical key、最後に network の順で回復する。
+            assert self.ref is not None
+            self.ref = self._resolved_source_ref()
+            http = self.deps.http
+            owns_http = http is None
+            if http is None:
+                http = make_arxiv_client(self.deps.settings)
+            try:
+                await self._acquire_original_pdf(http)
+            finally:
+                if owns_http:
+                    await http.aclose()
             return
 
         await self.store.set_progress(self.job_id, 10, stage="fetching")
@@ -526,45 +566,9 @@ class IngestRun:
             self.source_version = (
                 self.payload.requested_version or meta.latest_version or prior or "v1"
             )
+            self.ref = self._resolved_source_ref()
             await self.session.commit()
-            base = _www_base(self.deps.settings)
-            assert self.paper_id is not None
-            # 取得優先順位 LaTeX > HTML > PDF(plans/05 §1.3・§5・M2-01)。
-            latex_bytes = await self._fetch_latex_best_effort(http)
-            if latex_bytes is not None:
-                self.source_format = "latex"
-                source_bytes = latex_bytes
-                await self.deps.s3.put(
-                    self.deps.s3.sources_bucket,
-                    StorageKeys.latex_tar(self.paper_id, self.source_version),
-                    latex_bytes,
-                    content_type="application/gzip",
-                )
-                await self._record_source_asset(
-                    "arxiv_latex",  # plans/02 §4.3 ck_source_assets_kind の許容値
-                    StorageKeys.latex_tar(self.paper_id, self.source_version),
-                    content_type="application/gzip",
-                    byte_size=len(latex_bytes),
-                    source_url=eprint_url(
-                        self.ref, self.deps.settings.alinea_arxiv_base_url or None
-                    ),
-                )
-            else:
-                source_bytes = await self._fetch_html(http, base)
-                await self.deps.s3.put(
-                    self.deps.s3.sources_bucket,
-                    StorageKeys.arxiv_html(self.paper_id, self.source_version),
-                    source_bytes,
-                    content_type="text/html; charset=utf-8",
-                )
-                await self._record_source_asset(
-                    "arxiv_html",
-                    StorageKeys.arxiv_html(self.paper_id, self.source_version),
-                    content_type="text/html",
-                    byte_size=len(source_bytes),
-                    source_url=f"{base}/html/{self.ref.versioned}",
-                )
-            await self._fetch_pdf_best_effort(http, base)
+            source_bytes = await self._acquire_original_pdf(http)
         finally:
             if owns_http:
                 await http.aclose()
@@ -572,56 +576,177 @@ class IngestRun:
         await self._log(
             "fetching",
             "info",
-            joblog.fetch_timeline_message(self.source_format),
-            detail={"format": self.source_format, "bytes": len(source_bytes)},
-            timeline=True,
+            "原文 PDF を取得しました",
+            detail={"format": "pdf", "bytes": len(source_bytes)},
         )
         await self.store.checkpoint(
             self.job_id,
             "fetching",
-            {"source_version": self.source_version, "source_format": self.source_format},
+            {"source_version": self.source_version},
             progress=10,
         )
 
-    async def _fetch_latex_best_effort(self, http: httpx.AsyncClient) -> bytes | None:
-        """LaTeX ソース(e-print)を試行取得する(取得優先順位 §1.3・§5。M2-01)。
-
-        取得・展開・パース(検証用)のいずれかに失敗した場合は ``None`` を返し、呼び出し側が
-        既存の HTML 経路へ可視的にフォールバックする(``jobs.log`` warn。P3)。既存の
-        HTML/PDF 経路は変更しない。
-        """
+    def _resolved_source_ref(self) -> ArxivId:
         assert self.ref is not None
+        version = self.source_version.removeprefix("v")
+        if version.isdigit():
+            return ArxivId(self.ref.id, int(version))
+        return self.ref
+
+    async def _acquire_original_pdf(self, http: httpx.AsyncClient) -> bytes:
+        """Load a retained original PDF or fetch and retain it before candidates run."""
+
+        assert self.paper_id is not None and self.ref is not None
+        canonical_key = StorageKeys.original_pdf(self.paper_id, self.source_version)
+        compatible_versions = [self.source_version]
+        if self._allow_latest_pdf_alias and self.source_version != "latest":
+            compatible_versions.append("latest")
+        assets = list(
+            (
+                await self.session.execute(
+                    select(SourceAsset).where(
+                        SourceAsset.paper_id == self.paper_id,
+                        SourceAsset.source_version.in_(compatible_versions),
+                        SourceAsset.kind == "pdf",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assets.sort(key=lambda item: item.source_version != self.source_version)
+        record_asset = assets[0] if assets else None
+        cache_diagnostics: list[str] = []
+        cache_storage_failed = False
+        keys: list[tuple[str, str, str | None]] = []
+
+        def add_key(label: str, key: str, canonical_version: str | None = None) -> None:
+            if all(existing != key for _label, existing, _version in keys):
+                keys.append((label, key, canonical_version))
+
+        for asset in assets:
+            label = "asset" if asset.source_version == self.source_version else "latest_asset"
+            add_key(label, asset.storage_key)
+        add_key("canonical", canonical_key, self.source_version)
+        if self._allow_latest_pdf_alias and self.source_version != "latest":
+            add_key(
+                "latest_canonical",
+                StorageKeys.original_pdf(self.paper_id, "latest"),
+                "latest",
+            )
+
+        for label, key, canonical_version in keys:
+            try:
+                if canonical_version is not None:
+                    data = await load_original_pdf(self.deps.s3, self.paper_id, canonical_version)
+                else:
+                    data = await self.deps.s3.get(self.deps.s3.sources_bucket, key)
+            except ClientError as exc:
+                if not _is_missing_s3_object(exc):
+                    cache_storage_failed = True
+                    cache_diagnostics.append(f"{label}_storage_error")
+                    continue
+                cache_diagnostics.append(f"{label}_missing")
+                continue
+            except Exception:
+                cache_storage_failed = True
+                cache_diagnostics.append(f"{label}_storage_error")
+                continue
+            if not _is_pdf_like(data):
+                cache_diagnostics.append(f"{label}_invalid")
+                continue
+            try:
+                if key != canonical_key:
+                    await self.deps.s3.put(
+                        self.deps.s3.sources_bucket,
+                        canonical_key,
+                        data,
+                        content_type="application/pdf",
+                    )
+                await self._record_original_pdf_asset(canonical_key, data, asset=record_asset)
+            except Exception as exc:
+                await self.session.rollback()
+                raise FetchError(
+                    "storage_error",
+                    f"original pdf retention failed: cache={label}_hit; network=not_used",
+                ) from exc
+            self._pdf_bytes = data
+            return data
+
+        base = _www_base(self.deps.settings)
+        url = f"{base}/pdf/{self.ref.versioned}"
+        context = ",".join(cache_diagnostics) or "cache_miss"
+
+        def unavailable(kind: str, network: str) -> FetchError:
+            effective_kind = (
+                "storage_error" if cache_storage_failed and kind == "source_not_found" else kind
+            )
+            return FetchError(
+                effective_kind,
+                f"original pdf unavailable: cache={context}; network={network}",
+            )
+
         try:
             await self._throttle()
-            resp = await http.get(
-                eprint_url(self.ref, self.deps.settings.alinea_arxiv_base_url or None),
-                timeout=httpx.Timeout(60.0, connect=5.0),
-            )
+            resp = await http.get(url, timeout=httpx.Timeout(120.0, connect=5.0))
         except httpx.HTTPError as exc:
-            await self._log(
-                "fetching",
-                "warn",
-                "LaTeX ソース取得に失敗(HTML へフォールバック)",
-                detail={"error": str(exc)},
-            )
-            return None
-        if resp.status_code != 200 or "pdf" in resp.headers.get("content-type", "").lower():
-            return None
+            raise unavailable("network_error", "request_failed") from exc
+        if resp.status_code == 429:
+            raise unavailable("rate_limited", "http_429")
+        if resp.status_code == 408:
+            raise unavailable("network_error", "http_408")
+        if resp.status_code == 404:
+            raise unavailable("source_not_found", "http_404")
+        if resp.status_code >= 500:
+            raise unavailable("upstream_5xx", "upstream_5xx")
+        if resp.status_code != 200:
+            raise unavailable("source_not_found", f"http_{resp.status_code}")
         data = resp.content
+        if not _is_pdf_like(data):
+            raise unavailable("source_not_found", "invalid_pdf")
         try:
-            parse_arxiv_latex(data)  # 展開・メイン .tex 特定・構文解析まで検証する
-        except LatexParseError as exc:
-            await self._log(
-                "fetching",
-                "warn",
-                "LaTeX ソースの解析に失敗(HTML へフォールバック)",
-                detail={"error": str(exc), "kind": exc.kind},
+            await self.deps.s3.put(
+                self.deps.s3.sources_bucket,
+                canonical_key,
+                data,
+                content_type="application/pdf",
             )
-            return None
+            await self._record_original_pdf_asset(canonical_key, data, asset=record_asset)
+        except Exception as exc:
+            await self.session.rollback()
+            raise FetchError(
+                "storage_error",
+                f"original pdf retention failed: cache={context}; network=downloaded",
+            ) from exc
+        self._pdf_bytes = data
         return data
 
+    async def _record_original_pdf_asset(
+        self, key: str, data: bytes, *, asset: SourceAsset | None = None
+    ) -> None:
+        assert self.ref is not None
+        source_url = f"{_www_base(self.deps.settings)}/pdf/{self.ref.versioned}"
+        digest = hashlib.sha256(data).hexdigest()
+        if asset is not None:
+            asset.source_url = source_url
+            asset.source_version = self.source_version
+            asset.storage_key = key
+            asset.content_type = "application/pdf"
+            asset.byte_size = len(data)
+            asset.sha256 = digest
+            await self.session.commit()
+            return
+        await self._record_source_asset(
+            "pdf",
+            key,
+            content_type="application/pdf",
+            byte_size=len(data),
+            source_url=source_url,
+            sha256=digest,
+        )
+
     async def _get_pdf_bytes(self) -> bytes:
-        """アップロード原本 PDF を S3 から取得する(未取得なら都度取得。§9.2)。"""
+        """原本 PDF を S3 から取得する(未取得なら canonical key を読む)。"""
         if self._pdf_bytes is not None:
             return self._pdf_bytes
         assert self.paper_id is not None
@@ -670,69 +795,230 @@ class IngestRun:
         paper.license = meta.license
         paper.latest_version = meta.latest_version
 
-    async def _fetch_html(self, http: httpx.AsyncClient, base: str) -> bytes:
+    async def _fetch_latex_candidate_bytes(self, http: httpx.AsyncClient) -> bytes:
         assert self.ref is not None
-        url = f"{base}/html/{self.ref.versioned}"
-        await self._throttle()
-        try:
-            resp = await http.get(url, timeout=httpx.Timeout(30.0, connect=5.0))
-        except httpx.HTTPError as exc:
-            raise FetchError("network_error", f"arxiv html fetch failed: {exc}") from exc
-        if resp.status_code == 404:
-            raise FetchError("source_not_found", f"arxiv html 404: {url}")
-        if resp.status_code >= 500:
-            raise FetchError("upstream_5xx", f"arxiv html {resp.status_code}")
-        if resp.status_code != 200 or "ltx_document" not in resp.text:
-            raise FetchError("source_not_found", "arxiv html has no ltx_document")
-        self.source_format = "arxiv_html"
-        return resp.content
-
-    async def _fetch_pdf_best_effort(self, http: httpx.AsyncClient, base: str) -> None:
-        assert self.ref is not None
-        url = f"{base}/pdf/{self.ref.versioned}"
         try:
             await self._throttle()
-            resp = await http.get(url, timeout=httpx.Timeout(120.0, connect=5.0))
-            if resp.status_code != 200:
-                raise FetchError("source_not_found", f"pdf {resp.status_code}")
-            assert self.paper_id is not None
-            await self.deps.s3.put(
-                self.deps.s3.sources_bucket,
-                StorageKeys.original_pdf(self.paper_id, self.source_version),
-                resp.content,
-                content_type="application/pdf",
+            resp = await http.get(
+                eprint_url(self.ref, self.deps.settings.alinea_arxiv_base_url or None),
+                timeout=httpx.Timeout(60.0, connect=5.0),
             )
-            await self._record_source_asset(
-                "pdf",
-                StorageKeys.original_pdf(self.paper_id, self.source_version),
-                content_type="application/pdf",
-                byte_size=len(resp.content),
-                source_url=url,
+        except httpx.HTTPError as exc:
+            raise CandidateUnavailable(
+                "latex", "network_error", "arxiv e-print request failed"
+            ) from exc
+        if resp.status_code == 404:
+            raise CandidateUnavailable("latex", "source_not_found", "arxiv e-print returned 404")
+        if resp.status_code >= 500:
+            raise CandidateUnavailable("latex", "upstream_5xx", "arxiv e-print upstream failure")
+        if resp.status_code != 200:
+            raise CandidateUnavailable("latex", "source_not_found", "arxiv e-print was unavailable")
+        if "pdf" in resp.headers.get("content-type", "").lower():
+            raise CandidateUnavailable(
+                "latex",
+                "source_not_found",
+                "arxiv e-print returned PDF instead of LaTeX source",
             )
-        except (httpx.HTTPError, FetchError) as exc:
-            await self._log(
-                "fetching",
-                "warn",
-                "原文 PDF を取得できませんでした(続行)",
-                detail={"error": str(exc)},
+        return resp.content
+
+    async def _fetch_html_candidate_bytes(self, http: httpx.AsyncClient) -> bytes:
+        assert self.ref is not None
+        url = f"{_www_base(self.deps.settings)}/html/{self.ref.versioned}"
+        try:
+            await self._throttle()
+            resp = await http.get(url, timeout=httpx.Timeout(30.0, connect=5.0))
+        except httpx.HTTPError as exc:
+            raise CandidateUnavailable(
+                "arxiv_html", "network_error", "arxiv html request failed"
+            ) from exc
+        if resp.status_code == 404:
+            raise CandidateUnavailable("arxiv_html", "source_not_found", "arxiv html returned 404")
+        if resp.status_code >= 500:
+            raise CandidateUnavailable("arxiv_html", "upstream_5xx", "arxiv html upstream failure")
+        if resp.status_code != 200:
+            raise CandidateUnavailable(
+                "arxiv_html", "source_not_found", "arxiv html was unavailable"
             )
+        if "ltx_document" not in resp.text:
+            raise CandidateUnavailable(
+                "arxiv_html", "source_not_found", "arxiv html has no ltx_document"
+            )
+        return resp.content
+
+    def _pdf_text_for_completeness(self) -> str:
+        if self._pdf_text is not None:
+            return self._pdf_text
+        assert self._pdf_bytes is not None
+        try:
+            doc = fitz.open(stream=self._pdf_bytes, filetype="pdf")
+            try:
+                self._pdf_text = "\n".join(page.get_text("text", sort=True) for page in doc)
+            finally:
+                doc.close()
+        except Exception:
+            # Shallow acquisition deliberately leaves deep validation to the PDF candidate.
+            self._pdf_text = ""
+        return self._pdf_text
+
+    async def _latex_candidate(self, http: httpx.AsyncClient) -> SourceCandidate:
+        raw = await self._fetch_latex_candidate_bytes(http)
+        candidate, binary_files, main_tex_name = parse_latex_candidate(
+            raw, pdf_text=self._pdf_text_for_completeness()
+        )
+        self.latex_binary_files = binary_files
+        self.latex_main_tex_name = main_tex_name
+        return candidate
+
+    async def _html_candidate(self, http: httpx.AsyncClient) -> SourceCandidate:
+        raw = await self._fetch_html_candidate_bytes(http)
+        candidate = parse_html_candidate(raw, pdf_text=self._pdf_text_for_completeness())
+        self.latex_binary_files = {}
+        self.latex_main_tex_name = None
+        return candidate
+
+    async def _pdf_candidate(self) -> SourceCandidate:
+        data = await self._get_pdf_bytes()
+        candidate = parse_pdf_candidate(data, pdf_text=self._pdf_text_for_completeness())
+        self.latex_binary_files = {}
+        self.latex_main_tex_name = None
+        return candidate
+
+    async def _select_source_candidate(self) -> tuple[SourceCandidate, list[dict[str, Any]]]:
+        failures: list[dict[str, Any]] = []
+        http = self.deps.http
+        owns_http = http is None
+        if http is None:
+            http = make_arxiv_client(self.deps.settings)
+        try:
+            for source_format in ("latex", "arxiv_html", "pdf"):
+                try:
+                    if source_format == "latex":
+                        candidate = await self._latex_candidate(http)
+                    elif source_format == "arxiv_html":
+                        candidate = await self._html_candidate(http)
+                    else:
+                        candidate = await self._pdf_candidate()
+                except CandidateUnavailable as exc:
+                    failure: dict[str, Any] = exc.as_dict()
+                    failures.append(failure)
+                    display_format = {
+                        "latex": "LaTeX",
+                        "arxiv_html": "arXiv HTML",
+                        "pdf": "PDF",
+                    }.get(exc.source_format, exc.source_format)
+                    await self._log(
+                        "fetching",
+                        "warn",
+                        f"{display_format} ソース候補を利用できません(次候補へフォールバック)",
+                        detail=failure,
+                    )
+                    continue
+
+                if candidate.report.accepted:
+                    return candidate, failures
+                failure = {"format": candidate.source_format, **candidate.report.as_dict()}
+                failures.append(failure)
+                await self._log(
+                    "parsing",
+                    "warn",
+                    f"{candidate.source_format} ソース候補は不完全です(次候補へフォールバック)",
+                    detail=failure,
+                )
+        finally:
+            if owns_http:
+                await http.aclose()
+
+        raise FetchError(
+            "document_incomplete",
+            json.dumps({"candidates": failures}, ensure_ascii=False, sort_keys=True),
+        )
+
+    async def _adopt_source_candidate(
+        self, candidate: SourceCandidate, failures: list[dict[str, Any]]
+    ) -> None:
+        assert self.paper_id is not None and self.ref is not None
+        self.source_format = candidate.source_format
+        self.content = candidate.content
+        self._candidate_failures = failures
+        self._candidate_completeness = candidate.report.as_dict()
+        if isinstance(candidate.parsed, ParsedPdfDocument):
+            self.parsed = None
+            self.parsed_pdf = candidate.parsed
+        else:
+            self.parsed = candidate.parsed
+            self.parsed_pdf = None
+
+        key: str | None = None
+        kind: str | None = None
+        content_type = "application/octet-stream"
+        source_url = ""
+        if candidate.source_format == "latex":
+            key = StorageKeys.latex_tar(self.paper_id, self.source_version)
+            kind = "arxiv_latex"
+            content_type = "application/gzip"
+            source_url = eprint_url(self.ref, self.deps.settings.alinea_arxiv_base_url or None)
+        elif candidate.source_format == "arxiv_html":
+            key = StorageKeys.arxiv_html(self.paper_id, self.source_version)
+            kind = "arxiv_html"
+            content_type = "text/html; charset=utf-8"
+            source_url = f"{_www_base(self.deps.settings)}/html/{self.ref.versioned}"
+
+        if key is not None and kind is not None:
+            try:
+                await self.deps.s3.put(
+                    self.deps.s3.sources_bucket,
+                    key,
+                    candidate.source_bytes,
+                    content_type=content_type,
+                )
+                await self._record_source_asset(
+                    kind,
+                    key,
+                    content_type=content_type.split(";", 1)[0],
+                    byte_size=len(candidate.source_bytes),
+                    source_url=source_url,
+                    sha256=hashlib.sha256(candidate.source_bytes).hexdigest(),
+                )
+            except Exception as exc:
+                await self.session.rollback()
+                raise FetchError(
+                    "storage_error",
+                    f"candidate source retention failed: format={candidate.source_format}",
+                ) from exc
+
+        await self._log(
+            "fetching",
+            "info",
+            joblog.fetch_timeline_message(candidate.source_format),
+            detail={"format": candidate.source_format, "bytes": len(candidate.source_bytes)},
+            timeline=True,
+        )
 
     async def _record_source_asset(
-        self, kind: str, key: str, *, content_type: str, byte_size: int, source_url: str
+        self,
+        kind: str,
+        key: str,
+        *,
+        content_type: str,
+        byte_size: int,
+        source_url: str,
+        sha256: str | None = None,
     ) -> None:
-        exists = (
-            await self.session.execute(
-                select(SourceAsset.id).where(
-                    SourceAsset.paper_id == self.paper_id,
-                    SourceAsset.source_version == self.source_version,
-                    SourceAsset.kind == kind,
+        asset = (
+            (
+                await self.session.execute(
+                    select(SourceAsset).where(
+                        SourceAsset.paper_id == self.paper_id,
+                        SourceAsset.source_version == self.source_version,
+                        SourceAsset.kind == kind,
+                    )
                 )
             )
-        ).first()
-        if exists is not None:
-            return
-        self.session.add(
-            SourceAsset(
+            .scalars()
+            .first()
+        )
+        if asset is None:
+            asset = SourceAsset(
                 paper_id=self.paper_id,
                 kind=kind,
                 source_url=source_url,
@@ -740,8 +1026,15 @@ class IngestRun:
                 storage_key=key,
                 content_type=content_type,
                 byte_size=byte_size,
+                sha256=sha256,
             )
-        )
+            self.session.add(asset)
+        else:
+            asset.source_url = source_url
+            asset.storage_key = key
+            asset.content_type = content_type
+            asset.byte_size = byte_size
+            asset.sha256 = sha256
         await self.session.commit()
 
     # -- parsing + structuring -------------------------------------------
@@ -754,12 +1047,45 @@ class IngestRun:
         )
         return (await self.session.execute(stmt)).scalars().first()
 
+    def _restore_revision(self, revision: DocumentRevision) -> None:
+        self.source_format = revision.source_format
+        self.revision_id = str(revision.id)
+        self.content = DocumentContent.model_validate(revision.content)
+
+    async def _restore_checkpoint_revision(self) -> bool:
+        checkpoint = self.ckpt.get("structuring")
+        revision_id = checkpoint.get("revision_id") if isinstance(checkpoint, dict) else None
+        if not revision_id:
+            return False
+        revision = await self.session.get(DocumentRevision, str(revision_id))
+        if (
+            revision is None
+            or str(revision.paper_id) != self.paper_id
+            or revision.source_version != self.source_version
+        ):
+            return False
+        self._restore_revision(revision)
+        return True
+
     async def _stage_parse_and_structure(self) -> None:
-        existing = await self._find_revision()
-        if existing is not None:
-            self.revision_id = str(existing.id)
-            self.content = DocumentContent.model_validate(existing.content)
+        if await self._restore_checkpoint_revision():
             return
+        if self.is_pdf_upload:
+            existing = await self._find_revision()
+            if existing is not None:
+                self._restore_revision(existing)
+                return
+        else:
+            parse_ck = self.ckpt.get("parsing")
+            checkpoint_format = (
+                parse_ck.get("source_format") if isinstance(parse_ck, dict) else None
+            )
+            if checkpoint_format in {"latex", "arxiv_html", "pdf"}:
+                self.source_format = str(checkpoint_format)
+                existing = await self._find_revision()
+                if existing is not None:
+                    self._restore_revision(existing)
+                    return
 
         await self.store.set_progress(self.job_id, 20, stage="parsing")
         await self._publish_stage("parsing", 20)
@@ -787,33 +1113,27 @@ class IngestRun:
             )
             return
 
-        # parsing: LaTeX(優先)または HTML(いずれも S3)→ ブロックモデル(§1.3・§5・M2-01)。
-        if self.source_format == "latex":
-            raw = await self.deps.s3.get(
-                self.deps.s3.sources_bucket,
-                StorageKeys.latex_tar(self.paper_id, self.source_version),
-            )
-            try:
-                extracted = extract_latex_archive(raw)
-                self.latex_binary_files = extracted.binary_files
-                self.latex_main_tex_name, _ = select_main_tex(extracted.text_files)
-                self.parsed = parse_latex_source(self.latex_main_tex_name, extracted.text_files)
-            except LatexParseError as exc:
-                raise FetchError("parse_error", f"latex parse failed: {exc}") from exc
-        else:
-            self.latex_binary_files = {}
-            self.latex_main_tex_name = None
-            raw = await self.deps.s3.get(
-                self.deps.s3.sources_bucket,
-                StorageKeys.arxiv_html(self.paper_id, self.source_version),
-            )
-            self.parsed = parse_arxiv_html(raw.decode("utf-8"))
-        await self.store.checkpoint(self.job_id, "parsing", {}, progress=20)
+        # arXiv: LaTeX → HTML → retained original PDF の順に完全性を評価する。
+        candidate, failures = await self._select_source_candidate()
+        await self._adopt_source_candidate(candidate, failures)
+        existing = await self._find_revision()
+        if existing is not None:
+            self._restore_revision(existing)
+            return
+        await self.store.checkpoint(
+            self.job_id,
+            "parsing",
+            {"source_format": self.source_format, "parser_version": self.parser_version},
+            progress=20,
+        )
 
         # structuring: リビジョン永続化・図保存・検索索引・サムネイル。
         await self.store.set_progress(self.job_id, 35, stage="structuring")
         await self._publish_stage("structuring", 35)
-        await self._structure()
+        if candidate.source_format == "pdf":
+            await self._structure_pdf(candidate.source_bytes)
+        else:
+            await self._structure()
         if self.payload.adopt_on_complete and old_revision_id is not None:
             await self._reanchor_after_adopt(old_revision_id)
         await self.store.checkpoint(
@@ -832,6 +1152,8 @@ class IngestRun:
             "tables": len(self.parsed.tables),
             "blocks": len(self.parsed.blocks),
             "translatable_blocks": len(scope.in_scope_block_ids),
+            "candidate_failures": self._candidate_failures,
+            "completeness": self._candidate_completeness,
         }
         if self.source_format == "latex":
             stats["latex_source"] = {
@@ -957,12 +1279,12 @@ class IngestRun:
         paper.thumbnail_key = StorageKeys.thumbnail(self.paper_id)
         return []
 
-    # -- structuring (pdf_upload。品質 B。plans/05 §6・§9.2) --------------
+    # -- structuring (PDF 候補 / pdf_upload。品質 B。plans/05 §6・§9.2) ---
 
     async def _structure_pdf(self, data: bytes) -> None:
-        """PDF アップロードの structuring 段: リビジョン永続化・図表資産・書誌推定・索引・サムネ。
+        """PDF の structuring 段: リビジョン永続化・図表資産・索引・サムネ。
 
-        pdf_parser が既に図表を切り出し済み(HTTP 再取得不要)。
+        pdf_parser が既に図表を切り出し済み(HTTP 再取得不要)。書誌推定は upload のみ。
         """
         assert self.parsed_pdf is not None and self.paper_id is not None
         warnings = list(self.parsed_pdf.warnings)
@@ -970,6 +1292,9 @@ class IngestRun:
         scope = compute_translation_scope(content)
         stats: dict[str, Any] = dict(self.parsed_pdf.stats)
         stats["translatable_blocks"] = len(scope.in_scope_block_ids)
+        if not self.is_pdf_upload:
+            stats["candidate_failures"] = self._candidate_failures
+            stats["completeness"] = self._candidate_completeness
 
         revision = DocumentRevision(
             paper_id=self.paper_id,
@@ -996,7 +1321,8 @@ class IngestRun:
         abstract_text = _extract_pdf_abstract(content)
         if abstract_text and not paper.abstract:
             paper.abstract = abstract_text
-        await self._apply_bib_estimate(paper, data)
+        if self.is_pdf_upload:
+            await self._apply_bib_estimate(paper, data)
 
         await rebuild_block_search_index(self.session, self.revision_id, content)
         warnings.extend(
