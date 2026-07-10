@@ -70,3 +70,16 @@
 - [x] Run the full parser/figure/priority pipeline pytest set, worker/API cleanup tests, Ruff, format check, mypy, web typecheck, and viewer focused tests.
 - [x] Run `git diff --check` and scan the diff for paper IDs, titles, authors, or source-fragment special cases.
 - [x] Commit the approved design, plan, implementation, and tests as one scoped commit and report the hash and clean status.
+
+### Task 5: Document-limited operation timeout mapping
+
+**Files:**
+
+- Modify: `apps/worker/src/alinea_worker/pipeline.py`
+- Test: `apps/worker/tests/test_figure_assets.py`
+
+- [x] Add parametrized RED boundary tests for conversion, HTML asset fetch, and thumbnail timeouts: remap to `materialization_timeout` only when the document deadline strictly shortens the operation limit, and preserve the operation-specific code when both limits are equal.
+- [x] Introduce one timeout selection result that records both the effective seconds and whether the document deadline was the limiting bound, reading the deadline clock once per operation.
+- [x] Map only the active operation's timeout code (`conversion_timeout`, `asset_fetch_timeout`, or `thumbnail_timeout`) when the document deadline is limiting; preserve all other failure codes.
+- [x] Run focused tests to GREEN, then the fresh worker/parser/API suite, Python static checks, web typecheck/viewer tests, diff/hardcode scans, and specification review.
+- [x] Commit the reviewed fix and tests as one separate scoped commit.

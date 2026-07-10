@@ -1618,6 +1618,244 @@ async def test_document_deadline_stops_later_figure_materialization(
 
 
 @pytest.mark.parametrize(
+    ("document_timeout_s", "raised_code", "expected_code"),
+    [
+        (
+            worker_pipeline.DEFAULT_CONVERSION_TIMEOUT_S - 1.0,
+            "conversion_timeout",
+            "materialization_timeout",
+        ),
+        (
+            worker_pipeline.DEFAULT_CONVERSION_TIMEOUT_S,
+            "conversion_timeout",
+            "conversion_timeout",
+        ),
+        (
+            worker_pipeline.DEFAULT_CONVERSION_TIMEOUT_S + 1.0,
+            "conversion_timeout",
+            "conversion_timeout",
+        ),
+        (
+            worker_pipeline.DEFAULT_CONVERSION_TIMEOUT_S - 1.0,
+            "conversion_crashed",
+            "conversion_crashed",
+        ),
+    ],
+    ids=[
+        "document-limited",
+        "equal-operation-limit",
+        "operation-limited",
+        "non-timeout-error",
+    ],
+)
+async def test_conversion_timeout_maps_only_when_document_deadline_shortens_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    document_timeout_s: float,
+    raised_code: str,
+    expected_code: str,
+) -> None:
+    observed_timeouts: list[float] = []
+
+    async def fail_conversion(
+        _data: bytes,
+        *,
+        source_name: str,
+        content_type: str | None = None,
+        timeout_s: float,
+    ) -> FigureAssetPayload:
+        del source_name, content_type
+        observed_timeouts.append(timeout_s)
+        raise FigureAssetError(raised_code, "conversion failed")
+
+    monkeypatch.setattr(
+        worker_pipeline,
+        "isolated_figure_asset_payload",
+        fail_conversion,
+    )
+    deadline = worker_pipeline.MaterializationDeadline.start(
+        timeout_s=document_timeout_s,
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(FigureAssetError) as caught:
+        await worker_pipeline._materialize_figure_payload(
+            _raster_bytes("PNG"),
+            "figure.png",
+            deadline=deadline,
+        )
+
+    assert caught.value.code == expected_code
+    assert observed_timeouts == [
+        min(document_timeout_s, worker_pipeline.DEFAULT_CONVERSION_TIMEOUT_S)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("document_timeout_s", "raised_code", "expected_code"),
+    [
+        (
+            worker_pipeline.MAX_HTML_ASSET_FETCH_SECONDS - 1.0,
+            "asset_fetch_timeout",
+            "materialization_timeout",
+        ),
+        (
+            worker_pipeline.MAX_HTML_ASSET_FETCH_SECONDS,
+            "asset_fetch_timeout",
+            "asset_fetch_timeout",
+        ),
+        (
+            worker_pipeline.MAX_HTML_ASSET_FETCH_SECONDS + 1.0,
+            "asset_fetch_timeout",
+            "asset_fetch_timeout",
+        ),
+        (
+            worker_pipeline.MAX_HTML_ASSET_FETCH_SECONDS - 1.0,
+            "asset_too_large",
+            "asset_too_large",
+        ),
+    ],
+    ids=[
+        "document-limited",
+        "equal-operation-limit",
+        "operation-limited",
+        "non-timeout-error",
+    ],
+)
+async def test_asset_fetch_timeout_maps_only_when_document_deadline_shortens_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    document_timeout_s: float,
+    raised_code: str,
+    expected_code: str,
+) -> None:
+    observed_timeouts: list[float] = []
+
+    async def fail_fetch(
+        *_args: Any,
+        total_timeout_s: float,
+        **_kwargs: Any,
+    ) -> FigureAssetPayload:
+        observed_timeouts.append(total_timeout_s)
+        raise FigureAssetError(raised_code, "asset fetch failed")
+
+    monkeypatch.setattr(worker_pipeline, "fetch_html_asset", fail_fetch)
+    figure = Block(id="fig-html-timeout", type="figure", asset_key="plot.png")
+    run, storage = _figure_run(figure, {}, source_format="arxiv_html")
+    run.ref = SimpleNamespace(versioned="test-version")
+    run.deps = SimpleNamespace(
+        s3=storage,
+        http=object(),
+        redis=None,
+        settings=SimpleNamespace(alinea_arxiv_base_url="https://arxiv.org"),
+    )
+    deadline = worker_pipeline.MaterializationDeadline.start(
+        timeout_s=document_timeout_s,
+        clock=lambda: 0.0,
+    )
+
+    output, _warnings, failures = await run._save_figures(
+        "revision-id",
+        deadline=deadline,
+    )
+
+    assert output == {}
+    assert failures[0]["code"] == expected_code
+    assert observed_timeouts == [
+        min(document_timeout_s, worker_pipeline.MAX_HTML_ASSET_FETCH_SECONDS)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("document_timeout_s", "raised_code", "expected_code"),
+    [
+        (
+            worker_pipeline.DEFAULT_CONVERSION_TIMEOUT_S - 1.0,
+            "thumbnail_timeout",
+            "materialization_timeout",
+        ),
+        (
+            worker_pipeline.DEFAULT_CONVERSION_TIMEOUT_S,
+            "thumbnail_timeout",
+            "thumbnail_timeout",
+        ),
+        (
+            worker_pipeline.DEFAULT_CONVERSION_TIMEOUT_S + 1.0,
+            "thumbnail_timeout",
+            "thumbnail_timeout",
+        ),
+        (
+            worker_pipeline.DEFAULT_CONVERSION_TIMEOUT_S - 1.0,
+            "thumbnail_crashed",
+            "thumbnail_crashed",
+        ),
+    ],
+    ids=[
+        "document-limited",
+        "equal-operation-limit",
+        "operation-limited",
+        "non-timeout-error",
+    ],
+)
+async def test_thumbnail_timeout_maps_only_when_document_deadline_shortens_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    document_timeout_s: float,
+    raised_code: str,
+    expected_code: str,
+) -> None:
+    observed_timeouts: list[float] = []
+
+    async def fail_thumbnail(
+        _png: bytes,
+        *,
+        timeout_s: float,
+    ) -> figure_assets.ThumbnailPayload:
+        observed_timeouts.append(timeout_s)
+        raise FigureAssetError(raised_code, "thumbnail failed")
+
+    monkeypatch.setattr(worker_pipeline, "isolated_thumbnail_payload", fail_thumbnail)
+    run = object.__new__(IngestRun)
+    storage = _RecordingStorage()
+    run.paper_id = "paper-id"
+    run.revision_id = "revision-id"
+    run.deps = SimpleNamespace(s3=storage)
+    figure = Block(id="fig-thumbnail", type="figure", asset_key="figure.png")
+    paper = SimpleNamespace(thumbnail_key=None)
+    deadline = worker_pipeline.MaterializationDeadline.start(
+        timeout_s=document_timeout_s,
+        clock=lambda: 0.0,
+    )
+
+    warnings = await run._make_thumbnail(
+        paper,
+        {figure.id: _raster_bytes("PNG")},
+        [figure],
+        deadline=deadline,
+    )
+
+    assert warnings == [f"サムネイル生成に失敗(続行): [{expected_code}]"]
+    assert observed_timeouts == [
+        min(document_timeout_s, worker_pipeline.DEFAULT_CONVERSION_TIMEOUT_S)
+    ]
+    assert storage.puts == []
+
+
+def test_operation_timeout_reads_deadline_clock_once() -> None:
+    clock_reads = 0
+
+    def clock() -> float:
+        nonlocal clock_reads
+        clock_reads += 1
+        return 2.0
+
+    deadline = worker_pipeline.MaterializationDeadline(expires_at=12.0, clock=clock)
+
+    timeout = worker_pipeline._operation_timeout(deadline, operation_limit_s=15.0)
+
+    assert timeout.seconds == 10.0
+    assert timeout.document_limited is True
+    assert clock_reads == 1
+
+
+@pytest.mark.parametrize(
     "code",
     [
         "asset_too_large",

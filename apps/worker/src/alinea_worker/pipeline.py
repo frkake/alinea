@@ -200,6 +200,39 @@ class MaterializationDeadline:
         return min(remaining_s, operation_limit_s)
 
 
+@dataclass(frozen=True)
+class _OperationTimeout:
+    seconds: float
+    document_limited: bool
+
+
+def _operation_timeout(
+    deadline: MaterializationDeadline | None,
+    operation_limit_s: float,
+) -> _OperationTimeout:
+    if deadline is None:
+        return _OperationTimeout(operation_limit_s, document_limited=False)
+    remaining_s = deadline.remaining()
+    return _OperationTimeout(
+        min(remaining_s, operation_limit_s),
+        document_limited=remaining_s < operation_limit_s,
+    )
+
+
+def _map_document_limited_timeout(
+    exc: FigureAssetError,
+    *,
+    timeout: _OperationTimeout,
+    operation_code: str,
+) -> FigureAssetError:
+    if timeout.document_limited and exc.code == operation_code:
+        return FigureAssetError(
+            "materialization_timeout",
+            "document materialization deadline was exceeded",
+        )
+    return exc
+
+
 async def _materialize_figure_payload(
     data: bytes,
     source_name: str,
@@ -213,17 +246,23 @@ async def _materialize_figure_payload(
             "figure_bytes_exceeded",
             "document figure bytes exceed the aggregate safe limit",
         )
-    timeout_s = (
-        deadline.remaining(DEFAULT_CONVERSION_TIMEOUT_S)
-        if deadline is not None
-        else DEFAULT_CONVERSION_TIMEOUT_S
-    )
-    return await isolated_figure_asset_payload(
-        data,
-        source_name=source_name,
-        content_type=content_type,
-        timeout_s=timeout_s,
-    )
+    timeout = _operation_timeout(deadline, DEFAULT_CONVERSION_TIMEOUT_S)
+    try:
+        return await isolated_figure_asset_payload(
+            data,
+            source_name=source_name,
+            content_type=content_type,
+            timeout_s=timeout.seconds,
+        )
+    except FigureAssetError as exc:
+        mapped = _map_document_limited_timeout(
+            exc,
+            timeout=timeout,
+            operation_code="conversion_timeout",
+        )
+        if mapped is exc:
+            raise
+        raise mapped from exc
 
 
 async def _materialize_inline_svg(
@@ -2043,20 +2082,29 @@ class IngestRun:
                             deadline=deadline,
                         )
 
-                    fetch_timeout_s = (
-                        deadline.remaining(MAX_HTML_ASSET_FETCH_SECONDS)
-                        if deadline is not None
-                        else MAX_HTML_ASSET_FETCH_SECONDS
+                    fetch_timeout = _operation_timeout(
+                        deadline,
+                        MAX_HTML_ASSET_FETCH_SECONDS,
                     )
-                    payload = await fetch_html_asset(
-                        self.deps.http,
-                        base=_www_base(self.deps.settings),
-                        versioned=self.ref.versioned,
-                        source=source_key,
-                        payload_loader=load_with_budget,
-                        before_request=self._throttle,
-                        total_timeout_s=fetch_timeout_s,
-                    )
+                    try:
+                        payload = await fetch_html_asset(
+                            self.deps.http,
+                            base=_www_base(self.deps.settings),
+                            versioned=self.ref.versioned,
+                            source=source_key,
+                            payload_loader=load_with_budget,
+                            before_request=self._throttle,
+                            total_timeout_s=fetch_timeout.seconds,
+                        )
+                    except FigureAssetError as exc:
+                        mapped = _map_document_limited_timeout(
+                            exc,
+                            timeout=fetch_timeout,
+                            operation_code="asset_fetch_timeout",
+                        )
+                        if mapped is exc:
+                            raise
+                        raise mapped from exc
                 assert payload is not None
                 retained_bytes = payload.source_size or len(payload.content)
                 next_materialized_bytes = materialized_bytes + retained_bytes + len(payload.content)
@@ -2120,18 +2168,21 @@ class IngestRun:
         selected = select_thumbnail_figure(figures)
         if selected is None or selected.id not in figure_bytes:
             return []  # 図なし → thumbnail_key は NULL のまま(§8 ③④)
+        timeout: _OperationTimeout | None = None
         try:
-            timeout_s = (
-                deadline.remaining(DEFAULT_CONVERSION_TIMEOUT_S)
-                if deadline is not None
-                else DEFAULT_CONVERSION_TIMEOUT_S
-            )
+            timeout = _operation_timeout(deadline, DEFAULT_CONVERSION_TIMEOUT_S)
             thumbnails = await isolated_thumbnail_payload(
                 figure_bytes[selected.id],
-                timeout_s=timeout_s,
+                timeout_s=timeout.seconds,
             )
             card, card_2x = thumbnails.card, thumbnails.retina
         except FigureAssetError as exc:
+            if timeout is not None:
+                exc = _map_document_limited_timeout(
+                    exc,
+                    timeout=timeout,
+                    operation_code="thumbnail_timeout",
+                )
             return [f"サムネイル生成に失敗(続行): [{exc.code}]"]
         thumbnail_key = StorageKeys.thumbnail(self.paper_id, revision_id=self.revision_id)
         retina_key = StorageKeys.thumbnail(
