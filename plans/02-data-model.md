@@ -353,7 +353,7 @@ CREATE TABLE document_revisions (
     id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     paper_id       UUID        NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
     source_version TEXT        NOT NULL DEFAULT 'v1',   -- arXiv バージョン(PDF 由来は 'v1' 固定)
-    parser_version TEXT        NOT NULL,                -- 例 'latex-1.0.0' / 'pdf-1.2.0'
+    parser_version TEXT        NOT NULL,                -- 例 'latex-1.2.0' / 'pdf-1.2.0'
     quality_level  TEXT        NOT NULL,                -- A / B の2値(docs/02 §4)
     source_format  TEXT        NOT NULL,                -- どの形式から構造化したか(処理ログにも記録)
     content        JSONB       NOT NULL,                -- DocumentContentJson(§3.2)

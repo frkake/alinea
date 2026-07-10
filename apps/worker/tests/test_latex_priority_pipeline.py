@@ -1,7 +1,7 @@
 """M2-01: arXiv 取り込みの取得優先順位 LaTeX > HTML > PDF(plans/05 §1.3・§5)。
 
 - LaTeX ソース(e-print)が取得・解析できる場合、品質 A・`source_format='latex'`・
-  `parser_version='latex-1.1.0'` で構造化され、HTML 取得(SourceAsset kind='arxiv_html')は
+  `parser_version='latex-1.2.0'` で構造化され、HTML 取得(SourceAsset kind='arxiv_html')は
   行われない(優先順位の主経路化)。
 - LaTeX の取得/解析に失敗した場合は既存の HTML 経路へ**可視的に**フォールバックする
   (`jobs.log` に warn を記録。P3)。
@@ -37,6 +37,7 @@ from alinea_core.db.models import DocumentRevision, Paper, SourceAsset
 from alinea_core.document.blocks import DocumentContent
 from alinea_core.ingest import DocumentCompleteness, build_timeline
 from alinea_core.jobs.store import JobStore
+from alinea_core.parsing.html_parser import PARSER_VERSION as HTML_PARSER_VERSION
 from alinea_core.parsing.pdf_parser import PARSER_VERSION as PDF_PARSER_VERSION
 from alinea_core.settings import CoreSettings
 from alinea_core.storage.s3 import S3Storage, StorageKeys
@@ -191,6 +192,13 @@ _VALID_STORED_HTML = b"""<!doctype html><html><body><article class="ltx_document
 <div class="ltx_para"><p class="ltx_p">The stored candidate has its first complete paragraph.</p></div>
 <div class="ltx_para"><p class="ltx_p">The stored candidate has its second complete paragraph.</p></div>
 </section></article></body></html>"""
+_VALID_INLINE_SVG_HTML = b"""<!doctype html><html><body><article class="ltx_document">
+<section class="ltx_section"><h2 class="ltx_title ltx_title_section">1 Results</h2>
+<div class="ltx_para"><p class="ltx_p">The first complete result paragraph is here.</p></div>
+<div class="ltx_para"><p class="ltx_p">The second complete result paragraph is here.</p></div>
+<figure id="S1.F1" class="ltx_figure"><svg width="20" height="10">
+<rect width="20" height="10" fill="blue"></rect></svg></figure>
+</section></article></body></html>"""
 _VALID_STALE_HTML = _VALID_STORED_HTML.replace(b"The stored candidate", b"The stale duplicate")
 _PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
@@ -320,6 +328,7 @@ def _make_candidate_status_stub(
     eprint_status: int,
     eprint_body: bytes,
     html_status: int,
+    html_body: bytes = _VALID_STORED_HTML,
     pdf_bytes: bytes = _VALID_PRIORITY_PDF,
 ) -> Starlette:
     async def eprint(_request: Request) -> Response:
@@ -331,7 +340,7 @@ def _make_candidate_status_stub(
 
     async def html(_request: Request) -> Response:
         return Response(
-            _VALID_STORED_HTML,
+            html_body,
             status_code=html_status,
             media_type="text/html; charset=utf-8",
         )
@@ -649,7 +658,7 @@ async def test_ingest_prefers_latex_source_when_available(
         .one()
     )
     assert rev.source_format == "latex"
-    assert rev.parser_version == "latex-1.1.0"
+    assert rev.parser_version == "latex-1.2.0"
     assert rev.quality_level == "A"
     assert rev.stats["candidate_failures"] == []
     assert rev.stats["completeness"]["accepted"] is True
@@ -1623,7 +1632,7 @@ async def test_ingest_falls_back_to_html_and_logs_warning_when_latex_unavailable
         .one()
     )
     assert rev.source_format == "arxiv_html"
-    assert rev.parser_version == "html-1.0.0"
+    assert rev.parser_version == HTML_PARSER_VERSION
     assert rev.stats["candidate_failures"][0]["format"] == "latex"
     assert rev.stats["completeness"]["accepted"] is True
 
@@ -1634,6 +1643,130 @@ async def test_ingest_falls_back_to_html_and_logs_warning_when_latex_unavailable
 
     warn_entries = [row for row in job.log if row.get("level") == "warn"]
     assert any("LaTeX" in row.get("message", "") for row in warn_entries)
+
+
+async def test_html_inline_svg_is_rasterized_and_raw_is_not_persisted(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+) -> None:
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=404,
+            eprint_body=b"",
+            html_status=200,
+            html_body=_VALID_INLINE_SVG_HTML,
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    figure = next(
+        block
+        for _section, block in DocumentContent.model_validate(revision.content).iter_blocks()
+        if block.type == "figure"
+    )
+    assert figure.raw is None
+    assert figure.asset_key is not None and figure.asset_key.endswith(".png")
+    assert revision.stats["figure_asset_failures"] == []
+    stored = await S3Storage().get(S3Storage().assets_bucket, figure.asset_key)
+    assert stored.startswith(b"\x89PNG")
+
+
+async def test_reingest_creates_repaired_revision_after_html_parser_rollout(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+) -> None:
+    """A parser rollout must not reuse an unsafe revision from the previous parser."""
+
+    arxiv_id = _arxiv_id()
+    ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
+    legacy = DocumentRevision(
+        paper_id=ids["paper_id"],
+        source_version="v1",
+        parser_version="html-1.0.0",
+        quality_level="A",
+        source_format="arxiv_html",
+        content=DocumentContent(quality_level="A", sections=[]).model_dump(),
+        stats={
+            "candidate_failures": [],
+            "completeness": {"accepted": True, "code": None},
+        },
+    )
+    db_session.add(legacy)
+    await db_session.flush()
+    paper = await db_session.get(Paper, ids["paper_id"])
+    assert paper is not None
+    paper.latest_revision_id = legacy.id
+    await db_session.commit()
+
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=404,
+            eprint_body=b"",
+            html_status=200,
+            html_body=_VALID_INLINE_SVG_HTML,
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    revisions = (
+        (
+            await db_session.execute(
+                select(DocumentRevision)
+                .where(DocumentRevision.paper_id == ids["paper_id"])
+                .order_by(DocumentRevision.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [revision.parser_version for revision in revisions] == [
+        "html-1.0.0",
+        HTML_PARSER_VERSION,
+    ]
+    repaired = revisions[-1]
+    figure = next(
+        block
+        for _section, block in DocumentContent.model_validate(repaired.content).iter_blocks()
+        if block.type == "figure"
+    )
+    assert figure.raw is None
+    assert figure.asset_key is not None and figure.asset_key.endswith(".png")
+    await db_session.refresh(paper)
+    assert paper.latest_revision_id == repaired.id
 
 
 async def test_ingest_backfills_diagnostics_on_existing_same_parser_revision(
@@ -2378,7 +2511,7 @@ async def test_ingest_parsing_checkpoint_reuses_stored_candidate_without_reselec
         "parsing",
         {
             "source_format": "arxiv_html",
-            "parser_version": "html-1.0.0",
+            "parser_version": HTML_PARSER_VERSION,
             "candidate_failures": stored_failures,
             "completeness": {"accepted": True, "code": None},
             "adopt_from_revision_id": None,
@@ -2424,10 +2557,10 @@ async def test_ingest_parsing_checkpoint_reuses_stored_candidate_without_reselec
 @pytest.mark.parametrize(
     "parsing_checkpoint",
     [
-        {"parser_version": "html-1.0.0"},
+        {"parser_version": HTML_PARSER_VERSION},
         {
             "source_format": "arxiv_html",
-            "parser_version": "html-1.0.0",
+            "parser_version": HTML_PARSER_VERSION,
             "candidate_failures": "not-a-list",
         },
     ],

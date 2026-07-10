@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import io
 import tarfile
@@ -16,13 +17,16 @@ from alinea_core.document.blocks import Block
 from alinea_core.parsing.html_parser import parse_arxiv_html
 from alinea_core.storage.s3 import StorageKeys
 from alinea_worker import figure_assets
+from alinea_worker import pipeline as worker_pipeline
 from alinea_worker.figure_assets import (
     FigureAssetError,
+    FigureAssetPayload,
     asset_candidates,
     extract_graphicspaths,
     fetch_html_asset,
     figure_asset_payload,
     html_asset_url,
+    isolated_figure_asset_payload,
     normalize_requested_asset,
     resolve_latex_asset,
     validate_image_payload,
@@ -61,6 +65,32 @@ newpath 0 0 moveto 20 10 lineto stroke
 showpage
 %%EOF
 """
+
+
+def _isolated_sleep_worker(
+    _data: bytes, *, source_name: str, content_type: str | None = None
+) -> FigureAssetPayload:
+    import time
+
+    del source_name, content_type
+    time.sleep(5)
+    return FigureAssetPayload(b"x", "png", "image/png", 1, 1)
+
+
+def _isolated_crash_worker(
+    _data: bytes, *, source_name: str, content_type: str | None = None
+) -> FigureAssetPayload:
+    import os
+
+    del source_name, content_type
+    os._exit(17)
+
+
+def _isolated_oversize_worker(
+    _data: bytes, *, source_name: str, content_type: str | None = None
+) -> FigureAssetPayload:
+    del source_name, content_type
+    return FigureAssetPayload(b"x" * 64, "png", "image/png", 1, 1)
 
 
 @pytest.mark.parametrize(
@@ -126,6 +156,22 @@ def test_postscript_converter_output_is_normalized_to_png() -> None:
     assert result.payload.ext == "png"
     assert result.payload.content_type == "image/png"
     assert result.payload.content.startswith(b"\x89PNG")
+
+
+def test_postscript_conversion_preserves_size_failure_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    oversized_raster = _raster_bytes("PNG") + b"padding" * 100
+    monkeypatch.setattr(figure_assets, "MAX_ASSET_BYTES", len(EPS_BYTES) + 1)
+
+    with pytest.raises(FigureAssetError) as caught:
+        figure_asset_payload(
+            EPS_BYTES,
+            source_name="figure.eps",
+            postscript_converter=lambda _content, _format: oversized_raster,
+        )
+
+    assert caught.value.code == "asset_too_large"
 
 
 def test_resolves_case_insensitive_supported_extension() -> None:
@@ -248,6 +294,20 @@ def test_validate_image_payload_bounds_all_animation_frames(
     assert caught.value.code == "image_too_large"
 
 
+def test_validate_image_payload_enforces_explicit_animation_frame_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = io.BytesIO()
+    frames = [Image.new("RGB", (2, 2), color) for color in ("navy", "white", "red")]
+    frames[0].save(stream, format="GIF", save_all=True, append_images=frames[1:])
+    monkeypatch.setattr(figure_assets, "MAX_IMAGE_FRAMES", 2)
+
+    with pytest.raises(FigureAssetError) as caught:
+        validate_image_payload(stream.getvalue())
+
+    assert caught.value.code == "image_too_large"
+
+
 @pytest.mark.parametrize(
     "data",
     [
@@ -272,6 +332,61 @@ def test_pdf_and_svg_are_rendered_to_valid_png() -> None:
         assert payload.content.startswith(b"\x89PNG")
         assert payload.width > 0
         assert payload.height > 0
+
+
+@pytest.mark.parametrize(
+    ("worker", "timeout_s", "max_output_bytes", "expected_code"),
+    [
+        (_isolated_sleep_worker, 0.05, 1024, "conversion_timeout"),
+        (_isolated_crash_worker, 5.0, 1024, "conversion_crashed"),
+        (_isolated_oversize_worker, 5.0, 32, "conversion_oversize"),
+    ],
+    ids=["timeout", "crash", "oversize"],
+)
+async def test_isolated_conversion_reports_stable_resource_failures(
+    worker: Any,
+    timeout_s: float,
+    max_output_bytes: int,
+    expected_code: str,
+) -> None:
+    with pytest.raises(FigureAssetError) as caught:
+        await isolated_figure_asset_payload(
+            SVG_BYTES,
+            source_name="figure.svg",
+            timeout_s=timeout_s,
+            max_output_bytes=max_output_bytes,
+            worker=worker,
+        )
+
+    assert caught.value.code == expected_code
+
+
+async def test_default_isolated_conversion_returns_validated_png() -> None:
+    payload = await isolated_figure_asset_payload(
+        SVG_BYTES,
+        source_name="figure.svg",
+        timeout_s=10.0,
+    )
+
+    assert payload.ext == "png"
+    assert payload.content_type == "image/png"
+    assert payload.content.startswith(b"\x89PNG")
+
+
+async def test_isolated_conversion_reports_process_start_failure_as_crash() -> None:
+    unpicklable_worker = lambda *_args, **_kwargs: FigureAssetPayload(  # noqa: E731
+        b"x", "png", "image/png", 1, 1
+    )
+
+    with pytest.raises(FigureAssetError) as caught:
+        await isolated_figure_asset_payload(
+            SVG_BYTES,
+            source_name="figure.svg",
+            timeout_s=1.0,
+            worker=unpicklable_worker,
+        )
+
+    assert caught.value.code == "conversion_crashed"
 
 
 @pytest.mark.parametrize(
@@ -348,6 +463,155 @@ def test_svg_structural_validator_allows_internal_gradient_and_use_fragment() ->
     assert payload.ext == "png"
     assert payload.width > 0
     assert payload.height > 0
+
+
+@pytest.mark.parametrize(
+    "attribute",
+    [
+        'style="fill:image-set(url(#gradient) 1x)"',
+        'style="fill:cross-fade(url(#gradient), #fff)"',
+        'style="fill:element(#shape)"',
+        'style="fill:paint(worklet)"',
+        'style="fill:var(--author-value)"',
+        'fill="image-set(url(#gradient) 1x)"',
+        'style="fill:i\\6d age-set(url(#gradient) 1x)"',
+    ],
+)
+def test_svg_css_rejects_non_allowlisted_resource_functions_before_render(
+    monkeypatch: pytest.MonkeyPatch, attribute: str
+) -> None:
+    source = f"""<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+<defs><linearGradient id="gradient"/></defs><rect {attribute} width="20" height="10"/>
+</svg>""".encode()
+    rendered: list[str] = []
+
+    def fake_render(_content: bytes, filetype: str) -> Any:
+        rendered.append(filetype)
+        return validate_image_payload(_raster_bytes("PNG"))
+
+    monkeypatch.setattr(figure_assets, "_render_document", fake_render)
+
+    with pytest.raises(FigureAssetError) as caught:
+        figure_asset_payload(source, source_name="figure.svg")
+
+    assert caught.value.code == "unsafe_vector"
+    assert rendered == []
+
+
+def test_svg_style_attribute_allows_safe_colors_numbers_and_internal_gradient() -> None:
+    source = b"""<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+<defs><linearGradient id="gradient"><stop offset="0" stop-color="blue"/></linearGradient></defs>
+<rect width="20" height="10" fill="url(#gradient)" style="stroke:rgb(0,0,0);stroke-width:1;opacity:.5"/>
+</svg>"""
+
+    payload = figure_asset_payload(source, source_name="figure.svg")
+
+    assert payload.ext == "png"
+
+
+def test_svg_enforces_dedicated_byte_limit_before_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rendered: list[str] = []
+    monkeypatch.setattr(figure_assets, "MAX_SVG_BYTES", len(SVG_BYTES) - 1)
+    monkeypatch.setattr(
+        figure_assets,
+        "_render_document",
+        lambda _data, filetype: rendered.append(filetype),
+    )
+
+    with pytest.raises(FigureAssetError) as caught:
+        figure_asset_payload(SVG_BYTES, source_name="figure.svg")
+
+    assert caught.value.code == "asset_too_large"
+    assert rendered == []
+
+
+def test_inline_svg_enforces_byte_limit_before_html_parser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parsed: list[str] = []
+
+    def unexpected_parser(_raw: str) -> Any:
+        parsed.append("called")
+        raise AssertionError("Lexbor must not receive oversized inline HTML")
+
+    monkeypatch.setattr(figure_assets, "MAX_INLINE_SVG_HTML_BYTES", 4)
+    monkeypatch.setattr(figure_assets, "LexborHTMLParser", unexpected_parser)
+
+    with pytest.raises(FigureAssetError) as caught:
+        figure_assets.extract_inline_svg("<svg/>")
+
+    assert caught.value.code == "asset_too_large"
+    assert parsed == []
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "limit", "source"),
+    [
+        (
+            "MAX_SVG_ELEMENTS",
+            2,
+            b'<svg xmlns="http://www.w3.org/2000/svg"><g/><path/></svg>',
+        ),
+        (
+            "MAX_SVG_DEPTH",
+            2,
+            b'<svg xmlns="http://www.w3.org/2000/svg"><g><path/></g></svg>',
+        ),
+        (
+            "MAX_SVG_TEXT_CHARS",
+            3,
+            b'<svg xmlns="http://www.w3.org/2000/svg"><text>long</text></svg>',
+        ),
+    ],
+)
+def test_svg_enforces_streaming_complexity_limits_before_render(
+    monkeypatch: pytest.MonkeyPatch,
+    limit_name: str,
+    limit: int,
+    source: bytes,
+) -> None:
+    rendered: list[str] = []
+    monkeypatch.setattr(figure_assets, limit_name, limit)
+    monkeypatch.setattr(
+        figure_assets,
+        "_render_document",
+        lambda _data, filetype: rendered.append(filetype),
+    )
+
+    with pytest.raises(FigureAssetError) as caught:
+        figure_asset_payload(source, source_name="figure.svg")
+
+    assert caught.value.code == "vector_too_complex"
+    assert rendered == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [b" ", b'<svg xmlns="http://www.w3.org/2000/svg"><g></svg>'],
+    ids=["missing-root", "unbalanced-events"],
+)
+def test_streaming_svg_parser_rejects_missing_root_or_unbalanced_events(source: bytes) -> None:
+    with pytest.raises(FigureAssetError) as caught:
+        figure_asset_payload(source, source_name="figure.svg")
+
+    assert caught.value.code == "invalid_vector"
+
+
+def test_inline_svg_rejects_parser_without_document_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fragment = SimpleNamespace(
+        root=None,
+        css=lambda _selector: [SimpleNamespace(html="<svg/>")],
+    )
+    monkeypatch.setattr(figure_assets, "LexborHTMLParser", lambda _raw: fragment)
+
+    with pytest.raises(FigureAssetError) as caught:
+        figure_assets.extract_inline_svg("<svg/>")
+
+    assert caught.value.code == "unsafe_inline_figure"
 
 
 def test_svg_suffix_uses_validated_renderer_even_after_long_xml_prolog() -> None:
@@ -478,6 +742,42 @@ def test_html_asset_url_normalizes_safe_version_relative_paths(source: str, expe
     assert html_asset_url("https://arxiv.org", "2401.00001v2", source) == expected
 
 
+def test_html_asset_url_preserves_configured_base_path() -> None:
+    assert (
+        html_asset_url("https://mirror.example/arxiv", "2401.00001v2", "figures/x1.png")
+        == "https://mirror.example/arxiv/html/2401.00001v2/figures/x1.png"
+    )
+    assert (
+        html_asset_url("https://mirror.example/arxiv", "2401.00001v2", "html/2401.00001v2/x1.png")
+        == "https://mirror.example/arxiv/html/2401.00001v2/x1.png"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "/html/2401.00001v2/x1.png",
+        "/arxiv/html/2401.00001v2/x1.png",
+    ],
+)
+def test_html_asset_url_normalizes_mirror_absolute_html_paths(source: str) -> None:
+    assert (
+        html_asset_url("https://mirror.example/arxiv", "2401.00001v2", source)
+        == "https://mirror.example/arxiv/html/2401.00001v2/x1.png"
+    )
+
+
+def test_html_asset_url_rejects_same_origin_absolute_url_outside_base_path() -> None:
+    with pytest.raises(FigureAssetError) as caught:
+        html_asset_url(
+            "https://mirror.example/arxiv",
+            "2401.00001v2",
+            "https://mirror.example/html/2401.00001v2/x1.png",
+        )
+
+    assert caught.value.code == "unsafe_asset_url"
+
+
 @pytest.fixture
 async def figure_http() -> AsyncIterator[httpx.AsyncClient]:
     png = _raster_bytes("PNG")
@@ -603,16 +903,98 @@ async def test_fetch_html_asset_rejects_bad_status_and_oversized_response(
     assert caught.value.code == expected_code
 
 
+async def test_fetch_html_asset_applies_one_wall_deadline_across_redirects() -> None:
+    png = _raster_bytes("PNG")
+
+    async def first(_request: Any) -> RedirectResponse:
+        await asyncio.sleep(0.03)
+        return RedirectResponse("second.png", status_code=302)
+
+    async def second(_request: Any) -> Response:
+        await asyncio.sleep(0.03)
+        return Response(png, media_type="image/png")
+
+    app = Starlette(
+        routes=[
+            Route("/html/2401.00001v2/first.png", first),
+            Route("/html/2401.00001v2/second.png", second),
+        ]
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://arxiv.org"
+    ) as client:
+        with pytest.raises(FigureAssetError) as caught:
+            await fetch_html_asset(
+                client,
+                base="https://arxiv.org",
+                versioned="2401.00001v2",
+                source="first.png",
+                total_timeout_s=0.05,
+            )
+
+    assert caught.value.code == "asset_fetch_timeout"
+
+
 class _RecordingStorage:
     assets_bucket = "assets"
 
     def __init__(self) -> None:
         self.puts: list[tuple[str, str, bytes, str]] = []
+        self.deletes: list[tuple[str, list[str]]] = []
+        self.fail_delete = False
 
     async def put(
         self, bucket: str, key: str, body: bytes, *, content_type: str = "application/octet-stream"
     ) -> None:
         self.puts.append((bucket, key, body, content_type))
+
+    async def delete_many(self, bucket: str, keys: Any) -> None:
+        self.deletes.append((bucket, list(keys)))
+        if self.fail_delete:
+            raise RuntimeError("cleanup failed")
+
+
+class _FailingCommitSession:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def commit(self) -> None:
+        raise self.error
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_commit_failure_best_effort_deletes_new_revision_assets(
+    cleanup_fails: bool,
+) -> None:
+    error = RuntimeError("database commit failed")
+    session = _FailingCommitSession(error)
+    storage = _RecordingStorage()
+    storage.fail_delete = cleanup_fails
+
+    with pytest.raises(RuntimeError) as caught:
+        await worker_pipeline._commit_with_asset_cleanup(
+            session,
+            storage,
+            [
+                "figures/paper/revision/one.png",
+                "figures/paper/revision/two.png",
+                "thumbnails/paper/card.webp",
+                "thumbnails/paper/card@2x.webp",
+            ],
+        )
+
+    assert caught.value is error
+    assert storage.deletes == [
+        (
+            "assets",
+            [
+                "figures/paper/revision/one.png",
+                "figures/paper/revision/two.png",
+                "thumbnails/paper/card.webp",
+                "thumbnails/paper/card@2x.webp",
+            ],
+        )
+    ]
 
 
 def _figure_run(
@@ -648,6 +1030,41 @@ async def test_pipeline_uploads_only_canonical_validated_figure_payload() -> Non
     assert [(bucket, key, content_type) for bucket, key, _body, content_type in storage.puts] == [
         ("assets", expected_key, "image/png")
     ]
+
+
+@pytest.mark.parametrize(
+    ("source_name", "source"),
+    [("plot.pdf", _pdf_bytes()), ("plot.svg", SVG_BYTES), ("plot.eps", EPS_BYTES)],
+)
+async def test_pipeline_routes_document_conversions_through_isolated_process(
+    monkeypatch: pytest.MonkeyPatch,
+    source_name: str,
+    source: bytes,
+) -> None:
+    calls: list[str] = []
+
+    async def isolated(
+        data: bytes,
+        *,
+        source_name: str,
+        content_type: str | None = None,
+        **_kwargs: Any,
+    ) -> FigureAssetPayload:
+        del data, content_type
+        calls.append(source_name)
+        return validate_image_payload(_raster_bytes("PNG"))
+
+    monkeypatch.setattr(worker_pipeline, "isolated_figure_asset_payload", isolated)
+    fig = Block(id="fig-convert", type="figure", asset_key=source_name)
+    run, storage = _figure_run(fig, {source_name: source})
+
+    output, warnings, failures = await run._save_figures("revision-id")
+
+    assert calls == [source_name]
+    assert output[fig.id].startswith(b"\x89PNG")
+    assert len(storage.puts) == 1
+    assert warnings == []
+    assert failures == []
 
 
 @pytest.mark.parametrize(
@@ -694,7 +1111,211 @@ async def test_pipeline_records_missing_asset_key_without_upload() -> None:
     ]
 
 
-async def test_pipeline_allows_safe_inline_html_figure_without_asset_diagnostic() -> None:
+async def test_pipeline_limits_figure_count_per_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    figures = [
+        Block(id=f"fig-{index}", type="figure", asset_key=f"plot-{index}.png") for index in range(3)
+    ]
+    binary_files = {
+        f"plot-{index}.png": _raster_bytes("PNG", color=color)
+        for index, color in enumerate(("navy", "white", "red"))
+    }
+    run, storage = _figure_run(figures[0], binary_files)
+    run.parsed.figures = figures
+    monkeypatch.setattr(worker_pipeline, "MAX_FIGURES_PER_DOCUMENT", 2)
+
+    output, _warnings, failures = await run._save_figures("revision-id")
+
+    assert set(output) == {"fig-0", "fig-1"}
+    assert len(storage.puts) == 2
+    assert figures[2].asset_key is None
+    assert failures == [
+        {
+            "code": "figure_limit_exceeded",
+            "figure_id": "fig-2",
+            "source": "latex",
+        }
+    ]
+
+
+async def test_pipeline_limits_aggregate_retained_and_uploaded_figure_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    png = _raster_bytes("PNG")
+    figures = [
+        Block(id=f"fig-{index}", type="figure", asset_key=f"plot-{index}.png") for index in range(2)
+    ]
+    run, storage = _figure_run(
+        figures[0],
+        {"plot-0.png": png, "plot-1.png": png},
+    )
+    run.parsed.figures = figures
+    monkeypatch.setattr(
+        worker_pipeline,
+        "MAX_TOTAL_FIGURE_MATERIALIZED_BYTES",
+        len(png) * 2 + 1,
+    )
+
+    output, _warnings, failures = await run._save_figures("revision-id")
+
+    assert set(output) == {"fig-0"}
+    assert len(storage.puts) == 1
+    assert figures[1].asset_key is None
+    assert failures == [
+        {
+            "code": "figure_bytes_exceeded",
+            "figure_id": "fig-1",
+            "source": "latex",
+        }
+    ]
+
+
+async def test_pipeline_stops_converting_after_aggregate_cap_is_reached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = b"author-source"
+    png = _raster_bytes("PNG")
+    figures = [
+        Block(id=f"fig-{index}", type="figure", asset_key=f"plot-{index}.svg") for index in range(2)
+    ]
+    run, storage = _figure_run(
+        figures[0],
+        {"plot-0.svg": source, "plot-1.svg": source},
+    )
+    run.parsed.figures = figures
+    calls: list[str] = []
+
+    async def materialize(
+        _data: bytes,
+        source_name: str,
+        _content_type: str | None = None,
+        **_kwargs: Any,
+    ) -> FigureAssetPayload:
+        calls.append(source_name)
+        return FigureAssetPayload(
+            png,
+            "png",
+            "image/png",
+            16,
+            12,
+            source_size=len(source),
+        )
+
+    monkeypatch.setattr(worker_pipeline, "_materialize_figure_payload", materialize)
+    monkeypatch.setattr(
+        worker_pipeline,
+        "MAX_TOTAL_FIGURE_MATERIALIZED_BYTES",
+        len(source) + len(png),
+    )
+
+    output, _warnings, failures = await run._save_figures("revision-id")
+
+    assert calls == ["plot-0.svg"]
+    assert set(output) == {"fig-0"}
+    assert len(storage.puts) == 1
+    assert failures[0]["code"] == "figure_bytes_exceeded"
+
+
+async def test_pdf_pipeline_applies_document_figure_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    png = _raster_bytes("PNG")
+    blocks = [Block(id=f"fig-{index}", type="figure") for index in range(2)]
+    run = object.__new__(IngestRun)
+    storage = _RecordingStorage()
+    run.paper_id = "paper-id"
+    run.parsed_pdf = SimpleNamespace(
+        blocks=blocks,
+        figure_images={block.id: png for block in blocks},
+    )
+    run.deps = SimpleNamespace(s3=storage)
+    monkeypatch.setattr(worker_pipeline, "MAX_FIGURES_PER_DOCUMENT", 1)
+
+    output, warnings, failures = await run._save_pdf_assets("revision-id")
+
+    assert set(output) == {"fig-0"}
+    assert len(storage.puts) == 1
+    assert blocks[0].asset_key is not None
+    assert blocks[1].asset_key is None
+    assert warnings and "fig-1" in warnings[0]
+    assert failures == [
+        {
+            "code": "figure_limit_exceeded",
+            "figure_id": "fig-1",
+            "source": "pdf",
+        }
+    ]
+
+
+async def test_pdf_pipeline_applies_aggregate_figure_byte_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    png = _raster_bytes("PNG")
+    block = Block(id="fig-0", type="figure")
+    run = object.__new__(IngestRun)
+    storage = _RecordingStorage()
+    run.paper_id = "paper-id"
+    run.parsed_pdf = SimpleNamespace(blocks=[block], figure_images={block.id: png})
+    run.deps = SimpleNamespace(s3=storage)
+    monkeypatch.setattr(
+        worker_pipeline,
+        "MAX_TOTAL_FIGURE_MATERIALIZED_BYTES",
+        len(png) * 2 - 1,
+    )
+
+    output, _warnings, failures = await run._save_pdf_assets("revision-id")
+
+    assert output == {}
+    assert storage.puts == []
+    assert block.asset_key is None
+    assert failures[0]["code"] == "figure_bytes_exceeded"
+
+
+@pytest.mark.parametrize(
+    ("existing_thumbnail", "expected_keys"),
+    [
+        (
+            None,
+            [
+                StorageKeys.thumbnail("paper-id"),
+                StorageKeys.thumbnail("paper-id", retina=True),
+            ],
+        ),
+        (StorageKeys.thumbnail("paper-id"), []),
+    ],
+    ids=["new", "existing"],
+)
+async def test_thumbnail_cleanup_tracks_only_new_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    existing_thumbnail: str | None,
+    expected_keys: list[str],
+) -> None:
+    run = object.__new__(IngestRun)
+    storage = _RecordingStorage()
+    run.paper_id = "paper-id"
+    run.deps = SimpleNamespace(s3=storage)
+    figure = Block(
+        id="fig-1",
+        type="figure",
+        asset_key="figures/paper-id/revision-id/fig-1.png",
+    )
+    paper = SimpleNamespace(thumbnail_key=existing_thumbnail)
+    uploaded_keys: list[str] = []
+    monkeypatch.setattr(worker_pipeline, "render_thumbnail", lambda _png: (b"card", b"retina"))
+
+    warnings = await run._make_thumbnail(
+        paper,
+        {figure.id: _raster_bytes("PNG")},
+        [figure],
+        uploaded_keys=uploaded_keys,
+    )
+
+    assert warnings == []
+    assert uploaded_keys == expected_keys
+
+
+async def test_pipeline_rasterizes_safe_inline_html_figure_and_clears_raw() -> None:
     parsed = parse_arxiv_html(
         """<article class="ltx_document"><section class="ltx_section">
 <h2 class="ltx_title">Result</h2><figure id="fig-inline" class="ltx_figure">
@@ -708,8 +1329,37 @@ async def test_pipeline_allows_safe_inline_html_figure_without_asset_diagnostic(
 
     output, warnings, failures = await run._save_figures("revision-id")
 
-    assert fig.asset_key is None
-    assert output == {}
-    assert storage.puts == []
+    expected_key = StorageKeys.figure("paper-id", "revision-id", fig.id, "png")
+    assert fig.asset_key == expected_key
+    assert fig.raw is None
+    assert output[fig.id].startswith(b"\x89PNG")
+    assert [(key, content_type) for _bucket, key, _body, content_type in storage.puts] == [
+        (expected_key, "image/png")
+    ]
     assert warnings == []
     assert failures == []
+
+
+async def test_pipeline_rejects_legacy_active_inline_html_without_upload() -> None:
+    fig = Block(
+        id="fig-active",
+        type="figure",
+        asset_key=None,
+        raw='<svg><foreignObject><iframe srcdoc="&lt;script&gt;alert(1)&lt;/script&gt;"></iframe></foreignObject></svg>',
+    )
+    run, storage = _figure_run(fig, {}, source_format="arxiv_html")
+
+    output, warnings, failures = await run._save_figures("revision-id")
+
+    assert fig.asset_key is None
+    assert fig.raw is None
+    assert output == {}
+    assert storage.puts == []
+    assert warnings and "fig-active" in warnings[0]
+    assert failures == [
+        {
+            "code": "unsafe_inline_figure",
+            "figure_id": "fig-active",
+            "source": "arxiv_html",
+        }
+    ]

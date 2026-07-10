@@ -107,7 +107,7 @@ describe("FigureTableBlock", () => {
     expect(container.textContent).not.toContain("\\citep");
   });
 
-  test("renders inline SVG figure raw content when no asset URL exists", () => {
+  test("does not render legacy inline SVG raw content", () => {
     const block: DocBlock = {
       id: "blk-svg",
       type: "figure",
@@ -115,8 +115,9 @@ describe("FigureTableBlock", () => {
       raw: '<div class="ltx_flex_figure"><svg width="40" height="20"><title>chart</title></svg></div>',
       caption: [{ t: "text", v: "Inline chart." }],
     };
-    render(<FigureTableBlock block={block} />);
-    expect(screen.getByRole("img", { name: "図3" })).toContainHTML("<svg");
+    const { container } = render(<FigureTableBlock block={block} />);
+    expect(screen.queryByRole("img", { name: "図3" })).not.toBeInTheDocument();
+    expect(container.querySelector("svg")).toBeNull();
     expect(screen.getByText("Inline chart.")).toBeInTheDocument();
   });
 
@@ -160,7 +161,7 @@ describe("FigureTableBlock", () => {
     expect(container.textContent).not.toContain("tcolorbox");
   });
 
-  test("rewrites arxiv relative image sources inside raw composite figures", () => {
+  test("does not render raw composite figures with remote image sources", () => {
     const block: DocBlock = {
       id: "blk-svg",
       type: "figure",
@@ -169,22 +170,23 @@ describe("FigureTableBlock", () => {
       caption: [{ t: "text", v: "Composite chart." }],
     };
     const { container } = render(<FigureTableBlock block={block} />);
-    expect(container.querySelector("img")).toHaveAttribute(
-      "src",
-      "https://arxiv.org/html/2607.05247v1/figures/overview/cube_render_grid.png",
-    );
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("foreignObject")).toBeNull();
   });
 
-  test("rewrites stored asset keys inside raw composite figures", () => {
+  test("does not render encoded active HTML from a legacy raw figure", () => {
     const block: DocBlock = {
       id: "blk-svg",
       type: "figure",
       number: "3",
-      raw: '<svg><foreignObject><img src="figures/paper/rev/block.png"></foreignObject></svg>',
+      raw: '<iframe srcdoc="&lt;script&gt;document.body.dataset.pwned=1&lt;/script&gt;"></iframe><svg onload="document.body.dataset.pwned=1"></svg>',
       caption: [{ t: "text", v: "Composite chart." }],
     };
     const { container } = render(<FigureTableBlock block={block} />);
-    expect(container.querySelector("img")?.getAttribute("src")).toMatch(/^\/api\/assets\//);
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(container.querySelector("script")).toBeNull();
+    expect(container.querySelector("svg")).toBeNull();
+    expect(document.body.dataset.pwned).toBeUndefined();
   });
 
   test("uses the translated caption as the primary caption when a translated unit exists", () => {

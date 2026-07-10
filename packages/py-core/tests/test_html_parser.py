@@ -256,7 +256,7 @@ def test_metadata_sections_skipped() -> None:
 
 def test_parser_version_and_quality() -> None:
     doc = _doc()
-    assert doc.parser_version == PARSER_VERSION == "html-1.0.0"
+    assert doc.parser_version == PARSER_VERSION == "html-1.1.0"
     assert doc.quality_level == "A"
     assert doc.source_format == "arxiv_html"
 
@@ -287,7 +287,28 @@ def test_inline_svg_figure_raw_is_preserved() -> None:
     assert "chart" in fig.raw
 
 
-def test_composite_svg_figure_prefers_raw_over_first_image_asset() -> None:
+@pytest.mark.parametrize(
+    "visual",
+    [
+        '<iframe srcdoc="&lt;script&gt;document.body.dataset.pwned=1&lt;/script&gt;"></iframe>',
+        '<svg><foreignObject><img src="relative.png"></foreignObject></svg>',
+        '<svg onload="document.body.dataset.pwned=1"><path d="M0 0"></path></svg>',
+        '<object data="relative.svg"></object><svg width="10" height="10"></svg>',
+    ],
+)
+def test_inline_figure_raw_rejects_active_or_composite_html(visual: str) -> None:
+    doc = parse_arxiv_html(
+        f"""<article class="ltx_document"><section class="ltx_section">
+<h2 class="ltx_title">Results</h2><figure class="ltx_figure">
+<div class="ltx_flex_figure">{visual}</div></figure></section></article>"""
+    )
+    fig = doc.figures[0]
+
+    assert fig.raw is None
+    assert fig.asset_key is None
+
+
+def test_composite_svg_figure_is_rejected_instead_of_preserved_as_raw_html() -> None:
     doc = parse_arxiv_html(
         """
         <article class="ltx_document">
@@ -309,9 +330,7 @@ def test_composite_svg_figure_prefers_raw_over_first_image_asset() -> None:
     fig = next(b for b in doc.blocks if b.type == "figure")
 
     assert fig.asset_key is None
-    assert fig.raw is not None
-    assert "2607.00001v1/a.png" in fig.raw
-    assert "2607.00001v1/b.png" in fig.raw
+    assert fig.raw is None
 
 
 def test_to_document_content_roundtrip() -> None:

@@ -21,7 +21,7 @@ from alinea_core.document.blocks import Block, DocumentContent, Section, Section
 from alinea_core.document.inlines import Inline
 from alinea_core.parsing.block_ids import assign_block_ids
 
-PARSER_VERSION = "html-1.0.0"
+PARSER_VERSION = "html-1.1.0"
 
 _WS = re.compile(r"\s+")
 
@@ -43,11 +43,7 @@ _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 # 見出しタグ番号から除く前置ラベル語(付録は番号 "A" に正規化。plans/05 §4.2)。
 _LABEL_WORD = re.compile(r"^(?:appendix|appendices|section|chapter|part)\s+", re.IGNORECASE)
 _PATH_UNSAFE = re.compile(r"[^0-9A-Za-z-]")
-_SCRIPT_TAG = re.compile(r"<script\b[^>]*>.*?</script>", re.IGNORECASE | re.DOTALL)
-_EVENT_HANDLER_ATTR = re.compile(r"\s+on[a-zA-Z]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)")
-_JS_URL_ATTR = re.compile(
-    r"\s+(?:href|src|xlink:href)\s*=\s*(['\"])\s*javascript:[\s\S]*?\1", re.IGNORECASE
-)
+_ACTIVE_INLINE_TAGS = frozenset({"embed", "foreignobject", "iframe", "object", "script", "style"})
 
 # reference_entry 構造化(plans/05 §4.2.1)。
 _ARXIV_RE = re.compile(
@@ -120,16 +116,28 @@ def _classes(node: LexborNode) -> frozenset[str]:
 
 
 def _safe_inline_figure_html(html: str | None) -> str | None:
-    """arXiv HTML 内の複合図を本文表示用に最小限サニタイズして保持する。"""
+    """Return one structurally inert SVG; reject composite/active author HTML."""
     if not html:
         return None
-    lowered = html.lower()
-    if "<svg" not in lowered and "<img" not in lowered:
+    fragment = LexborHTMLParser(html)
+    svgs = fragment.css("svg")
+    if len(svgs) != 1 or fragment.css_first("img") is not None:
         return None
-    cleaned = _SCRIPT_TAG.sub("", html)
-    cleaned = _EVENT_HANDLER_ATTR.sub("", cleaned)
-    cleaned = _JS_URL_ATTR.sub("", cleaned)
-    return cleaned
+    root = fragment.root
+    if root is None:
+        return None
+    for element in root.traverse(include_text=False):
+        tag = str(element.tag or "").casefold()
+        if tag in _ACTIVE_INLINE_TAGS:
+            return None
+        for raw_name, raw_value in element.attributes.items():
+            name = str(raw_name).rsplit(":", 1)[-1].casefold()
+            value = str(raw_value or "").strip()
+            if name.startswith("on") or name in {"srcdoc", "style"}:
+                return None
+            if name in {"href", "src"} and not re.fullmatch(r"#[A-Za-z0-9_.:-]+", value):
+                return None
+    return svgs[0].html
 
 
 def _element_children(node: LexborNode) -> list[LexborNode]:
@@ -149,7 +157,7 @@ def _compact_citation_text(text: str | None) -> str:
     value = re.sub(r"([([])\s+", r"\1", value)
 
     author_year = re.match(
-        r"^([A-Z][A-Za-z'’.-]+(?:\s+et\s+al\.?)?)\s*[, ]*\(?"
+        r"^([A-Z][A-Za-z'\u2019.-]+(?:\s+et\s+al\.?)?)\s*[, ]*\(?"
         r"((?:19|20)\d{2})(?:\s*(?:\{[^})]{1,8}\}|[a-z]))?\)?",
         value,
     )
@@ -159,7 +167,7 @@ def _compact_citation_text(text: str | None) -> str:
 
     looks_expanded = len(value) > 72 or value.count(",") >= 2
     if looks_expanded:
-        raw_reference = re.match(r"^([A-Z][A-Za-z'’.-]+)\b.*?\b((?:19|20)\d{2})\b", value)
+        raw_reference = re.match(r"^([A-Z][A-Za-z'\u2019.-]+)\b.*?\b((?:19|20)\d{2})\b", value)
         if raw_reference:
             return f"{raw_reference.group(1)} et al. ({raw_reference.group(2)})"
     return value
@@ -449,14 +457,17 @@ class _ArxivHtmlParser:
         img = node.css_first("img.ltx_graphics") or node.css_first("img")
         src = (img.attributes.get("src") if img is not None else None) or None
         visual = None
-        if len(imgs) > 1:
+        svg = node.css_first("svg")
+        if svg is not None:
+            visual = node.css_first(".ltx_flex_figure") or svg
+        elif len(imgs) > 1:
             visual = node.css_first(".ltx_flex_figure") or node.css_first("svg")
             if visual is None:
                 visual = node.css_first("table.ltx_tabular") or node.css_first("table")
         elif src is None:
             visual = node.css_first(".ltx_flex_figure") or node.css_first("svg")
         raw = _safe_inline_figure_html(visual.html if visual is not None else None)
-        if raw is not None:
+        if visual is not None:
             src = None
         caption, number = self._caption(node)
         return Block(

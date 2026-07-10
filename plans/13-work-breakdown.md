@@ -190,7 +190,7 @@
 
 | ID | タスク名 | 内容 | 主な成果物 | 規模 | 依存 | 参照 |
 |---|---|---|---|---|---|---|
-| M2-01 | LaTeX パーサ | arXiv e-print(LaTeX ソース)→ 品質 A 構造化、相互参照解決(`\ref`/`\cite`)、取得優先順位を LaTeX > HTML > PDF に切替(主経路化) | `alinea_core/parsing/latex_parser.py`(parser_version 'latex-1.0.0')fetch 優先順位変更、テスト PY-PARSE-02 | L | M1-25 | plans/05 §5, §1.3; docs/02 §3 |
+| M2-01 | LaTeX パーサ | arXiv e-print(LaTeX ソース)→ 品質 A 構造化、相互参照解決(`\ref`/`\cite`)、取得優先順位を LaTeX > HTML > PDF に切替(主経路化) | `alinea_core/parsing/latex_parser.py`(parser_version 'latex-1.2.0')fetch 優先順位変更、テスト PY-PARSE-02 | L | M1-25 | plans/05 §5, §1.3; docs/02 §3 |
 | M2-02 | 既存 B 論文の A 昇格運用 | M1-22 の昇格提案 cron を LaTeX 経路に接続し、既存 B 論文の再取り込み→A 昇格→リアンカーを本運用化 | cron の LaTeX 判定拡張、PW-11 の LaTeX 経路再実行 | S | M2-01 | plans/05 §12.3; docs/10 §4 |
 | M2-03 | 記事生成バックエンド | `generate_article` ジョブ(素材収集=訳文・メモ・チャット履歴、記事構造 JSON スキーマ、プリセット 4 種、「議論したい点」疑問ハイライト由来、出典ブロック自動挿入・削除不可)、版管理(instructions_history)、ブロック書き直し/再生成 | `apps/worker/src/alinea_worker/tasks/generate_article.py` plans/07 §4 の実装、テスト PY-ART-01, PY-ART-02, PY-ART-04 | L | M1-25 | plans/07 §4; docs/07 §2 |
 | M2-04 | 記事 API | `GET/POST /api/library-items/{id}/article`、regenerate(✦指示つき再生成)、版一覧・restore、blocks/rewrite | `routers/articles.py`(plans/03 §19) | M | M2-03 | plans/03 §19 |

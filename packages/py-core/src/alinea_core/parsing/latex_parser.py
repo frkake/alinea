@@ -11,7 +11,7 @@ gzip(1 ファイル投稿の arXiv 慣習)。メインファイルは `\\documen
 
 `\\input`/`\\include` を再帰展開し、`\\bibliography{...}` は同梱 `.bbl` があれば埋め込む。
 出力は `alinea_core.parsing.html_parser.ParsedDocument`(既存 IR を再利用。重複定義しない)
-で `quality_level="A"`, `source_format="latex"`, `parser_version="latex-1.1.0"`。
+で `quality_level="A"`, `source_format="latex"`, `parser_version="latex-1.2.0"`。
 
 相互参照(`\\ref`/`\\eqref`)は 2 パスで解決する: 1 パス目で全ブロックを構築しつつ `\\label` を
 label→kind map に記録し、2 パス目で保留中の `ref` インラインへ `kind` を確定する(HTML パーサの
@@ -33,7 +33,7 @@ from alinea_core.document.inlines import Inline
 from alinea_core.parsing.block_ids import assign_block_ids
 from alinea_core.parsing.html_parser import ParsedDocument
 
-PARSER_VERSION = "latex-1.1.0"
+PARSER_VERSION = "latex-1.2.0"
 
 _WS = re.compile(r"\s+")
 

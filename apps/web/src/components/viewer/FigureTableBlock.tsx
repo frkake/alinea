@@ -112,7 +112,7 @@ function parseLatexSpanCell(rawCell: string): TableCell {
   let rowSpan: number | undefined;
 
   if (text.startsWith("\\multicolumn")) {
-    let index = "\\multicolumn".length;
+    const index = "\\multicolumn".length;
     const span = readBraced(text, index);
     const align = span ? readBraced(text, span.end) : null;
     const body = align ? readBraced(text, align.end) : null;
@@ -122,7 +122,7 @@ function parseLatexSpanCell(rawCell: string): TableCell {
   }
 
   if (text.startsWith("\\multirow")) {
-    let index = skipOptional(text, "\\multirow".length);
+    const index = skipOptional(text, "\\multirow".length);
     const span = readBraced(text, index);
     const width = span ? readBraced(text, span.end) : null;
     const body = width ? readBraced(text, width.end) : null;
@@ -238,44 +238,6 @@ function parseTable(raw: string | null | undefined): TableRows | null {
   return parseHtmlTable(raw) ?? parseLatexTable(raw);
 }
 
-function encodeAssetId(storageKey: string): string {
-  const bytes = new TextEncoder().encode(storageKey);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-function normalizeFigureHtmlSrc(src: string): string {
-  const trimmed = src.trim();
-  if (
-    !trimmed ||
-    trimmed.startsWith("data:") ||
-    trimmed.startsWith("http://") ||
-    trimmed.startsWith("https://") ||
-    trimmed.startsWith("/api/assets/")
-  ) {
-    return src;
-  }
-  if (/^(?:figures|renders|thumbnails)\//.test(trimmed)) {
-    return `/api/assets/${encodeAssetId(trimmed)}`;
-  }
-  if (/^\d{4}\.\d{4,5}v\d+\//.test(trimmed)) {
-    return `https://arxiv.org/html/${trimmed}`;
-  }
-  if (trimmed.startsWith("/html/")) {
-    return `https://arxiv.org${trimmed}`;
-  }
-  return src;
-}
-
-function renderableFigureHtml(raw: string | null | undefined): string | null {
-  if (!raw || !/(<svg[\s>]|<img[\s>])/i.test(raw)) return null;
-  return raw.replace(
-    /\bsrc\s*=\s*(["'])([^"']+)\1/gi,
-    (_match, quote: string, src: string) => `src=${quote}${normalizeFigureHtmlSrc(src)}${quote}`,
-  );
-}
-
 function looksLikeUndelimitedMath(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) return false;
@@ -364,7 +326,6 @@ export function FigureTableBlock({
   onRefClick,
 }: FigureTableBlockProps) {
   const rows = parseTable(block.raw);
-  const figureHtml = block.type === "figure" && !block.asset_url ? renderableFigureHtml(block.raw) : null;
   const hasCaption = (block.caption ?? []).length > 0;
   const hasTranslation = showTranslatedCaption && hasTranslatedText(unit);
   const captionLabel = mediaLabel(block);
@@ -394,21 +355,6 @@ export function FigureTableBlock({
             objectFit: "contain",
             margin: "0 auto 10px",
           }}
-        />
-      ) : null}
-      {figureHtml ? (
-        <div
-          aria-label={mediaLabel(block)}
-          role="img"
-          style={{
-            display: "block",
-            maxWidth: "100%",
-            maxHeight: 540,
-            overflow: "auto",
-            margin: "0 auto 10px",
-            textAlign: "center",
-          }}
-          dangerouslySetInnerHTML={{ __html: figureHtml }}
         />
       ) : null}
       {rows ? <TableView rows={rows} /> : null}

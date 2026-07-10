@@ -32,8 +32,8 @@ libs/alinea_core/src/alinea_core/
     model.py           # Block / Inline / Section の Pydantic モデル(plans/02 §3.2 と同型)
     block_ids.py       # ブロック安定 ID 生成(§4.4)
     carryover.py       # リビジョン間 ID 引き継ぎ(§4.5)
-    html_parser.py     # arXiv HTML / ar5iv パーサ(§4)— parser_version 'html-1.0.0'
-    latex_parser.py    # LaTeX パーサ(§5, M2)— parser_version 'latex-1.0.0'
+    html_parser.py     # arXiv HTML / ar5iv パーサ(§4)— parser_version 'html-1.1.0'
+    latex_parser.py    # LaTeX パーサ(§5, M2)— parser_version 'latex-1.2.0'
     pdf_parser.py      # PDF パーサ(§6)— parser_version 'pdf-1.0.0'
     pdf_sync.py        # 品質 A の page+bbox 同期(§4.6)
   ingest/
@@ -349,7 +349,7 @@ async def latex_available(ref: ArxivRef, redis: Redis, http: httpx.AsyncClient) 
 
 - 対象 HTML: arXiv 公式 HTML(2023-12 以降の論文で提供)と ar5iv。**どちらも LaTeXML 生成で CSS クラス体系(`ltx_*`)が共通**のため、単一パーサ `html_parser.py` で両対応する。ルート要素は `article.ltx_document`。
 - **決定**: HTML パーサは **selectolax(lexbor バックエンド)** を使う。理由: C 実装で BeautifulSoup 比 10 倍以上高速、CSS セレクタと属性走査で本用途に十分(spec-decisions C7 の選択肢から確定)。
-- `parser_version = 'html-1.0.0'`。出力は plans/02 §3.2 の `DocumentContentJson`(`quality_level: "A"`, `source_format: 'arxiv_html'`)。
+- `parser_version = 'html-1.1.0'`。出力は plans/02 §3.2 の `DocumentContentJson`(`quality_level: "A"`, `source_format: 'arxiv_html'`)。
 - 回帰テストのフィクスチャは Rectified Flow(arXiv:2209.03003、C10 のシード論文)の公式 HTML と ar5iv HTML を `libs/alinea_core/tests/fixtures/` に凍結する。
 
 ### 4.2 DOM → ブロック対応表(完全)
@@ -531,7 +531,7 @@ def carry_over_ids(old_blocks: list[BlockRef], new_sections: list[Section]) -> C
 
 - 入力: `sources/{paper_id}/{sv}/latex.tar.gz` を展開 → メインファイル判定(`\documentclass` を含み `\begin{document}` を持つ .tex。複数候補時は `ms.tex`/`main.tex`/最大サイズの順)→ `latexpand` 相当の自前 `\input`/`\include` 展開 → pandoc 3.x(`--from=latex+raw_tex`)。
 - pandoc AST → Block 対応: `Header`→heading / `Para`・`Plain`→paragraph / `Math DisplayMath`→equation(`\label` は前処理で捕捉した対応表から)/ `Figure`→figure(graphics ファイルを PDF ならページラスタライズ、EPS/PDF 図は `pymupdf` で 200dpi PNG 化)/ `Table`→table / `CodeBlock`→code / `BulletList`・`OrderedList`→list / `BlockQuote`→quote / `Div` の theorem 環境→theorem / `Note`→footnote / thebibliography・bbl→reference_entry。
-- ID 付与・carryover・PDF 同期は §4.4〜§4.6 を共用(パーサ非依存)。`parser_version='latex-1.0.0'`, `source_format='latex'`, 品質 A。
+- ID 付与・carryover・PDF 同期は §4.4〜§4.6 を共用(パーサ非依存)。`parser_version='latex-1.2.0'`, `source_format='latex'`, 品質 A。
 - pandoc が変換不能(exit≠0・AST 空)なら arXiv HTML へフォールバックし `jobs.log` に warn(処理ログで判別可能 — docs/02 §2)。
 
 ## 6. PDF パイプライン(品質 B)

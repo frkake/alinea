@@ -99,7 +99,7 @@ def test_no_documentclass_raises_no_main_tex() -> None:
 
 def test_parser_version_and_quality() -> None:
     doc = _doc()
-    assert doc.parser_version == PARSER_VERSION == "latex-1.1.0"
+    assert doc.parser_version == PARSER_VERSION == "latex-1.2.0"
     assert doc.quality_level == "A"
     assert doc.source_format == "latex"
 
