@@ -1,3 +1,4 @@
+import pytest
 from alinea_core.document.blocks import Block, BlockType, DocumentContent, Section, SectionHeading
 from alinea_core.ingest.completeness import (
     DocumentCompleteness,
@@ -39,6 +40,17 @@ def test_rejects_single_embedded_pdf_filename() -> None:
         paragraph_count=1,
         figure_count=0,
     )
+
+
+def test_rejects_embedded_pdf_filename_from_mapping_manifest() -> None:
+    report = assess_document_completeness(
+        _doc(_text_block("b1", "paragraph", "body.pdf")),
+        pdf_text="",
+        source_manifest={"binary_files": {"nested/body.pdf": b"PDF"}},
+    )
+
+    assert not report.accepted
+    assert report.code == "embedded_pdf_wrapper"
 
 
 def test_accepts_short_but_structured_note() -> None:
@@ -93,6 +105,19 @@ def test_rejects_unresolved_figure_assets_and_preserves_counts() -> None:
     assert report.unresolved_figures == 1
 
 
+def test_rejects_negative_unresolved_figure_count() -> None:
+    with pytest.raises(ValueError, match="unresolved_figures must be non-negative"):
+        assess_document_completeness(
+            _doc(
+                _text_block("p1", "paragraph", "First paragraph."),
+                _text_block("p2", "paragraph", "Second paragraph."),
+            ),
+            pdf_text="",
+            source_manifest={},
+            unresolved_figures=-1,
+        )
+
+
 def test_rejects_structured_text_far_shorter_than_pdf_text() -> None:
     pdf_text = "x" * 1_000
 
@@ -111,6 +136,19 @@ def test_rejects_structured_text_far_shorter_than_pdf_text() -> None:
     assert report.structured_chars == len("Method\nBrief body.")
     assert report.paragraph_count == 1
     assert report.figure_count == 0
+
+
+def test_accepts_structured_text_at_exactly_thirty_five_percent() -> None:
+    report = assess_document_completeness(
+        _doc(Block(id="h1", type="heading", level=1, title="x" * 350)),
+        pdf_text="y" * 1_000,
+        source_manifest={},
+    )
+
+    assert report.accepted
+    assert report.code is None
+    assert report.source_chars == 1_000
+    assert report.structured_chars == 350
 
 
 def test_rejects_empty_document() -> None:
@@ -166,3 +204,42 @@ def test_counts_only_prose_bearing_blocks_as_paragraphs_and_all_figures() -> Non
     assert report.accepted
     assert report.paragraph_count == 4
     assert report.figure_count == 2
+
+
+def test_includes_nested_section_blocks_in_text_counts_and_acceptance() -> None:
+    visible = "Nested first.\nNested second.\nNested figure."
+    content = DocumentContent(
+        quality_level="A",
+        sections=[
+            Section(
+                id="sec-root",
+                heading=SectionHeading(number="1", title="Root"),
+                sections=[
+                    Section(
+                        id="sec-nested",
+                        heading=SectionHeading(number="1.1", title="Nested"),
+                        blocks=[
+                            _text_block("p1", "paragraph", "Nested first."),
+                            Block(
+                                id="list-1",
+                                type="list",
+                                items=[[{"t": "text", "v": "Nested second."}]],
+                            ),
+                            Block(
+                                id="fig-1",
+                                type="figure",
+                                caption=[{"t": "text", "v": "Nested figure."}],
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+
+    report = assess_document_completeness(content, pdf_text="", source_manifest={})
+
+    assert report.accepted
+    assert report.structured_chars == len(visible)
+    assert report.paragraph_count == 2
+    assert report.figure_count == 1

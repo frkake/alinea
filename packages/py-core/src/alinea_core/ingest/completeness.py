@@ -36,6 +36,9 @@ def assess_document_completeness(
     unresolved_figures: int = 0,
 ) -> DocumentCompleteness:
     """Assess whether a structured candidate contains a complete, usable document."""
+    if unresolved_figures < 0:
+        raise ValueError("unresolved_figures must be non-negative")
+
     blocks = [block for _section, block in content.iter_blocks()]
     visible = "\n".join(
         block_to_plain(block) for block in blocks if block.type in TRANSLATABLE_BLOCK_TYPES
@@ -58,7 +61,9 @@ def assess_document_completeness(
     binary_files = source_manifest.get("binary_files", ())
     if isinstance(binary_files, str):
         binary_files = (binary_files,)
-    if not isinstance(binary_files, list | tuple | set | frozenset):
+    elif isinstance(binary_files, Mapping):
+        binary_files = binary_files.keys()
+    elif not isinstance(binary_files, list | tuple | set | frozenset):
         binary_files = ()
     binary_pdfs = {
         Path(name).name
