@@ -101,6 +101,11 @@ describe("SidePanelTabs", () => {
     }
   });
 
+  test("keeps tab labels on one line", () => {
+    render(<SidePanelTabs active="chat" counts={{}} onChange={() => {}} />);
+    expect(screen.getByRole("tab", { name: "チャット" })).toHaveStyle({ whiteSpace: "nowrap" });
+  });
+
   test("renders only the provided M0 subset (chat/figures/info)", () => {
     render(
       <SidePanelTabs

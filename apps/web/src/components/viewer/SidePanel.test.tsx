@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { annotationsList } from "@alinea/api-client";
@@ -12,13 +12,25 @@ vi.mock("@alinea/api-client", async (importOriginal) => {
   return {
     ...actual,
     annotationsList: vi.fn(async () => ({
-      data: { items: [], counts: { all: 0, important: 0, question: 0, idea: 0, term: 0, with_comment: 0, unplaced: 0 } },
+      data: {
+        items: [],
+        counts: {
+          all: 0,
+          important: 0,
+          question: 0,
+          idea: 0,
+          term: 0,
+          with_comment: 0,
+          unplaced: 0,
+        },
+      },
     })),
     notesList: vi.fn(async () => ({ data: { items: [] } })),
   };
 });
 
 function resetStore() {
+  window.localStorage.clear();
   useViewerStore.setState({
     panelOpen: true,
     activeTab: "chat",
@@ -63,20 +75,26 @@ describe("SidePanel tabs milestone=M1", () => {
     expect(notesList).toHaveBeenCalled();
   });
 
-  test("注釈 tab uses the 320px panel width; other tabs use 340px", () => {
-    useViewerStore.setState({ activeTab: "annotations" });
-    const { container, rerender } = renderWithClient(<SidePanel milestone="M1" />);
-    expect((container.firstChild as HTMLElement).style.width).toBe("320px");
+  test("panel width can be resized and is persisted", () => {
+    const { container } = renderWithClient(<SidePanel milestone="M1" />);
+    const panel = container.firstChild as HTMLElement;
+    const separator = screen.getByRole("separator", { name: "サイドパネルの幅を変更" });
 
-    act(() => {
-      useViewerStore.setState({ activeTab: "figures" });
-    });
-    rerender(
-      <QueryClientProvider client={new QueryClient()}>
-        <SidePanel milestone="M1" />
-      </QueryClientProvider>,
-    );
-    expect((container.firstChild as HTMLElement).style.width).toBe("340px");
+    expect(panel.style.width).toBe("380px");
+    fireEvent(separator, new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 400 }));
+    fireEvent(window, new MouseEvent("pointermove", { bubbles: true, clientX: 350 }));
+    fireEvent(window, new MouseEvent("pointerup", { bubbles: true }));
+
+    expect(panel.style.width).toBe("430px");
+    expect(window.localStorage.getItem("alinea-viewer-side-panel-width")).toBe("430");
+  });
+
+  test("panel width can be adjusted from the keyboard", () => {
+    const { container } = renderWithClient(<SidePanel milestone="M1" />);
+    const separator = screen.getByRole("separator", { name: "サイドパネルの幅を変更" });
+
+    fireEvent.keyDown(separator, { key: "ArrowLeft" });
+    expect((container.firstChild as HTMLElement).style.width).toBe("400px");
   });
 
   test("clicking the active tab closes the panel (viewer-shell §6.4)", () => {
@@ -129,7 +147,11 @@ describe("SidePanel tabs milestone=M2", () => {
     vi.clearAllMocks();
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ items: [], suggestion: null, count: 0 }) })),
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [], suggestion: null, count: 0 }),
+      })),
     );
   });
 

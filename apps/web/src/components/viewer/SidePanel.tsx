@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { SidePanelTabs, type SidePanelTabId } from "@/components/ui/SidePanelTabs";
 import { CountBadge } from "@/components/ui/CountBadge";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -36,6 +36,38 @@ const TAB_LABELS: Record<SidePanelTabId, string> = {
   info: "情報",
 };
 
+const DEFAULT_PANEL_WIDTH = 380;
+const MIN_PANEL_WIDTH = 300;
+const MAX_PANEL_WIDTH = 560;
+const PANEL_WIDTH_STORAGE_KEY = "alinea-viewer-side-panel-width";
+
+function clampPanelWidth(width: number): number {
+  const viewportMax =
+    typeof window === "undefined" ? MAX_PANEL_WIDTH : Math.floor(window.innerWidth * 0.5);
+  return Math.min(
+    Math.max(width, MIN_PANEL_WIDTH),
+    Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, viewportMax)),
+  );
+}
+
+function readPanelWidth(): number | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const value = Number(window.localStorage.getItem(PANEL_WIDTH_STORAGE_KEY));
+    return Number.isFinite(value) && value > 0 ? clampPanelWidth(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePanelWidth(width: number): void {
+  try {
+    window.localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, String(width));
+  } catch {
+    /* storage 不可環境では現在の表示幅だけを維持する */
+  }
+}
+
 export interface SidePanelProps {
   milestone?: "M0" | "M1" | "M2";
   /** 件数バッジ(注釈・リソースのみ。M0 タブには出さない)。 */
@@ -58,6 +90,68 @@ export function SidePanel({ milestone = "M0", counts = {}, renderTab }: SidePane
   const panelOpen = useViewerStore((s) => s.panelOpen);
   const storeTab = useViewerStore((s) => s.activeTab);
   const setPanel = useViewerStore((s) => s.setPanel);
+  const [width, setWidth] = useState(DEFAULT_PANEL_WIDTH);
+  const [resizing, setResizing] = useState(false);
+  const panelRef = useRef<HTMLElement>(null);
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    const savedWidth = readPanelWidth();
+    if (savedWidth !== null) setWidth(savedWidth);
+
+    const onWindowResize = () => setWidth((current) => clampPanelWidth(current));
+    window.addEventListener("resize", onWindowResize);
+    return () => {
+      window.removeEventListener("resize", onWindowResize);
+      resizeCleanupRef.current?.();
+    };
+  }, []);
+
+  const finishResize = useCallback((nextWidth: number) => {
+    const clampedWidth = clampPanelWidth(nextWidth);
+    setWidth(clampedWidth);
+    setResizing(false);
+    writePanelWidth(clampedWidth);
+  }, []);
+
+  const onResizePointerDown = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+
+      resizeCleanupRef.current?.();
+      const startX = event.clientX;
+      const startWidth = panelRef.current?.getBoundingClientRect().width || width;
+      let nextWidth = startWidth;
+      setResizing(true);
+
+      const onPointerMove = (moveEvent: globalThis.PointerEvent) => {
+        nextWidth = clampPanelWidth(startWidth + startX - moveEvent.clientX);
+        setWidth(nextWidth);
+      };
+      const cleanup = () => {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerCancel);
+        resizeCleanupRef.current = null;
+      };
+      const onPointerUp = () => {
+        cleanup();
+        finishResize(nextWidth);
+      };
+      const onPointerCancel = () => {
+        cleanup();
+        setWidth(clampPanelWidth(startWidth));
+        setResizing(false);
+      };
+
+      resizeCleanupRef.current = cleanup;
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp);
+      window.addEventListener("pointercancel", onPointerCancel);
+    },
+    [finishResize, width],
+  );
 
   const tabs = milestone === "M2" ? M2_TABS : milestone === "M1" ? M1_TABS : M0_TABS;
   const active = tabs.includes(storeTab) ? storeTab : "chat";
@@ -73,22 +167,53 @@ export function SidePanel({ milestone = "M0", counts = {}, renderTab }: SidePane
     );
   }
 
-  // 注釈タブのみ 320px(viewer-shell §6.2)。他タブは 340px。
-  const width = active === "annotations" ? 320 : 340;
-
   return (
     <aside
+      ref={panelRef}
       data-milestone={milestone}
       style={{
         width,
+        minWidth: MIN_PANEL_WIDTH,
+        maxWidth: "50vw",
         flex: "none",
         background: "var(--pr-bg-card)",
         borderLeft: "1px solid var(--pr-border-pane)",
         display: "flex",
         flexDirection: "column",
         minHeight: 0,
+        position: "relative",
       }}
     >
+      <div
+        role="separator"
+        aria-label="サイドパネルの幅を変更"
+        aria-orientation="vertical"
+        aria-valuemin={MIN_PANEL_WIDTH}
+        aria-valuemax={MAX_PANEL_WIDTH}
+        aria-valuenow={Math.round(width)}
+        tabIndex={0}
+        title="ドラッグしてサイドパネルの幅を変更"
+        onPointerDown={onResizePointerDown}
+        onKeyDown={(event) => {
+          const delta = event.key === "ArrowLeft" ? 20 : event.key === "ArrowRight" ? -20 : 0;
+          if (delta === 0) return;
+          event.preventDefault();
+          finishResize(width + delta);
+        }}
+        style={{
+          position: "absolute",
+          top: 0,
+          bottom: 0,
+          left: -4,
+          width: 8,
+          zIndex: 2,
+          cursor: "col-resize",
+          touchAction: "none",
+          background: resizing
+            ? "color-mix(in srgb, var(--pr-acc) 28%, transparent)"
+            : "transparent",
+        }}
+      />
       <div
         style={{
           display: "flex",
@@ -97,7 +222,15 @@ export function SidePanel({ milestone = "M0", counts = {}, renderTab }: SidePane
           minWidth: 0,
         }}
       >
-        <div style={{ flex: 1, minWidth: 0, overflowX: "auto" }}>
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflowX: "auto",
+            overflowY: "hidden",
+            scrollbarWidth: "thin",
+          }}
+        >
           <SidePanelTabs
             active={active}
             counts={counts}
@@ -196,7 +329,13 @@ function SidePanelRail({
       <div
         role="tablist"
         aria-label="サイドパネルタブ"
-        style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, minWidth: 0 }}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 4,
+          minWidth: 0,
+        }}
       >
         {tabs.map((tab) => {
           const isActive = tab === active;

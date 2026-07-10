@@ -34,21 +34,30 @@ export interface SidePanelTabsProps {
   borderBottom?: boolean;
 }
 
-export function SidePanelTabs({ active, counts, onChange, tabs = ALL_TABS, borderBottom = true }: SidePanelTabsProps) {
+export function SidePanelTabs({
+  active,
+  counts,
+  onChange,
+  tabs = ALL_TABS,
+  borderBottom = true,
+}: SidePanelTabsProps) {
   return (
     <div
       role="tablist"
       style={{
         display: "flex",
+        flexWrap: "nowrap",
         borderBottom: borderBottom ? "1px solid var(--pr-border-soft)" : undefined,
         padding: "0 6px",
         minWidth: 0,
+        width: "max-content",
       }}
     >
       {tabs.map((tab) => {
         const isActive = tab === active;
         const style: CSSProperties = {
-          padding: "10px 9px 8px",
+          flex: "none",
+          padding: "10px 7px 8px",
           fontSize: 12,
           border: "none",
           background: "transparent",
@@ -57,6 +66,7 @@ export function SidePanelTabs({ active, counts, onChange, tabs = ALL_TABS, borde
           color: isActive ? "var(--pr-acc)" : "var(--pr-text-sub2)",
           fontWeight: isActive ? 600 : 400,
           boxShadow: isActive ? "inset 0 -2px var(--pr-acc)" : undefined,
+          whiteSpace: "nowrap",
         };
         const count = counts[tab];
         return (
