@@ -27,6 +27,7 @@ from alinea_core.jobs.store import JobStore
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from alinea_core.translation.pipeline import compute_translation_scope
 from alinea_worker.tasks.ingest import ingest_paper
+from botocore.exceptions import ClientError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,6 +50,27 @@ def _single_paragraph_pdf() -> bytes:
     data = bytes(doc.tobytes())
     doc.close()
     return data
+
+
+class _RaisingStorage:
+    sources_bucket = "sources"
+    assets_bucket = "assets"
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def get(self, bucket: str, key: str) -> bytes:
+        raise self.error
+
+
+def _client_error(code: str) -> ClientError:
+    return ClientError(
+        {
+            "Error": {"Code": code, "Message": "provider-secret-detail"},
+            "ResponseMetadata": {"HTTPStatusCode": 503},
+        },
+        "GetObject",
+    )
 
 
 async def _seed_pdf_ingest_job(db: AsyncSession, *, pdf_bytes: bytes) -> dict[str, str]:
@@ -210,6 +232,101 @@ async def test_pdf_upload_resume_backfills_diagnostics_from_retained_pdf(
     await db_session.refresh(revision)
     assert revision.stats["completeness"]["accepted"] is True
     assert revision.stats["candidate_failures"] == []
+
+
+@pytest.mark.parametrize("resume", [False, True], ids=["initial", "fetching-checkpoint"])
+@pytest.mark.parametrize("error_code", ["SlowDown", "NoSuchBucket"])
+async def test_pdf_upload_client_error_is_sanitized_retryable_storage_error(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+    resume: bool,
+    error_code: str,
+) -> None:
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf"))
+    store = JobStore(db_session)
+    if resume:
+        await store.checkpoint(
+            ids["job_id"],
+            "fetching",
+            {"source_version": "v1", "source_format": "pdf_upload"},
+            progress=10,
+        )
+    ctx = {**worker_ctx, "s3": _RaisingStorage(_client_error(error_code))}
+
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    with pytest.raises(FetchError) as error:
+        await ingest_paper(ctx, store, job)
+
+    assert error.value.kind == "storage_error"
+    assert error_code not in str(error.value)
+    assert "provider-secret-detail" not in str(error.value)
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    assert job.status == "running"
+    assert job.error is None
+
+
+async def test_pdf_upload_unexpected_storage_exception_is_sanitized_retryable(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+) -> None:
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf"))
+    store = JobStore(db_session)
+    ctx = {**worker_ctx, "s3": _RaisingStorage(RuntimeError("backend-token-detail"))}
+
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    with pytest.raises(FetchError) as error:
+        await ingest_paper(ctx, store, job)
+
+    assert error.value.kind == "storage_error"
+    assert "backend-token-detail" not in str(error.value)
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    assert job.status == "running"
+
+
+async def test_pdf_upload_missing_object_remains_sanitized_source_not_found(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+) -> None:
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf"))
+    store = JobStore(db_session)
+    ctx = {**worker_ctx, "s3": _RaisingStorage(_client_error("NoSuchKey"))}
+
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(ctx, store, job)
+
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    assert job.status == "failed"
+    error = json.loads(job.error or "{}")
+    assert error["code"] == "source_not_found"
+    assert "NoSuchKey" not in error["message"]
+    assert "provider-secret-detail" not in error["message"]
+
+
+async def test_pdf_upload_non_object_fetching_checkpoint_fails_with_parse_error(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+) -> None:
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf"))
+    store = JobStore(db_session)
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    job.payload = {**job.payload, "_checkpoint": {"fetching": "not-an-object"}}
+    await db_session.commit()
+
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(worker_ctx, store, job)
+
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    assert job.status == "failed"
+    assert json.loads(job.error or "{}")["code"] == "parse_error"
 
 
 async def test_pdf_upload_parsing_checkpoint_rejects_changed_source_bytes(

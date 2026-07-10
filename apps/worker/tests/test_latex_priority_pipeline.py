@@ -689,6 +689,8 @@ async def test_ingest_reconciles_duplicate_pdf_assets_deterministically(
     prefix = f"sources/{ids['paper_id']}/v1"
     later_key = f"{prefix}/z-original.pdf"
     preferred_key = f"{prefix}/a-original.pdf"
+    latest_prefix = f"sources/{ids['paper_id']}/latest"
+    latest_keys = [f"{latest_prefix}/a-original.pdf", f"{latest_prefix}/z-original.pdf"]
     await storage.put(
         storage.sources_bucket,
         later_key,
@@ -701,6 +703,13 @@ async def test_ingest_reconciles_duplicate_pdf_assets_deterministically(
         _VALID_PRIORITY_PDF,
         content_type="application/pdf",
     )
+    for latest_key in latest_keys:
+        await storage.put(
+            storage.sources_bucket,
+            latest_key,
+            _VALID_MULTI_PARAGRAPH_PDF,
+            content_type="application/pdf",
+        )
     later_asset = SourceAsset(
         paper_id=ids["paper_id"],
         kind="pdf",
@@ -719,11 +728,21 @@ async def test_ingest_reconciles_duplicate_pdf_assets_deterministically(
         content_type="application/pdf",
         byte_size=len(_VALID_PRIORITY_PDF),
     )
-    # Deliberately insert the lexically later key first. Reconciliation must not
-    # depend on heap/insertion order when historical duplicate rows exist.
-    db_session.add_all([later_asset, preferred_asset])
-    await db_session.flush()
-    preferred_asset_id = str(preferred_asset.id)
+    latest_assets = [
+        SourceAsset(
+            paper_id=ids["paper_id"],
+            kind="pdf",
+            source_url=f"http://arxiv.test/pdf/{arxiv_id}",
+            source_version="latest",
+            storage_key=latest_key,
+            content_type="application/pdf",
+            byte_size=len(_VALID_MULTI_PARAGRAPH_PDF),
+        )
+        for latest_key in latest_keys
+    ]
+    # Deliberately insert the lexically later exact key first. Reconciliation must
+    # normalize every compatible exact/latest row, independent of heap order.
+    db_session.add_all([later_asset, preferred_asset, *latest_assets])
     await db_session.commit()
 
     store = JobStore(db_session)
@@ -759,9 +778,13 @@ async def test_ingest_reconciles_duplicate_pdf_assets_deterministically(
         .scalars()
         .all()
     )
-    assert len(pdf_assets) == 2
-    canonical_asset = next(asset for asset in pdf_assets if asset.storage_key == canonical_key)
-    assert str(canonical_asset.id) == preferred_asset_id
+    assert len(pdf_assets) == 4
+    expected_sha256 = hashlib.sha256(_VALID_PRIORITY_PDF).hexdigest()
+    assert {asset.storage_key for asset in pdf_assets} == {canonical_key}
+    assert {asset.source_version for asset in pdf_assets} == {"v1"}
+    assert {asset.content_type for asset in pdf_assets} == {"application/pdf"}
+    assert {asset.byte_size for asset in pdf_assets} == {len(_VALID_PRIORITY_PDF)}
+    assert {asset.sha256 for asset in pdf_assets} == {expected_sha256}
 
 
 async def test_ingest_prefers_canonical_pdf_over_stale_exact_asset(
@@ -1219,10 +1242,23 @@ async def test_ingest_parsing_checkpoint_reuses_stored_candidate_without_reselec
     assert revision.stats["completeness"]["accepted"] is True
 
 
+@pytest.mark.parametrize(
+    "parsing_checkpoint",
+    [
+        {"parser_version": "html-1.0.0"},
+        {
+            "source_format": "arxiv_html",
+            "parser_version": "html-1.0.0",
+            "candidate_failures": "not-a-list",
+        },
+    ],
+    ids=["missing-source-format", "candidate-failures-not-list"],
+)
 async def test_ingest_rejects_malformed_parsing_checkpoint_without_reselection(
     db_session: AsyncSession,
     router: LLMRouter,
     seed_ingest_job: Any,
+    parsing_checkpoint: dict[str, Any],
 ) -> None:
     arxiv_id = _arxiv_id()
     ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
@@ -1252,7 +1288,7 @@ async def test_ingest_rejects_malformed_parsing_checkpoint_without_reselection(
     await store.checkpoint(
         ids["job_id"],
         "parsing",
-        {"parser_version": "html-1.0.0"},
+        parsing_checkpoint,
         progress=20,
     )
     calls = {"pdf": 0, "eprint": 0, "html": 0}

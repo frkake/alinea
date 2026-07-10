@@ -245,7 +245,7 @@ def _is_pdf_like(data: bytes) -> bool:
 
 def _is_missing_s3_object(exc: ClientError) -> bool:
     error = exc.response.get("Error", {})
-    return str(error.get("Code") or "") in {"NoSuchKey", "NoSuchBucket", "404", "NotFound"}
+    return str(error.get("Code") or "") in {"NoSuchKey", "404", "NotFound"}
 
 
 def _clean_latex_asset_path(value: str) -> str:
@@ -535,14 +535,13 @@ class IngestRun:
     async def _stage_fetching(self) -> None:
         # pdf_upload は従来どおり API が先行保存した原本だけを確認する。
         fetch_ck = self.ckpt.get("fetching")
+        if fetch_ck is not None and not isinstance(fetch_ck, dict):
+            raise FetchError("parse_error", "fetching checkpoint is not an object")
         if fetch_ck and fetch_ck.get("source_version"):
             self.source_version = str(fetch_ck["source_version"])
             self.source_format = str(fetch_ck.get("source_format", "arxiv_html"))
             if self.is_pdf_upload:
-                try:
-                    await self._get_pdf_bytes()
-                except Exception as exc:
-                    raise FetchError("source_not_found", f"original pdf missing: {exc}") from exc
+                await self._load_pdf_upload_bytes()
                 return
 
             # arXiv の再開時も原本 PDF 不変条件を再確認する。資産行が stale でも
@@ -632,11 +631,9 @@ class IngestRun:
         )
         exact_assets = [asset for asset in assets if asset.source_version == self.source_version]
         latest_assets = [asset for asset in assets if asset.source_version == "latest"]
-        record_asset: SourceAsset | None = None
-        if exact_assets:
-            record_asset = exact_assets[0]
-        elif latest_assets:
-            record_asset = latest_assets[0]
+        reconcile_assets = list(exact_assets)
+        if self._allow_latest_pdf_alias and self.source_version != "latest":
+            reconcile_assets.extend(latest_assets)
         cache_diagnostics: list[str] = []
         cache_storage_failed = False
         keys: list[tuple[str, str, str | None]] = []
@@ -685,7 +682,7 @@ class IngestRun:
                         data,
                         content_type="application/pdf",
                     )
-                await self._record_original_pdf_asset(canonical_key, data, asset=record_asset)
+                await self._record_original_pdf_asset(canonical_key, data, assets=reconcile_assets)
             except Exception as exc:
                 await self.session.rollback()
                 raise FetchError(
@@ -733,7 +730,7 @@ class IngestRun:
                 data,
                 content_type="application/pdf",
             )
-            await self._record_original_pdf_asset(canonical_key, data, asset=record_asset)
+            await self._record_original_pdf_asset(canonical_key, data, assets=reconcile_assets)
         except Exception as exc:
             await self.session.rollback()
             raise FetchError(
@@ -744,18 +741,19 @@ class IngestRun:
         return data
 
     async def _record_original_pdf_asset(
-        self, key: str, data: bytes, *, asset: SourceAsset | None = None
+        self, key: str, data: bytes, *, assets: list[SourceAsset]
     ) -> None:
         assert self.ref is not None
         source_url = f"{_www_base(self.deps.settings)}/pdf/{self.ref.versioned}"
         digest = hashlib.sha256(data).hexdigest()
-        if asset is not None:
-            asset.source_url = source_url
-            asset.source_version = self.source_version
-            asset.storage_key = key
-            asset.content_type = "application/pdf"
-            asset.byte_size = len(data)
-            asset.sha256 = digest
+        if assets:
+            for asset in assets:
+                asset.source_url = source_url
+                asset.source_version = self.source_version
+                asset.storage_key = key
+                asset.content_type = "application/pdf"
+                asset.byte_size = len(data)
+                asset.sha256 = digest
             await self.session.commit()
             return
         await self._record_source_asset(
@@ -779,6 +777,20 @@ class IngestRun:
         self._pdf_bytes = data
         return data
 
+    async def _load_pdf_upload_bytes(self) -> bytes:
+        """Load an uploaded PDF while preserving missing-vs-transient storage semantics."""
+
+        try:
+            return await self._get_pdf_bytes()
+        except ClientError as exc:
+            if _is_missing_s3_object(exc):
+                raise FetchError("source_not_found", "original pdf is missing") from exc
+            raise FetchError("storage_error", "original pdf storage is unavailable") from exc
+        except FetchError:
+            raise
+        except Exception as exc:
+            raise FetchError("storage_error", "original pdf storage is unavailable") from exc
+
     async def _stage_fetching_pdf(self) -> None:
         """pdf_upload: ローカル資産(拡張が送信済みの原本 PDF)の存在確認のみで完了する(§9.2)。
 
@@ -786,10 +798,7 @@ class IngestRun:
         """
         self.source_version = "v1"
         self.source_format = "pdf_upload"
-        try:
-            data = await self._get_pdf_bytes()
-        except Exception as exc:
-            raise FetchError("source_not_found", f"original pdf missing: {exc}") from exc
+        data = await self._load_pdf_upload_bytes()
 
         await self._log(
             "fetching",
@@ -940,6 +949,13 @@ class IngestRun:
             self.parsed = candidate.parsed
             self.parsed_pdf = None
 
+    @staticmethod
+    def _checkpoint_candidate_failures(checkpoint: dict[str, Any]) -> list[dict[str, Any]]:
+        failures = checkpoint.get("candidate_failures", [])
+        if not isinstance(failures, list):
+            raise FetchError("parse_error", "parsing checkpoint candidate failures are invalid")
+        return [dict(item) for item in failures if isinstance(item, dict)]
+
     async def _load_retained_source_bytes(
         self,
         *,
@@ -1075,11 +1091,7 @@ class IngestRun:
                 json.dumps({"candidates": [failure]}, ensure_ascii=False, sort_keys=True),
             )
 
-        failures = [
-            dict(item)
-            for item in checkpoint.get("candidate_failures", [])
-            if isinstance(item, dict)
-        ]
+        failures = self._checkpoint_candidate_failures(checkpoint)
         completeness = candidate.report.as_dict()
         stored_completeness = checkpoint.get("completeness")
         if isinstance(stored_completeness, dict):
@@ -1421,11 +1433,7 @@ class IngestRun:
                 ):
                     raise FetchError("parse_error", "parsing checkpoint identity is invalid")
                 self.source_format = str(checkpoint_format)
-                self._candidate_failures = [
-                    dict(item)
-                    for item in parse_ck.get("candidate_failures", [])
-                    if isinstance(item, dict)
-                ]
+                self._candidate_failures = self._checkpoint_candidate_failures(parse_ck)
                 checkpoint_completeness = parse_ck.get("completeness")
                 self._candidate_completeness = (
                     dict(checkpoint_completeness)

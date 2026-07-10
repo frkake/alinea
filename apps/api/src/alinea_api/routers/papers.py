@@ -18,7 +18,7 @@ from alinea_core.db.models import DocumentRevision, Job, LibraryItem, Paper, Sou
 from alinea_core.ingest.joblog import project_ingest_log
 from alinea_core.ingest.reanchor import ReanchorStats, reanchor_paper
 from alinea_core.jobs.store import JobStore
-from alinea_core.storage.s3 import S3Storage
+from alinea_core.storage.s3 import S3Storage, StorageKeys
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -189,21 +189,28 @@ async def paper_pdf(
 
     kinds = _PDF_VARIANT_KINDS.get(variant, _PDF_KINDS)
     conditions = [SourceAsset.paper_id == paper_id, SourceAsset.kind.in_(kinds)]
+    revision = None
+    if paper.latest_revision_id:
+        revision = await db.get(DocumentRevision, str(paper.latest_revision_id))
+    canonical_key: str | None = None
     if variant == "translated":
         conditions.append(SourceAsset.storage_key.endswith(f"/translated-{style}.pdf"))
-        if paper.latest_revision_id:
-            revision = await db.get(DocumentRevision, str(paper.latest_revision_id))
-            if revision is not None:
-                conditions.append(SourceAsset.source_version == revision.source_version)
-    asset = (
+        if revision is not None:
+            conditions.append(SourceAsset.source_version == revision.source_version)
+    elif revision is not None:
+        conditions.append(SourceAsset.source_version == revision.source_version)
+        canonical_key = StorageKeys.original_pdf(paper_id, revision.source_version)
+    ordering = (
         (
-            await db.execute(
-                select(SourceAsset)
-                .where(*conditions)
-                .order_by(SourceAsset.created_at.desc())
-                .limit(1)
-            )
+            (SourceAsset.storage_key == canonical_key).desc(),
+            SourceAsset.created_at.desc(),
+            SourceAsset.id.asc(),
         )
+        if canonical_key is not None
+        else (SourceAsset.created_at.desc(), SourceAsset.id.asc())
+    )
+    asset = (
+        (await db.execute(select(SourceAsset).where(*conditions).order_by(*ordering).limit(1)))
         .scalars()
         .first()
     )

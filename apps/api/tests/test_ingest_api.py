@@ -660,7 +660,7 @@ async def test_reingest_missing_paper_404(
 # ---------------------------------------------------------------------------
 # GET /api/papers/{id}/pdf(200)
 # ---------------------------------------------------------------------------
-async def test_paper_pdf_streams_bytes(
+async def test_paper_pdf_streams_extension_capture_bytes(
     client: AsyncClient,
     db_session: AsyncSession,
     redis_client: Any,
@@ -674,11 +674,23 @@ async def test_paper_pdf_streams_bytes(
     await db_session.flush()
     created_papers.append(paper.id)
     db_session.add(LibraryItem(user_id=user.id, paper_id=paper.id, status="reading"))
+    revision = DocumentRevision(
+        paper_id=paper.id,
+        source_version="v1",
+        parser_version="pdf-placeholder-1.0.0",
+        quality_level="B",
+        source_format="pdf",
+        content={"quality_level": "B", "sections": []},
+        stats={},
+    )
+    db_session.add(revision)
+    await db_session.flush()
+    paper.latest_revision_id = revision.id
     key = f"sources/{paper.id}/v1/original.pdf"
     db_session.add(
         SourceAsset(
             paper_id=paper.id,
-            kind="pdf",
+            kind="extension_capture",
             source_version="v1",
             storage_key=key,
             content_type="application/pdf",
@@ -692,6 +704,82 @@ async def test_paper_pdf_streams_bytes(
     assert r.headers["content-type"].startswith("application/pdf")
     assert r.headers["cache-control"] == "private, max-age=600"
     assert r.content == _MINIMAL_PDF
+
+
+async def test_paper_pdf_prefers_current_revision_canonical_asset_over_newer_duplicates(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+    fake_storage: Any,
+) -> None:
+    user = await _login(client, db_session, redis_client, unique_email)
+    paper = Paper(arxiv_id=_rand_arxiv(), title="Canonical PDF Paper", visibility="public")
+    db_session.add(paper)
+    await db_session.flush()
+    created_papers.append(paper.id)
+    db_session.add(LibraryItem(user_id=user.id, paper_id=paper.id, status="reading"))
+    revision = DocumentRevision(
+        paper_id=paper.id,
+        source_version="v1",
+        parser_version="html-1.0.0",
+        quality_level="A",
+        source_format="arxiv_html",
+        content={"quality_level": "A", "sections": []},
+        stats={},
+    )
+    db_session.add(revision)
+    await db_session.flush()
+    paper.latest_revision_id = revision.id
+
+    canonical_key = f"sources/{paper.id}/v1/original.pdf"
+    stale_key = f"sources/{paper.id}/v1/stale.pdf"
+    unrelated_key = f"sources/{paper.id}/v2/original.pdf"
+    now = dt.datetime.now(dt.UTC)
+    db_session.add_all(
+        [
+            SourceAsset(
+                paper_id=paper.id,
+                kind="pdf",
+                source_version="v1",
+                storage_key=canonical_key,
+                content_type="application/pdf",
+                byte_size=10,
+                created_at=now - dt.timedelta(minutes=2),
+            ),
+            SourceAsset(
+                paper_id=paper.id,
+                kind="pdf",
+                source_version="v1",
+                storage_key=stale_key,
+                content_type="application/pdf",
+                byte_size=5,
+                created_at=now - dt.timedelta(minutes=1),
+            ),
+            SourceAsset(
+                paper_id=paper.id,
+                kind="pdf",
+                source_version="v2",
+                storage_key=unrelated_key,
+                content_type="application/pdf",
+                byte_size=8,
+                created_at=now,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    canonical_bytes = b"%PDF-canonical-current-version"
+
+    async def get_selected(_bucket: str, key: str) -> bytes:
+        return canonical_bytes if key == canonical_key else b"%PDF-stale-or-unrelated"
+
+    fake_storage.get = get_selected
+    response = await client.get(f"/api/papers/{paper.id}/pdf", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert response.content == canonical_bytes
 
 
 async def test_paper_pdf_streams_translated_variant(
