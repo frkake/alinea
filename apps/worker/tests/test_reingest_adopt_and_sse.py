@@ -21,8 +21,10 @@ import time
 import uuid
 from typing import Any
 
+import pytest
 from alinea_core.db.models import Annotation, DocumentRevision, LibraryItem, Paper, User
 from alinea_core.jobs.store import JobStore
+from alinea_worker.pipeline import IngestRun
 from alinea_worker.tasks.ingest import ingest_paper
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -172,6 +174,72 @@ async def test_reingest_adopt_on_complete_switches_and_reanchors(
 
     timeline_logs = [entry for entry in (job.log or []) if entry.get("level") == "info"]
     assert any("リアンカー" in str(entry.get("message", "")) for entry in timeline_logs)
+
+
+async def test_reingest_resume_after_revision_commit_finishes_adoption(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arxiv_id = _arxiv_id()
+    seed = await _seed_promotable_paper(db_session, arxiv_id=arxiv_id)
+    store = JobStore(db_session)
+    job_id = await store.enqueue(
+        kind="ingest",
+        payload={
+            "mode": "reingest",
+            "source": "arxiv",
+            "arxiv_id": arxiv_id,
+            "url": None,
+            "library_item_id": seed["library_item_id"],
+            "adopt_on_complete": True,
+        },
+        priority="bulk",
+        user_id=seed["user_id"],
+        paper_id=seed["paper_id"],
+        library_item_id=seed["library_item_id"],
+    )
+
+    original_reanchor = IngestRun._reanchor_after_adopt
+
+    async def crash_before_reanchor(self: IngestRun, old_revision_id: str) -> None:
+        raise RuntimeError(f"simulated crash before reanchor from {old_revision_id}")
+
+    monkeypatch.setattr(IngestRun, "_reanchor_after_adopt", crash_before_reanchor)
+    job = await store.claim(job_id)
+    assert job is not None
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        await ingest_paper(worker_ctx, store, job)
+
+    paper = await db_session.get(Paper, seed["paper_id"])
+    assert paper is not None
+    new_revision_id = str(paper.latest_revision_id)
+    assert new_revision_id != seed["old_revision_id"]
+    ann = await db_session.get(Annotation, seed["annotation_id"])
+    assert ann is not None
+    assert ann.anchor["revision_id"] == seed["old_revision_id"]
+
+    monkeypatch.setattr(IngestRun, "_reanchor_after_adopt", original_reanchor)
+    await store.fail_with_retry(job_id, {"stage": "structuring", "message": "crash"})
+    job = await store.claim(job_id)
+    assert job is not None
+    await ingest_paper(worker_ctx, store, job)
+
+    ann = await db_session.get(Annotation, seed["annotation_id"])
+    assert ann is not None
+    assert ann.anchor["revision_id"] == new_revision_id
+
+    job = await store.get(job_id)
+    assert job is not None
+    job.status = "queued"
+    job.finished_at = None
+    await db_session.commit()
+    job = await store.claim(job_id)
+    assert job is not None
+    await ingest_paper(worker_ctx, store, job)
+    ann = await db_session.get(Annotation, seed["annotation_id"])
+    assert ann is not None
+    assert ann.anchor["revision_id"] == new_revision_id
 
 
 # ===========================================================================

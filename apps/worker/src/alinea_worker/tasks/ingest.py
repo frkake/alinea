@@ -3,8 +3,8 @@
 ``ingest_paper(ctx, store, job)`` は :data:`alinea_worker.main.HANDLERS` に登録される
 arq ハンドラ。8 段階ステートマシンの駆動は :mod:`alinea_worker.pipeline` に委譲する。
 
-エラー分類(§2.4): 非リトライ分類(`source_not_found` / `no_text_layer` / `parse_error`)は
-その場で ``failed`` 確定にする。リトライ分類は例外を再送出し、``run_job`` の
+エラー分類(§2.4): 非リトライ分類(`source_not_found` / `no_text_layer` / `parse_error` /
+`document_incomplete`)はその場で ``failed`` 確定にする。リトライ分類は例外を再送出し、``run_job`` の
 :meth:`JobStore.fail_with_retry`(指数バックオフ)に委ねる。
 """
 
@@ -22,7 +22,9 @@ from alinea_core.jobs.store import JobStore
 from alinea_worker.pipeline import run_ingest
 
 # 非リトライのエラー分類(§2.4)。到達で即 failed。
-_NON_RETRYABLE = frozenset({"source_not_found", "no_text_layer", "parse_error"})
+_NON_RETRYABLE = frozenset(
+    {"source_not_found", "no_text_layer", "parse_error", "document_incomplete"}
+)
 
 
 async def ingest_paper(ctx: dict[str, Any], store: JobStore, job: Job) -> None:

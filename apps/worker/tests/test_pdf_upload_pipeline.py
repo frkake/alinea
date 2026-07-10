@@ -10,12 +10,16 @@ fetching(HTML/PDF 取得・レート制限)は一切経由しない(§9.2「ロ�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from pathlib import Path
 from typing import Any
 
+import fitz
+import pytest
 from _summary_contract import assert_summary_lines_contract
+from alinea_core.arxiv.fetch import FetchError
 from alinea_core.db.models import DocumentRevision, LibraryItem, Paper, TranslationSet, User
 from alinea_core.document.blocks import DocumentContent
 from alinea_core.ingest import build_timeline
@@ -31,6 +35,20 @@ _FIXTURES = Path(__file__).resolve().parents[3] / "packages" / "py-core" / "test
 
 def _load_pdf(name: str) -> bytes:
     return (_FIXTURES / name).read_bytes()
+
+
+def _single_paragraph_pdf() -> bytes:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_textbox(
+        fitz.Rect(72, 72, 520, 300),
+        "This is one deliberately long paragraph with enough extractable characters for "
+        "the PDF parser but no second paragraph or heading.",
+        fontsize=11,
+    )
+    data = bytes(doc.tobytes())
+    doc.close()
+    return data
 
 
 async def _seed_pdf_ingest_job(db: AsyncSession, *, pdf_bytes: bytes) -> dict[str, str]:
@@ -165,6 +183,88 @@ async def test_pdf_upload_ingest_reaches_complete_quality_b(
     assert "全文翻訳 完了" in timeline[2]["label"]
 
 
+async def test_pdf_upload_resume_backfills_diagnostics_from_retained_pdf(
+    db_session: AsyncSession, worker_ctx: dict[str, Any]
+) -> None:
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf"))
+    store = JobStore(db_session)
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(worker_ctx, store, job)
+
+    revision = await _revision(db_session, ids["paper_id"])
+    revision.stats = {}
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    job.status = "queued"
+    job.finished_at = None
+    await db_session.commit()
+
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(worker_ctx, store, job)
+
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    assert job.status == "succeeded"
+    await db_session.refresh(revision)
+    assert revision.stats["completeness"]["accepted"] is True
+    assert revision.stats["candidate_failures"] == []
+
+
+async def test_pdf_upload_parsing_checkpoint_rejects_changed_source_bytes(
+    db_session: AsyncSession, worker_ctx: dict[str, Any]
+) -> None:
+    original = _load_pdf("pdf_quality_b_sample.pdf")
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=original)
+    key = StorageKeys.original_pdf(ids["paper_id"], "v1")
+    store = JobStore(db_session)
+    await store.checkpoint(
+        ids["job_id"],
+        "fetching",
+        {"source_version": "v1", "source_format": "pdf_upload"},
+        progress=10,
+    )
+    await store.checkpoint(
+        ids["job_id"],
+        "parsing",
+        {
+            "source_format": "pdf_upload",
+            "parser_version": "pdf-1.0.0",
+            "candidate_failures": [],
+            "completeness": {"accepted": True},
+            "adopt_from_revision_id": None,
+            "source_storage_key": key,
+            "source_sha256": hashlib.sha256(original).hexdigest(),
+        },
+        progress=20,
+    )
+    storage = S3Storage()
+    await storage.put(
+        storage.sources_bucket,
+        key,
+        _load_pdf("pdf_table_sample.pdf"),
+        content_type="application/pdf",
+    )
+
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    with pytest.raises(FetchError) as error:
+        await ingest_paper(worker_ctx, store, job)
+
+    assert error.value.kind == "storage_error"
+    revisions = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert revisions == []
+
+
 # ===========================================================================
 # テキストレイヤ無し PDF: 段階名(parsing)+理由+再試行なしで failed(§2.4・§6.1)
 # ===========================================================================
@@ -200,3 +300,32 @@ async def test_pdf_upload_ingest_no_text_layer_fails_parsing(
         .all()
     )
     assert revs == []
+
+
+async def test_pdf_upload_incomplete_document_fails_before_revision_promotion(
+    db_session: AsyncSession, worker_ctx: dict[str, Any]
+) -> None:
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=_single_paragraph_pdf())
+    store = JobStore(db_session)
+
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(worker_ctx, store, job)
+
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    assert job.status == "failed"
+    assert json.loads(job.error or "{}")["code"] == "document_incomplete"
+    paper = await db_session.get(Paper, ids["paper_id"])
+    assert paper is not None
+    assert paper.latest_revision_id is None
+    revisions = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert revisions == []

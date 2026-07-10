@@ -49,7 +49,7 @@ from alinea_core.db.models import (
 )
 from alinea_core.document.blocks import Block, DocumentContent
 from alinea_core.document.plaintext import block_to_plain
-from alinea_core.ingest import joblog, progress
+from alinea_core.ingest import assess_document_completeness, joblog, progress
 from alinea_core.ingest.bib_estimate import estimate_bibliography
 from alinea_core.ingest.reanchor import ReanchorStats, reanchor_paper
 from alinea_core.ingest.thumbnail import render_thumbnail, select_thumbnail_figure
@@ -68,8 +68,6 @@ from alinea_core.parsing.pdf_parser import (
 )
 from alinea_core.parsing.pdf_parser import (
     ParsedPdfDocument,
-    PdfParseError,
-    parse_pdf,
 )
 from alinea_core.search.rebuild import rebuild_block_search_index
 from alinea_core.settings import CoreSettings, get_settings
@@ -145,6 +143,16 @@ _IMAGE_CONTENT_TYPES = {
     ".gif": "image/gif",
     ".svg": "image/svg+xml",
 }
+_HISTORICAL_CANDIDATE_FAILURES = [
+    {
+        "format": "unknown",
+        "code": "historical_diagnostics_unavailable",
+        "message": "candidate failure history was not recorded",
+    }
+]
+_RETRYABLE_CANDIDATE_CODES = frozenset(
+    {"network_error", "rate_limited", "upstream_5xx", "storage_error"}
+)
 
 
 @dataclass(frozen=True)
@@ -381,6 +389,8 @@ class IngestRun:
         self._pdf_text: str | None = None
         self._candidate_failures: list[dict[str, Any]] = []
         self._candidate_completeness: dict[str, Any] | None = None
+        self._candidate_storage_key: str | None = None
+        self._candidate_sha256: str | None = None
         self.style: str = "natural"
         self._settings_obj: TranslationSettings | None = None
 
@@ -529,6 +539,10 @@ class IngestRun:
             self.source_version = str(fetch_ck["source_version"])
             self.source_format = str(fetch_ck.get("source_format", "arxiv_html"))
             if self.is_pdf_upload:
+                try:
+                    await self._get_pdf_bytes()
+                except Exception as exc:
+                    raise FetchError("source_not_found", f"original pdf missing: {exc}") from exc
                 return
 
             # arXiv の再開時も原本 PDF 不変条件を再確認する。資産行が stale でも
@@ -604,11 +618,13 @@ class IngestRun:
         assets = list(
             (
                 await self.session.execute(
-                    select(SourceAsset).where(
+                    select(SourceAsset)
+                    .where(
                         SourceAsset.paper_id == self.paper_id,
                         SourceAsset.source_version.in_(compatible_versions),
                         SourceAsset.kind == "pdf",
                     )
+                    .order_by(SourceAsset.storage_key.asc(), SourceAsset.id.asc())
                 )
             )
             .scalars()
@@ -629,9 +645,9 @@ class IngestRun:
             if all(existing != key for _label, existing, _version in keys):
                 keys.append((label, key, canonical_version))
 
+        add_key("canonical", canonical_key, self.source_version)
         for asset in exact_assets:
             add_key("asset", asset.storage_key)
-        add_key("canonical", canonical_key, self.source_version)
         if self._allow_latest_pdf_alias and self.source_version != "latest":
             for asset in latest_assets:
                 add_key("latest_asset", asset.storage_key)
@@ -813,6 +829,12 @@ class IngestRun:
             raise CandidateUnavailable(
                 "latex", "network_error", "arxiv e-print request failed"
             ) from exc
+        if resp.status_code == 408:
+            raise CandidateUnavailable("latex", "network_error", "arxiv e-print request timed out")
+        if resp.status_code == 429:
+            raise CandidateUnavailable(
+                "latex", "rate_limited", "arxiv e-print request was rate limited"
+            )
         if resp.status_code == 404:
             raise CandidateUnavailable("latex", "source_not_found", "arxiv e-print returned 404")
         if resp.status_code >= 500:
@@ -837,6 +859,14 @@ class IngestRun:
             raise CandidateUnavailable(
                 "arxiv_html", "network_error", "arxiv html request failed"
             ) from exc
+        if resp.status_code == 408:
+            raise CandidateUnavailable(
+                "arxiv_html", "network_error", "arxiv html request timed out"
+            )
+        if resp.status_code == 429:
+            raise CandidateUnavailable(
+                "arxiv_html", "rate_limited", "arxiv html request was rate limited"
+            )
         if resp.status_code == 404:
             raise CandidateUnavailable("arxiv_html", "source_not_found", "arxiv html returned 404")
         if resp.status_code >= 500:
@@ -889,6 +919,178 @@ class IngestRun:
         self.latex_main_tex_name = None
         return candidate
 
+    def _set_candidate_state(
+        self,
+        candidate: SourceCandidate,
+        failures: list[dict[str, Any]],
+        *,
+        completeness: dict[str, Any] | None = None,
+    ) -> None:
+        self.source_format = candidate.source_format
+        self.content = candidate.content
+        self._candidate_failures = failures
+        self._candidate_completeness = completeness or candidate.report.as_dict()
+        if candidate.source_format != "latex":
+            self.latex_binary_files = {}
+            self.latex_main_tex_name = None
+        if isinstance(candidate.parsed, ParsedPdfDocument):
+            self.parsed = None
+            self.parsed_pdf = candidate.parsed
+        else:
+            self.parsed = candidate.parsed
+            self.parsed_pdf = None
+
+    async def _load_retained_source_bytes(
+        self,
+        *,
+        kind: str,
+        canonical_key: str,
+        source_format: str,
+        selected_key: str | None = None,
+        expected_sha256: str | None = None,
+    ) -> bytes:
+        assert self.paper_id is not None
+        assets = (
+            (
+                await self.session.execute(
+                    select(SourceAsset)
+                    .where(
+                        SourceAsset.paper_id == self.paper_id,
+                        SourceAsset.source_version == self.source_version,
+                        SourceAsset.kind == kind,
+                    )
+                    .order_by(SourceAsset.storage_key.asc(), SourceAsset.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        keys = (
+            [selected_key]
+            if selected_key is not None
+            else list(dict.fromkeys([canonical_key, *(asset.storage_key for asset in assets)]))
+        )
+        storage_failed = False
+        for key in keys:
+            try:
+                data = await self.deps.s3.get(self.deps.s3.sources_bucket, key)
+            except ClientError as exc:
+                if _is_missing_s3_object(exc):
+                    continue
+                storage_failed = True
+                continue
+            except Exception:
+                storage_failed = True
+                continue
+            if expected_sha256 is not None and hashlib.sha256(data).hexdigest() != expected_sha256:
+                raise FetchError(
+                    "storage_error",
+                    f"stored selected source digest mismatch: format={source_format}",
+                )
+            return data
+        reason = "storage_unavailable" if storage_failed else "object_missing"
+        raise FetchError(
+            "storage_error",
+            f"stored selected source unavailable: format={source_format}; reason={reason}",
+        )
+
+    async def _load_checkpoint_candidate(self, checkpoint: dict[str, Any]) -> SourceCandidate:
+        assert self.paper_id is not None
+        source_format = str(checkpoint.get("source_format") or "")
+        selected_key_value = checkpoint.get("source_storage_key")
+        selected_sha_value = checkpoint.get("source_sha256")
+        if (selected_key_value is None) != (selected_sha_value is None):
+            raise FetchError("parse_error", "parsing checkpoint has incomplete source identity")
+        if selected_key_value is not None and (
+            not isinstance(selected_key_value, str)
+            or not selected_key_value
+            or not isinstance(selected_sha_value, str)
+            or len(selected_sha_value) != 64
+            or any(char not in "0123456789abcdef" for char in selected_sha_value)
+        ):
+            raise FetchError("parse_error", "parsing checkpoint source identity is invalid")
+        selected_key = selected_key_value
+        selected_sha256 = selected_sha_value
+        canonical_keys = {
+            "latex": StorageKeys.latex_tar(self.paper_id, self.source_version),
+            "arxiv_html": StorageKeys.arxiv_html(self.paper_id, self.source_version),
+            "pdf": StorageKeys.original_pdf(self.paper_id, self.source_version),
+            "pdf_upload": StorageKeys.original_pdf(self.paper_id, self.source_version),
+        }
+        canonical_key = canonical_keys.get(source_format)
+        if selected_key is not None and selected_key != canonical_key:
+            raise FetchError("parse_error", "parsing checkpoint source key is invalid")
+        try:
+            if source_format == "latex":
+                raw = await self._load_retained_source_bytes(
+                    kind="arxiv_latex",
+                    canonical_key=canonical_keys["latex"],
+                    source_format=source_format,
+                    selected_key=selected_key,
+                    expected_sha256=selected_sha256,
+                )
+                candidate, binary_files, main_tex_name = parse_latex_candidate(
+                    raw, pdf_text=self._pdf_text_for_completeness()
+                )
+                self.latex_binary_files = binary_files
+                self.latex_main_tex_name = main_tex_name
+            elif source_format == "arxiv_html":
+                raw = await self._load_retained_source_bytes(
+                    kind="arxiv_html",
+                    canonical_key=canonical_keys["arxiv_html"],
+                    source_format=source_format,
+                    selected_key=selected_key,
+                    expected_sha256=selected_sha256,
+                )
+                candidate = parse_html_candidate(raw, pdf_text=self._pdf_text_for_completeness())
+            elif source_format in {"pdf", "pdf_upload"}:
+                raw = await self._load_retained_source_bytes(
+                    kind="pdf",
+                    canonical_key=canonical_keys[source_format],
+                    source_format=source_format,
+                    selected_key=selected_key,
+                    expected_sha256=selected_sha256,
+                )
+                self._pdf_bytes = raw
+                candidate = parse_pdf_candidate(raw, pdf_text=self._pdf_text_for_completeness())
+            else:
+                raise FetchError("parse_error", "parsing checkpoint has an invalid source format")
+        except CandidateUnavailable as exc:
+            code = "no_text_layer" if exc.code == "no_text_layer" else "parse_error"
+            raise FetchError(
+                code,
+                f"stored selected source is invalid: format={source_format}; code={exc.code}",
+            ) from exc
+
+        expected_parser = str(checkpoint.get("parser_version") or "")
+        if expected_parser and candidate.parsed.parser_version != expected_parser:
+            raise FetchError(
+                "parse_error",
+                f"stored selected source parser mismatch: format={source_format}",
+            )
+        if not candidate.report.accepted:
+            failure = {"format": candidate.source_format, **candidate.report.as_dict()}
+            raise FetchError(
+                "document_incomplete",
+                json.dumps({"candidates": [failure]}, ensure_ascii=False, sort_keys=True),
+            )
+
+        failures = [
+            dict(item)
+            for item in checkpoint.get("candidate_failures", [])
+            if isinstance(item, dict)
+        ]
+        completeness = candidate.report.as_dict()
+        stored_completeness = checkpoint.get("completeness")
+        if isinstance(stored_completeness, dict):
+            completeness.update(stored_completeness)
+        if not completeness.get("accepted"):
+            raise FetchError("document_incomplete", "stored selected source is incomplete")
+        self._set_candidate_state(candidate, failures, completeness=completeness)
+        self._candidate_storage_key = selected_key
+        self._candidate_sha256 = selected_sha256
+        return candidate
+
     async def _select_source_candidate(self) -> tuple[SourceCandidate, list[dict[str, Any]]]:
         failures: list[dict[str, Any]] = []
         http = self.deps.http
@@ -934,25 +1136,22 @@ class IngestRun:
             if owns_http:
                 await http.aclose()
 
-        raise FetchError(
-            "document_incomplete",
-            json.dumps({"candidates": failures}, ensure_ascii=False, sort_keys=True),
+        diagnostics = json.dumps({"candidates": failures}, ensure_ascii=False, sort_keys=True)
+        retryable = next(
+            (
+                str(failure.get("code"))
+                for failure in failures
+                if failure.get("code") in _RETRYABLE_CANDIDATE_CODES
+            ),
+            None,
         )
+        raise FetchError(retryable or "document_incomplete", diagnostics)
 
     async def _adopt_source_candidate(
         self, candidate: SourceCandidate, failures: list[dict[str, Any]]
     ) -> None:
         assert self.paper_id is not None and self.ref is not None
-        self.source_format = candidate.source_format
-        self.content = candidate.content
-        self._candidate_failures = failures
-        self._candidate_completeness = candidate.report.as_dict()
-        if isinstance(candidate.parsed, ParsedPdfDocument):
-            self.parsed = None
-            self.parsed_pdf = candidate.parsed
-        else:
-            self.parsed = candidate.parsed
-            self.parsed_pdf = None
+        self._set_candidate_state(candidate, failures)
 
         key: str | None = None
         kind: str | None = None
@@ -968,8 +1167,11 @@ class IngestRun:
             kind = "arxiv_html"
             content_type = "text/html; charset=utf-8"
             source_url = f"{_www_base(self.deps.settings)}/html/{self.ref.versioned}"
+        else:
+            key = StorageKeys.original_pdf(self.paper_id, self.source_version)
 
-        if key is not None and kind is not None:
+        if kind is not None:
+            assert key is not None
             try:
                 await self.deps.s3.put(
                     self.deps.s3.sources_bucket,
@@ -992,6 +1194,10 @@ class IngestRun:
                     f"candidate source retention failed: format={candidate.source_format}",
                 ) from exc
 
+        assert key is not None
+        self._candidate_storage_key = key
+        self._candidate_sha256 = hashlib.sha256(candidate.source_bytes).hexdigest()
+
         await self._log(
             "fetching",
             "info",
@@ -1013,11 +1219,13 @@ class IngestRun:
         asset = (
             (
                 await self.session.execute(
-                    select(SourceAsset).where(
+                    select(SourceAsset)
+                    .where(
                         SourceAsset.paper_id == self.paper_id,
                         SourceAsset.source_version == self.source_version,
                         SourceAsset.kind == kind,
                     )
+                    .order_by(SourceAsset.storage_key.asc(), SourceAsset.id.asc())
                 )
             )
             .scalars()
@@ -1045,93 +1253,293 @@ class IngestRun:
 
     # -- parsing + structuring -------------------------------------------
 
-    async def _find_revision(self) -> DocumentRevision | None:
+    async def _find_revision(self, *, parser_version: str | None = None) -> DocumentRevision | None:
         stmt = select(DocumentRevision).where(
             DocumentRevision.paper_id == self.paper_id,
             DocumentRevision.source_version == self.source_version,
-            DocumentRevision.parser_version == self.parser_version,
+            DocumentRevision.parser_version == (parser_version or self.parser_version),
         )
         return (await self.session.execute(stmt)).scalars().first()
 
     def _restore_revision(self, revision: DocumentRevision) -> None:
         self.source_format = revision.source_format
         self.revision_id = str(revision.id)
-        self.content = DocumentContent.model_validate(revision.content)
+        try:
+            self.content = DocumentContent.model_validate(revision.content)
+        except (TypeError, ValueError) as exc:
+            raise FetchError(
+                "parse_error", f"stored revision content is invalid: revision_id={revision.id}"
+            ) from exc
 
-    async def _restore_checkpoint_revision(self) -> bool:
-        checkpoint = self.ckpt.get("structuring")
-        revision_id = checkpoint.get("revision_id") if isinstance(checkpoint, dict) else None
-        if not revision_id:
-            return False
+    async def _checkpoint_revision(
+        self,
+    ) -> tuple[DocumentRevision, str | None] | None:
+        if "structuring" not in self.ckpt:
+            return None
+        checkpoint = self.ckpt["structuring"]
+        if not isinstance(checkpoint, dict):
+            raise FetchError("parse_error", "structuring checkpoint is not an object")
+        revision_id = checkpoint.get("revision_id")
+        if not isinstance(revision_id, str) or not revision_id:
+            raise FetchError("parse_error", "structuring checkpoint revision identity is invalid")
         revision = await self.session.get(DocumentRevision, str(revision_id))
         if (
             revision is None
             or str(revision.paper_id) != self.paper_id
             or revision.source_version != self.source_version
         ):
-            return False
+            raise FetchError("parse_error", "structuring checkpoint revision is unavailable")
+        adopt_from = checkpoint.get("adopt_from_revision_id")
+        if adopt_from is not None and not isinstance(adopt_from, str):
+            raise FetchError("parse_error", "structuring checkpoint adoption identity is invalid")
+        return revision, (str(adopt_from) if adopt_from else None)
+
+    async def _legacy_source_manifest(self, revision: DocumentRevision) -> dict[str, Any]:
+        if revision.source_format != "latex" or self.paper_id is None:
+            return {}
+        try:
+            raw = await self._load_retained_source_bytes(
+                kind="arxiv_latex",
+                canonical_key=StorageKeys.latex_tar(self.paper_id, self.source_version),
+                source_format="latex",
+            )
+            _candidate, binary_files, _main_tex = parse_latex_candidate(raw, pdf_text="")
+        except (CandidateUnavailable, FetchError):
+            return {}
+        return {"binary_files": sorted(binary_files)}
+
+    async def _ensure_revision_diagnostics(self, revision: DocumentRevision) -> None:
+        stats = dict(revision.stats or {})
+        stored_completeness = stats.get("completeness")
+        if isinstance(stored_completeness, dict) and isinstance(
+            stored_completeness.get("accepted"), bool
+        ):
+            completeness = dict(stored_completeness)
+        else:
+            assert self.content is not None
+            report = assess_document_completeness(
+                self.content,
+                pdf_text=self._pdf_text_for_completeness(),
+                source_manifest=await self._legacy_source_manifest(revision),
+            )
+            completeness = report.as_dict()
+        stored_failures = stats.get("candidate_failures")
+        if isinstance(stored_failures, list):
+            failures = [dict(item) for item in stored_failures if isinstance(item, dict)]
+        elif self._candidate_completeness is not None:
+            failures = [dict(item) for item in self._candidate_failures]
+        elif self.is_pdf_upload:
+            failures = []
+        else:
+            failures = [dict(item) for item in _HISTORICAL_CANDIDATE_FAILURES]
+        stats["candidate_failures"] = failures
+        stats["completeness"] = completeness
+        revision.stats = stats
+        await self.session.commit()
+        if not completeness.get("accepted"):
+            raise FetchError(
+                "document_incomplete",
+                json.dumps(
+                    {
+                        "revision_id": str(revision.id),
+                        "format": revision.source_format,
+                        "completeness": completeness,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+
+    async def _finalize_revision(
+        self, revision: DocumentRevision, *, adopt_from_revision_id: str | None
+    ) -> None:
         self._restore_revision(revision)
-        return True
+        await self._ensure_revision_diagnostics(revision)
+        paper = await self._get_paper()
+        paper.latest_revision_id = revision.id
+        await self.session.commit()
+        if self.payload.adopt_on_complete and adopt_from_revision_id is not None:
+            await self._reanchor_after_adopt(adopt_from_revision_id)
+        await self.store.checkpoint(
+            self.job_id,
+            "structuring",
+            {
+                "revision_id": self.revision_id,
+                "adopt_from_revision_id": adopt_from_revision_id,
+            },
+            progress=35,
+        )
 
     async def _stage_parse_and_structure(self) -> None:
-        if await self._restore_checkpoint_revision():
+        checkpoint_revision = await self._checkpoint_revision()
+        if checkpoint_revision is not None:
+            revision, adopt_from_revision_id = checkpoint_revision
+            await self._finalize_revision(revision, adopt_from_revision_id=adopt_from_revision_id)
             return
+        checkpoint_candidate: SourceCandidate | None = None
+        parse_ck: dict[str, Any] = {}
         if self.is_pdf_upload:
-            existing = await self._find_revision()
+            raw_parse_ck = self.ckpt.get("parsing")
+            if raw_parse_ck is not None and not isinstance(raw_parse_ck, dict):
+                raise FetchError("parse_error", "parsing checkpoint is not an object")
+            parse_ck = raw_parse_ck if isinstance(raw_parse_ck, dict) else {}
+            if parse_ck:
+                checkpoint_parser = parse_ck.get("parser_version")
+                if (
+                    parse_ck.get("source_format") != "pdf_upload"
+                    or not isinstance(checkpoint_parser, str)
+                    or not checkpoint_parser
+                ):
+                    raise FetchError("parse_error", "parsing checkpoint identity is invalid")
+                checkpoint_candidate = await self._load_checkpoint_candidate(parse_ck)
+                existing = await self._find_revision(parser_version=checkpoint_parser)
+            else:
+                existing = await self._find_revision()
             if existing is not None:
-                self._restore_revision(existing)
+                if existing.source_format != "pdf":
+                    raise FetchError(
+                        "parse_error", "parsing checkpoint source format does not match revision"
+                    )
+                adopt_from = parse_ck.get("adopt_from_revision_id")
+                await self._finalize_revision(
+                    existing,
+                    adopt_from_revision_id=(str(adopt_from) if adopt_from else None),
+                )
                 return
         else:
-            parse_ck = self.ckpt.get("parsing")
-            checkpoint_format = (
-                parse_ck.get("source_format") if isinstance(parse_ck, dict) else None
-            )
-            if checkpoint_format in {"latex", "arxiv_html", "pdf"}:
+            raw_parse_ck = self.ckpt.get("parsing")
+            if raw_parse_ck is not None:
+                if not isinstance(raw_parse_ck, dict):
+                    raise FetchError("parse_error", "parsing checkpoint is not an object")
+                parse_ck = raw_parse_ck
+                checkpoint_format = parse_ck.get("source_format")
+                checkpoint_parser = parse_ck.get("parser_version")
+                if (
+                    checkpoint_format not in {"latex", "arxiv_html", "pdf"}
+                    or not isinstance(checkpoint_parser, str)
+                    or not checkpoint_parser
+                ):
+                    raise FetchError("parse_error", "parsing checkpoint identity is invalid")
                 self.source_format = str(checkpoint_format)
-                existing = await self._find_revision()
+                self._candidate_failures = [
+                    dict(item)
+                    for item in parse_ck.get("candidate_failures", [])
+                    if isinstance(item, dict)
+                ]
+                checkpoint_completeness = parse_ck.get("completeness")
+                self._candidate_completeness = (
+                    dict(checkpoint_completeness)
+                    if isinstance(checkpoint_completeness, dict)
+                    else None
+                )
+                existing = await self._find_revision(parser_version=checkpoint_parser)
                 if existing is not None:
-                    self._restore_revision(existing)
+                    if existing.source_format != checkpoint_format:
+                        raise FetchError(
+                            "parse_error",
+                            "parsing checkpoint source format does not match revision",
+                        )
+                    adopt_from = parse_ck.get("adopt_from_revision_id")
+                    await self._finalize_revision(
+                        existing,
+                        adopt_from_revision_id=(str(adopt_from) if adopt_from else None),
+                    )
                     return
+                checkpoint_candidate = await self._load_checkpoint_candidate(parse_ck)
 
         await self.store.set_progress(self.job_id, 20, stage="parsing")
         await self._publish_stage("parsing", 20)
         assert self.paper_id is not None
         # adopt_on_complete(通知「変更する」経由の reingest)は新リビジョン確定後に旧リビジョンを
         # 追従させる(§4.5)。構造化前に「現在の latest」を旧リビジョンとして確定しておく。
-        old_revision_id = str((await self._get_paper()).latest_revision_id or "") or None
+        if "adopt_from_revision_id" in parse_ck:
+            checkpoint_adopt_from = parse_ck.get("adopt_from_revision_id")
+            old_revision_id = str(checkpoint_adopt_from) if checkpoint_adopt_from else None
+        else:
+            old_revision_id = str((await self._get_paper()).latest_revision_id or "") or None
         if self.is_pdf_upload:
-            data = await self._get_pdf_bytes()
-            try:
-                self.parsed_pdf = parse_pdf(data)
-            except PdfParseError as exc:
-                raise FetchError(exc.kind, exc.message) from exc
-            except Exception as exc:
-                raise FetchError("parse_error", f"pdf parse failed: {exc}") from exc
-            await self.store.checkpoint(self.job_id, "parsing", {}, progress=20)
+            upload_candidate = checkpoint_candidate
+            if upload_candidate is None:
+                data = await self._get_pdf_bytes()
+                try:
+                    upload_candidate = parse_pdf_candidate(
+                        data, pdf_text=self._pdf_text_for_completeness()
+                    )
+                except CandidateUnavailable as exc:
+                    raise FetchError(exc.code, exc.message) from exc
+                if not upload_candidate.report.accepted:
+                    raise FetchError(
+                        "document_incomplete",
+                        json.dumps(
+                            {
+                                "candidates": [
+                                    {
+                                        "format": upload_candidate.source_format,
+                                        **upload_candidate.report.as_dict(),
+                                    }
+                                ]
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                    )
+                assert isinstance(upload_candidate.parsed, ParsedPdfDocument)
+                self.parsed_pdf = upload_candidate.parsed
+                self.content = upload_candidate.content
+                self._candidate_failures = []
+                self._candidate_completeness = upload_candidate.report.as_dict()
+                self._candidate_storage_key = StorageKeys.original_pdf(
+                    self.paper_id, self.source_version
+                )
+                self._candidate_sha256 = hashlib.sha256(upload_candidate.source_bytes).hexdigest()
+                await self.store.checkpoint(
+                    self.job_id,
+                    "parsing",
+                    {
+                        "source_format": "pdf_upload",
+                        "parser_version": self.parser_version,
+                        "candidate_failures": [],
+                        "completeness": self._candidate_completeness,
+                        "adopt_from_revision_id": old_revision_id,
+                        "source_storage_key": self._candidate_storage_key,
+                        "source_sha256": self._candidate_sha256,
+                    },
+                    progress=20,
+                )
+            data = upload_candidate.source_bytes
 
             await self.store.set_progress(self.job_id, 35, stage="structuring")
             await self._publish_stage("structuring", 35)
             await self._structure_pdf(data)
-            if self.payload.adopt_on_complete and old_revision_id is not None:
-                await self._reanchor_after_adopt(old_revision_id)
-            await self.store.checkpoint(
-                self.job_id, "structuring", {"revision_id": self.revision_id}, progress=35
-            )
+            assert self.revision_id is not None
+            created_revision = await self.session.get(DocumentRevision, self.revision_id)
+            assert created_revision is not None
+            await self._finalize_revision(created_revision, adopt_from_revision_id=old_revision_id)
             return
 
         # arXiv: LaTeX → HTML → retained original PDF の順に完全性を評価する。
-        candidate, failures = await self._select_source_candidate()
-        await self._adopt_source_candidate(candidate, failures)
-        existing = await self._find_revision()
-        if existing is not None:
-            self._restore_revision(existing)
-            return
-        await self.store.checkpoint(
-            self.job_id,
-            "parsing",
-            {"source_format": self.source_format, "parser_version": self.parser_version},
-            progress=20,
-        )
+        candidate = checkpoint_candidate
+        if candidate is None:
+            candidate, failures = await self._select_source_candidate()
+            await self._adopt_source_candidate(candidate, failures)
+            await self.store.checkpoint(
+                self.job_id,
+                "parsing",
+                {
+                    "source_format": self.source_format,
+                    "parser_version": self.parser_version,
+                    "candidate_failures": self._candidate_failures,
+                    "completeness": self._candidate_completeness,
+                    "adopt_from_revision_id": old_revision_id,
+                    "source_storage_key": self._candidate_storage_key,
+                    "source_sha256": self._candidate_sha256,
+                },
+                progress=20,
+            )
+            existing = await self._find_revision()
+            if existing is not None:
+                await self._finalize_revision(existing, adopt_from_revision_id=old_revision_id)
+                return
 
         # structuring: リビジョン永続化・図保存・検索索引・サムネイル。
         await self.store.set_progress(self.job_id, 35, stage="structuring")
@@ -1140,11 +1548,10 @@ class IngestRun:
             await self._structure_pdf(candidate.source_bytes)
         else:
             await self._structure()
-        if self.payload.adopt_on_complete and old_revision_id is not None:
-            await self._reanchor_after_adopt(old_revision_id)
-        await self.store.checkpoint(
-            self.job_id, "structuring", {"revision_id": self.revision_id}, progress=35
-        )
+        assert self.revision_id is not None
+        created_revision = await self.session.get(DocumentRevision, self.revision_id)
+        assert created_revision is not None
+        await self._finalize_revision(created_revision, adopt_from_revision_id=old_revision_id)
 
     async def _structure(self) -> None:
         assert self.parsed is not None and self.paper_id is not None
@@ -1182,7 +1589,6 @@ class IngestRun:
         self.content = content
 
         paper = await self._get_paper()
-        paper.latest_revision_id = revision.id
         figure_bytes, fig_warnings = await self._save_figures(self.revision_id)
         warnings.extend(fig_warnings)
         content = self.parsed.to_document_content()
@@ -1298,9 +1704,8 @@ class IngestRun:
         scope = compute_translation_scope(content)
         stats: dict[str, Any] = dict(self.parsed_pdf.stats)
         stats["translatable_blocks"] = len(scope.in_scope_block_ids)
-        if not self.is_pdf_upload:
-            stats["candidate_failures"] = self._candidate_failures
-            stats["completeness"] = self._candidate_completeness
+        stats["candidate_failures"] = self._candidate_failures
+        stats["completeness"] = self._candidate_completeness
 
         revision = DocumentRevision(
             paper_id=self.paper_id,
@@ -1323,7 +1728,6 @@ class IngestRun:
         self.content = content
 
         paper = await self._get_paper()
-        paper.latest_revision_id = revision.id
         abstract_text = _extract_pdf_abstract(content)
         if abstract_text and not paper.abstract:
             paper.abstract = abstract_text
