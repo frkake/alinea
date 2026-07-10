@@ -41,7 +41,8 @@ from alinea_core.parsing.pdf_parser import PARSER_VERSION as PDF_PARSER_VERSION
 from alinea_core.settings import CoreSettings
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from alinea_llm.router import LLMRouter
-from alinea_worker.pipeline import IngestRun, _html_figure_asset_url, run_ingest
+from alinea_worker.figure_assets import html_asset_url
+from alinea_worker.pipeline import IngestRun, run_ingest
 from alinea_worker.source_candidates import embedded_pdf_bytes, parse_html_candidate
 from alinea_worker.tasks.ingest import ingest_paper
 from sqlalchemy import select
@@ -57,6 +58,7 @@ from starlette.routing import Route
 
 _LATEX_MAIN_TEX = (
     "\\documentclass{article}\n"
+    "\\graphicspath{{../images/}}\n"
     "\\begin{document}\n"
     "\\section{Introduction}\n"
     "\\label{sec:intro}\n"
@@ -66,7 +68,7 @@ _LATEX_MAIN_TEX = (
     "E = mc^2\n"
     "\\end{equation}\n"
     "\\begin{figure}\n"
-    "\\includegraphics{mock-figure.pdf}\n"
+    "\\includegraphics{mock-figure}\n"
     "\\caption{A mock figure for asset persistence.}\n"
     "\\label{fig:mock}\n"
     "\\end{figure}\n"
@@ -89,12 +91,12 @@ def _build_latex_archive() -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
         data = _LATEX_MAIN_TEX.encode()
-        info = tarfile.TarInfo(name="main.tex")
+        info = tarfile.TarInfo(name="paper/main.tex")
         info.size = len(data)
         info.mtime = 0
         tar.addfile(info, io.BytesIO(data))
         fig = _tiny_pdf_figure()
-        fig_info = tarfile.TarInfo(name="mock-figure.pdf")
+        fig_info = tarfile.TarInfo(name="images/mock-figure.pdf")
         fig_info.size = len(fig)
         fig_info.mtime = 0
         tar.addfile(fig_info, io.BytesIO(fig))
@@ -598,7 +600,7 @@ def test_html_figure_asset_url_does_not_duplicate_version_prefix() -> None:
     ref = normalize_arxiv_id("2607.02963v1")
     settings = CoreSettings(alinea_arxiv_base_url="https://arxiv.org")
 
-    url = _html_figure_asset_url(settings, ref, "2607.02963v1/x1.png")
+    url = html_asset_url(settings.alinea_arxiv_base_url, ref.versioned, "2607.02963v1/x1.png")
 
     assert url == "https://arxiv.org/html/2607.02963v1/x1.png"
 
@@ -642,6 +644,9 @@ async def test_ingest_prefers_latex_source_when_available(
     assert rev.quality_level == "A"
     assert rev.stats["candidate_failures"] == []
     assert rev.stats["completeness"]["accepted"] is True
+    assert rev.stats["figure_asset_failures"] == []
+    assert rev.stats["latex_source"]["main_tex"] == "paper/main.tex"
+    assert rev.stats["latex_source"]["graphicspaths"] == ["../images/"]
     content = DocumentContent.model_validate(rev.content)
     fig = next(block for _sec, block in content.iter_blocks() if block.type == "figure")
     assert fig.asset_key is not None

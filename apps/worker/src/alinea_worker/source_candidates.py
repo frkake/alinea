@@ -20,6 +20,8 @@ from alinea_core.parsing.latex_parser import (
 from alinea_core.parsing.pdf_parser import ParsedPdfDocument, PdfParseError, parse_pdf
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 
+from alinea_worker.figure_assets import extract_graphicspaths
+
 _LATEX_CANDIDATE_MESSAGES = {
     "empty_archive": "e-print archive is empty",
     "no_main_tex": "no .tex content found in e-print archive",
@@ -39,6 +41,7 @@ class SourceCandidate:
     report: DocumentCompleteness
     source_bytes: bytes
     diagnostics: list[dict[str, Any]]
+    graphicspaths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -123,6 +126,7 @@ def parse_latex_candidate(
         report=report,
         source_bytes=source_bytes,
         diagnostics=[],
+        graphicspaths=extract_graphicspaths(extracted.text_files, main_tex_name),
     )
     return candidate, extracted.binary_files, main_tex_name
 
