@@ -153,7 +153,10 @@ async def test_ingest_full_pipeline_reaches_complete(
     assert paper.title == "Mock Rectified Flow"
     assert paper.license == "cc-by-4.0"
     assert paper.abstract_ja
-    assert paper.summary_lines and len(paper.summary_lines) == 3
+    assert paper.summary_lines is not None
+    summary_items = [line.split(": ", 1) for line in paper.summary_lines]
+    assert [item[0] for item in summary_items] == ["課題", "提案", "仕組み", "検証", "結果"]
+    assert all(len(item) == 2 and item[1] for item in summary_items)
     assert paper.thumbnail_key  # Figure 1 からサムネイル生成
     li = await db_session.get(LibraryItem, ids["library_item_id"])
     assert li is not None

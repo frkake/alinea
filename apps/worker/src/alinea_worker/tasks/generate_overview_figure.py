@@ -253,15 +253,19 @@ _HEADINGS_EN_SCHEMA = _JsonSchemaSpec(
 
 
 def build_overview_raster_prompt(headings_en: tuple[str, str, str]) -> str:
-    """§5.5: §6.2 の共通プリアンブル(``EXPLAINER_STYLE_PREAMBLE``)を再利用する。"""
+    """§5.5: 共通スタイルを再利用しつつ、概要図の文字なし契約を優先する。"""
     from alinea_worker.tasks.generate_explainer_figure import EXPLAINER_STYLE_PREAMBLE
 
+    text_constraint = (
+        "Overview-specific constraint: Strictly NO text, NO letters, NO digits, NO formulas, "
+        "NO labels, NO watermarks, NO logos. The SVG and caption carry all wording."
+    )
     concept = (
         f"Concept: a three-stage flow diagram showing (1) {headings_en[0]}, "
         f"(2) {headings_en[1]}, (3) {headings_en[2]}, connected left to right by arrows. "
         "Abstract shapes only."
     )
-    return f"{EXPLAINER_STYLE_PREAMBLE}\n\n{concept}"
+    return f"{EXPLAINER_STYLE_PREAMBLE}\n{text_constraint}\n\n{concept}"
 
 
 async def _translate_headings_en(
