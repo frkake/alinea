@@ -1365,7 +1365,7 @@ class IngestRun:
 
     async def _adopt_source_candidate(
         self, candidate: SourceCandidate, failures: list[dict[str, Any]]
-    ) -> None:
+    ) -> str | None:
         assert self.paper_id is not None and self.ref is not None
         self._set_candidate_state(candidate, failures)
         embedded_pdf = _embedded_pdf_identity(self._candidate_diagnostics)
@@ -1392,8 +1392,16 @@ class IngestRun:
         else:
             key = StorageKeys.original_pdf(self.paper_id, self.source_version)
 
+        assert key is not None
+        self._candidate_storage_key = key
+        self._candidate_sha256 = hashlib.sha256(retained_bytes).hexdigest()
+        existing = await self._find_revision()
+        existing_revision_id: str | None = None
+        if existing is not None:
+            self._validate_revision_candidate_provenance(existing)
+            existing_revision_id = str(existing.id)
+
         if kind is not None:
-            assert key is not None
             try:
                 await self.deps.s3.put(
                     self.deps.s3.sources_bucket,
@@ -1416,10 +1424,6 @@ class IngestRun:
                     f"candidate source retention failed: format={candidate.source_format}",
                 ) from exc
 
-        assert key is not None
-        self._candidate_storage_key = key
-        self._candidate_sha256 = hashlib.sha256(retained_bytes).hexdigest()
-
         await self._log(
             "fetching",
             "info",
@@ -1427,6 +1431,7 @@ class IngestRun:
             detail={"format": candidate.source_format, "bytes": len(candidate.source_bytes)},
             timeline=True,
         )
+        return existing_revision_id
 
     async def _record_source_asset(
         self,
@@ -1593,10 +1598,63 @@ class IngestRun:
             progress=35,
         )
 
+    async def _restore_structuring_checkpoint_candidate(self, revision: DocumentRevision) -> None:
+        assert self.paper_id is not None
+        stats = revision.stats if isinstance(revision.stats, dict) else {}
+        revision_has_embedded_provenance = any(
+            key in stats for key in _EMBEDDED_PDF_PROVENANCE_KEYS
+        )
+        raw_parse_ck = self.ckpt.get("parsing")
+        if raw_parse_ck is None:
+            if revision_has_embedded_provenance:
+                raise FetchError(
+                    "parse_error", "embedded revision parsing checkpoint is unavailable"
+                )
+            return
+        if not isinstance(raw_parse_ck, dict):
+            if revision_has_embedded_provenance:
+                raise FetchError("parse_error", "parsing checkpoint is not an object")
+            return
+        raw_diagnostics = raw_parse_ck.get("candidate_diagnostics", [])
+        checkpoint_has_embedded_provenance = isinstance(raw_diagnostics, list) and any(
+            isinstance(item, dict)
+            and (
+                item.get("kind") == "embedded_pdf"
+                or "embedded_pdf_source" in item
+                or "embedded_pdf_sha256" in item
+            )
+            for item in raw_diagnostics
+        )
+        checkpoint_has_embedded_provenance = checkpoint_has_embedded_provenance or (
+            raw_parse_ck.get("source_format") == "pdf"
+            and raw_parse_ck.get("source_storage_key")
+            == StorageKeys.latex_tar(self.paper_id, self.source_version)
+        )
+        if not revision_has_embedded_provenance and not checkpoint_has_embedded_provenance:
+            return
+
+        checkpoint_format = raw_parse_ck.get("source_format")
+        checkpoint_parser = raw_parse_ck.get("parser_version")
+        if (
+            checkpoint_format != revision.source_format
+            or checkpoint_parser != revision.parser_version
+        ):
+            raise FetchError(
+                "parse_error", "parsing checkpoint source does not match revision identity"
+            )
+        self.source_format = str(checkpoint_format)
+        self._candidate_provenance_validation_required = True
+        self._candidate_failures = self._checkpoint_candidate_failures(raw_parse_ck)
+        self._candidate_diagnostics = self._checkpoint_candidate_diagnostics(raw_parse_ck)
+        if _embedded_pdf_identity(self._candidate_diagnostics) is None:
+            raise FetchError("parse_error", "embedded parsing checkpoint identity is incomplete")
+        await self._load_checkpoint_candidate(raw_parse_ck)
+
     async def _stage_parse_and_structure(self) -> None:
         checkpoint_revision = await self._checkpoint_revision()
         if checkpoint_revision is not None:
             revision, adopt_from_revision_id = checkpoint_revision
+            await self._restore_structuring_checkpoint_candidate(revision)
             await self._finalize_revision(revision, adopt_from_revision_id=adopt_from_revision_id)
             return
         checkpoint_candidate: SourceCandidate | None = None
@@ -1746,7 +1804,7 @@ class IngestRun:
         candidate = checkpoint_candidate
         if candidate is None:
             candidate, failures = await self._select_source_candidate()
-            await self._adopt_source_candidate(candidate, failures)
+            existing_revision_id = await self._adopt_source_candidate(candidate, failures)
             await self.store.checkpoint(
                 self.job_id,
                 "parsing",
@@ -1762,8 +1820,10 @@ class IngestRun:
                 },
                 progress=20,
             )
-            existing = await self._find_revision()
-            if existing is not None:
+            if existing_revision_id is not None:
+                existing = await self.session.get(DocumentRevision, existing_revision_id)
+                if existing is None:
+                    raise FetchError("parse_error", "selected existing revision is unavailable")
                 await self._finalize_revision(existing, adopt_from_revision_id=old_revision_id)
                 return
 
