@@ -79,8 +79,9 @@ def assess_document_completeness(
         if isinstance(name, str) and name.lower().endswith(".pdf")
     }
 
-    visible_reference = PurePosixPath(visible).name
-    if len(visible_blocks) <= 3 and visible_reference in binary_pdfs:
+    if 0 < len(visible_blocks) <= 3 and all(
+        PurePosixPath(plain).name in binary_pdfs for _block, plain in visible_blocks
+    ):
         return report(False, "embedded_pdf_wrapper")
     if unresolved_figures > 0:
         return report(False, "figure_asset_unresolved")

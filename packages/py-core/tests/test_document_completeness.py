@@ -66,6 +66,34 @@ def test_rejects_normalized_embedded_pdf_reference(reference: str) -> None:
     assert report.code == "embedded_pdf_wrapper"
 
 
+def test_substantive_prose_before_pdf_reference_is_not_a_wrapper() -> None:
+    report = assess_document_completeness(
+        _doc(
+            _text_block("p1", "paragraph", "Substantive introduction."),
+            _text_block("p2", "paragraph", "papers/body.pdf"),
+        ),
+        pdf_text="",
+        source_manifest={"binary_files": ["nested/body.pdf"]},
+    )
+
+    assert report.code != "embedded_pdf_wrapper"
+    assert report.accepted
+
+
+def test_meaningful_heading_before_pdf_reference_is_not_a_wrapper() -> None:
+    report = assess_document_completeness(
+        _doc(
+            Block(id="h1", type="heading", level=1, title="Supplemental material"),
+            _text_block("p1", "paragraph", "papers/body.pdf"),
+        ),
+        pdf_text="",
+        source_manifest={"binary_files": ["nested/body.pdf"]},
+    )
+
+    assert report.code != "embedded_pdf_wrapper"
+    assert report.accepted
+
+
 def test_empty_parser_blocks_do_not_hide_embedded_pdf_wrapper() -> None:
     report = assess_document_completeness(
         _doc(
