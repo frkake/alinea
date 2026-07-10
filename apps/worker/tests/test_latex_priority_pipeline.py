@@ -1,7 +1,7 @@
 """M2-01: arXiv 取り込みの取得優先順位 LaTeX > HTML > PDF(plans/05 §1.3・§5)。
 
 - LaTeX ソース(e-print)が取得・解析できる場合、品質 A・`source_format='latex'`・
-  `parser_version='latex-1.0.0'` で構造化され、HTML 取得(SourceAsset kind='arxiv_html')は
+  `parser_version='latex-1.1.0'` で構造化され、HTML 取得(SourceAsset kind='arxiv_html')は
   行われない(優先順位の主経路化)。
 - LaTeX の取得/解析に失敗した場合は既存の HTML 経路へ**可視的に**フォールバックする
   (`jobs.log` に warn を記録。P3)。
@@ -267,7 +267,7 @@ async def test_ingest_prefers_latex_source_when_available(
         .one()
     )
     assert rev.source_format == "latex"
-    assert rev.parser_version == "latex-1.0.0"
+    assert rev.parser_version == "latex-1.1.0"
     assert rev.quality_level == "A"
     content = DocumentContent.model_validate(rev.content)
     fig = next(block for _sec, block in content.iter_blocks() if block.type == "figure")

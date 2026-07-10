@@ -31,6 +31,8 @@ function unwrapKnownCommands(value: string): string {
   for (let i = 0; i < 6; i += 1) {
     const prev = next;
     next = next
+      .replace(/\\href\{[^{}]*\}\{([^{}]*)\}/g, "$1")
+      .replace(/\\(?:url|doi)\{([^{}]*)\}/g, "$1")
       .replace(/\\mybox(?:\[[^\]]*])?\{[^{}]*\}\{([^{}]*)\}/g, "$1")
       .replace(
         /\\(?:textbf|textit|texttt|emph|mathrm|mathbf|mathit|operatorname|textsuperscript|textsubscript|underline|textsc|text)\{([^{}]*)\}/g,

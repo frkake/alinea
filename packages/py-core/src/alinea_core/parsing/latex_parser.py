@@ -11,7 +11,7 @@ gzip(1 ファイル投稿の arXiv 慣習)。メインファイルは `\\documen
 
 `\\input`/`\\include` を再帰展開し、`\\bibliography{...}` は同梱 `.bbl` があれば埋め込む。
 出力は `alinea_core.parsing.html_parser.ParsedDocument`(既存 IR を再利用。重複定義しない)
-で `quality_level="A"`, `source_format="latex"`, `parser_version="latex-1.0.0"`。
+で `quality_level="A"`, `source_format="latex"`, `parser_version="latex-1.1.0"`。
 
 相互参照(`\\ref`/`\\eqref`)は 2 パスで解決する: 1 パス目で全ブロックを構築しつつ `\\label` を
 label→kind map に記録し、2 パス目で保留中の `ref` インラインへ `kind` を確定する(HTML パーサの
@@ -25,6 +25,7 @@ import gzip
 import io
 import re
 import tarfile
+from dataclasses import dataclass
 from typing import Any
 
 from alinea_core.document.blocks import Block, Section, SectionHeading
@@ -32,7 +33,7 @@ from alinea_core.document.inlines import Inline
 from alinea_core.parsing.block_ids import assign_block_ids
 from alinea_core.parsing.html_parser import ParsedDocument
 
-PARSER_VERSION = "latex-1.0.0"
+PARSER_VERSION = "latex-1.1.0"
 
 _WS = re.compile(r"\s+")
 
@@ -619,6 +620,135 @@ def _strip_setup_commands(text: str) -> str:
 
 
 # ============================================================================
+# 文書固有マクロ
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class _MacroDefinition:
+    """本文抽出に必要な範囲へ縮約した LaTeX マクロ定義。"""
+
+    arg_count: int
+    body: str
+    optional_default: str | None = None
+
+
+_NEWCOMMAND_RE = re.compile(
+    r"\\(newcommand|renewcommand|providecommand|DeclareRobustCommand)\*?(?![A-Za-z])"
+)
+_DEF_RE = re.compile(r"\\(?:def|gdef|edef|xdef)\s*\\([A-Za-z@]+)")
+_MACRO_NAME_RE = re.compile(r"\\([A-Za-z@]+)\*?")
+_PARAMETER_RE = re.compile(r"#([1-9])")
+
+
+def _skip_space(text: str, pos: int) -> int:
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    return pos
+
+
+def _read_square(text: str, open_pos: int) -> tuple[str, int] | None:
+    end = _matching_square(text, open_pos)
+    if end is None:
+        return None
+    return text[open_pos + 1 : end], end + 1
+
+
+def _parse_newcommand_definition(
+    text: str, match: re.Match[str]
+) -> tuple[str, _MacroDefinition, int] | None:
+    i = _skip_space(text, match.end())
+    if i >= len(text):
+        return None
+
+    if text[i] == "{":
+        try:
+            raw_name, i = _read_braced(text, i)
+        except LatexParseError:
+            return None
+        name_match = _MACRO_NAME_RE.fullmatch(raw_name.strip())
+    else:
+        name_match = _MACRO_NAME_RE.match(text, i)
+        if name_match is not None:
+            i = name_match.end()
+    if name_match is None:
+        return None
+    name = name_match.group(1)
+
+    i = _skip_space(text, i)
+    arg_count = 0
+    optional_default: str | None = None
+    if i < len(text) and text[i] == "[":
+        count_group = _read_square(text, i)
+        if count_group is None:
+            return None
+        count_raw, i = count_group
+        if count_raw.strip().isdigit():
+            arg_count = int(count_raw.strip())
+            i = _skip_space(text, i)
+            if i < len(text) and text[i] == "[":
+                default_group = _read_square(text, i)
+                if default_group is None:
+                    return None
+                optional_default, i = default_group
+
+    i = _skip_space(text, i)
+    if i >= len(text) or text[i] != "{":
+        return None
+    try:
+        body, end = _read_braced(text, i)
+    except LatexParseError:
+        return None
+    return name, _MacroDefinition(arg_count, body, optional_default), end
+
+
+def _parse_def_definition(
+    text: str, match: re.Match[str]
+) -> tuple[str, _MacroDefinition, int] | None:
+    name = match.group(1)
+    open_pos = text.find("{", match.end())
+    if open_pos == -1:
+        return None
+    params = text[match.end() : open_pos]
+    arg_count = max((int(m.group(1)) for m in _PARAMETER_RE.finditer(params)), default=0)
+    try:
+        body, end = _read_braced(text, open_pos)
+    except LatexParseError:
+        return None
+    return name, _MacroDefinition(arg_count, body), end
+
+
+def _collect_macro_definitions(texts: list[str]) -> dict[str, _MacroDefinition]:
+    """class/style と本文から、表示語を作るユーザーマクロを順序どおり収集する。
+
+    完全な TeX 展開器ではなく、本文で頻出する ``newcommand`` / ``def`` の位置引数だけを
+    扱う。未使用のレイアウト用マクロも表には入るが、呼び出されない限り表示へ影響しない。
+    """
+
+    definitions: dict[str, _MacroDefinition] = {}
+    for text in texts:
+        matches: list[tuple[int, re.Match[str], str]] = [
+            (m.start(), m, "new") for m in _NEWCOMMAND_RE.finditer(text)
+        ]
+        matches.extend((m.start(), m, "def") for m in _DEF_RE.finditer(text))
+        matches.sort(key=lambda item: item[0])
+        for _start, match, kind in matches:
+            parsed = (
+                _parse_newcommand_definition(text, match)
+                if kind == "new"
+                else _parse_def_definition(text, match)
+            )
+            if parsed is None:
+                continue
+            name, definition, _end = parsed
+            command = match.group(1) if kind == "new" else "def"
+            if command == "providecommand" and name in definitions:
+                continue
+            definitions[name] = definition
+    return definitions
+
+
+# ============================================================================
 # 汎用ブレース/環境スキャナ
 # ============================================================================
 
@@ -705,12 +835,100 @@ def _read_environment(text: str, start: int, name: str) -> tuple[str, int]:
 
 
 # 最上位走査の候補(文書順で最早マッチを選ぶ)。
-_SECTION_RE = re.compile(r"\\(section|subsection|subsubsection)(\*)?\{")
+_SECTION_RE = re.compile(r"\\(section|subsection|subsubsection)(\*)?(?![A-Za-z])")
 _BEGIN_RE = re.compile(r"\\begin\{([a-zA-Z]+\*?)\}")
-_APPENDIX_RE = re.compile(r"\\appendix\b")
+_APPENDIX_RE = re.compile(r"\\(?:appendix|beginappendix)\b")
 _LABEL_AFTER_RE = re.compile(r"\s*\\label\{([^}]*)\}")
 
 _LEVEL_OF = {"section": 1, "subsection": 2, "subsubsection": 3}
+
+
+def _read_section_title(text: str, pos: int) -> tuple[str, int] | None:
+    """節コマンド直後の任意の短縮題 ``[...]`` と本題 ``{...}`` を読む。"""
+
+    i = _skip_space(text, pos)
+    if i < len(text) and text[i] == "[":
+        short = _read_square(text, i)
+        if short is None:
+            return None
+        _short_title, i = short
+        i = _skip_space(text, i)
+    if i >= len(text) or text[i] != "{":
+        return None
+    return _read_braced(text, i)
+
+
+def _environment_prefix(
+    inner: str, *, required_args: int = 0
+) -> tuple[list[str], list[str], str]:
+    """環境本体先頭の ``[...]`` と既知個数の ``{...}`` 引数を本文から分離する。"""
+
+    i = _skip_space(inner, 0)
+    options: list[str] = []
+    while i < len(inner) and inner[i] == "[":
+        group = _read_square(inner, i)
+        if group is None:
+            break
+        value, i = group
+        options.append(value)
+        i = _skip_space(inner, i)
+
+    arguments: list[str] = []
+    for _ in range(required_args):
+        if i >= len(inner) or inner[i] != "{":
+            break
+        value, i = _read_braced(inner, i)
+        arguments.append(value)
+        i = _skip_space(inner, i)
+    return options, arguments, inner[i:]
+
+
+def _split_option_list(raw: str) -> list[str]:
+    """tcolorbox 等のオプションを波括弧内のカンマを壊さず分割する。"""
+
+    out: list[str] = []
+    start = 0
+    curly = 0
+    square = 0
+    escaped = False
+    for i, char in enumerate(raw):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == "{":
+            curly += 1
+        elif char == "}":
+            curly = max(0, curly - 1)
+        elif char == "[":
+            square += 1
+        elif char == "]":
+            square = max(0, square - 1)
+        elif char == "," and curly == 0 and square == 0:
+            out.append(raw[start:i].strip())
+            start = i + 1
+    out.append(raw[start:].strip())
+    return [part for part in out if part]
+
+
+def _environment_option(options: list[str], key: str) -> str | None:
+    for option_group in options:
+        for item in _split_option_list(option_group):
+            name, separator, value = item.partition("=")
+            if not separator or name.strip() != key:
+                continue
+            clean = value.strip()
+            if clean.startswith("{"):
+                try:
+                    unwrapped, end = _read_braced(clean, 0)
+                except LatexParseError:
+                    return clean
+                if not clean[end:].strip():
+                    return unwrapped
+            return clean
+    return None
 
 
 def _iter_top_level(text: str) -> list[tuple[Any, ...]]:
@@ -740,7 +958,11 @@ def _iter_top_level(text: str) -> list[tuple[Any, ...]]:
         if m is m_sec:
             level = _LEVEL_OF[m.group(1)]
             starred = m.group(2) == "*"
-            title_raw, end = _read_braced(text, m.end() - 1)
+            title_group = _read_section_title(text, m.end())
+            if title_group is None:
+                i = m.end()
+                continue
+            title_raw, end = title_group
             label: str | None = None
             lm = _LABEL_AFTER_RE.match(text, end)
             if lm:
@@ -801,7 +1023,12 @@ def _structure_reference(raw: str) -> dict[str, str] | None:
     return out or None
 
 
-_CMD_WITH_ARG_RE = re.compile(r"\\(?:emph|textit|textbf|textsc|texttt|uline)\{([^{}]*)\}")
+_CMD_WITH_ARG_RE = re.compile(
+    r"\\(?:emph|textit|textbf|textsc|texttt|uline|underline|textrm|textsf|textnormal)"
+    r"\{([^{}]*)\}"
+)
+_URL_WITH_ARG_RE = re.compile(r"\\(?:url|doi)\{([^{}]*)\}")
+_HREF_RE = re.compile(r"\\href\{[^{}]*\}\{([^{}]*)\}")
 _BARE_CMD_RE = re.compile(r"\\[a-zA-Z]+\*?")
 
 
@@ -811,10 +1038,14 @@ def _strip_markup(text: str) -> str:
     out = text
     while prev != out:
         prev = out
+        out = _HREF_RE.sub(r"\1", out)
+        out = _URL_WITH_ARG_RE.sub(r"\1", out)
         out = _CMD_WITH_ARG_RE.sub(r"\1", out)
     out = out.replace("~", " ")
     out = out.replace("\\\\", " ").replace("\\ ", " ")
+    out = out.replace("\\&", "&").replace("\\_", "_").replace("\\%", "%")
     out = _BARE_CMD_RE.sub(" ", out)
+    out = out.replace("{", "").replace("}", "")
     return _collapse(out)
 
 
@@ -846,7 +1077,10 @@ def _merge_text(inlines: list[Inline]) -> list[Inline]:
 
 def _append_text(out: list[Inline], raw: str) -> None:
     if raw.strip():
-        out.append(Inline(t="text", v=_WS.sub(" ", raw)))
+        # TeX の本文用引用符・ダッシュはソース記号ではなく表示文字へ正規化する。
+        normalized = raw.replace("``", "“").replace("''", "”")
+        normalized = normalized.replace("---", "\u2014").replace("--", "\u2013")
+        out.append(Inline(t="text", v=_WS.sub(" ", normalized)))
     elif raw:
         out.append(Inline(t="text", v=" "))
 
@@ -883,7 +1117,50 @@ _NO_OUTPUT_CMDS = {
     "textstyle",
     "scriptstyle",
     "scriptscriptstyle",
+    "FloatBarrier",
+    "raggedleft",
+    "raggedright",
+    "sloppy",
+    "fussy",
+    "itshape",
+    "upshape",
+    "bfseries",
+    "mdseries",
+    "rmfamily",
+    "sffamily",
+    "ttfamily",
+    "tiny",
+    "scriptsize",
+    "footnotesize",
+    "small",
+    "normalsize",
+    "large",
+    "Large",
+    "LARGE",
+    "huge",
+    "Huge",
+    "protect",
+    "unskip",
 }
+_DISCARD_ARGUMENT_CMDS = {
+    "vspace": 1,
+    "hspace": 1,
+    "addvspace": 1,
+    "enlargethispage": 1,
+    "setlength": 2,
+    "addtolength": 2,
+    "setcounter": 2,
+    "addtocounter": 2,
+    "Needspace": 1,
+    "needspace": 1,
+    "color": 1,
+    "pagecolor": 1,
+    "thispagestyle": 1,
+    "pagestyle": 1,
+    "begin": 1,
+    "end": 1,
+}
+_DISCARD_DIMENSION_CMDS = {"kern", "hskip", "vskip"}
 _SPACE_CMDS = {"quad", "qquad"}
 _SYMBOL_CMDS = {
     "LaTeX": "LaTeX",
@@ -894,10 +1171,12 @@ _SYMBOL_CMDS = {
     "ldots": "...",
     "cdots": "...",
     "dots": "...",
+    "checkmark": "✓",
+    "times": "\u00d7",
 }
 
 _SPECIAL_RE = re.compile(
-    r"\$|\\\(|\\\)|\\\[|\\\]|\\\\|\\\s|\\[A-Za-z]+\*?|\\[%&_#{}$~^]|~"
+    r"\$|\\\(|\\\)|\\\[|\\\]|\\\\|\\\s|\\[A-Za-z]+\*?|\\[%&_#{}$~^]|~|[{}]"
 )
 _BIBITEM_RE = re.compile(r"\\bibitem(?:\[([^\]]*)\])?\{([^}]+)\}")
 _INCLUDEGRAPHICS_RE = re.compile(r"\\includegraphics\*?(?:\[[^\]]*\])?\{([^}]+)\}")
@@ -948,7 +1227,7 @@ def _extract_bibliography(text: str) -> tuple[str, str | None]:
 class _LatexParser:
     """1 回のパースの状態(ラベル解決・脚注・warnings)を保持する。"""
 
-    def __init__(self) -> None:
+    def __init__(self, macros: dict[str, _MacroDefinition] | None = None) -> None:
         self.warnings: list[str] = []
         self._fn_counter = 0
         self._fn_stack: list[list[Block]] = []
@@ -958,6 +1237,8 @@ class _LatexParser:
         self._level_counters = [0, 0, 0]
         self._theorem_counters: dict[str, int] = {}
         self._anon_counter = 0
+        self._macros = macros or {}
+        self._macro_stack: list[str] = []
 
     # -- 数式番号 -----------------------------------------------------------
 
@@ -1111,10 +1392,35 @@ class _LatexParser:
             return _build_bibliography_blocks(inner)
         if base == "abstract":
             return []  # papers.abstract が正(html パーサと同方針)
+        if base == "tcolorbox":
+            options, _arguments, content = _environment_prefix(inner)
+            blocks = self._flatten_env(content)
+            title = _environment_option(options, "title")
+            if title:
+                title_text = _flatten_plain(self._parse_inline(title))
+                if title_text:
+                    blocks.insert(
+                        0,
+                        Block(
+                            id="",
+                            type="paragraph",
+                            inlines=[Inline(t="emphasis", v=title_text)],
+                        ),
+                    )
+            return blocks
         if base in ("center", "flushleft", "flushright", "minipage", "small", "footnotesize"):
-            return self._flatten_env(inner)
-        # 未知 env: 段落として受理する(壊れた訳を見せないための安全側。P3)
-        return self._paragraphs(inner)
+            required_args = 1 if base == "minipage" else 0
+            _options, _arguments, content = _environment_prefix(
+                inner, required_args=required_args
+            )
+            return self._flatten_env(content)
+        if base == "multicols":
+            _options, _arguments, content = _environment_prefix(inner, required_args=1)
+            return self._flatten_env(content)
+        # 未知 env は設定オプションを表示しない。段落境界はソース対応(PDF 差し替え)のため
+        # 維持し、入れ子の begin/end はインライン側で不可視化する。
+        _options, _arguments, content = _environment_prefix(inner)
+        return self._paragraphs(content)
 
     def _paragraphs(self, raw: str) -> list[Block]:
         out: list[Block] = []
@@ -1174,7 +1480,7 @@ class _LatexParser:
         if m_tab:
             try:
                 _inner, end = _read_environment(inner, m_tab.end(), m_tab.group(1))
-                raw = inner[m_tab.start() : end]
+                raw = self._expand_macros_in_raw(inner[m_tab.start() : end])
             except LatexParseError:
                 raw = None
         caption_inlines: list[Inline] = []
@@ -1229,11 +1535,11 @@ class _LatexParser:
             raw_caption, end = _read_braced(text, m_cap.end() - 1)
             caption_inlines = self._parse_inline(raw_caption)
             text = text[: m_cap.start()] + text[end:]
-        body_text = _collapse(text)
+        body_inlines = self._parse_inline(text)
         blk = Block(
             id="",
             type="algorithm",
-            inlines=[Inline(t="text", v=body_text)] if body_text else [],
+            inlines=body_inlines,
             caption=caption_inlines,
             label=label,
         )
@@ -1292,8 +1598,28 @@ class _LatexParser:
                 _append_text(out, " ")
                 i = m.end()
                 continue
-            if tok == "\\\\" or re.match(r"\\\s", tok):
+            if tok == "\\\\":
                 _append_text(out, " ")
+                i = m.end()
+                option_pos = _skip_space(text, i)
+                if option_pos < n and text[option_pos] == "[":
+                    line_space = _read_square(text, option_pos)
+                    if line_space is not None:
+                        _ignored, i = line_space
+                continue
+            if re.match(r"\\\s", tok):
+                _append_text(out, " ")
+                i = m.end()
+                continue
+            if tok == "{":
+                try:
+                    grouped, i = _read_braced(text, m.start())
+                except LatexParseError:
+                    i = m.end()
+                    continue
+                out.extend(self._parse_inline(grouped))
+                continue
+            if tok == "}":
                 i = m.end()
                 continue
             if len(tok) == 2 and tok[0] == "\\" and tok[1] in "%&_#{}$~^":
@@ -1304,6 +1630,124 @@ class _LatexParser:
             i, produced = self._dispatch_command(text, m.end(), cmd)
             out.extend(produced)
         return _merge_text(out)
+
+    @staticmethod
+    def _read_macro_argument(text: str, pos: int) -> tuple[str | None, int]:
+        """TeX の必須引数を 1 個読む。通常の波括弧に加え単一トークンにも縮退対応する。"""
+
+        i = _skip_space(text, pos)
+        if i >= len(text):
+            return None, pos
+        if text[i] == "{":
+            return _read_braced(text, i)
+        command = _CONTROL_WORD_RE.match(text, i)
+        if command is not None:
+            return command.group(0), command.end()
+        return text[i], i + 1
+
+    def _expand_macro(self, text: str, pos: int, cmd: str) -> tuple[int, list[Inline]]:
+        definition = self._macros[cmd]
+        if cmd in self._macro_stack or len(self._macro_stack) >= 32:
+            return pos, []
+
+        args: list[str] = []
+        i = pos
+        if definition.optional_default is not None:
+            option_pos = _skip_space(text, i)
+            if option_pos < len(text) and text[option_pos] == "[":
+                option = _read_square(text, option_pos)
+                if option is not None:
+                    value, i = option
+                    args.append(value)
+                else:
+                    args.append(definition.optional_default)
+            else:
+                args.append(definition.optional_default)
+
+        required = definition.arg_count - (1 if definition.optional_default is not None else 0)
+        for _ in range(max(0, required)):
+            argument, end = self._read_macro_argument(text, i)
+            if argument is None:
+                argument = ""
+            else:
+                i = end
+            args.append(argument)
+
+        # ``\\name{}`` は 0 引数マクロ後の空グループで、紙面上は何も表示しない。
+        if definition.arg_count == 0:
+            empty_pos = _skip_space(text, i)
+            if empty_pos < len(text) and text[empty_pos] == "{":
+                try:
+                    empty, end = _read_braced(text, empty_pos)
+                except LatexParseError:
+                    empty = "not-empty"
+                    end = i
+                if not empty.strip():
+                    i = end
+
+        sentinel = "\x00ALINEA_HASH\x00"
+        expanded = definition.body.replace("##", sentinel)
+        for number, value in enumerate(args, 1):
+            expanded = expanded.replace(f"#{number}", value)
+        expanded = expanded.replace(sentinel, "#")
+
+        self._macro_stack.append(cmd)
+        try:
+            return i, self._parse_inline(expanded)
+        finally:
+            self._macro_stack.pop()
+
+    def _expand_macros_in_raw(self, text: str) -> str:
+        """表の構造 LaTeX は保ちつつ、文書固有の表示語だけを平文へ展開する。"""
+
+        out: list[str] = []
+        i = 0
+        while True:
+            match = _CONTROL_WORD_RE.search(text, i)
+            if match is None:
+                out.append(text[i:])
+                break
+            out.append(text[i : match.start()])
+            cmd = match.group(0)[1:].rstrip("*")
+            if cmd not in self._macros:
+                out.append(match.group(0))
+                i = match.end()
+                continue
+            end, inlines = self._expand_macro(text, match.end(), cmd)
+            for inline in inlines:
+                if inline.t in ("text", "emphasis", "code_inline"):
+                    out.append(inline.v)
+                elif inline.t == "math_inline":
+                    out.append(f"${inline.v}$")
+                elif inline.t == "url":
+                    out.append(inline.v or inline.href or "")
+            i = max(end, match.end())
+        return "".join(out)
+
+    @staticmethod
+    def _consume_braced_arguments(text: str, pos: int, count: int) -> int:
+        i = pos
+        for _ in range(count):
+            _arg, end = _read_optional_braced(text, i)
+            if _arg is None:
+                return i
+            i = end
+        return i
+
+    @staticmethod
+    def _consume_dimension(text: str, pos: int) -> int:
+        i = _skip_space(text, pos)
+        if i < len(text) and text[i] == "{":
+            try:
+                _value, return_pos = _read_braced(text, i)
+                return return_pos
+            except LatexParseError:
+                return pos
+        match = re.match(
+            r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)?(?:\\[A-Za-z]+|[A-Za-z]+)(?:\s+(?:plus|minus)\s+\S+)*",
+            text[i:],
+        )
+        return i + len(match.group(0)) if match is not None else pos
 
     def _dispatch_command(self, text: str, pos: int, cmd: str) -> tuple[int, list[Inline]]:
         if cmd in _SYMBOL_CMDS:
@@ -1345,24 +1789,76 @@ class _LatexParser:
             return end, [Inline(t="url", v=label_txt, href=href)]
         if cmd in ("emph", "textit", "textsc", "textbf"):
             arg, end = _read_optional_braced(text, pos)
-            txt = _flatten_plain(self._parse_inline(arg or ""))
-            return end, ([Inline(t="emphasis", v=txt)] if txt else [])
+            children = self._parse_inline(arg or "")
+            if all(child.t == "text" for child in children):
+                txt = _flatten_plain(children)
+                return end, ([Inline(t="emphasis", v=txt)] if txt else [])
+            # IR の emphasis は v 形なので、数式・引用等は同じ列へ戻して構造を保つ。
+            # テキスト片だけを emphasis にすることで ``$...$`` が表示文字へ漏れない。
+            produced = [
+                Inline(t="emphasis", v=child.v) if child.t == "text" else child
+                for child in children
+                if child.t != "text" or child.v
+            ]
+            return end, produced
         if cmd in ("texttt", "code", "verb"):
             arg, end = _read_optional_braced(text, pos)
             return end, ([Inline(t="code_inline", v=arg)] if arg else [])
+        if cmd in (
+            "underline",
+            "uline",
+            "sout",
+            "textrm",
+            "textsf",
+            "textnormal",
+            "mbox",
+            "makebox",
+            "fbox",
+            "framebox",
+            "ensuremath",
+            "operatorname",
+            "mathrm",
+            "mathbf",
+            "mathit",
+            "text",
+        ):
+            arg, end = _read_optional_braced(text, pos)
+            return end, self._parse_inline(arg or "")
+        if cmd in ("textcolor", "colorbox", "foreignlanguage", "rotatebox"):
+            _setting, mid = _read_optional_braced(text, pos)
+            visible, end = _read_optional_braced(text, mid)
+            return end, self._parse_inline(visible or "")
+        if cmd == "fcolorbox":
+            _frame, mid = _read_optional_braced(text, pos)
+            _background, mid = _read_optional_braced(text, mid)
+            visible, end = _read_optional_braced(text, mid)
+            return end, self._parse_inline(visible or "")
+        if cmd in self._macros:
+            return self._expand_macro(text, pos, cmd)
         if cmd in _NO_OUTPUT_CMDS:
             if cmd == "label":
                 _arg, end = _read_optional_braced(text, pos)
                 return end, []
             return pos, []
+        if cmd in _DISCARD_ARGUMENT_CMDS:
+            return self._consume_braced_arguments(text, pos, _DISCARD_ARGUMENT_CMDS[cmd]), []
+        if cmd in _DISCARD_DIMENSION_CMDS:
+            return self._consume_dimension(text, pos), []
         if cmd in _SETUP_CMDS:
             return _consume_setup_command(text, pos, cmd), []
         if cmd in _SPACE_CMDS:
             return pos, [Inline(t="text", v=" ")]
-        # 未知コマンド: 引数があれば透過(内容だけ残す)、無ければ読み飛ばす。
-        arg, end = _read_optional_braced(text, pos)
-        if arg is not None:
-            return end, self._parse_inline(arg)
+        # 未知コマンド: 設定値らしき先行引数を見せず、最後の可視引数だけ透過する。
+        args: list[str] = []
+        end = pos
+        while True:
+            arg, next_end = _read_optional_braced(text, end)
+            if arg is None:
+                break
+            args.append(arg)
+            end = next_end
+        if args:
+            return end, self._parse_inline(args[-1])
         return pos, []
 
 
@@ -1377,12 +1873,18 @@ def parse_latex_source(main_name: str, files: dict[str, str]) -> ParsedDocument:
     visited = {main_name}
     expanded = _expand_includes(main_tex, files, visited)
     expanded = _resolve_bibliography(expanded, files)
+    macro_sources = [
+        content
+        for name, content in sorted(files.items())
+        if name.lower().endswith((".cls", ".sty"))
+    ]
+    macros = _collect_macro_definitions([*macro_sources, expanded])
     body = _extract_document_body(expanded)
     body = _strip_frontmatter_commands(body)
     body = _strip_setup_commands(body)
     body, bib_inner = _extract_bibliography(body)
 
-    parser = _LatexParser()
+    parser = _LatexParser(macros)
     sections = parser.parse_top_level(body)
     parser.resolve_pending_refs()
 

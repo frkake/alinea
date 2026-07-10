@@ -29,6 +29,7 @@ from alinea_core.db.models import (
     TranslationUnit,
 )
 from alinea_core.document.blocks import Block, DocumentContent
+from alinea_core.document.plaintext import block_to_plain
 from alinea_core.parsing.latex_parser import (
     _BEGIN_RE,
     LatexArchive,
@@ -662,7 +663,11 @@ def _replace_caption(inner: str, cursor: _TranslationCursor, block_type: str) ->
 
 
 def _split_list_translation(text: str) -> list[str]:
-    items = [part.strip() for part in re.split(r"(?:\n\s*-\s*|\n+)", text) if part.strip()]
+    items = [
+        part.strip()
+        for part in re.split(r"(?:\n\s*-\s*|\n+|\s+-\s+)", text)
+        if part.strip()
+    ]
     return items or ([text.strip()] if text.strip() else [])
 
 
@@ -675,7 +680,7 @@ def _split_list_content(content: object) -> list[list[dict[str, Any]]]:
             items[-1].append(inline)
             continue
         value = str(inline.get("v") or "")
-        parts = re.split(r"\n\s*-\s*", value)
+        parts = re.split(r"(?:\n\s*-\s*|\s+-\s+)", value)
         for index, part in enumerate(parts):
             if index:
                 items.append([])
@@ -752,12 +757,46 @@ def _replace_whole_env(inner: str, cursor: _TranslationCursor, block_type: str) 
     replacement = _unit_to_latex(unit, cursor, source_latex=inner)
     if replacement is None:
         return inner
-    prefix_match = re.match(r"\s*(?:\[[^\]]*\]\s*)?", inner)
+    prefix_match = re.match(
+        r"\s*(?:\[[^\]]*\]\s*)?"
+        r"(?:\\(?:tiny|scriptsize|footnotesize|small|normalsize|large|Large)\b\s*)?",
+        inner,
+    )
     prefix = prefix_match.group(0) if prefix_match else ""
     labels = "".join(m.group(0) + "\n" for m in _LABEL_RE.finditer(inner))
     qed = r"\qedhere" if r"\qedhere" in inner else ""
     cursor.mark(block)
     return prefix + labels + replacement + qed
+
+
+def _replace_tcolorbox_title(prefix: str, cursor: _TranslationCursor) -> str:
+    """Translate a visible ``title=...`` option without changing the box options."""
+
+    match = re.search(r"(?<![A-Za-z])title\s*=\s*", prefix)
+    if match is None:
+        return prefix
+    value_start = match.end()
+    if value_start >= len(prefix):
+        return prefix
+    if prefix[value_start] == "{":
+        try:
+            source_title, value_end = _read_braced(prefix, value_start)
+        except LatexParseError:
+            return prefix
+        wrapped = True
+    else:
+        delimiter = re.search(r"[,\]]", prefix[value_start:])
+        value_end = value_start + (delimiter.start() if delimiter else len(prefix) - value_start)
+        source_title = prefix[value_start:value_end].strip()
+        wrapped = False
+
+    block, unit = cursor.take("paragraph")
+    replacement = _unit_to_latex(unit, cursor, source_latex=source_title)
+    if replacement is None:
+        return prefix
+    cursor.mark(block)
+    rendered = "{" + replacement + "}" if wrapped else replacement
+    return prefix[:value_start] + rendered + prefix[value_end:]
 
 
 def _layout_only_chunk(chunk: str) -> bool:
@@ -866,6 +905,12 @@ def _transform_env(
             if match:
                 prefix = match.group(0)
                 body = inner[match.end() :]
+        return prefix + _transform_latex_text(body, cursor, abstract_ja)
+    if base == "tcolorbox":
+        prefix_match = re.match(r"\s*(?:\[[^\]]*\]\s*)?", inner)
+        prefix = prefix_match.group(0) if prefix_match else ""
+        body = inner[len(prefix) :]
+        prefix = _replace_tcolorbox_title(prefix, cursor)
         return prefix + _transform_latex_text(body, cursor, abstract_ja)
     # The parser represents custom text environments (for example tcolorbox) as
     # paragraphs. Keep the outer environment/options so the author's page style is
@@ -1198,7 +1243,15 @@ def _find_pdf_page_bound_violations(doc: fitz.Document) -> list[str]:
 
 
 def _block_signature(content: DocumentContent) -> list[tuple[str, str]]:
-    return [(block.id, block.type) for _section, block in content.iter_blocks()]
+    """ID carryover を許しつつ、位置置換に必要な型と可視内容の一致を検証する。"""
+
+    return [
+        (
+            block.type,
+            hashlib.sha256(block_to_plain(block).encode("utf-8")).hexdigest()[:16],
+        )
+        for _section, block in content.iter_blocks()
+    ]
 
 
 def _validate_source_revision_match(archive: LatexArchive, content: DocumentContent) -> None:

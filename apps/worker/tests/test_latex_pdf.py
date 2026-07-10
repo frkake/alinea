@@ -294,11 +294,11 @@ def test_render_list_preserves_items_and_structured_inline_latex() -> None:
         heading.id: _unit(heading.id, "手法"),
         list_block.id: _unit(
             list_block.id,
-            "第一項。\n- 第二項。",
+            "第一項。 - 第二項。",
             [
                 {"t": "text", "v": "第一項は"},
                 {"t": "ref", "ref": "sec:method", "kind": "section"},
-                {"t": "text", "v": "を参照。\n- 第二項は"},
+                {"t": "text", "v": "を参照。 - 第二項は"},
                 {"t": "math_inline", "v": "x^2"},
                 {"t": "text", "v": "。"},
             ],
@@ -336,6 +336,57 @@ Original prose in a custom styled environment.
     assert r"\begin{important}" in rendered.main_tex
     assert "カスタム環境内の日本語本文。" in rendered.main_tex
     assert r"\end{important}" in rendered.main_tex
+    _validate_render_coverage(rendered, content, units)
+
+
+def test_render_tcolorbox_title_and_nested_quote_match_structured_blocks() -> None:
+    tex = r"""
+\documentclass{article}
+\usepackage[most]{tcolorbox}
+\begin{document}
+\begin{tcolorbox}[
+  breakable,
+  title={Visible example title},
+  colback=blue!3
+]
+Question text.
+
+\begin{quote}\small
+Choice A or choice B.
+\end{quote}
+
+Answer text.
+\end{tcolorbox}
+
+Following paragraph.
+\end{document}
+"""
+    archive = LatexArchive({"main.tex": tex}, {})
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    tracked = [
+        block
+        for _section, block in content.iter_blocks()
+        if block.type in {"paragraph", "quote"}
+    ]
+    assert [block.type for block in tracked] == [
+        "paragraph",
+        "paragraph",
+        "quote",
+        "paragraph",
+        "paragraph",
+    ]
+    translations = ["表示例の題名", "質問文。", "選択肢AまたはB。", "回答文。", "後続段落。"]
+    units = {
+        block.id: _unit(block.id, translation, [{"t": "text", "v": translation}])
+        for block, translation in zip(tracked, translations, strict=True)
+    }
+
+    rendered = render_translated_latex_source(archive, content, units)
+
+    assert "title={表示例の題名}" in rendered.main_tex
+    assert r"\begin{quote}\small" in rendered.main_tex
+    assert "選択肢AまたはB。" in rendered.main_tex
+    assert "後続段落。" in rendered.main_tex
     _validate_render_coverage(rendered, content, units)
 
 
@@ -529,6 +580,16 @@ def test_source_revision_mismatch_is_rejected_before_positional_replacement() ->
         assert exc.kind == "source_revision_mismatch"
     else:
         raise AssertionError("source/revision mismatch was accepted")
+
+
+def test_source_revision_match_accepts_carried_over_block_ids() -> None:
+    source = r"\documentclass{article}\begin{document}\section{Intro}Source A.\end{document}"
+    archive = LatexArchive({"main.tex": source}, {})
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    for index, (_section, block) in enumerate(content.iter_blocks(), start=1):
+        block.id = f"blk-carried-{index}"
+
+    _validate_source_revision_match(archive, content)
 
 
 def test_real_multifile_project_maps_every_translated_block_and_keeps_layout() -> None:

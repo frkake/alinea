@@ -13,6 +13,7 @@ import { useViewerStore } from "@/stores/viewer-store";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
 import { FigureTableBlock } from "@/components/viewer/FigureTableBlock";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
+import { cleanLatexDisplayTextOutsideMath } from "@/components/viewer/latex-display-clean";
 import {
   isPaperFrontMatterBlock,
   PaperFrontMatterBlock,
@@ -423,6 +424,121 @@ function SourceBlock({
         onCitationClick={onCitationClick}
         onRefClick={onRefClick}
       />
+    );
+  }
+  if (block.type === "list") {
+    const List = block.ordered ? "ol" : "ul";
+    return (
+      <List
+        data-block-id={block.id}
+        style={{
+          fontSize: "var(--pr-content-font-size-px, 15px)",
+          lineHeight: 1.8,
+          color: "var(--pr-text-en)",
+          margin: "0 0 20px",
+          paddingLeft: 28,
+        }}
+      >
+        {(block.items ?? []).map((item, index) => (
+          <li key={index} style={{ marginBottom: 6 }}>
+            <InlineRenderer
+              inlines={item}
+              onCitationClick={onCitationClick}
+              onRefClick={onRefClick}
+            />
+          </li>
+        ))}
+      </List>
+    );
+  }
+  if (block.type === "quote") {
+    return (
+      <blockquote
+        data-block-id={block.id}
+        style={{
+          fontSize: "var(--pr-content-font-size-px, 15px)",
+          lineHeight: 1.8,
+          color: "var(--pr-text-en)",
+          margin: "0 0 20px",
+          padding: "2px 0 2px 18px",
+          borderLeft: "3px solid var(--pr-border-card)",
+        }}
+      >
+        <InlineRenderer
+          inlines={block.inlines ?? []}
+          onCitationClick={onCitationClick}
+          onRefClick={onRefClick}
+        />
+      </blockquote>
+    );
+  }
+  if (block.type === "theorem" || block.type === "algorithm") {
+    return (
+      <div
+        data-block-id={block.id}
+        style={{
+          fontSize: "var(--pr-content-font-size-px, 15px)",
+          lineHeight: 1.8,
+          color: "var(--pr-text-en)",
+          margin: "0 0 20px",
+          padding: "10px 14px",
+          border: "1px solid var(--pr-border-card)",
+          borderRadius: 8,
+        }}
+      >
+        {block.title ? <strong>{block.title} </strong> : null}
+        {(block.caption ?? []).length > 0 ? (
+          <strong>
+            <InlineRenderer
+              inlines={block.caption ?? []}
+              onCitationClick={onCitationClick}
+              onRefClick={onRefClick}
+            />{" "}
+          </strong>
+        ) : null}
+        <InlineRenderer
+          inlines={block.inlines ?? []}
+          onCitationClick={onCitationClick}
+          onRefClick={onRefClick}
+        />
+      </div>
+    );
+  }
+  if (block.type === "reference_entry") {
+    return (
+      <p
+        data-block-id={block.id}
+        style={{
+          fontSize: "var(--pr-content-font-size-px, 14px)",
+          lineHeight: 1.7,
+          color: "var(--pr-text-en)",
+          margin: "0 0 12px",
+          overflowWrap: "anywhere",
+        }}
+      >
+        {cleanLatexDisplayTextOutsideMath(block.raw ?? "")}
+      </p>
+    );
+  }
+  if (block.type === "footnote") {
+    const footnoteNumber = block.label?.match(/\d+$/)?.[0];
+    return (
+      <p
+        data-block-id={block.id}
+        style={{
+          fontSize: "var(--pr-content-font-size-px, 13px)",
+          lineHeight: 1.7,
+          color: "var(--pr-text-muted)",
+          margin: "0 0 14px",
+        }}
+      >
+        {footnoteNumber ? <sup>{footnoteNumber} </sup> : null}
+        <InlineRenderer
+          inlines={block.inlines ?? []}
+          onCitationClick={onCitationClick}
+          onRefClick={onRefClick}
+        />
+      </p>
     );
   }
   return (

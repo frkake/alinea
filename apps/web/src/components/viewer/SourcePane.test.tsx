@@ -157,4 +157,66 @@ describe("SourcePane hl parity (M1 統合ポリッシュ)", () => {
       expect(mark).toHaveTextContent("rectified");
     });
   });
+
+  test("renders every structured source block instead of dropping non-paragraph content", async () => {
+    vi.mocked(viewerGetDocument).mockResolvedValue({
+      data: {
+        revision_id: "rev_1",
+        quality_level: "A",
+        sections: [
+          {
+            id: "sec-1",
+            heading: { number: "1", title: "Body" },
+            blocks: [
+              {
+                id: "blk-list",
+                type: "list",
+                ordered: false,
+                items: [[{ t: "text", v: "Visible list item" }]],
+              },
+              {
+                id: "blk-quote",
+                type: "quote",
+                inlines: [{ t: "text", v: "Visible quotation" }],
+              },
+              {
+                id: "blk-theorem",
+                type: "theorem",
+                title: "Theorem 1",
+                inlines: [{ t: "text", v: "Visible theorem body" }],
+              },
+              {
+                id: "blk-algorithm",
+                type: "algorithm",
+                caption: [{ t: "text", v: "Visible algorithm" }],
+                inlines: [{ t: "text", v: "Visible algorithm body" }],
+              },
+              {
+                id: "blk-footnote",
+                type: "footnote",
+                label: "footnote3",
+                inlines: [{ t: "text", v: "Visible footnote" }],
+              },
+              {
+                id: "blk-reference",
+                type: "reference_entry",
+                raw: String.raw`Author. \emph{Visible reference}. \url{https://example.com}.`,
+              },
+            ],
+          },
+        ],
+      },
+    } as never);
+
+    renderWithClient(<SourcePane itemId="li_1" revisionId="rev_1" toc={[]} lastPosition={null} />);
+
+    expect(await screen.findByText("Visible list item")).toBeInTheDocument();
+    expect(screen.getByText("Visible quotation")).toBeInTheDocument();
+    expect(screen.getByText(/Theorem 1/)).toBeInTheDocument();
+    expect(screen.getByText(/Visible algorithm body/)).toBeInTheDocument();
+    expect(screen.getByText("Visible footnote")).toBeInTheDocument();
+    expect(screen.getByText(/Visible reference/)).toHaveTextContent(
+      "Author. Visible reference. https://example.com.",
+    );
+  });
 });

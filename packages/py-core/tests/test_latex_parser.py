@@ -99,7 +99,7 @@ def test_no_documentclass_raises_no_main_tex() -> None:
 
 def test_parser_version_and_quality() -> None:
     doc = _doc()
-    assert doc.parser_version == PARSER_VERSION == "latex-1.0.0"
+    assert doc.parser_version == PARSER_VERSION == "latex-1.1.0"
     assert doc.quality_level == "A"
     assert doc.source_format == "latex"
 
@@ -206,6 +206,96 @@ def test_latex_setup_commands_do_not_leak_into_body() -> None:
     assert "CoverageEval" not in joined
     assert "MICHELE" not in joined
     assert "▶" not in joined
+
+
+def test_custom_macros_expand_to_visible_prose_in_body_caption_and_heading() -> None:
+    doc = parse_latex_source(
+        "main.tex",
+        {
+            "paper.cls": r"\newcommand{\benchprefix}{IdeaGene}",
+            "main.tex": (
+                r"\documentclass{paper}"
+                r"\newcommand{\benchfull}{\benchprefix-Bench}"
+                r"\newcommand{\genome}{\textit{Idea Genome}}"
+                r"\newcommand{\relation}[2]{#1 / #2}"
+                r"\begin{document}"
+                r"\section{\benchfull{} Results}"
+                r"\benchfull{} compares each \genome{} with \relation{parent}{child}."
+                r"\begin{figure}\caption{Overview of \benchfull{} and \genome{}.}\end{figure}"
+                r"\begin{table}\begin{tabular}{ll}"
+                r"\benchfull{} & \genome{} \\"
+                r"\end{tabular}\end{table}"
+                r"\end{document}"
+            ),
+        },
+    )
+
+    heading = next(block for block in doc.blocks if block.type == "heading")
+    paragraph = next(block for block in doc.blocks if block.type == "paragraph")
+    figure = next(block for block in doc.blocks if block.type == "figure")
+    table = next(block for block in doc.blocks if block.type == "table")
+    assert heading.title == "IdeaGene-Bench Results"
+    assert block_to_plain(paragraph) == (
+        "IdeaGene-Bench compares each Idea Genome with parent / child."
+    )
+    assert block_to_plain(figure).replace(" .", ".") == (
+        "Overview of IdeaGene-Bench and Idea Genome."
+    )
+    assert "IdeaGene-Bench & Idea Genome" in (table.raw or "")
+    assert "\\benchfull" not in (table.raw or "")
+    assert "\\genome" not in (table.raw or "")
+
+
+def test_layout_commands_and_container_options_never_become_body_text() -> None:
+    doc = parse_latex_source(
+        "main.tex",
+        {
+            "main.tex": (
+                r"\documentclass{article}\begin{document}"
+                r"\vspace{-6mm}\enlargethispage{1.5cm}"
+                r"\begin{center}\begin{tcolorbox}["
+                r"colback=blue!3,colframe=blue!25,title={Visible box title}]"
+                r"\itshape ``Descent with modification.'' \\[1pt]"
+                r"\textbf{\textcolor{CaseOrange}{Question.}} Read this."
+                r"\begin{quote}\small A nested quotation.\end{quote}"
+                r"\end{tcolorbox}\end{center}\vspace{-2pt}"
+                r"\section{Body}Real body.\end{document}"
+            )
+        },
+    )
+
+    prose = " ".join(
+        block_to_plain(block)
+        for block in doc.blocks
+        if block.type not in {"heading", "equation", "code"}
+    )
+    assert "Visible box title" in prose
+    assert "Descent with modification." in prose
+    assert "Question. Read this." in prose
+    assert "A nested quotation." in prose
+    for leaked in ("-6mm", "1.5cm", "-2pt", "colback", "colframe", "CaseOrange", "quote"):
+        assert leaked not in prose
+    assert any(block.type == "quote" for block in doc.blocks)
+
+
+def test_custom_beginappendix_switches_numbering_to_letters() -> None:
+    doc = parse_latex_source(
+        "main.tex",
+        {
+            "paper.cls": r"\newcommand{\beginappendix}{\appendix}",
+            "main.tex": (
+                r"\documentclass{paper}\begin{document}"
+                r"\section{Main}Text."
+                r"\beginappendix\section{Details}Appendix text."
+                r"\end{document}"
+            ),
+        },
+    )
+
+    assert [(section.heading.number, section.heading.title) for section in doc.sections] == [
+        ("1", "Main"),
+        ("A", "Details"),
+    ]
 
 
 def test_input_command_is_expanded_into_appendix_section() -> None:
@@ -431,6 +521,8 @@ def test_code_and_algorithm_content() -> None:
     assert "Rectified Flow Sampling" in cap
     body = " ".join(il.v for il in alg.inlines)
     assert "range(N)" in body
+    assert "\\begin" not in body
+    assert "\\STATE" not in body
 
 
 def test_quote_block_present() -> None:
