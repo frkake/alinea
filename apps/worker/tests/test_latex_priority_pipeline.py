@@ -35,13 +35,14 @@ from alinea_core.arxiv.fetch import FetchError, RedisLike
 from alinea_core.arxiv.ids import normalize_arxiv_id
 from alinea_core.db.models import DocumentRevision, Paper, SourceAsset
 from alinea_core.document.blocks import DocumentContent
-from alinea_core.ingest import build_timeline
+from alinea_core.ingest import DocumentCompleteness, build_timeline
 from alinea_core.jobs.store import JobStore
+from alinea_core.parsing.pdf_parser import PARSER_VERSION as PDF_PARSER_VERSION
 from alinea_core.settings import CoreSettings
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from alinea_llm.router import LLMRouter
-from alinea_worker.pipeline import _html_figure_asset_url, run_ingest
-from alinea_worker.source_candidates import parse_html_candidate
+from alinea_worker.pipeline import IngestRun, _html_figure_asset_url, run_ingest
+from alinea_worker.source_candidates import embedded_pdf_bytes, parse_html_candidate
 from alinea_worker.tasks.ingest import ingest_paper
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -98,6 +99,54 @@ def _build_latex_archive() -> bytes:
         fig_info.mtime = 0
         tar.addfile(fig_info, io.BytesIO(fig))
     return gzip.compress(buf.getvalue(), mtime=0)
+
+
+_EMBEDDED_PDF_WRAPPER_TEX = (
+    "\\documentclass{article}\n"
+    "\\usepackage{pdfpages}\n"
+    "\\begin{document}\n"
+    "\\includepdf[pages=-]{body.pdf}\n"
+    "\\end{document}\n"
+)
+
+
+def _build_embedded_pdf_archive(
+    pdf_bytes: bytes | None = None,
+    *,
+    additional_pdfs: dict[str, bytes] | None = None,
+) -> bytes:
+    pdf_bytes = _VALID_MULTI_PARAGRAPH_PDF if pdf_bytes is None else pdf_bytes
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        tex = _EMBEDDED_PDF_WRAPPER_TEX.encode()
+        tex_info = tarfile.TarInfo(name="main.tex")
+        tex_info.size = len(tex)
+        tex_info.mtime = 0
+        tar.addfile(tex_info, io.BytesIO(tex))
+        pdf_info = tarfile.TarInfo(name="body.pdf")
+        pdf_info.size = len(pdf_bytes)
+        pdf_info.mtime = 0
+        tar.addfile(pdf_info, io.BytesIO(pdf_bytes))
+        for name, data in sorted((additional_pdfs or {}).items()):
+            extra_info = tarfile.TarInfo(name=name)
+            extra_info.size = len(data)
+            extra_info.mtime = 0
+            tar.addfile(extra_info, io.BytesIO(data))
+    return gzip.compress(buf.getvalue(), mtime=0)
+
+
+def _incomplete_original_pdf() -> bytes:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_textbox(
+        fitz.Rect(72, 72, 520, 180),
+        "This canonical original PDF is intentionally incomplete and contains only one "
+        "meaningful paragraph for fallback testing.",
+        fontsize=11,
+    )
+    data = bytes(doc.tobytes())
+    doc.close()
+    return data
 
 
 _ATOM_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -198,6 +247,32 @@ def _make_pdf_fallback_stub() -> Starlette:
             Route("/e-print/{arxiv_id:path}", _eprint_invalid, methods=["GET"]),
             Route("/html/{path:path}", _html_missing, methods=["GET"]),
             Route("/pdf/{arxiv_id:path}", _pdf_valid, methods=["GET"]),
+        ]
+    )
+
+
+def _make_embedded_pdf_wrapper_stub(
+    calls: dict[str, int], *, archive: bytes, original_pdf: bytes
+) -> Starlette:
+    async def eprint(_request: Request) -> Response:
+        calls["eprint"] += 1
+        return Response(archive, media_type="application/x-eprint-tar")
+
+    async def html(_request: Request) -> Response:
+        calls["html"] += 1
+        return Response("html must not be needed", status_code=500)
+
+    async def pdf(_request: Request) -> Response:
+        calls["pdf"] += 1
+        return Response(original_pdf, media_type="application/pdf")
+
+    return Starlette(
+        routes=[
+            Route("/api/query", _query, methods=["GET"]),
+            Route("/oai2", _oai2, methods=["GET"]),
+            Route("/e-print/{arxiv_id:path}", eprint, methods=["GET"]),
+            Route("/html/{path:path}", html, methods=["GET"]),
+            Route("/pdf/{arxiv_id:path}", pdf, methods=["GET"]),
         ]
     )
 
@@ -347,6 +422,100 @@ async def _source_asset_kinds(db: AsyncSession, paper_id: str) -> set[str]:
     return set(rows.all())
 
 
+def _completeness_report(code: str | None) -> DocumentCompleteness:
+    return DocumentCompleteness(
+        accepted=False,
+        code=code,
+        source_chars=0,
+        structured_chars=0,
+        paragraph_count=0,
+        figure_count=0,
+    )
+
+
+def test_embedded_pdf_bytes_requires_wrapper_report() -> None:
+    assert (
+        embedded_pdf_bytes(
+            _completeness_report("document_incomplete"),
+            {"paper.pdf": _VALID_MULTI_PARAGRAPH_PDF},
+        )
+        is None
+    )
+
+
+def test_embedded_pdf_bytes_rejects_zero_or_multiple_eligible_pdfs() -> None:
+    report = _completeness_report("embedded_pdf_wrapper")
+
+    assert embedded_pdf_bytes(report, {"figure.png": _PNG_1X1}) is None
+    assert (
+        embedded_pdf_bytes(
+            report,
+            {
+                "z-paper.pdf": _VALID_MULTI_PARAGRAPH_PDF,
+                "a-paper.PDF": _VALID_PRIORITY_PDF,
+            },
+        )
+        is None
+    )
+
+
+def test_embedded_pdf_bytes_counts_invalid_pdf_member_as_ambiguous() -> None:
+    assert (
+        embedded_pdf_bytes(
+            _completeness_report("embedded_pdf_wrapper"),
+            {
+                "paper.pdf": _VALID_MULTI_PARAGRAPH_PDF,
+                "placeholder.pdf": b"",
+            },
+        )
+        is None
+    )
+
+
+def test_embedded_pdf_bytes_accepts_uppercase_extension_and_ignores_non_pdf_entries() -> None:
+    result = embedded_pdf_bytes(
+        _completeness_report("embedded_pdf_wrapper"),
+        {
+            "notes.txt": b"not a PDF",
+            "nested/PAPER.PDF": _VALID_MULTI_PARAGRAPH_PDF,
+        },
+    )
+
+    assert result == ("nested/PAPER.PDF", _VALID_MULTI_PARAGRAPH_PDF)
+
+
+@pytest.mark.parametrize(
+    "member_name",
+    [
+        "/paper.pdf",
+        "../paper.pdf",
+        "nested/../../paper.pdf",
+        "nested\\paper.pdf",
+        "https:paper.pdf",
+        "nested/\x01paper.pdf",
+    ],
+)
+def test_embedded_pdf_bytes_rejects_unsafe_member_names(member_name: str) -> None:
+    assert (
+        embedded_pdf_bytes(
+            _completeness_report("embedded_pdf_wrapper"),
+            {member_name: _VALID_MULTI_PARAGRAPH_PDF},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("data", [b"", b"this is not a PDF"])
+def test_embedded_pdf_bytes_rejects_non_pdf_payload(data: bytes) -> None:
+    assert (
+        embedded_pdf_bytes(
+            _completeness_report("embedded_pdf_wrapper"),
+            {"paper.pdf": data},
+        )
+        is None
+    )
+
+
 # ============================ LaTeX 優先経路(成功時) ============================
 
 
@@ -412,6 +581,380 @@ async def test_ingest_prefers_latex_source_when_available(
     timeline = build_timeline(job.log)
     assert timeline
     assert "LaTeX ソース取得" in timeline[0]["label"]
+
+
+async def test_latex_wrapper_promotes_embedded_pdf_to_pdf_candidate(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+) -> None:
+    arxiv_id = _arxiv_id()
+    ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
+    archive = _build_embedded_pdf_archive()
+    original_pdf = _incomplete_original_pdf()
+    calls = {"pdf": 0, "eprint": 0, "html": 0}
+    transport = httpx.ASGITransport(
+        app=_make_embedded_pdf_wrapper_stub(
+            calls,
+            archive=archive,
+            original_pdf=original_pdf,
+        )
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    assert job.status == "succeeded", job.error
+    assert calls == {"pdf": 1, "eprint": 1, "html": 0}
+
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert revision.source_format == "pdf"
+    assert revision.parser_version == PDF_PARSER_VERSION
+    assert revision.quality_level == "B"
+    assert revision.stats["embedded_pdf_source"] == "body.pdf"
+    assert revision.stats["blocks"] > 5
+    assert "body.pdf" not in json.dumps(revision.content)
+    assert revision.stats["candidate_failures"][0]["format"] == "latex"
+    assert revision.stats["candidate_failures"][0]["code"] == "embedded_pdf_wrapper"
+
+    parsing_checkpoint = JobStore.get_checkpoint(job)["parsing"]
+    assert parsing_checkpoint["source_storage_key"] == StorageKeys.latex_tar(ids["paper_id"], "v1")
+    assert parsing_checkpoint["source_sha256"] == hashlib.sha256(archive).hexdigest()
+    assert parsing_checkpoint["candidate_diagnostics"] == [
+        {
+            "kind": "embedded_pdf",
+            "embedded_pdf_source": "body.pdf",
+            "embedded_pdf_sha256": hashlib.sha256(_VALID_MULTI_PARAGRAPH_PDF).hexdigest(),
+        }
+    ]
+
+    assets = (
+        (
+            await db_session.execute(
+                select(SourceAsset).where(SourceAsset.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assets_by_kind = {asset.kind: asset for asset in assets}
+    assert set(assets_by_kind) == {"arxiv_latex", "pdf"}
+    storage = S3Storage()
+    original_asset = assets_by_kind["pdf"]
+    assert original_asset.storage_key == StorageKeys.original_pdf(ids["paper_id"], "v1")
+    assert await storage.get(storage.sources_bucket, original_asset.storage_key) == original_pdf
+    latex_asset = assets_by_kind["arxiv_latex"]
+    assert latex_asset.storage_key == StorageKeys.latex_tar(ids["paper_id"], "v1")
+    assert await storage.get(storage.sources_bucket, latex_asset.storage_key) == archive
+
+
+async def test_embedded_pdf_parsing_checkpoint_reuses_exact_archive_member(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arxiv_id = _arxiv_id()
+    ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
+    archive = _build_embedded_pdf_archive()
+    original_pdf = _incomplete_original_pdf()
+    calls = {"pdf": 0, "eprint": 0, "html": 0}
+    transport = httpx.ASGITransport(
+        app=_make_embedded_pdf_wrapper_stub(
+            calls,
+            archive=archive,
+            original_pdf=original_pdf,
+        )
+    )
+
+    async def crash_after_parsing_checkpoint(_run: IngestRun, _data: bytes) -> None:
+        raise RuntimeError("simulated crash after parsing checkpoint")
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        with monkeypatch.context() as patch:
+            patch.setattr(IngestRun, "_structure_pdf", crash_after_parsing_checkpoint)
+            with pytest.raises(RuntimeError, match="simulated crash"):
+                await run_ingest(ctx, store, job)
+
+        job = await store.get(ids["job_id"])
+        assert job is not None
+        parsing_checkpoint = JobStore.get_checkpoint(job)["parsing"]
+        assert parsing_checkpoint["source_storage_key"] == StorageKeys.latex_tar(
+            ids["paper_id"], "v1"
+        )
+        assert parsing_checkpoint["source_sha256"] == hashlib.sha256(archive).hexdigest()
+        assert parsing_checkpoint["candidate_diagnostics"][0]["embedded_pdf_sha256"] == (
+            hashlib.sha256(_VALID_MULTI_PARAGRAPH_PDF).hexdigest()
+        )
+        assert (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        ).scalars().all() == []
+
+        calls.update(pdf=0, eprint=0, html=0)
+        job.status = "queued"
+        job.stage = "parsing"
+        job.error = None
+        job.finished_at = None
+        await db_session.commit()
+        resumed_job = await store.claim(ids["job_id"])
+        assert resumed_job is not None
+        await run_ingest(ctx, store, resumed_job)
+
+    assert calls == {"pdf": 0, "eprint": 0, "html": 0}
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert revision.source_format == "pdf"
+    assert revision.parser_version == PDF_PARSER_VERSION
+    assert revision.stats["embedded_pdf_source"] == "body.pdf"
+    assert "This paper studies things" in json.dumps(revision.content)
+    assert "body.pdf" not in json.dumps(revision.content)
+
+    assets = (
+        (
+            await db_session.execute(
+                select(SourceAsset).where(SourceAsset.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [asset.kind for asset in assets].count("pdf") == 1
+    assert [asset.kind for asset in assets].count("arxiv_latex") == 1
+    storage = S3Storage()
+    original_asset = next(asset for asset in assets if asset.kind == "pdf")
+    assert await storage.get(storage.sources_bucket, original_asset.storage_key) == original_pdf
+
+
+@pytest.mark.parametrize(
+    ("archive", "expected_failure_codes"),
+    [
+        (
+            _build_embedded_pdf_archive(_CORRUPT_PDF_LIKE),
+            ["embedded_pdf_wrapper", "parse_error"],
+        ),
+        (
+            _build_embedded_pdf_archive(additional_pdfs={"appendix.pdf": _VALID_PRIORITY_PDF}),
+            ["embedded_pdf_wrapper"],
+        ),
+    ],
+    ids=["embedded-parse-fails", "multiple-pdfs-are-ambiguous"],
+)
+async def test_embedded_pdf_wrapper_failure_continues_to_html(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    archive: bytes,
+    expected_failure_codes: list[str],
+) -> None:
+    arxiv_id = _arxiv_id()
+    ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=200,
+            eprint_body=archive,
+            html_status=200,
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    assert job.status == "succeeded", job.error
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert revision.source_format == "arxiv_html"
+    assert [failure["code"] for failure in revision.stats["candidate_failures"]] == (
+        expected_failure_codes
+    )
+    if len(expected_failure_codes) == 2:
+        assert revision.stats["candidate_failures"][1]["embedded_pdf_source"] == "body.pdf"
+    kinds = await _source_asset_kinds(db_session, ids["paper_id"])
+    assert kinds == {"arxiv_html", "pdf"}
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_member", "stored_member_bytes", "expected_error"),
+    [
+        ("missing.pdf", _VALID_MULTI_PARAGRAPH_PDF, "parse_error"),
+        ("../body.pdf", _VALID_MULTI_PARAGRAPH_PDF, "parse_error"),
+        ("body.pdf", _VALID_PRIORITY_PDF, "storage_error"),
+    ],
+    ids=["missing-member", "unsafe-member", "changed-member"],
+)
+async def test_embedded_pdf_parsing_checkpoint_rejects_invalid_member_identity(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    checkpoint_member: str,
+    stored_member_bytes: bytes,
+    expected_error: str,
+) -> None:
+    arxiv_id = _arxiv_id()
+    ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
+    original_pdf = _incomplete_original_pdf()
+    archive = _build_embedded_pdf_archive(stored_member_bytes)
+    storage = S3Storage()
+    pdf_key = StorageKeys.original_pdf(ids["paper_id"], "v1")
+    latex_key = StorageKeys.latex_tar(ids["paper_id"], "v1")
+    await storage.put(storage.sources_bucket, pdf_key, original_pdf, content_type="application/pdf")
+    await storage.put(
+        storage.sources_bucket,
+        latex_key,
+        archive,
+        content_type="application/gzip",
+    )
+    db_session.add_all(
+        [
+            SourceAsset(
+                paper_id=ids["paper_id"],
+                kind="pdf",
+                source_url=f"http://arxiv.test/pdf/{arxiv_id}v1",
+                source_version="v1",
+                storage_key=pdf_key,
+                content_type="application/pdf",
+                byte_size=len(original_pdf),
+                sha256=hashlib.sha256(original_pdf).hexdigest(),
+            ),
+            SourceAsset(
+                paper_id=ids["paper_id"],
+                kind="arxiv_latex",
+                source_url=f"http://arxiv.test/e-print/{arxiv_id}v1",
+                source_version="v1",
+                storage_key=latex_key,
+                content_type="application/gzip",
+                byte_size=len(archive),
+                sha256=hashlib.sha256(archive).hexdigest(),
+            ),
+            DocumentRevision(
+                paper_id=ids["paper_id"],
+                source_version="v1",
+                parser_version=PDF_PARSER_VERSION,
+                quality_level="B",
+                source_format="pdf",
+                content=DocumentContent(quality_level="B", sections=[]).model_dump(),
+                stats={
+                    "candidate_failures": [],
+                    "completeness": {"accepted": True, "code": None},
+                },
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    store = JobStore(db_session)
+    await store.checkpoint(ids["job_id"], "fetching", {"source_version": "v1"}, progress=10)
+    await store.checkpoint(
+        ids["job_id"],
+        "parsing",
+        {
+            "source_format": "pdf",
+            "parser_version": PDF_PARSER_VERSION,
+            "candidate_failures": [{"format": "latex", "code": "embedded_pdf_wrapper"}],
+            "candidate_diagnostics": [
+                {
+                    "kind": "embedded_pdf",
+                    "embedded_pdf_source": checkpoint_member,
+                    "embedded_pdf_sha256": hashlib.sha256(_VALID_MULTI_PARAGRAPH_PDF).hexdigest(),
+                }
+            ],
+            "completeness": {"accepted": True, "code": None},
+            "adopt_from_revision_id": None,
+            "source_storage_key": latex_key,
+            "source_sha256": hashlib.sha256(archive).hexdigest(),
+        },
+        progress=20,
+    )
+
+    calls = {"pdf": 0, "eprint": 0, "html": 0}
+    transport = httpx.ASGITransport(
+        app=_make_counting_arxiv_stub(calls, pdf_status=500, latex_available=True)
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        with pytest.raises(FetchError) as error:
+            await run_ingest(ctx, store, job)
+
+    assert error.value.kind == expected_error
+    assert checkpoint_member not in str(error.value)
+    assert calls == {"pdf": 0, "eprint": 0, "html": 0}
+    paper = await db_session.get(Paper, ids["paper_id"])
+    assert paper is not None
+    assert paper.latest_revision_id is None
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert "embedded_pdf_source" not in revision.stats
 
 
 # ============================ HTML への可視的フォールバック(既存経路の保護) ============================

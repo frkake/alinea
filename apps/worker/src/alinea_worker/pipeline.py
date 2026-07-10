@@ -92,6 +92,7 @@ from alinea_worker.latex_pdf import LatexPdfBuildError, build_latex_translation_
 from alinea_worker.source_candidates import (
     CandidateUnavailable,
     SourceCandidate,
+    embedded_pdf_bytes,
     load_original_pdf,
     parse_html_candidate,
     parse_latex_candidate,
@@ -243,6 +244,46 @@ def _is_pdf_like(data: bytes) -> bool:
     return len(data) >= 8 and data[:1024].lstrip().startswith(b"%PDF-")
 
 
+def _extract_pdf_text(data: bytes) -> str:
+    try:
+        doc = fitz.open(stream=data, filetype="pdf")
+        try:
+            return "\n".join(page.get_text("text", sort=True) for page in doc)
+        finally:
+            doc.close()
+    except Exception:
+        return ""
+
+
+def _embedded_pdf_identity(
+    diagnostics: list[dict[str, Any]],
+) -> tuple[str, str] | None:
+    entries = [
+        item
+        for item in diagnostics
+        if item.get("kind") == "embedded_pdf"
+        or "embedded_pdf_source" in item
+        or "embedded_pdf_sha256" in item
+    ]
+    if not entries:
+        return None
+    if len(entries) != 1:
+        raise ValueError("embedded PDF diagnostics are ambiguous")
+    entry = entries[0]
+    source = entry.get("embedded_pdf_source")
+    digest = entry.get("embedded_pdf_sha256")
+    if (
+        entry.get("kind") != "embedded_pdf"
+        or not isinstance(source, str)
+        or not source
+        or not isinstance(digest, str)
+        or len(digest) != 64
+        or any(char not in "0123456789abcdef" for char in digest)
+    ):
+        raise ValueError("embedded PDF diagnostics are invalid")
+    return source, digest
+
+
 def _is_missing_s3_object(exc: ClientError) -> bool:
     error = exc.response.get("Error", {})
     return str(error.get("Code") or "") in {"NoSuchKey", "404", "NotFound"}
@@ -385,9 +426,11 @@ class IngestRun:
         self.parsed_pdf: ParsedPdfDocument | None = None
         self.latex_binary_files: dict[str, bytes] = {}
         self.latex_main_tex_name: str | None = None
+        self._latex_archive_bytes: bytes | None = None
         self._pdf_bytes: bytes | None = None
         self._pdf_text: str | None = None
         self._candidate_failures: list[dict[str, Any]] = []
+        self._candidate_diagnostics: list[dict[str, Any]] = []
         self._candidate_completeness: dict[str, Any] | None = None
         self._candidate_storage_key: str | None = None
         self._candidate_sha256: str | None = None
@@ -894,15 +937,8 @@ class IngestRun:
         if self._pdf_text is not None:
             return self._pdf_text
         assert self._pdf_bytes is not None
-        try:
-            doc = fitz.open(stream=self._pdf_bytes, filetype="pdf")
-            try:
-                self._pdf_text = "\n".join(page.get_text("text", sort=True) for page in doc)
-            finally:
-                doc.close()
-        except Exception:
-            # Shallow acquisition deliberately leaves deep validation to the PDF candidate.
-            self._pdf_text = ""
+        # Shallow acquisition deliberately leaves deep validation to the PDF candidate.
+        self._pdf_text = _extract_pdf_text(self._pdf_bytes)
         return self._pdf_text
 
     async def _latex_candidate(self, http: httpx.AsyncClient) -> SourceCandidate:
@@ -910,6 +946,7 @@ class IngestRun:
         candidate, binary_files, main_tex_name = parse_latex_candidate(
             raw, pdf_text=self._pdf_text_for_completeness()
         )
+        self._latex_archive_bytes = raw
         self.latex_binary_files = binary_files
         self.latex_main_tex_name = main_tex_name
         return candidate
@@ -917,6 +954,7 @@ class IngestRun:
     async def _html_candidate(self, http: httpx.AsyncClient) -> SourceCandidate:
         raw = await self._fetch_html_candidate_bytes(http)
         candidate = parse_html_candidate(raw, pdf_text=self._pdf_text_for_completeness())
+        self._latex_archive_bytes = None
         self.latex_binary_files = {}
         self.latex_main_tex_name = None
         return candidate
@@ -924,6 +962,7 @@ class IngestRun:
     async def _pdf_candidate(self) -> SourceCandidate:
         data = await self._get_pdf_bytes()
         candidate = parse_pdf_candidate(data, pdf_text=self._pdf_text_for_completeness())
+        self._latex_archive_bytes = None
         self.latex_binary_files = {}
         self.latex_main_tex_name = None
         return candidate
@@ -938,8 +977,14 @@ class IngestRun:
         self.source_format = candidate.source_format
         self.content = candidate.content
         self._candidate_failures = failures
+        self._candidate_diagnostics = [dict(item) for item in candidate.diagnostics]
         self._candidate_completeness = completeness or candidate.report.as_dict()
-        if candidate.source_format != "latex":
+        try:
+            embedded_pdf = _embedded_pdf_identity(self._candidate_diagnostics)
+        except ValueError as exc:
+            raise FetchError("parse_error", "selected source diagnostics are invalid") from exc
+        if candidate.source_format != "latex" and embedded_pdf is None:
+            self._latex_archive_bytes = None
             self.latex_binary_files = {}
             self.latex_main_tex_name = None
         if isinstance(candidate.parsed, ParsedPdfDocument):
@@ -955,6 +1000,22 @@ class IngestRun:
         if not isinstance(failures, list):
             raise FetchError("parse_error", "parsing checkpoint candidate failures are invalid")
         return [dict(item) for item in failures if isinstance(item, dict)]
+
+    @staticmethod
+    def _checkpoint_candidate_diagnostics(checkpoint: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_diagnostics = checkpoint.get("candidate_diagnostics", [])
+        if not isinstance(raw_diagnostics, list) or not all(
+            isinstance(item, dict) for item in raw_diagnostics
+        ):
+            raise FetchError("parse_error", "parsing checkpoint candidate diagnostics are invalid")
+        diagnostics = [dict(item) for item in raw_diagnostics]
+        try:
+            _embedded_pdf_identity(diagnostics)
+        except ValueError as exc:
+            raise FetchError(
+                "parse_error", "parsing checkpoint embedded source identity is invalid"
+            ) from exc
+        return diagnostics
 
     async def _load_retained_source_bytes(
         self,
@@ -1013,6 +1074,10 @@ class IngestRun:
     async def _load_checkpoint_candidate(self, checkpoint: dict[str, Any]) -> SourceCandidate:
         assert self.paper_id is not None
         source_format = str(checkpoint.get("source_format") or "")
+        diagnostics = self._checkpoint_candidate_diagnostics(checkpoint)
+        embedded_pdf = _embedded_pdf_identity(diagnostics)
+        if embedded_pdf is not None and source_format != "pdf":
+            raise FetchError("parse_error", "parsing checkpoint embedded source format is invalid")
         selected_key_value = checkpoint.get("source_storage_key")
         selected_sha_value = checkpoint.get("source_sha256")
         if (selected_key_value is None) != (selected_sha_value is None):
@@ -1027,13 +1092,19 @@ class IngestRun:
             raise FetchError("parse_error", "parsing checkpoint source identity is invalid")
         selected_key = selected_key_value
         selected_sha256 = selected_sha_value
+        if embedded_pdf is not None and selected_key is None:
+            raise FetchError("parse_error", "parsing checkpoint has incomplete source identity")
         canonical_keys = {
             "latex": StorageKeys.latex_tar(self.paper_id, self.source_version),
             "arxiv_html": StorageKeys.arxiv_html(self.paper_id, self.source_version),
             "pdf": StorageKeys.original_pdf(self.paper_id, self.source_version),
             "pdf_upload": StorageKeys.original_pdf(self.paper_id, self.source_version),
         }
-        canonical_key = canonical_keys.get(source_format)
+        canonical_key = (
+            canonical_keys["latex"]
+            if embedded_pdf is not None
+            else canonical_keys.get(source_format)
+        )
         if selected_key is not None and selected_key != canonical_key:
             raise FetchError("parse_error", "parsing checkpoint source key is invalid")
         try:
@@ -1048,6 +1119,7 @@ class IngestRun:
                 candidate, binary_files, main_tex_name = parse_latex_candidate(
                     raw, pdf_text=self._pdf_text_for_completeness()
                 )
+                self._latex_archive_bytes = raw
                 self.latex_binary_files = binary_files
                 self.latex_main_tex_name = main_tex_name
             elif source_format == "arxiv_html":
@@ -1059,6 +1131,30 @@ class IngestRun:
                     expected_sha256=selected_sha256,
                 )
                 candidate = parse_html_candidate(raw, pdf_text=self._pdf_text_for_completeness())
+            elif source_format == "pdf" and embedded_pdf is not None:
+                raw = await self._load_retained_source_bytes(
+                    kind="arxiv_latex",
+                    canonical_key=canonical_keys["latex"],
+                    source_format=source_format,
+                    selected_key=selected_key,
+                    expected_sha256=selected_sha256,
+                )
+                wrapper, binary_files, main_tex_name = parse_latex_candidate(
+                    raw, pdf_text=self._pdf_text_for_completeness()
+                )
+                selected = embedded_pdf_bytes(wrapper.report, binary_files)
+                if selected is None or selected[0] != embedded_pdf[0]:
+                    raise FetchError("parse_error", "stored embedded source identity is invalid")
+                _member_name, member_bytes = selected
+                if hashlib.sha256(member_bytes).hexdigest() != embedded_pdf[1]:
+                    raise FetchError("storage_error", "stored embedded source digest mismatch")
+                self._latex_archive_bytes = raw
+                self.latex_binary_files = binary_files
+                self.latex_main_tex_name = main_tex_name
+                candidate = parse_pdf_candidate(
+                    member_bytes, pdf_text=_extract_pdf_text(member_bytes)
+                )
+                candidate.diagnostics = diagnostics
             elif source_format in {"pdf", "pdf_upload"}:
                 raw = await self._load_retained_source_bytes(
                     kind="pdf",
@@ -1134,6 +1230,65 @@ class IngestRun:
                     )
                     continue
 
+                if (
+                    candidate.source_format == "latex"
+                    and candidate.report.code == "embedded_pdf_wrapper"
+                ):
+                    wrapper_failure = {
+                        "format": candidate.source_format,
+                        **candidate.report.as_dict(),
+                    }
+                    failures.append(wrapper_failure)
+                    await self._log(
+                        "parsing",
+                        "warn",
+                        "latex ソース候補は不完全です(埋め込み PDF を確認)",
+                        detail=wrapper_failure,
+                    )
+                    selected = embedded_pdf_bytes(candidate.report, self.latex_binary_files)
+                    if selected is None:
+                        continue
+                    member_name, member_bytes = selected
+                    try:
+                        promoted = parse_pdf_candidate(
+                            member_bytes, pdf_text=_extract_pdf_text(member_bytes)
+                        )
+                    except CandidateUnavailable as exc:
+                        failure = {
+                            **exc.as_dict(),
+                            "embedded_pdf_source": member_name,
+                        }
+                        failures.append(failure)
+                        await self._log(
+                            "parsing",
+                            "warn",
+                            "埋め込み PDF ソース候補を利用できません(次候補へフォールバック)",
+                            detail=failure,
+                        )
+                        continue
+                    promoted.diagnostics = [
+                        {
+                            "kind": "embedded_pdf",
+                            "embedded_pdf_source": member_name,
+                            "embedded_pdf_sha256": hashlib.sha256(member_bytes).hexdigest(),
+                        }
+                    ]
+                    if promoted.report.accepted:
+                        return promoted, failures
+                    failure = {
+                        "format": promoted.source_format,
+                        **promoted.report.as_dict(),
+                        "embedded_pdf_source": member_name,
+                    }
+                    failures.append(failure)
+                    await self._log(
+                        "parsing",
+                        "warn",
+                        "埋め込み PDF ソース候補は不完全です(次候補へフォールバック)",
+                        detail=failure,
+                    )
+                    continue
+
                 if candidate.report.accepted:
                     return candidate, failures
                 failure = {"format": candidate.source_format, **candidate.report.as_dict()}
@@ -1164,12 +1319,18 @@ class IngestRun:
     ) -> None:
         assert self.paper_id is not None and self.ref is not None
         self._set_candidate_state(candidate, failures)
+        embedded_pdf = _embedded_pdf_identity(self._candidate_diagnostics)
 
         key: str | None = None
         kind: str | None = None
         content_type = "application/octet-stream"
         source_url = ""
-        if candidate.source_format == "latex":
+        retained_bytes = candidate.source_bytes
+        if candidate.source_format == "latex" or embedded_pdf is not None:
+            if embedded_pdf is not None:
+                if self._latex_archive_bytes is None:
+                    raise FetchError("parse_error", "embedded source container is unavailable")
+                retained_bytes = self._latex_archive_bytes
             key = StorageKeys.latex_tar(self.paper_id, self.source_version)
             kind = "arxiv_latex"
             content_type = "application/gzip"
@@ -1188,16 +1349,16 @@ class IngestRun:
                 await self.deps.s3.put(
                     self.deps.s3.sources_bucket,
                     key,
-                    candidate.source_bytes,
+                    retained_bytes,
                     content_type=content_type,
                 )
                 await self._record_source_asset(
                     kind,
                     key,
                     content_type=content_type.split(";", 1)[0],
-                    byte_size=len(candidate.source_bytes),
+                    byte_size=len(retained_bytes),
                     source_url=source_url,
-                    sha256=hashlib.sha256(candidate.source_bytes).hexdigest(),
+                    sha256=hashlib.sha256(retained_bytes).hexdigest(),
                 )
             except Exception as exc:
                 await self.session.rollback()
@@ -1208,7 +1369,7 @@ class IngestRun:
 
         assert key is not None
         self._candidate_storage_key = key
-        self._candidate_sha256 = hashlib.sha256(candidate.source_bytes).hexdigest()
+        self._candidate_sha256 = hashlib.sha256(retained_bytes).hexdigest()
 
         await self._log(
             "fetching",
@@ -1346,6 +1507,13 @@ class IngestRun:
             failures = [dict(item) for item in _HISTORICAL_CANDIDATE_FAILURES]
         stats["candidate_failures"] = failures
         stats["completeness"] = completeness
+        diagnostics = self._candidate_diagnostics
+        parsing_checkpoint = self.ckpt.get("parsing")
+        if not diagnostics and isinstance(parsing_checkpoint, dict):
+            diagnostics = self._checkpoint_candidate_diagnostics(parsing_checkpoint)
+        embedded_pdf = _embedded_pdf_identity(diagnostics)
+        if embedded_pdf is not None:
+            stats["embedded_pdf_source"] = embedded_pdf[0]
         revision.stats = stats
         await self.session.commit()
         if not completeness.get("accepted"):
@@ -1434,6 +1602,7 @@ class IngestRun:
                     raise FetchError("parse_error", "parsing checkpoint identity is invalid")
                 self.source_format = str(checkpoint_format)
                 self._candidate_failures = self._checkpoint_candidate_failures(parse_ck)
+                self._candidate_diagnostics = self._checkpoint_candidate_diagnostics(parse_ck)
                 checkpoint_completeness = parse_ck.get("completeness")
                 self._candidate_completeness = (
                     dict(checkpoint_completeness)
@@ -1447,6 +1616,14 @@ class IngestRun:
                             "parse_error",
                             "parsing checkpoint source format does not match revision",
                         )
+                    embedded_pdf = _embedded_pdf_identity(self._candidate_diagnostics)
+                    if embedded_pdf is not None:
+                        checkpoint_candidate = await self._load_checkpoint_candidate(parse_ck)
+                        if (existing.stats or {}).get("embedded_pdf_source") != embedded_pdf[0]:
+                            raise FetchError(
+                                "parse_error",
+                                "parsing checkpoint source does not match revision provenance",
+                            )
                     adopt_from = parse_ck.get("adopt_from_revision_id")
                     await self._finalize_revision(
                         existing,
@@ -1537,6 +1714,7 @@ class IngestRun:
                     "source_format": self.source_format,
                     "parser_version": self.parser_version,
                     "candidate_failures": self._candidate_failures,
+                    "candidate_diagnostics": self._candidate_diagnostics,
                     "completeness": self._candidate_completeness,
                     "adopt_from_revision_id": old_revision_id,
                     "source_storage_key": self._candidate_storage_key,
@@ -1714,6 +1892,9 @@ class IngestRun:
         stats["translatable_blocks"] = len(scope.in_scope_block_ids)
         stats["candidate_failures"] = self._candidate_failures
         stats["completeness"] = self._candidate_completeness
+        embedded_pdf = _embedded_pdf_identity(self._candidate_diagnostics)
+        if embedded_pdf is not None:
+            stats["embedded_pdf_source"] = embedded_pdf[0]
 
         revision = DocumentRevision(
             paper_id=self.paper_id,

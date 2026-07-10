@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from alinea_core.document.blocks import DocumentContent
@@ -23,6 +26,7 @@ _LATEX_CANDIDATE_MESSAGES = {
     "unbalanced_braces": "latex source contains unbalanced braces",
     "unterminated_environment": "latex source contains an unterminated environment",
 }
+_SCHEME_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 
 @dataclass
@@ -50,6 +54,45 @@ class CandidateUnavailable(Exception):  # noqa: N818 - task-defined public API
 
     def as_dict(self) -> dict[str, str]:
         return {"format": self.source_format, "code": self.code, "message": self.message}
+
+
+def _safe_archive_member_name(name: str) -> bool:
+    path = PurePosixPath(name)
+    return (
+        bool(name)
+        and name == name.strip()
+        and "\\" not in name
+        and not any(ord(char) < 0x20 or ord(char) == 0x7F for char in name)
+        and not path.is_absolute()
+        and _SCHEME_PREFIX_RE.match(name) is None
+        and all(part not in {"", ".", ".."} for part in path.parts)
+        and str(path) == name
+    )
+
+
+def embedded_pdf_bytes(
+    report: DocumentCompleteness,
+    binary_files: Mapping[str, bytes],
+) -> tuple[str, bytes] | None:
+    """Select the sole safe PDF member from an embedded-PDF LaTeX wrapper."""
+
+    if report.code != "embedded_pdf_wrapper":
+        return None
+    pdfs = [
+        (name, data)
+        for name, data in sorted(binary_files.items(), key=lambda item: item[0])
+        if name.lower().endswith(".pdf")
+    ]
+    if len(pdfs) != 1:
+        return None
+    name, data = pdfs[0]
+    if (
+        not _safe_archive_member_name(name)
+        or len(data) < 8
+        or not data[:1024].lstrip().startswith(b"%PDF-")
+    ):
+        return None
+    return name, data
 
 
 def parse_latex_candidate(
@@ -147,6 +190,7 @@ async def load_original_pdf(storage: S3Storage, paper_id: str, source_version: s
 __all__ = [
     "CandidateUnavailable",
     "SourceCandidate",
+    "embedded_pdf_bytes",
     "load_original_pdf",
     "parse_html_candidate",
     "parse_latex_candidate",
