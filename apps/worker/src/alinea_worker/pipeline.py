@@ -1794,7 +1794,23 @@ class IngestRun:
         if self.parsed is None or self.paper_id is None:
             return out, warnings, failures
         for fig in self.parsed.figures:
-            if fig.asset_key is None:
+            if fig.asset_key is None or not fig.asset_key.strip():
+                if (
+                    fig.asset_key is None
+                    and self.source_format == "arxiv_html"
+                    and isinstance(fig.raw, str)
+                    and bool(fig.raw.strip())
+                ):
+                    continue
+                fig.asset_key = None
+                failures.append(
+                    {
+                        "code": "missing_asset_key",
+                        "figure_id": fig.id,
+                        "source": self.source_format,
+                    }
+                )
+                warnings.append(f"図の保存に失敗(続行): {fig.id} [missing_asset_key]")
                 continue
             requested = fig.asset_key
             try:

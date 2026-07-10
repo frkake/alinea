@@ -76,6 +76,14 @@ _LATEX_MAIN_TEX = (
     "The method section describes the approach in detail for testing purposes here.\n"
     "\\end{document}\n"
 )
+_LATEX_MISSING_ASSET_TEX = _LATEX_MAIN_TEX.replace(
+    "\\end{document}\n",
+    "\\begin{figure}\n"
+    "\\caption{A figure whose source is missing.}\n"
+    "\\label{fig:missing}\n"
+    "\\end{figure}\n"
+    "\\end{document}\n",
+)
 
 
 def _tiny_pdf_figure() -> bytes:
@@ -87,10 +95,10 @@ def _tiny_pdf_figure() -> bytes:
     return bytes(data)
 
 
-def _build_latex_archive() -> bytes:
+def _build_latex_archive(main_tex: str = _LATEX_MAIN_TEX) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
-        data = _LATEX_MAIN_TEX.encode()
+        data = main_tex.encode()
         info = tarfile.TarInfo(name="paper/main.tex")
         info.size = len(data)
         info.mtime = 0
@@ -199,10 +207,6 @@ async def _oai2(_request: Request) -> Response:
     return Response(_OAI_XML, media_type="text/xml")
 
 
-async def _eprint_valid_latex(_request: Request) -> Response:
-    return Response(_build_latex_archive(), media_type="application/x-eprint-tar")
-
-
 async def _html_unused(_request: Request) -> Response:  # pragma: no cover
     """LaTeX 成功時は呼ばれないはず(優先順位検証)。呼ばれたら分かるよう 500 で明示する。"""
     return Response("html should not be fetched when latex succeeds", status_code=500)
@@ -216,12 +220,17 @@ async def _pdf(_request: Request) -> Response:
     return Response(_VALID_PRIORITY_PDF, media_type="application/pdf")
 
 
-def _make_latex_arxiv_stub() -> Starlette:
+def _make_latex_arxiv_stub(archive: bytes | None = None) -> Starlette:
+    selected_archive = archive if archive is not None else _build_latex_archive()
+
+    async def eprint(_request: Request) -> Response:
+        return Response(selected_archive, media_type="application/x-eprint-tar")
+
     return Starlette(
         routes=[
             Route("/api/query", _query, methods=["GET"]),
             Route("/oai2", _oai2, methods=["GET"]),
-            Route("/e-print/{arxiv_id:path}", _eprint_valid_latex, methods=["GET"]),
+            Route("/e-print/{arxiv_id:path}", eprint, methods=["GET"]),
             Route("/html/{versioned}/mock-figure.png", _figure_png, methods=["GET"]),
             Route("/html/{path:path}", _html_unused, methods=["GET"]),
             Route("/pdf/{arxiv_id:path}", _pdf, methods=["GET"]),
@@ -661,6 +670,52 @@ async def test_ingest_prefers_latex_source_when_available(
     timeline = build_timeline(job.log)
     assert timeline
     assert "LaTeX ソース取得" in timeline[0]["label"]
+
+
+async def test_missing_latex_figure_key_is_persisted_as_structured_failure(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+) -> None:
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_latex_arxiv_stub(_build_latex_archive(_LATEX_MISSING_ASSET_TEX))
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    content = DocumentContent.model_validate(revision.content)
+    missing = next(
+        block for _section, block in content.iter_blocks() if block.label == "fig:missing"
+    )
+    assert revision.stats["figure_asset_failures"] == [
+        {
+            "code": "missing_asset_key",
+            "figure_id": missing.id,
+            "source": "latex",
+        }
+    ]
+    assert missing.asset_key is None
 
 
 async def test_latex_wrapper_promotes_embedded_pdf_to_pdf_candidate(

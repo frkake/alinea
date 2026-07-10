@@ -13,6 +13,7 @@ import fitz
 import httpx
 import pytest
 from alinea_core.document.blocks import Block
+from alinea_core.parsing.html_parser import parse_arxiv_html
 from alinea_core.storage.s3 import StorageKeys
 from alinea_worker import figure_assets
 from alinea_worker.figure_assets import (
@@ -293,6 +294,62 @@ def test_svg_with_external_resource_is_rejected_instead_of_persisted(
     assert caught.value.code == "unsafe_vector"
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        b'<svg xmlns="http://www.w3.org/2000/svg"><image href="relative.png"/></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg"><image href="/etc/passwd"/></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg"><use href="ftp://example.org/x"/></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg"><use href="javascript:alert(1)"/></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/png,x"/></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg"><image href="h&#116;tp://example.org/x"/></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="relative.svg#x"/></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg"><rect style="fill:url(relative.png)"/></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg"><rect style="fill:u&#114;l(relative.png)"/></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg"><style>@im/**/port url(relative.css)</style></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg"><style>@imp&#111;rt url(relative.css)</style></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg"><style>fill:u\\72l(relative.png)</style></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><p>x</p></foreignObject></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>',
+        b'<?xml version="1.0"?><?xml-stylesheet href="relative.css"?><svg xmlns="http://www.w3.org/2000/svg"/>',
+    ],
+)
+def test_svg_structural_validator_rejects_active_content_before_render(
+    monkeypatch: pytest.MonkeyPatch, source: bytes
+) -> None:
+    rendered: list[str] = []
+
+    def fake_render(_content: bytes, filetype: str) -> Any:
+        rendered.append(filetype)
+        return validate_image_payload(_raster_bytes("PNG"))
+
+    monkeypatch.setattr(figure_assets, "_render_document", fake_render)
+
+    with pytest.raises(FigureAssetError) as caught:
+        figure_asset_payload(source, source_name="figure.svg")
+
+    assert caught.value.code == "unsafe_vector"
+    assert rendered == []
+
+
+def test_svg_structural_validator_allows_internal_gradient_and_use_fragment() -> None:
+    source = b"""<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+<defs>
+  <linearGradient id="gradient"><stop offset="0" stop-color="blue"/></linearGradient>
+  <path id="shape" d="M0 0 L10 0 L10 10 Z"/>
+</defs>
+<rect width="20" height="10" fill="url(#gradient)"/>
+<use href="#shape"/>
+</svg>"""
+
+    payload = figure_asset_payload(source, source_name="figure.svg")
+
+    assert payload.ext == "png"
+    assert payload.width > 0
+    assert payload.height > 0
+
+
 def test_svg_suffix_uses_validated_renderer_even_after_long_xml_prolog() -> None:
     source = (
         b'<?xml version="1.0"?>\n<!--'
@@ -307,18 +364,28 @@ def test_svg_suffix_uses_validated_renderer_even_after_long_xml_prolog() -> None
     assert (payload.width, payload.height) == (16, 12)
 
 
-def test_svg_rejects_entity_declaration_after_long_prolog() -> None:
+def test_svg_rejects_entity_declaration_before_render(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     source = (
         b'<?xml version="1.0"?>\n<!--'
         + b"padding" * 1500
         + b'--><!DOCTYPE svg [<!ENTITY x "unsafe">]>'
         + b'<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6">&x;</svg>'
     )
+    rendered: list[str] = []
+
+    def fake_render(_content: bytes, filetype: str) -> Any:
+        rendered.append(filetype)
+        return validate_image_payload(_raster_bytes("PNG"))
+
+    monkeypatch.setattr(figure_assets, "_render_document", fake_render)
 
     with pytest.raises(FigureAssetError) as caught:
         figure_asset_payload(source, source_name="figure.svg")
 
     assert caught.value.code == "unsafe_vector"
+    assert rendered == []
 
 
 def test_eps_without_available_converter_fails_without_returning_source_bytes() -> None:
@@ -427,12 +494,24 @@ async def figure_http() -> AsyncIterator[httpx.AsyncClient]:
     async def missing(_request: Any) -> Response:
         return Response("missing", status_code=404)
 
+    async def nested_redirect(_request: Any) -> RedirectResponse:
+        return RedirectResponse("new.png", status_code=302)
+
+    async def nested_image(_request: Any) -> Response:
+        return Response(png, media_type="image/png")
+
+    async def escaping_redirect(_request: Any) -> RedirectResponse:
+        return RedirectResponse("../../../2401.00001v1/private.png", status_code=302)
+
     app = Starlette(
         routes=[
             Route("/html/2401.00001v2/good.png", good),
             Route("/html/2401.00001v2/redirect.png", redirect),
             Route("/html/2401.00001v2/unsafe.png", unsafe_redirect),
             Route("/html/2401.00001v2/missing.png", missing),
+            Route("/html/2401.00001v2/figures/old.png", nested_redirect),
+            Route("/html/2401.00001v2/figures/new.png", nested_image),
+            Route("/html/2401.00001v2/figures/escape.png", escaping_redirect),
         ]
     )
     async with httpx.AsyncClient(
@@ -475,6 +554,33 @@ async def test_fetch_html_asset_rejects_cross_origin_redirect(
     assert caught.value.code == "unsafe_asset_url"
 
 
+async def test_fetch_html_asset_resolves_relative_redirect_against_current_directory(
+    figure_http: httpx.AsyncClient,
+) -> None:
+    payload = await fetch_html_asset(
+        figure_http,
+        base="https://arxiv.org",
+        versioned="2401.00001v2",
+        source="figures/old.png",
+    )
+
+    assert payload.ext == "png"
+
+
+async def test_fetch_html_asset_rejects_relative_redirect_outside_current_version(
+    figure_http: httpx.AsyncClient,
+) -> None:
+    with pytest.raises(FigureAssetError) as caught:
+        await fetch_html_asset(
+            figure_http,
+            base="https://arxiv.org",
+            versioned="2401.00001v2",
+            source="figures/escape.png",
+        )
+
+    assert caught.value.code == "unsafe_asset_url"
+
+
 @pytest.mark.parametrize(
     ("source", "max_bytes", "expected_code"),
     [("missing.png", 1024, "asset_http_status"), ("good.png", 10, "asset_too_large")],
@@ -509,12 +615,17 @@ class _RecordingStorage:
         self.puts.append((bucket, key, body, content_type))
 
 
-def _figure_run(fig: Block, binary_files: dict[str, bytes]) -> tuple[IngestRun, _RecordingStorage]:
+def _figure_run(
+    fig: Block,
+    binary_files: dict[str, bytes],
+    *,
+    source_format: str = "latex",
+) -> tuple[IngestRun, _RecordingStorage]:
     run = object.__new__(IngestRun)
     storage = _RecordingStorage()
     run.parsed = SimpleNamespace(figures=[fig])
     run.paper_id = "paper-id"
-    run.source_format = "latex"
+    run.source_format = source_format
     run.latex_binary_files = binary_files
     run.latex_main_tex_name = "paper/main.tex"
     run.latex_graphicspaths = ["../images/"]
@@ -539,9 +650,12 @@ async def test_pipeline_uploads_only_canonical_validated_figure_payload() -> Non
     ]
 
 
-@pytest.mark.parametrize("requested", ["", r"\iftoggle{largefigures"])
+@pytest.mark.parametrize(
+    ("requested", "expected_code"),
+    [("", "missing_asset_key"), (r"\iftoggle{largefigures", "invalid_asset_path")],
+)
 async def test_pipeline_failure_clears_public_asset_key_and_records_diagnostic(
-    requested: str,
+    requested: str, expected_code: str
 ) -> None:
     fig = Block(id="fig-bad", type="figure", asset_key=requested)
     run, storage = _figure_run(fig, {"images/plot.png": _raster_bytes("PNG")})
@@ -554,8 +668,48 @@ async def test_pipeline_failure_clears_public_asset_key_and_records_diagnostic(
     assert warnings and "fig-bad" in warnings[0]
     assert failures == [
         {
-            "code": "invalid_asset_path",
+            "code": expected_code,
             "figure_id": "fig-bad",
             "source": "latex",
         }
     ]
+
+
+async def test_pipeline_records_missing_asset_key_without_upload() -> None:
+    fig = Block(id="fig-missing", type="figure", asset_key=None)
+    run, storage = _figure_run(fig, {})
+
+    output, warnings, failures = await run._save_figures("revision-id")
+
+    assert fig.asset_key is None
+    assert output == {}
+    assert storage.puts == []
+    assert warnings and "fig-missing" in warnings[0]
+    assert failures == [
+        {
+            "code": "missing_asset_key",
+            "figure_id": "fig-missing",
+            "source": "latex",
+        }
+    ]
+
+
+async def test_pipeline_allows_safe_inline_html_figure_without_asset_diagnostic() -> None:
+    parsed = parse_arxiv_html(
+        """<article class="ltx_document"><section class="ltx_section">
+<h2 class="ltx_title">Result</h2><figure id="fig-inline" class="ltx_figure">
+<svg width="10" height="10"><path d="M0 0 L10 10"></path></svg>
+</figure></section></article>"""
+    )
+    fig = parsed.figures[0]
+    assert fig.asset_key is None
+    assert fig.raw is not None
+    run, storage = _figure_run(fig, {}, source_format="arxiv_html")
+
+    output, warnings, failures = await run._save_figures("revision-id")
+
+    assert fig.asset_key is None
+    assert output == {}
+    assert storage.puts == []
+    assert warnings == []
+    assert failures == []

@@ -13,10 +13,11 @@ import math
 import posixpath
 import re
 import warnings
+import xml.etree.ElementTree as ET
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from urllib.parse import SplitResult, unquote, urlsplit, urlunsplit
+from urllib.parse import SplitResult, unquote, urljoin, urlsplit, urlunsplit
 
 import fitz
 import httpx
@@ -41,14 +42,34 @@ MAX_REDIRECTS = 3
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _GRAPHICSPATH_RE = re.compile(r"\\graphicspath(?![A-Za-z])")
-_SVG_UNSAFE_DECLARATION_RE = re.compile(rb"<!\s*(?:doctype|entity)\b", re.IGNORECASE)
-_SVG_EXTERNAL_REFERENCE_RE = re.compile(
-    rb"(?:"
-    rb"(?:href|src)\s*=\s*['\"]\s*(?:https?:|file:|//)"
-    rb"|url\s*\(\s*['\"]?\s*(?:https?:|file:|//)"
-    rb"|@import\s+['\"]\s*(?:https?:|file:|//)"
-    rb")",
+_SVG_UNSAFE_DECLARATION_RE = re.compile(r"<!\s*(?:doctype|entity)\b", re.IGNORECASE)
+_XML_DECLARATION_RE = re.compile(r"\A<\?xml(?:\s+[^?]*)?\?>", re.IGNORECASE)
+_CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_CSS_URL_RE = re.compile(r"url\s*\(\s*(?P<target>[^)]*?)\s*\)", re.IGNORECASE)
+_CSS_DANGEROUS_RE = re.compile(
+    r"@import\b|expression\s*\(|(?:behavior|-moz-binding)\s*:|javascript\s*:",
     re.IGNORECASE,
+)
+_SAFE_FRAGMENT_RE = re.compile(r"#[A-Za-z0-9_.:-]+\Z")
+_SVG_NAMESPACE = "http://www.w3.org/2000/svg"
+_SVG_ACTIVE_ELEMENTS = frozenset(
+    {
+        "animate",
+        "animatemotion",
+        "animatetransform",
+        "audio",
+        "canvas",
+        "discard",
+        "embed",
+        "foreignobject",
+        "handler",
+        "iframe",
+        "listener",
+        "object",
+        "script",
+        "set",
+        "video",
+    }
 )
 _RASTER_FORMATS: dict[str, tuple[str, str]] = {
     "PNG": ("png", "image/png"),
@@ -396,12 +417,81 @@ def _is_supported_raster(data: bytes) -> bool:
     )
 
 
+def _xml_name(value: str) -> tuple[str | None, str]:
+    if value.startswith("{") and "}" in value:
+        namespace, local = value[1:].split("}", 1)
+        return namespace, local.casefold()
+    return None, value.rsplit(":", 1)[-1].casefold()
+
+
+def _require_internal_fragment(value: str) -> None:
+    if _SAFE_FRAGMENT_RE.fullmatch(value.strip()) is None:
+        raise FigureAssetError("unsafe_vector", "SVG references must target an internal fragment")
+
+
+def _validate_svg_css(value: str) -> None:
+    if "\\" in value:
+        raise FigureAssetError("unsafe_vector", "SVG CSS escapes are not accepted")
+    without_comments = _CSS_COMMENT_RE.sub("", value)
+    if "/*" in without_comments or "*/" in without_comments:
+        raise FigureAssetError("unsafe_vector", "SVG CSS contains an invalid comment")
+    if _CSS_DANGEROUS_RE.search(without_comments) is not None:
+        raise FigureAssetError("unsafe_vector", "SVG CSS contains active content")
+
+    unmatched = _CSS_URL_RE.sub("", without_comments)
+    if re.search(r"url\s*\(", unmatched, re.IGNORECASE) is not None:
+        raise FigureAssetError("unsafe_vector", "SVG CSS contains an invalid URL")
+    for match in _CSS_URL_RE.finditer(without_comments):
+        target = match.group("target").strip()
+        if len(target) >= 2 and target[0] == target[-1] and target[0] in {'"', "'"}:
+            target = target[1:-1].strip()
+        _require_internal_fragment(target)
+
+
+def _decode_and_precheck_svg(data: bytes) -> str:
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise FigureAssetError("invalid_vector", "SVG must use UTF-8 XML") from exc
+    if _SVG_UNSAFE_DECLARATION_RE.search(text) is not None:
+        raise FigureAssetError("unsafe_vector", "SVG declarations are not accepted")
+
+    declaration = _XML_DECLARATION_RE.match(text)
+    remainder = text[declaration.end() :] if declaration is not None else text
+    if "<?" in remainder or "?>" in remainder:
+        raise FigureAssetError("unsafe_vector", "SVG processing instructions are not accepted")
+    return text
+
+
+def _validate_svg_document(data: bytes) -> None:
+    text = _decode_and_precheck_svg(data)
+    try:
+        # DTDs, entities, non-XML-declaration PIs, and non-UTF-8 input are rejected above.
+        root = ET.fromstring(text)  # noqa: S314 - hardened stdlib parse, no DTD/entity input
+    except ET.ParseError as exc:
+        raise FigureAssetError("invalid_vector", "SVG XML is invalid") from exc
+
+    root_namespace, root_name = _xml_name(str(root.tag))
+    if root_name != "svg" or root_namespace not in {None, _SVG_NAMESPACE}:
+        raise FigureAssetError("unsafe_vector", "vector document root is not safe SVG")
+
+    for element in root.iter():
+        namespace, name = _xml_name(str(element.tag))
+        if namespace not in {None, _SVG_NAMESPACE} or name in _SVG_ACTIVE_ELEMENTS:
+            raise FigureAssetError("unsafe_vector", "SVG contains an active element")
+        for raw_attribute, value in element.attrib.items():
+            _attribute_namespace, attribute = _xml_name(raw_attribute)
+            if attribute.startswith("on") or attribute == "base":
+                raise FigureAssetError("unsafe_vector", "SVG contains an active attribute")
+            if attribute in {"href", "src"}:
+                _require_internal_fragment(value)
+            _validate_svg_css(value)
+        if name == "style":
+            _validate_svg_css("".join(element.itertext()))
+
+
 def _render_svg(data: bytes) -> FigureAssetPayload:
-    if (
-        _SVG_UNSAFE_DECLARATION_RE.search(data) is not None
-        or _SVG_EXTERNAL_REFERENCE_RE.search(data) is not None
-    ):
-        raise FigureAssetError("unsafe_vector", "SVG contains an external or active resource")
+    _validate_svg_document(data)
     try:
         return _render_document(data, "svg")
     except FigureAssetError as exc:
@@ -633,7 +723,11 @@ async def fetch_html_asset(
                         raise FigureAssetError(
                             "asset_redirect_invalid", "figure redirect limit was exceeded"
                         )
-                    url = html_asset_url(base, versioned, location)
+                    if _has_control(location):
+                        raise FigureAssetError(
+                            "unsafe_asset_url", "figure redirect contains control characters"
+                        )
+                    url = html_asset_url(base, versioned, urljoin(url, location))
                     continue
                 if response.status_code != 200:
                     raise FigureAssetError(
