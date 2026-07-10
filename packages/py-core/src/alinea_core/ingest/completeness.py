@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
 from alinea_core.document.blocks import DocumentContent
@@ -40,11 +40,19 @@ def assess_document_completeness(
         raise ValueError("unresolved_figures must be non-negative")
 
     blocks = [block for _section, block in content.iter_blocks()]
-    visible = "\n".join(
-        block_to_plain(block) for block in blocks if block.type in TRANSLATABLE_BLOCK_TYPES
-    ).strip()
+    visible_blocks = []
+    for block in blocks:
+        if block.type not in TRANSLATABLE_BLOCK_TYPES:
+            continue
+        plain = block_to_plain(block)
+        if plain:
+            visible_blocks.append((block, plain))
+    visible = "\n".join(plain for _block, plain in visible_blocks)
     stripped_pdf_text = pdf_text.strip()
     paragraph_count = sum(block.type in _PARAGRAPH_TYPES for block in blocks)
+    visible_paragraph_count = sum(
+        block.type in _PARAGRAPH_TYPES for block, _plain in visible_blocks
+    )
     figure_count = sum(block.type == "figure" for block in blocks)
 
     def report(accepted: bool, code: str | None) -> DocumentCompleteness:
@@ -66,12 +74,13 @@ def assess_document_completeness(
     elif not isinstance(binary_files, list | tuple | set | frozenset):
         binary_files = ()
     binary_pdfs = {
-        Path(name).name
+        PurePosixPath(name).name
         for name in binary_files
         if isinstance(name, str) and name.lower().endswith(".pdf")
     }
 
-    if len(blocks) <= 3 and visible in binary_pdfs:
+    visible_reference = PurePosixPath(visible).name
+    if len(visible_blocks) <= 3 and visible_reference in binary_pdfs:
         return report(False, "embedded_pdf_wrapper")
     if unresolved_figures > 0:
         return report(False, "figure_asset_unresolved")
@@ -79,6 +88,7 @@ def assess_document_completeness(
         return report(False, "document_incomplete")
 
     accepted = bool(visible) and (
-        paragraph_count >= 2 or any(block.type == "heading" for block in blocks)
+        visible_paragraph_count >= 2
+        or any(block.type == "heading" for block, _plain in visible_blocks)
     )
     return report(accepted, None if accepted else "document_incomplete")

@@ -1,4 +1,5 @@
 import pytest
+from alinea_core import ingest
 from alinea_core.document.blocks import Block, BlockType, DocumentContent, Section, SectionHeading
 from alinea_core.ingest.completeness import (
     DocumentCompleteness,
@@ -53,6 +54,52 @@ def test_rejects_embedded_pdf_filename_from_mapping_manifest() -> None:
     assert report.code == "embedded_pdf_wrapper"
 
 
+@pytest.mark.parametrize("reference", ["./body.pdf", "papers/body.pdf"])
+def test_rejects_normalized_embedded_pdf_reference(reference: str) -> None:
+    report = assess_document_completeness(
+        _doc(_text_block("b1", "paragraph", reference)),
+        pdf_text="",
+        source_manifest={"binary_files": ["nested/body.pdf"]},
+    )
+
+    assert not report.accepted
+    assert report.code == "embedded_pdf_wrapper"
+
+
+def test_empty_parser_blocks_do_not_hide_embedded_pdf_wrapper() -> None:
+    report = assess_document_completeness(
+        _doc(
+            _text_block("b1", "paragraph", "body.pdf"),
+            _text_block("empty-p", "paragraph", ""),
+            Block(id="empty-h", type="heading", level=1),
+            Block(id="empty-fig", type="figure"),
+        ),
+        pdf_text="",
+        source_manifest={"binary_files": ["nested/body.pdf"]},
+    )
+
+    assert not report.accepted
+    assert report.code == "embedded_pdf_wrapper"
+
+
+@pytest.mark.parametrize(
+    "binary_files",
+    [
+        pytest.param("nested/body.pdf", id="string"),
+        pytest.param(("nested/body.pdf",), id="tuple"),
+        pytest.param({"nested/body.pdf"}, id="set"),
+    ],
+)
+def test_rejects_embedded_pdf_filename_from_common_manifest_forms(binary_files: object) -> None:
+    report = assess_document_completeness(
+        _doc(_text_block("b1", "paragraph", "body.pdf")),
+        pdf_text="",
+        source_manifest={"binary_files": binary_files},
+    )
+
+    assert report.code == "embedded_pdf_wrapper"
+
+
 def test_accepts_short_but_structured_note() -> None:
     visible = "Method\nA concise method.\nA concise result."
 
@@ -75,6 +122,61 @@ def test_accepts_short_but_structured_note() -> None:
         "figure_count": 0,
         "unresolved_figures": 0,
     }
+
+
+def test_rejects_empty_heading_with_only_one_non_empty_paragraph() -> None:
+    report = assess_document_completeness(
+        _doc(
+            Block(id="h1", type="heading", level=1),
+            _text_block("p1", "paragraph", "Only visible paragraph."),
+        ),
+        pdf_text="",
+        source_manifest={},
+    )
+
+    assert not report.accepted
+    assert report.code == "document_incomplete"
+    assert report.structured_chars == len("Only visible paragraph.")
+    assert report.paragraph_count == 1
+
+
+def test_rejects_empty_paragraphs_with_only_figure_caption_visible() -> None:
+    report = assess_document_completeness(
+        _doc(
+            _text_block("p1", "paragraph", ""),
+            _text_block("p2", "paragraph", ""),
+            Block(
+                id="fig-1",
+                type="figure",
+                caption=[{"t": "text", "v": "Only a figure caption."}],
+            ),
+        ),
+        pdf_text="",
+        source_manifest={},
+    )
+
+    assert not report.accepted
+    assert report.code == "document_incomplete"
+    assert report.structured_chars == len("Only a figure caption.")
+    assert report.paragraph_count == 2
+    assert report.figure_count == 1
+
+
+def test_empty_blocks_do_not_add_visible_text_separators() -> None:
+    visible = "Heading\nVisible paragraph."
+    report = assess_document_completeness(
+        _doc(
+            Block(id="h1", type="heading", level=1, title="Heading"),
+            _text_block("empty-p", "paragraph", ""),
+            _text_block("p1", "paragraph", "Visible paragraph."),
+        ),
+        pdf_text="",
+        source_manifest={},
+    )
+
+    assert report.accepted
+    assert report.structured_chars == len(visible)
+    assert report.paragraph_count == 2
 
 
 def test_rejects_unresolved_figure_assets_and_preserves_counts() -> None:
@@ -243,3 +345,8 @@ def test_includes_nested_section_blocks_in_text_counts_and_acceptance() -> None:
     assert report.structured_chars == len(visible)
     assert report.paragraph_count == 2
     assert report.figure_count == 1
+
+
+def test_completeness_classifier_is_publicly_exported() -> None:
+    assert ingest.DocumentCompleteness is DocumentCompleteness
+    assert ingest.assess_document_completeness is assess_document_completeness
