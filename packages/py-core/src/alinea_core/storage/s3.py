@@ -125,6 +125,33 @@ class S3Storage:
                     },
                 )
 
+    async def delete_prefixes(self, bucket: str, prefixes: Iterable[str]) -> None:
+        unique_prefixes = [prefix for prefix in dict.fromkeys(prefixes) if prefix]
+        if not unique_prefixes:
+            return
+        async with self._client_ctx() as client:
+            for prefix in unique_prefixes:
+                continuation_token: str | None = None
+                while True:
+                    kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": prefix}
+                    if continuation_token is not None:
+                        kwargs["ContinuationToken"] = continuation_token
+                    response = await client.list_objects_v2(**kwargs)
+                    keys = [obj["Key"] for obj in response.get("Contents", [])]
+                    for i in range(0, len(keys), 1000):
+                        await client.delete_objects(
+                            Bucket=bucket,
+                            Delete={
+                                "Objects": [{"Key": key} for key in keys[i : i + 1000]],
+                                "Quiet": True,
+                            },
+                        )
+                    if not response.get("IsTruncated"):
+                        break
+                    continuation_token = response.get("NextContinuationToken")
+                    if continuation_token is None:
+                        break
+
     async def presign_get(self, bucket: str, key: str, expires_in: int = 600) -> str:
         """署名付き GET URL を発行する(既定 600 秒。plans/03 §22.1)。
 

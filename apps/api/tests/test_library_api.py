@@ -19,6 +19,7 @@ import pytest
 import pytest_asyncio
 from alinea_api.services.session_service import create_extension_token, create_session
 from alinea_api.services.user_service import purge_user, upsert_user_by_email
+from alinea_core.article.storage_keys import article_versions_cache_key
 from alinea_core.db.models import (
     Annotation,
     Article,
@@ -39,6 +40,7 @@ from alinea_core.db.models import (
     ReadingSession,
     ResourceLink,
     SourceAsset,
+    UsageRecord,
     User,
     VocabEntry,
 )
@@ -54,12 +56,19 @@ class _RecordingStorage:
 
     def __init__(self) -> None:
         self.deleted: list[tuple[str, str]] = []
+        self.deleted_prefixes: list[tuple[str, str]] = []
 
     async def delete_many(self, bucket: str, keys: Any) -> None:
         key_list = list(keys)
         if key_list and _storage_failure is not None:
             raise _storage_failure
         self.deleted.extend((bucket, key) for key in key_list)
+
+    async def delete_prefixes(self, bucket: str, prefixes: Any) -> None:
+        prefix_list = list(prefixes)
+        if prefix_list and _storage_failure is not None:
+            raise _storage_failure
+        self.deleted_prefixes.extend((bucket, prefix) for prefix in prefix_list)
 
 
 _last_storage: _RecordingStorage | None = None
@@ -75,6 +84,11 @@ def _storage_override() -> _RecordingStorage:
 def _storage_deleted() -> set[tuple[str, str]]:
     assert _last_storage is not None
     return set(_last_storage.deleted)
+
+
+def _storage_deleted_prefixes() -> set[tuple[str, str]]:
+    assert _last_storage is not None
+    return set(_last_storage.deleted_prefixes)
 
 
 def _build_app() -> FastAPI:
@@ -522,9 +536,16 @@ async def test_delete_removes_unreferenced_public_paper_and_storage_objects(
         ("assets", overview_image_key),
         ("assets", explainer_image_key),
     } <= _storage_deleted()
+    assert {
+        ("sources", f"sources/{paper_id}/"),
+        ("assets", f"figures/{paper_id}/"),
+        ("assets", f"thumbnails/{paper_id}/"),
+        ("assets", f"renders/articles/{article.id}/"),
+        ("assets", f"renders/overview/{article.id}/"),
+    } <= _storage_deleted_prefixes()
 
 
-async def test_delete_keeps_public_paper_referenced_by_other_item(
+async def test_delete_removes_public_paper_and_all_referencing_items(
     auth: tuple[AsyncClient, str], db_session: AsyncSession
 ) -> None:
     client, uid = auth
@@ -549,8 +570,8 @@ async def test_delete_keeps_public_paper_referenced_by_other_item(
 
     assert r.status_code == 204
     assert await _count(db_session, LibraryItem, LibraryItem.id == item_id) == 0
-    assert await _count(db_session, LibraryItem, LibraryItem.id == other_item_id) == 1
-    assert await _count(db_session, Paper, Paper.id == paper_id) == 1
+    assert await _count(db_session, LibraryItem, LibraryItem.id == other_item_id) == 0
+    assert await _count(db_session, Paper, Paper.id == paper_id) == 0
 
 
 async def test_delete_rolls_back_when_storage_delete_fails(
@@ -580,7 +601,7 @@ async def test_delete_rolls_back_when_storage_delete_fails(
 
 
 async def test_delete_cascades_related_personal_data(
-    auth: tuple[AsyncClient, str], db_session: AsyncSession, factories: Any
+    auth: tuple[AsyncClient, str], db_session: AsyncSession, factories: Any, redis_client: Any
 ) -> None:
     client, uid = auth
     item_id = await _mk_item(db_session, uid)
@@ -610,7 +631,18 @@ async def test_delete_cascades_related_personal_data(
     await factories.make_collection(db_session, user=user, entries_of=[item])
     article = await factories.make_article(db_session, library_item=item, with_blocks=True)
     await factories.make_reading_session(db_session, library_item=item)
-    await factories.make_job(db_session, user=user, paper=paper, library_item=item)
+    job = await factories.make_job(db_session, user=user, paper=paper, library_item=item)
+    usage = UsageRecord(
+        user_id=uid,
+        library_item_id=item_id,
+        job_id=str(job.id),
+        task="translation",
+        provider="openai",
+        model="test",
+        key_source="operator",
+        status="ok",
+    )
+    db_session.add(usage)
     glossary = Glossary(id=str(uuid.uuid4()), scope="paper", library_item_id=item_id)
     db_session.add(glossary)
     await db_session.flush()
@@ -626,6 +658,7 @@ async def test_delete_cascades_related_personal_data(
     revision_id = str(revision.id)
     thread_id = str(thread.id)
     article_id = str(article.id)
+    usage_id = usage.id
     glossary_id = str(glossary.id)
     db_session.add(
         Notification(
@@ -635,6 +668,8 @@ async def test_delete_cascades_related_personal_data(
         )
     )
     await db_session.commit()
+    await redis_client.set(f"promo:checked:{paper_id}", "1")
+    await redis_client.rpush(article_versions_cache_key(article_id), "cached-version")
 
     r = await client.delete(f"/api/library-items/{item_id}")
     assert r.status_code == 204
@@ -653,6 +688,7 @@ async def test_delete_cascades_related_personal_data(
     assert await _count(db_session, ArticleBlock, ArticleBlock.article_id == article_id) == 0
     assert await _count(db_session, ReadingSession, ReadingSession.library_item_id == item_id) == 0
     assert await _count(db_session, Job, Job.library_item_id == item_id) == 0
+    assert await _count(db_session, UsageRecord, UsageRecord.id == usage_id) == 0
     assert await _count(db_session, Glossary, Glossary.id == glossary_id) == 0
     assert await _count(db_session, GlossaryTerm, GlossaryTerm.glossary_id == glossary_id) == 0
     assert (
@@ -663,6 +699,12 @@ async def test_delete_cascades_related_personal_data(
         )
         == 0
     )
+    assert await redis_client.exists(f"promo:checked:{paper_id}") == 0
+    assert await redis_client.exists(article_versions_cache_key(article_id)) == 0
+    assert {
+        ("assets", f"renders/articles/{article_id}/"),
+        ("assets", f"renders/overview/{article_id}/"),
+    } <= _storage_deleted_prefixes()
 
 
 async def test_delete_allows_extension_token(

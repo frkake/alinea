@@ -18,6 +18,7 @@ import uuid
 from collections.abc import Iterable, Sequence
 from typing import Annotated, Any
 
+from alinea_core.article.storage_keys import article_versions_cache_key
 from alinea_core.db.models import (
     Article,
     Collection,
@@ -25,12 +26,14 @@ from alinea_core.db.models import (
     DocumentRevision,
     ExplainerFigure,
     Glossary,
+    Job,
     LibraryItem,
     Notification,
     OverviewFigure,
     Paper,
     SavedFilter,
     SourceAsset,
+    UsageRecord,
 )
 from alinea_core.document.blocks import DocumentContent
 from alinea_core.storage.s3 import S3Storage, StorageKeys
@@ -115,11 +118,17 @@ def _asset_keys_from_json(value: Any) -> set[str]:
     return keys
 
 
-async def _article_asset_keys(db: DbDep, library_item_id: str) -> set[str]:
-    rows = await db.execute(select(Article.id).where(Article.library_item_id == library_item_id))
+async def _article_storage_data(
+    db: DbDep, library_item_ids: Sequence[str]
+) -> tuple[list[str], list[str], set[str]]:
+    if not library_item_ids:
+        return [], [], set()
+    rows = await db.execute(
+        select(Article.id).where(Article.library_item_id.in_(library_item_ids))
+    )
     article_ids = list(rows.scalars())
     if not article_ids:
-        return set()
+        return [], [], set()
 
     keys: set[str] = set()
     overview_rows = await db.execute(
@@ -132,13 +141,15 @@ async def _article_asset_keys(db: DbDep, library_item_id: str) -> set[str]:
         _add_storage_key(keys, image_key)
 
     explainer_rows = await db.execute(
-        select(ExplainerFigure.image_storage_key).where(
+        select(ExplainerFigure.id, ExplainerFigure.image_storage_key).where(
             ExplainerFigure.article_id.in_(article_ids)
         )
     )
-    for image_key in explainer_rows.scalars():
+    explainer_ids: list[str] = []
+    for explainer_id, image_key in explainer_rows.all():
+        explainer_ids.append(str(explainer_id))
         _add_storage_key(keys, image_key)
-    return keys
+    return [str(article_id) for article_id in article_ids], explainer_ids, keys
 
 
 async def _paper_storage_keys(db: DbDep, paper: Paper) -> tuple[set[str], set[str]]:
@@ -164,18 +175,19 @@ async def _paper_storage_keys(db: DbDep, paper: Paper) -> tuple[set[str], set[st
     return source_keys, asset_keys
 
 
-def _is_paper_scoped_thumbnail(key: str, paper_id: str, paper: Paper | None) -> bool:
-    return key == (paper.thumbnail_key if paper is not None else None) or key.startswith(
-        f"thumbnails/{paper_id}/"
-    )
-
-
 async def _delete_storage_objects(
-    storage: S3Storage, *, source_keys: Iterable[str], asset_keys: Iterable[str]
+    storage: S3Storage,
+    *,
+    source_keys: Iterable[str],
+    asset_keys: Iterable[str],
+    source_prefixes: Iterable[str] = (),
+    asset_prefixes: Iterable[str] = (),
 ) -> None:
     try:
         await storage.delete_many(storage.sources_bucket, source_keys)
         await storage.delete_many(storage.assets_bucket, asset_keys)
+        await storage.delete_prefixes(storage.sources_bucket, source_prefixes)
+        await storage.delete_prefixes(storage.assets_bucket, asset_prefixes)
     except Exception:
         logger.warning("failed to delete library item storage objects", exc_info=True)
         raise
@@ -782,51 +794,85 @@ async def patch_item(
 
 
 # ============================================================================
-# 削除(§5.5)。取り込み中(queued/waiting_quota/running)の項目に対する呼び出しは
-# 取り込みキャンセルとして扱う(docs/08 §2.2 拡張ポップアップ・Web 進捗表示の「キャンセル」)。
+# 削除(§5.5)。論文を再取り込みした際に旧翻訳・生成物を再利用しないよう、同じ Paper を
+# 参照する項目を含めて論文単位で完全削除する。取り込み中(queued/waiting_quota/running)の
+# 項目に対する呼び出しは取り込みキャンセルとして扱う(docs/08 §2.2)。
 # 未着手(queued/waiting_quota)のジョブは行ごと消えるため claim() が確実に空振りする
 # (main.py run_job の claim=None 経路)。running は次回 DB 書き込みで LookupError となり
 # ベストエフォートで中断(main.py の job_gone_after_cancel 経路)。
 # ============================================================================
 @router.delete("/api/library-items/{item_id}", status_code=204, operation_id="libraryItems_delete")
 async def delete_item(
-    item_id: str, user: CurrentUserOrExt, db: DbDep, storage: StorageDep
+    item_id: str, user: CurrentUserOrExt, db: DbDep, storage: StorageDep, r: RedisDep
 ) -> Response:
     item = await _get_owned(db, user.id, item_id)
     paper_id = str(item.paper_id)
     paper = await db.get(Paper, paper_id)
-    remaining = (
-        await db.execute(
-            select(func.count())
-            .select_from(LibraryItem)
-            .where(LibraryItem.paper_id == paper_id, LibraryItem.id != item_id)
-        )
-    ).scalar_one()
-    delete_paper = int(remaining) == 0
+    library_item_ids = [
+        str(value)
+        for value in (
+            await db.execute(select(LibraryItem.id).where(LibraryItem.paper_id == paper_id))
+        ).scalars()
+    ]
+    article_ids, explainer_ids, article_asset_keys = await _article_storage_data(
+        db, library_item_ids
+    )
 
     source_keys: set[str] = set()
-    asset_keys = await _article_asset_keys(db, item_id)
-    if delete_paper:
-        if paper is not None:
-            paper_source_keys, paper_asset_keys = await _paper_storage_keys(db, paper)
-            source_keys.update(paper_source_keys)
-            asset_keys.update(paper_asset_keys)
-        _add_storage_key(asset_keys, item.thumbnail_key)
-    elif item.thumbnail_key and not _is_paper_scoped_thumbnail(item.thumbnail_key, paper_id, paper):
-        _add_storage_key(asset_keys, item.thumbnail_key)
-
-    await db.execute(delete(Glossary).where(Glossary.library_item_id == item_id))
-    await db.execute(
-        delete(Notification).where(
-            Notification.user_id == user.id,
-            Notification.payload["library_item_id"].astext == item_id,
-        )
+    asset_keys = set(article_asset_keys)
+    if paper is not None:
+        paper_source_keys, paper_asset_keys = await _paper_storage_keys(db, paper)
+        source_keys.update(paper_source_keys)
+        asset_keys.update(paper_asset_keys)
+    item_thumbnail_rows = await db.execute(
+        select(LibraryItem.thumbnail_key).where(LibraryItem.id.in_(library_item_ids))
     )
-    await db.delete(item)  # 配下は FK ON DELETE CASCADE で消える
-    if delete_paper and paper is not None:
+    for thumbnail_key in item_thumbnail_rows.scalars():
+        _add_storage_key(asset_keys, thumbnail_key)
+
+    job_ids = [
+        str(value)
+        for value in (
+            await db.execute(
+                select(Job.id).where(
+                    or_(Job.paper_id == paper_id, Job.library_item_id.in_(library_item_ids))
+                )
+            )
+        ).scalars()
+    ]
+    usage_condition: ColumnElement[bool] = UsageRecord.library_item_id.in_(library_item_ids)
+    if job_ids:
+        usage_condition = or_(usage_condition, UsageRecord.job_id.in_(job_ids))
+    await db.execute(delete(UsageRecord).where(usage_condition))
+    await db.execute(delete(Glossary).where(Glossary.library_item_id.in_(library_item_ids)))
+    notification_conditions = [
+        Notification.payload["library_item_id"].astext.in_(library_item_ids),
+        Notification.payload["paper_id"].astext == paper_id,
+    ]
+    if job_ids:
+        notification_conditions.append(Notification.payload["job_id"].astext.in_(job_ids))
+    await db.execute(delete(Notification).where(or_(*notification_conditions)))
+    if paper is not None:
         await db.delete(paper)
+    else:
+        await db.delete(item)
     await db.flush()
-    await _delete_storage_objects(storage, source_keys=source_keys, asset_keys=asset_keys)
+    await _delete_storage_objects(
+        storage,
+        source_keys=source_keys,
+        asset_keys=asset_keys,
+        source_prefixes=[f"sources/{paper_id}/"],
+        asset_prefixes=[
+            f"figures/{paper_id}/",
+            f"thumbnails/{paper_id}/",
+            *(f"renders/articles/{article_id}/" for article_id in article_ids),
+            *(f"renders/overview/{article_id}/" for article_id in article_ids),
+            *(f"renders/explainer/{explainer_id}/" for explainer_id in explainer_ids),
+        ],
+    )
+    redis_keys = [f"promo:checked:{paper_id}"]
+    redis_keys.extend(article_versions_cache_key(article_id) for article_id in article_ids)
+    await r.delete(*redis_keys)
     await db.commit()
     return Response(status_code=204)
 
