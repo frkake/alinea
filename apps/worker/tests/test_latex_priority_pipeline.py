@@ -529,21 +529,23 @@ async def test_ingest_reuses_api_prefetched_latest_pdf_without_network_fetch(
     arxiv_id = _arxiv_id()
     ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
     storage = S3Storage()
+    resolved_key = StorageKeys.original_pdf(ids["paper_id"], "v1")
     key = StorageKeys.original_pdf(ids["paper_id"], "latest")
     await storage.put(
         storage.sources_bucket, key, _VALID_PRIORITY_PDF, content_type="application/pdf"
     )
-    db_session.add(
-        SourceAsset(
-            paper_id=ids["paper_id"],
-            kind="pdf",
-            source_url=f"http://arxiv.test/pdf/{arxiv_id}",
-            source_version="latest",
-            storage_key=key,
-            content_type="application/pdf",
-            byte_size=len(_VALID_PRIORITY_PDF),
-        )
+    latest_asset = SourceAsset(
+        paper_id=ids["paper_id"],
+        kind="pdf",
+        source_url=f"http://arxiv.test/pdf/{arxiv_id}",
+        source_version="latest",
+        storage_key=key,
+        content_type="application/pdf",
+        byte_size=len(_VALID_PRIORITY_PDF),
     )
+    db_session.add(latest_asset)
+    await db_session.flush()
+    latest_asset_id = str(latest_asset.id)
     await db_session.commit()
 
     calls = {"pdf": 0, "eprint": 0, "html": 0}
@@ -567,6 +569,7 @@ async def test_ingest_reuses_api_prefetched_latest_pdf_without_network_fetch(
     assert job is not None
     assert job.status == "succeeded", job.error
     assert calls == {"pdf": 0, "eprint": 1, "html": 0}
+    assert await storage.get(storage.sources_bucket, resolved_key) == _VALID_PRIORITY_PDF
     pdf_assets = (
         (
             await db_session.execute(
@@ -579,10 +582,12 @@ async def test_ingest_reuses_api_prefetched_latest_pdf_without_network_fetch(
         .all()
     )
     assert len(pdf_assets) == 1
+    assert str(pdf_assets[0].id) == latest_asset_id
     assert pdf_assets[0].source_version == "v1"
+    assert pdf_assets[0].storage_key == resolved_key
 
 
-async def test_ingest_resume_uses_structuring_checkpoint_without_reselecting_candidate(
+async def test_ingest_prefers_resolved_canonical_pdf_over_latest_alias(
     db_session: AsyncSession,
     router: LLMRouter,
     seed_ingest_job: Any,
@@ -590,19 +595,29 @@ async def test_ingest_resume_uses_structuring_checkpoint_without_reselecting_can
     arxiv_id = _arxiv_id()
     ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
     storage = S3Storage()
-    key = StorageKeys.original_pdf(ids["paper_id"], "v1")
+    resolved_key = StorageKeys.original_pdf(ids["paper_id"], "v1")
+    latest_key = StorageKeys.original_pdf(ids["paper_id"], "latest")
     await storage.put(
-        storage.sources_bucket, key, _VALID_PRIORITY_PDF, content_type="application/pdf"
+        storage.sources_bucket,
+        resolved_key,
+        _VALID_PRIORITY_PDF,
+        content_type="application/pdf",
+    )
+    await storage.put(
+        storage.sources_bucket,
+        latest_key,
+        _VALID_MULTI_PARAGRAPH_PDF,
+        content_type="application/pdf",
     )
     db_session.add(
         SourceAsset(
             paper_id=ids["paper_id"],
             kind="pdf",
-            source_url=f"http://arxiv.test/pdf/{arxiv_id}v1",
-            source_version="v1",
-            storage_key=key,
+            source_url=f"http://arxiv.test/pdf/{arxiv_id}",
+            source_version="latest",
+            storage_key=latest_key,
             content_type="application/pdf",
-            byte_size=len(_VALID_PRIORITY_PDF),
+            byte_size=len(_VALID_MULTI_PARAGRAPH_PDF),
         )
     )
     await db_session.commit()
@@ -623,21 +638,84 @@ async def test_ingest_resume_uses_structuring_checkpoint_without_reselecting_can
         job = await store.claim(ids["job_id"])
         assert job is not None
         await ingest_paper(ctx, store, job)
-        assert calls == {"pdf": 0, "eprint": 1, "html": 0}
 
-        job = await store.get(ids["job_id"])
-        assert job is not None
-        job.status = "queued"
-        job.stage = "structuring"
-        job.finished_at = None
-        await db_session.commit()
-        calls.update(pdf=0, eprint=0, html=0)
+    assert calls["pdf"] == 0
+    assert await storage.get(storage.sources_bucket, resolved_key) == _VALID_PRIORITY_PDF
 
+
+async def test_ingest_resume_uses_structuring_checkpoint_without_reselecting_candidate(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+) -> None:
+    arxiv_id = _arxiv_id()
+    ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
+    storage = S3Storage()
+    key = StorageKeys.original_pdf(ids["paper_id"], "v1")
+    await storage.put(
+        storage.sources_bucket, key, _VALID_PRIORITY_PDF, content_type="application/pdf"
+    )
+    pdf_asset = SourceAsset(
+        paper_id=ids["paper_id"],
+        kind="pdf",
+        source_url=f"http://arxiv.test/pdf/{arxiv_id}v1",
+        source_version="v1",
+        storage_key=key,
+        content_type="application/pdf",
+        byte_size=len(_VALID_PRIORITY_PDF),
+    )
+    db_session.add(pdf_asset)
+    await db_session.flush()
+    pdf_asset_id = str(pdf_asset.id)
+    await db_session.commit()
+
+    calls = {"pdf": 0, "eprint": 0, "html": 0}
+    transport = httpx.ASGITransport(
+        app=_make_counting_arxiv_stub(calls, pdf_status=500, latex_available=True)
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
         job = await store.claim(ids["job_id"])
         assert job is not None
         await ingest_paper(ctx, store, job)
+        assert calls == {"pdf": 0, "eprint": 1, "html": 0}
 
-    assert calls == {"pdf": 0, "eprint": 0, "html": 0}
+        for _attempt in range(2):
+            job = await store.get(ids["job_id"])
+            assert job is not None
+            job.status = "queued"
+            job.stage = "structuring"
+            job.finished_at = None
+            await db_session.commit()
+            calls.update(pdf=0, eprint=0, html=0)
+
+            job = await store.claim(ids["job_id"])
+            assert job is not None
+            await ingest_paper(ctx, store, job)
+
+            assert calls == {"pdf": 0, "eprint": 0, "html": 0}
+            pdf_assets = (
+                (
+                    await db_session.execute(
+                        select(SourceAsset).where(
+                            SourceAsset.paper_id == ids["paper_id"],
+                            SourceAsset.kind == "pdf",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(pdf_assets) == 1
+            assert str(pdf_assets[0].id) == pdf_asset_id
+
     revisions = (
         await db_session.execute(
             select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])

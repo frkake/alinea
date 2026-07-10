@@ -614,8 +614,13 @@ class IngestRun:
             .scalars()
             .all()
         )
-        assets.sort(key=lambda item: item.source_version != self.source_version)
-        record_asset = assets[0] if assets else None
+        exact_assets = [asset for asset in assets if asset.source_version == self.source_version]
+        latest_assets = [asset for asset in assets if asset.source_version == "latest"]
+        record_asset: SourceAsset | None = None
+        if exact_assets:
+            record_asset = exact_assets[0]
+        elif latest_assets:
+            record_asset = latest_assets[0]
         cache_diagnostics: list[str] = []
         cache_storage_failed = False
         keys: list[tuple[str, str, str | None]] = []
@@ -624,11 +629,12 @@ class IngestRun:
             if all(existing != key for _label, existing, _version in keys):
                 keys.append((label, key, canonical_version))
 
-        for asset in assets:
-            label = "asset" if asset.source_version == self.source_version else "latest_asset"
-            add_key(label, asset.storage_key)
+        for asset in exact_assets:
+            add_key("asset", asset.storage_key)
         add_key("canonical", canonical_key, self.source_version)
         if self._allow_latest_pdf_alias and self.source_version != "latest":
+            for asset in latest_assets:
+                add_key("latest_asset", asset.storage_key)
             add_key(
                 "latest_canonical",
                 StorageKeys.original_pdf(self.paper_id, "latest"),
