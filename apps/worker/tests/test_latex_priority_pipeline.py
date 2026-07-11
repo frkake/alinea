@@ -1,7 +1,7 @@
 """M2-01: arXiv 取り込みの取得優先順位 LaTeX > HTML > PDF(plans/05 §1.3・§5)。
 
 - LaTeX ソース(e-print)が取得・解析できる場合、品質 A・`source_format='latex'`・
-  `parser_version='latex-1.2.0'` で構造化され、HTML 取得(SourceAsset kind='arxiv_html')は
+  `parser_version='latex-1.3.0'` で構造化され、HTML 取得(SourceAsset kind='arxiv_html')は
   行われない(優先順位の主経路化)。
 - LaTeX の取得/解析に失敗した場合は既存の HTML 経路へ**可視的に**フォールバックする
   (`jobs.log` に warn を記録。P3)。
@@ -42,10 +42,17 @@ from alinea_core.parsing.pdf_parser import PARSER_VERSION as PDF_PARSER_VERSION
 from alinea_core.settings import CoreSettings
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from alinea_llm.router import LLMRouter
+from alinea_worker import pipeline as worker_pipeline
 from alinea_worker.figure_assets import html_asset_url
 from alinea_worker.pipeline import IngestRun, run_ingest
-from alinea_worker.source_candidates import embedded_pdf_bytes, parse_html_candidate
+from alinea_worker.source_candidates import (
+    embedded_pdf_bytes,
+    parse_html_candidate,
+    parse_latex_candidate,
+    parse_pdf_candidate,
+)
 from alinea_worker.tasks.ingest import ingest_paper
+from botocore.exceptions import ClientError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.applications import Starlette
@@ -77,12 +84,47 @@ _LATEX_MAIN_TEX = (
     "The method section describes the approach in detail for testing purposes here.\n"
     "\\end{document}\n"
 )
-_LATEX_MISSING_ASSET_TEX = _LATEX_MAIN_TEX.replace(
+_LATEX_COMPLETE_FIGURE_TEX = _LATEX_MAIN_TEX.replace(
+    "The method section describes the approach in detail for testing purposes here.\n",
+    "The method section describes the approach in detail for testing purposes here. "
+    "It includes enough structured prose to remain a complete source candidate before its "
+    "declared display assets are checked. The explanation covers inputs, transformations, "
+    "evaluation, limitations, and reproducible observations without depending on a paper.\n",
+)
+_LATEX_MISSING_ASSET_TEX = _LATEX_COMPLETE_FIGURE_TEX.replace(
     "\\end{document}\n",
     "\\begin{figure}\n"
     "\\caption{A figure whose source is missing.}\n"
     "\\label{fig:missing}\n"
     "\\end{figure}\n"
+    "\\end{document}\n",
+)
+_LATEX_TWO_VALID_FIGURES_TEX = _LATEX_MAIN_TEX.replace(
+    "\\end{document}\n",
+    "\\begin{figure}\n"
+    "\\includegraphics{mock-figure}\n"
+    "\\caption{A second valid synthetic figure.}\n"
+    "\\label{fig:second}\n"
+    "\\end{figure}\n"
+    "\\end{document}\n",
+)
+_LATEX_MULTI_PANEL_MISSING_ASSET_TEX = _LATEX_COMPLETE_FIGURE_TEX.replace(
+    "\\includegraphics{mock-figure}\n",
+    "\\includegraphics{mock-figure}\n\\includegraphics {missing-panel}\n",
+)
+_LATEX_STANDALONE_MISSING_ASSET_TEX = _LATEX_COMPLETE_FIGURE_TEX.replace(
+    "\\end{document}\n",
+    "\\includegraphics{mock-figure}\n"
+    "\\includegraphics [width=.5\\textwidth] {missing-standalone}\n"
+    "\\end{document}\n",
+)
+_LATEX_TABLE_MISSING_ASSET_TEX = _LATEX_COMPLETE_FIGURE_TEX.replace(
+    "\\end{document}\n",
+    "\\begin{table}\n"
+    "\\caption{An image-backed comparison table.}\n"
+    "\\includegraphics{mock-figure}\n"
+    "\\includegraphics {missing-table-panel}\n"
+    "\\end{table}\n"
     "\\end{document}\n",
 )
 
@@ -203,6 +245,29 @@ _VALID_INLINE_SVG_STYLE_ATTRIBUTE_HTML = _VALID_INLINE_SVG_HTML.replace(
     b'<rect width="20" height="10" fill="blue"></rect>',
     b'<rect width="20" height="10" style="fill:red"></rect>',
 )
+_VALID_EXTERNAL_FIGURE_HTML = b"""<!doctype html><html><body><article class="ltx_document">
+<section class="ltx_section"><h2 class="ltx_title ltx_title_section">1 Method</h2>
+<div class="ltx_para"><p class="ltx_p">This first synthetic paragraph contains enough
+structured prose to establish a complete candidate before its external display asset is
+validated, including method inputs, transformations, evidence, and limitations.</p></div>
+<div class="ltx_para"><p class="ltx_p">This second synthetic paragraph describes generic
+evaluation outcomes and reproducibility details without depending on any particular paper,
+identifier, title, author, or source fragment.</p></div>
+<figure id="S1.F1" class="ltx_figure"><img class="ltx_graphics" src="plot.png"
+alt="external plot"/><figcaption class="ltx_caption">A synthetic plot.</figcaption></figure>
+</section></article></body></html>"""
+_VALID_MULTI_IMAGE_HTML = b"""<!doctype html><html><body><article class="ltx_document">
+<section class="ltx_section"><h2 class="ltx_title ltx_title_section">1 Panels</h2>
+<div class="ltx_para"><p class="ltx_p">This first synthetic paragraph contains enough
+structured prose to make the multi-panel HTML source eligible before display assets are
+validated, including method inputs, transformations, evidence, and limitations.</p></div>
+<div class="ltx_para"><p class="ltx_p">This second synthetic paragraph describes generic
+evaluation outcomes and reproducibility details without depending on a particular paper.</p></div>
+<figure id="S1.F2" class="ltx_figure"><div class="ltx_flex_figure">
+<img class="ltx_graphics" src="panel-a.png" alt="panel a"/>
+<img class="ltx_graphics" src="panel-b.png" alt="panel b"/>
+</div><figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">Figure 2:</span>
+Shared panels.</figcaption></figure></section></article></body></html>"""
 _VALID_INLINE_SVG_STYLE_ELEMENT_HTML = _VALID_INLINE_SVG_HTML.replace(
     b'<rect width="20" height="10" fill="blue"></rect>',
     b'<style>rect{fill:red}</style><rect width="20" height="10"></rect>',
@@ -213,6 +278,9 @@ _UNSAFE_INLINE_SVG_STYLE_HTML = _VALID_INLINE_SVG_HTML.replace(
     b'<rect width="20" height="10"></rect>',
 )
 _VALID_STALE_HTML = _VALID_STORED_HTML.replace(b"The stored candidate", b"The stale duplicate")
+_VALID_CHANGED_HTML = _VALID_STORED_HTML.replace(
+    b"The stored candidate", b"The independently changed candidate"
+)
 _PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
 )
@@ -372,6 +440,73 @@ def _make_candidate_status_stub(
     )
 
 
+def _make_oversized_source_stub(
+    source: str,
+    *,
+    declared_length: int,
+) -> Starlette:
+    oversized = b"x" * 64
+
+    async def eprint(_request: Request) -> Response:
+        if source == "eprint":
+            return Response(
+                oversized,
+                headers={"content-length": str(declared_length)},
+                media_type="application/x-eprint-tar",
+            )
+        return Response("missing", status_code=404)
+
+    async def html(_request: Request) -> Response:
+        if source == "html":
+            return Response(
+                oversized,
+                headers={"content-length": str(declared_length)},
+                media_type="text/html; charset=utf-8",
+            )
+        return Response(_VALID_STORED_HTML, media_type="text/html; charset=utf-8")
+
+    async def pdf(_request: Request) -> Response:
+        headers = (
+            {"content-length": str(declared_length)} if source == "pdf" else None
+        )
+        return Response(_VALID_PRIORITY_PDF, headers=headers, media_type="application/pdf")
+
+    return Starlette(
+        routes=[
+            Route("/api/query", _query, methods=["GET"]),
+            Route("/oai2", _oai2, methods=["GET"]),
+            Route("/e-print/{arxiv_id:path}", eprint, methods=["GET"]),
+            Route("/html/{path:path}", html, methods=["GET"]),
+            Route("/pdf/{arxiv_id:path}", pdf, methods=["GET"]),
+        ]
+    )
+
+
+def _make_html_figure_status_stub(status_code: int) -> Starlette:
+    async def eprint(_request: Request) -> Response:
+        return Response("missing", status_code=404)
+
+    async def figure(_request: Request) -> Response:
+        return Response("unavailable", status_code=status_code)
+
+    async def html(_request: Request) -> Response:
+        return Response(_VALID_EXTERNAL_FIGURE_HTML, media_type="text/html; charset=utf-8")
+
+    async def pdf(_request: Request) -> Response:
+        return Response(_incomplete_original_pdf(), media_type="application/pdf")
+
+    return Starlette(
+        routes=[
+            Route("/api/query", _query, methods=["GET"]),
+            Route("/oai2", _oai2, methods=["GET"]),
+            Route("/e-print/{arxiv_id:path}", eprint, methods=["GET"]),
+            Route("/html/{arxiv_id}/plot.png", figure, methods=["GET"]),
+            Route("/html/{path:path}", html, methods=["GET"]),
+            Route("/pdf/{arxiv_id:path}", pdf, methods=["GET"]),
+        ]
+    )
+
+
 async def _noop_throttle(_redis: RedisLike) -> None:
     return None
 
@@ -487,10 +622,20 @@ async def _seed_existing_pdf_revision_for_embedded_selection(
             sha256=hashlib.sha256(original_pdf).hexdigest(),
         )
     )
+    pdf_candidate = parse_pdf_candidate(embedded_pdf, pdf_text="")
     stats: dict[str, Any] = {
         "marker": "existing revision must not be mutated",
         "candidate_failures": [],
-        "completeness": {"accepted": True, "code": None},
+        "completeness": pdf_candidate.report.as_dict(),
+        "figure_asset_failures": [],
+        "figure_materialization_version": worker_pipeline.FIGURE_MATERIALIZATION_VERSION,
+        "selected_source": {
+            "storage_key": latex_key,
+            "sha256": hashlib.sha256(archive).hexdigest(),
+        },
+        "parsed_content_sha256": worker_pipeline._canonical_content_sha256(
+            pdf_candidate.content.model_dump()
+        ),
     }
     if provenance in {"exact", "member_digest_mismatch", "partial"}:
         stats["embedded_pdf_source"] = "body.pdf"
@@ -504,19 +649,42 @@ async def _seed_existing_pdf_revision_for_embedded_selection(
                 "embedded_pdf_container_storage_key": latex_key,
             }
         )
-    content = DocumentContent(quality_level="B", sections=[]).model_dump()
     revision = DocumentRevision(
         paper_id=ids["paper_id"],
         source_version="v1",
         parser_version=PDF_PARSER_VERSION,
         quality_level="B",
         source_format="pdf",
-        content=content,
+        content=pdf_candidate.content.model_dump(),
         stats=stats,
     )
     db.add(revision)
     await db.flush()
     revision_id = str(revision.id)
+    parsed_pdf = pdf_candidate.parsed
+    blocks_by_id = {block.id: block for block in parsed_pdf.blocks}
+    manifest: list[dict[str, Any]] = []
+    for block_id, png in sorted(parsed_pdf.figure_images.items()):
+        block = blocks_by_id[block_id]
+        key = StorageKeys.figure(ids["paper_id"], revision_id, block_id, "png")
+        block.asset_key = key
+        await storage.put(storage.assets_bucket, key, png, content_type="image/png")
+        manifest.append(
+            {
+                "block_id": block_id,
+                "key": key,
+                "sha256": hashlib.sha256(png).hexdigest(),
+                "byte_size": len(png),
+            }
+        )
+    content = parsed_pdf.to_document_content().model_dump()
+    stats = {
+        **stats,
+        "figure_asset_manifest": manifest,
+        "revision_content_sha256": worker_pipeline._canonical_content_sha256(content),
+    }
+    revision.content = content
+    revision.stats = stats
     await db.commit()
     store = JobStore(db)
     await store.checkpoint(ids["job_id"], "fetching", {"source_version": "v1"}, progress=10)
@@ -640,7 +808,21 @@ async def test_ingest_prefers_latex_source_when_available(
     db_session: AsyncSession,
     latex_worker_ctx: dict[str, Any],
     seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    materialized_sources: list[str] = []
+    original_materialize = worker_pipeline._materialize_figure_payload
+
+    async def counting_materialize(
+        data: bytes,
+        source_name: str,
+        content_type: str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        materialized_sources.append(source_name)
+        return await original_materialize(data, source_name, content_type, **kwargs)
+
+    monkeypatch.setattr(worker_pipeline, "_materialize_figure_payload", counting_materialize)
     arxiv_id = _arxiv_id()
     ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
     store = JobStore(db_session)
@@ -671,11 +853,17 @@ async def test_ingest_prefers_latex_source_when_available(
         .one()
     )
     assert rev.source_format == "latex"
-    assert rev.parser_version == "latex-1.2.0"
+    assert rev.parser_version == "latex-1.3.0"
     assert rev.quality_level == "A"
     assert rev.stats["candidate_failures"] == []
     assert rev.stats["completeness"]["accepted"] is True
     assert rev.stats["figure_asset_failures"] == []
+    parsed_candidate, _binary_files, _main_tex_name = parse_latex_candidate(
+        stored_latex, pdf_text=""
+    )
+    assert rev.stats["parsed_content_sha256"] == worker_pipeline._canonical_content_sha256(
+        parsed_candidate.content.model_dump()
+    )
     assert rev.stats["latex_source"]["main_tex"] == "paper/main.tex"
     assert rev.stats["latex_source"]["graphicspaths"] == ["../images/"]
     content = DocumentContent.model_validate(rev.content)
@@ -683,6 +871,19 @@ async def test_ingest_prefers_latex_source_when_available(
     assert fig.asset_key is not None
     assert fig.asset_key.startswith(f"figures/{ids['paper_id']}/{rev.id}/{fig.id}.")
     assert fig.asset_key.endswith(".png")
+    assert materialized_sources == ["images/mock-figure.pdf"]
+    stored_figure = await storage.get(storage.assets_bucket, fig.asset_key)
+    assert rev.stats["figure_materialization_version"] == (
+        worker_pipeline.FIGURE_MATERIALIZATION_VERSION
+    )
+    assert rev.stats["figure_asset_manifest"] == [
+        {
+            "block_id": fig.id,
+            "key": fig.asset_key,
+            "sha256": hashlib.sha256(stored_figure).hexdigest(),
+            "byte_size": len(stored_figure),
+        }
+    ]
 
     kinds = await _source_asset_kinds(db_session, ids["paper_id"])
     assert "arxiv_latex" in kinds
@@ -694,14 +895,506 @@ async def test_ingest_prefers_latex_source_when_available(
     assert "LaTeX ソース取得" in timeline[0]["label"]
 
 
-async def test_missing_latex_figure_key_is_persisted_as_structured_failure(
+@pytest.mark.parametrize("selected_format", ["latex", "pdf"])
+async def test_large_candidate_buffers_are_released_before_translation_and_job_completes(
+    selected_format: str,
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    app = (
+        _make_latex_arxiv_stub()
+        if selected_format == "latex"
+        else _make_candidate_status_stub(
+            eprint_status=404,
+            eprint_body=b"",
+            html_status=404,
+            pdf_bytes=_VALID_MULTI_PARAGRAPH_PDF,
+        )
+    )
+    original_translate_abstract = IngestRun._stage_translating_abstract
+    release_checks: list[str] = []
+
+    async def assert_released_then_translate(run: IngestRun) -> None:
+        assert run.source_format == selected_format
+        assert run.content is not None
+        assert run.parsed is None
+        assert run.parsed_pdf is None
+        assert run._candidate_materialized_figures == {}
+        assert run.latex_binary_files == {}
+        assert run._latex_archive_bytes is None
+        assert run._pdf_bytes is None
+        assert run._pdf_text is None
+        release_checks.append(run.source_format)
+        await original_translate_abstract(run)
+
+    async def skip_latex_pdf_build(_run: IngestRun) -> None:
+        return None
+
+    monkeypatch.setattr(IngestRun, "_stage_translating_abstract", assert_released_then_translate)
+    monkeypatch.setattr(IngestRun, "_build_latex_translation_pdf", skip_latex_pdf_build)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
+    assert release_checks == [selected_format]
+
+
+async def test_reingest_repairs_missing_manifest_asset_before_reusing_revision(
+    db_session: AsyncSession,
+    latex_worker_ctx: dict[str, Any],
+    seed_ingest_job: Any,
+) -> None:
+    arxiv_id = _arxiv_id()
+    ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
+    store = JobStore(db_session)
+    first_job = await store.claim(ids["job_id"])
+    assert first_job is not None
+    await ingest_paper(latex_worker_ctx, store, first_job)
+
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    manifest = revision.stats["figure_asset_manifest"]
+    assert len(manifest) == 1
+    missing_key = manifest[0]["key"]
+    storage = S3Storage()
+    await storage.delete_many(storage.assets_bucket, [missing_key])
+
+    reingest_job_id = await store.enqueue(
+        kind="ingest",
+        payload={
+            "mode": "reingest",
+            "source": "arxiv",
+            "arxiv_id": arxiv_id,
+            "library_item_id": ids["library_item_id"],
+        },
+        priority="bulk",
+        user_id=ids["user_id"],
+        paper_id=ids["paper_id"],
+        library_item_id=ids["library_item_id"],
+    )
+    reingest_job = await store.claim(reingest_job_id)
+    assert reingest_job is not None
+    await ingest_paper(latex_worker_ctx, store, reingest_job)
+
+    completed = await store.get(reingest_job_id)
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
+    repaired = await storage.get(storage.assets_bucket, missing_key)
+    assert len(repaired) == manifest[0]["byte_size"]
+    assert hashlib.sha256(repaired).hexdigest() == manifest[0]["sha256"]
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        )
+    ).scalars()
+    assert [str(item.id) for item in revisions.all()] == [str(revision.id)]
+
+    await storage.delete_many(storage.assets_bucket, [missing_key])
+    completed = await store.get(reingest_job_id)
+    assert completed is not None
+    payload = json.loads(json.dumps(completed.payload))
+    payload["_checkpoint"].pop("structuring", None)
+    completed.payload = payload
+    completed.status = "queued"
+    completed.stage = "parsing"
+    completed.error = None
+    completed.finished_at = None
+    await db_session.commit()
+    resumed = await store.claim(reingest_job_id)
+    assert resumed is not None
+    await ingest_paper(latex_worker_ctx, store, resumed)
+
+    repaired_after_parsing_resume = await storage.get(storage.assets_bucket, missing_key)
+    assert hashlib.sha256(repaired_after_parsing_resume).hexdigest() == manifest[0]["sha256"]
+
+    await storage.delete_many(storage.assets_bucket, [missing_key])
+    completed = await store.get(reingest_job_id)
+    assert completed is not None
+    completed.status = "queued"
+    completed.stage = "structuring"
+    completed.error = None
+    completed.finished_at = None
+    await db_session.commit()
+    structuring_resume = await store.claim(reingest_job_id)
+    assert structuring_resume is not None
+    await ingest_paper(latex_worker_ctx, store, structuring_resume)
+
+    repaired_after_structuring_resume = await storage.get(storage.assets_bucket, missing_key)
+    assert hashlib.sha256(repaired_after_structuring_resume).hexdigest() == manifest[0]["sha256"]
+
+
+async def test_legacy_revision_without_figure_identity_rolls_to_new_parser_revision(
+    db_session: AsyncSession,
+    latex_worker_ctx: dict[str, Any],
+    seed_ingest_job: Any,
+) -> None:
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    legacy = DocumentRevision(
+        paper_id=ids["paper_id"],
+        source_version="v1",
+        parser_version="latex-1.2.0",
+        quality_level="A",
+        source_format="latex",
+        content=DocumentContent(quality_level="A", sections=[]).model_dump(),
+        stats={"legacy": True},
+    )
+    db_session.add(legacy)
+    await db_session.commit()
+    store = JobStore(db_session)
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(latex_worker_ctx, store, job)
+
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision)
+            .where(DocumentRevision.paper_id == ids["paper_id"])
+            .order_by(DocumentRevision.created_at, DocumentRevision.id)
+        )
+    ).scalars()
+    revision_list = revisions.all()
+    assert {item.parser_version for item in revision_list} == {
+        "latex-1.2.0",
+        "latex-1.3.0",
+    }
+    current = next(item for item in revision_list if item.parser_version == "latex-1.3.0")
+    assert current.stats["figure_materialization_version"] == (
+        worker_pipeline.FIGURE_MATERIALIZATION_VERSION
+    )
+    paper = await db_session.get(Paper, ids["paper_id"])
+    assert paper is not None
+    assert str(paper.latest_revision_id) == str(current.id)
+
+
+async def test_changed_fresh_source_rejects_existing_revision_without_overwrite(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+) -> None:
+    arxiv_id = _arxiv_id()
+    ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
+    storage = S3Storage()
+    html_key = StorageKeys.arxiv_html(ids["paper_id"], "v1")
+    store = JobStore(db_session)
+
+    first_transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=404,
+            eprint_body=b"",
+            html_status=200,
+            html_body=_VALID_STORED_HTML,
+            pdf_bytes=_VALID_PRIORITY_PDF,
+        )
+    )
+    async with httpx.AsyncClient(transport=first_transport, base_url="http://arxiv.test") as http:
+        first_ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        first_job = await store.claim(ids["job_id"])
+        assert first_job is not None
+        await ingest_paper(first_ctx, store, first_job)
+
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert revision.stats["selected_source"] == {
+        "storage_key": html_key,
+        "sha256": hashlib.sha256(_VALID_STORED_HTML).hexdigest(),
+    }
+    assert revision.stats["revision_content_sha256"] == (
+        worker_pipeline._canonical_content_sha256(revision.content)
+    )
+
+    reingest_job_id = await store.enqueue(
+        kind="ingest",
+        payload={
+            "mode": "reingest",
+            "source": "arxiv",
+            "arxiv_id": arxiv_id,
+            "library_item_id": ids["library_item_id"],
+        },
+        priority="bulk",
+        user_id=ids["user_id"],
+        paper_id=ids["paper_id"],
+        library_item_id=ids["library_item_id"],
+    )
+    second_transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=404,
+            eprint_body=b"",
+            html_status=200,
+            html_body=_VALID_CHANGED_HTML,
+            pdf_bytes=_VALID_PRIORITY_PDF,
+        )
+    )
+    async with httpx.AsyncClient(transport=second_transport, base_url="http://arxiv.test") as http:
+        second_ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        reingest_job = await store.claim(reingest_job_id)
+        assert reingest_job is not None
+        with pytest.raises(FetchError) as error:
+            await run_ingest(second_ctx, store, reingest_job)
+
+    assert error.value.kind == "parse_error"
+    assert await storage.get(storage.sources_bucket, html_key) == _VALID_STORED_HTML
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        )
+    ).scalars()
+    assert [str(item.id) for item in revisions.all()] == [str(revision.id)]
+
+
+async def test_fresh_reparse_rejects_content_mismatch_with_matching_stored_identity(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+) -> None:
+    arxiv_id = _arxiv_id()
+    ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
+    store = JobStore(db_session)
+    first_transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=404,
+            eprint_body=b"",
+            html_status=200,
+            html_body=_VALID_STORED_HTML,
+            pdf_bytes=_VALID_PRIORITY_PDF,
+        )
+    )
+    async with httpx.AsyncClient(transport=first_transport, base_url="http://arxiv.test") as http:
+        first_ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        first_job = await store.claim(ids["job_id"])
+        assert first_job is not None
+        await ingest_paper(first_ctx, store, first_job)
+
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    original_content = json.loads(json.dumps(revision.content))
+    original_parsed = parse_html_candidate(_VALID_STORED_HTML, pdf_text="")
+    changed_parsed = parse_html_candidate(_VALID_CHANGED_HTML, pdf_text="")
+    original_parsed_sha256 = worker_pipeline._canonical_content_sha256(
+        original_parsed.content.model_dump()
+    )
+    assert revision.stats["parsed_content_sha256"] == original_parsed_sha256
+    assert original_parsed_sha256 != worker_pipeline._canonical_content_sha256(
+        changed_parsed.content.model_dump()
+    )
+
+    html_key = StorageKeys.arxiv_html(ids["paper_id"], "v1")
+    changed_source_sha256 = hashlib.sha256(_VALID_CHANGED_HTML).hexdigest()
+    revision.stats = {
+        **revision.stats,
+        "selected_source": {
+            "storage_key": html_key,
+            "sha256": changed_source_sha256,
+        },
+        "parsed_content_sha256": original_parsed_sha256,
+        "revision_content_sha256": worker_pipeline._canonical_content_sha256(revision.content),
+    }
+    assert revision.stats["figure_asset_manifest"] == []
+    html_asset = (
+        (
+            await db_session.execute(
+                select(SourceAsset).where(
+                    SourceAsset.paper_id == ids["paper_id"],
+                    SourceAsset.kind == "arxiv_html",
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    html_asset.byte_size = len(_VALID_CHANGED_HTML)
+    html_asset.sha256 = changed_source_sha256
+    storage = S3Storage()
+    await storage.put(
+        storage.sources_bucket,
+        html_key,
+        _VALID_CHANGED_HTML,
+        content_type="text/html; charset=utf-8",
+    )
+    await db_session.commit()
+
+    reingest_job_id = await store.enqueue(
+        kind="ingest",
+        payload={
+            "mode": "reingest",
+            "source": "arxiv",
+            "arxiv_id": arxiv_id,
+            "library_item_id": ids["library_item_id"],
+        },
+        priority="bulk",
+        user_id=ids["user_id"],
+        paper_id=ids["paper_id"],
+        library_item_id=ids["library_item_id"],
+    )
+    second_transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=404,
+            eprint_body=b"",
+            html_status=200,
+            html_body=_VALID_CHANGED_HTML,
+            pdf_bytes=_VALID_PRIORITY_PDF,
+        )
+    )
+    async with httpx.AsyncClient(transport=second_transport, base_url="http://arxiv.test") as http:
+        second_ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        reingest_job = await store.claim(reingest_job_id)
+        assert reingest_job is not None
+        with pytest.raises(FetchError) as error:
+            await run_ingest(second_ctx, store, reingest_job)
+
+    assert error.value.kind == "parse_error"
+    stored = await db_session.get(DocumentRevision, revision.id)
+    assert stored is not None
+    assert stored.content == original_content
+    assert stored.stats["parsed_content_sha256"] == original_parsed_sha256
+
+
+async def test_structuring_resume_rejects_mutated_revision_content(
     db_session: AsyncSession,
     router: LLMRouter,
     seed_ingest_job: Any,
 ) -> None:
     ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
     transport = httpx.ASGITransport(
-        app=_make_latex_arxiv_stub(_build_latex_archive(_LATEX_MISSING_ASSET_TEX))
+        app=_make_candidate_status_stub(
+            eprint_status=404,
+            eprint_body=b"",
+            html_status=200,
+            html_body=_VALID_STORED_HTML,
+            pdf_bytes=_VALID_PRIORITY_PDF,
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        first_job = await store.claim(ids["job_id"])
+        assert first_job is not None
+        await ingest_paper(ctx, store, first_job)
+
+        revision = (
+            (
+                await db_session.execute(
+                    select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+                )
+            )
+            .scalars()
+            .one()
+        )
+        original_digest = revision.stats["revision_content_sha256"]
+        mutated = json.loads(json.dumps(revision.content))
+        paragraph = next(
+            block
+            for section in mutated["sections"]
+            for block in section["blocks"]
+            if block["type"] == "paragraph"
+        )
+        paragraph["inlines"][0]["v"] = "Tampered but structurally valid stored text."
+        revision.content = mutated
+        await db_session.commit()
+        assert worker_pipeline._canonical_content_sha256(mutated) != original_digest
+
+        completed = await store.get(ids["job_id"])
+        assert completed is not None
+        completed.status = "queued"
+        completed.stage = "structuring"
+        completed.error = None
+        completed.finished_at = None
+        await db_session.commit()
+        resumed = await store.claim(ids["job_id"])
+        assert resumed is not None
+        with pytest.raises(FetchError) as error:
+            await run_ingest(ctx, store, resumed)
+
+    assert error.value.kind == "parse_error"
+    stored = await db_session.get(DocumentRevision, revision.id)
+    assert stored is not None
+    assert stored.content == mutated
+    assert stored.stats["revision_content_sha256"] == original_digest
+
+
+async def test_candidate_with_missing_latex_figure_falls_back_to_pdf_extraction(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+) -> None:
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=200,
+            eprint_body=_build_latex_archive(_LATEX_MISSING_ASSET_TEX),
+            html_status=404,
+            pdf_bytes=_VALID_MULTI_PARAGRAPH_PDF,
+        )
     )
 
     async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
@@ -726,18 +1419,578 @@ async def test_missing_latex_figure_key_is_persisted_as_structured_failure(
         .scalars()
         .one()
     )
-    content = DocumentContent.model_validate(revision.content)
-    missing = next(
-        block for _section, block in content.iter_blocks() if block.label == "fig:missing"
+    assert revision.source_format == "pdf"
+    assert revision.stats["candidate_failures"][0]["format"] == "latex"
+    assert revision.stats["candidate_failures"][0]["code"] == "figure_asset_unresolved", (
+        revision.stats["candidate_failures"]
     )
-    assert revision.stats["figure_asset_failures"] == [
-        {
-            "code": "missing_asset_key",
-            "figure_id": missing.id,
-            "source": "latex",
+    assert revision.stats["candidate_failures"][0]["unresolved_figures"] == 1
+    content = DocumentContent.model_validate(revision.content)
+    figures = [block for _section, block in content.iter_blocks() if block.type == "figure"]
+    assert figures
+    assert all(
+        block.asset_key and block.asset_key.startswith(f"figures/{ids['paper_id']}/{revision.id}/")
+        for block in figures
+    )
+    assert revision.stats["figure_asset_failures"] == []
+
+
+async def test_candidate_with_missing_second_panel_falls_back_to_pdf_extraction(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+) -> None:
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=200,
+            eprint_body=_build_latex_archive(_LATEX_MULTI_PANEL_MISSING_ASSET_TEX),
+            html_status=404,
+            pdf_bytes=_VALID_MULTI_PARAGRAPH_PDF,
+        )
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
         }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert revision.source_format == "pdf"
+    latex_failure = revision.stats["candidate_failures"][0]
+    assert latex_failure["format"] == "latex"
+    assert latex_failure["code"] == "figure_asset_unresolved"
+    assert latex_failure["unresolved_figures"] == 1
+    assert latex_failure["figure_asset_failures"][0]["figure_id"]
+
+
+@pytest.mark.parametrize(
+    "latex_source",
+    [_LATEX_STANDALONE_MISSING_ASSET_TEX, _LATEX_TABLE_MISSING_ASSET_TEX],
+    ids=["standalone-graphics", "image-backed-table"],
+)
+async def test_candidate_with_missing_nonfigure_environment_asset_falls_back_to_pdf(
+    latex_source: str,
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+) -> None:
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=200,
+            eprint_body=_build_latex_archive(latex_source),
+            html_status=404,
+            pdf_bytes=_VALID_MULTI_PARAGRAPH_PDF,
+        )
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert revision.source_format == "pdf"
+    latex_failure = revision.stats["candidate_failures"][0]
+    assert latex_failure["format"] == "latex"
+    assert latex_failure["code"] == "figure_asset_unresolved"
+    assert latex_failure["unresolved_figures"] == 1
+
+
+async def test_html_candidate_with_missing_second_image_falls_back_to_pdf_extraction(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetched: list[str] = []
+
+    async def fetch_panel(
+        _http: Any,
+        *,
+        source: str,
+        payload_loader: Any,
+        **_kwargs: Any,
+    ) -> Any:
+        del payload_loader
+        fetched.append(source)
+        if source == "panel-a.png":
+            return worker_pipeline.FigureAssetPayload(
+                _PNG_1X1,
+                "png",
+                "image/png",
+                1,
+                1,
+                len(_PNG_1X1),
+            )
+        raise worker_pipeline.FigureAssetError(
+            "asset_http_status", "synthetic missing second panel"
+        )
+
+    monkeypatch.setattr(worker_pipeline, "fetch_html_asset", fetch_panel)
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=404,
+            eprint_body=b"",
+            html_status=200,
+            html_body=_VALID_MULTI_IMAGE_HTML,
+            pdf_bytes=_VALID_MULTI_PARAGRAPH_PDF,
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    assert fetched == ["panel-a.png", "panel-b.png"]
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert revision.source_format == "pdf"
+    html_failure = next(
+        failure
+        for failure in revision.stats["candidate_failures"]
+        if failure["format"] == "arxiv_html"
+    )
+    assert html_failure["code"] == "figure_asset_unresolved"
+    assert html_failure["unresolved_figures"] == 1
+
+
+async def test_candidate_materialization_deadline_does_not_starve_pdf_fallback(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ExpiredDeadline:
+        def remaining(self, _operation_limit_s: float | None = None) -> float:
+            raise worker_pipeline.FigureAssetError(
+                "materialization_timeout", "candidate deadline expired"
+            )
+
+    class LiveDeadline:
+        def remaining(self, operation_limit_s: float | None = None) -> float:
+            return 30.0 if operation_limit_s is None else min(30.0, operation_limit_s)
+
+    starts = 0
+
+    def start_deadline(
+        _cls: type[worker_pipeline.MaterializationDeadline],
+        *,
+        timeout_s: float,
+        **_kwargs: Any,
+    ) -> Any:
+        nonlocal starts
+        assert timeout_s == worker_pipeline.MAX_DOCUMENT_MATERIALIZATION_SECONDS
+        starts += 1
+        return ExpiredDeadline() if starts == 1 else LiveDeadline()
+
+    monkeypatch.setattr(
+        worker_pipeline.MaterializationDeadline,
+        "start",
+        classmethod(start_deadline),
+    )
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=200,
+            eprint_body=_build_latex_archive(_LATEX_MISSING_ASSET_TEX),
+            html_status=404,
+            pdf_bytes=_VALID_MULTI_PARAGRAPH_PDF,
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert revision.source_format == "pdf"
+    assert revision.stats["candidate_failures"][0]["code"] == "figure_asset_unresolved"
+    assert revision.stats["candidate_failures"][0]["figure_asset_failures"][0]["code"] == (
+        "materialization_timeout"
+    )
+    assert starts >= 3
+
+
+async def test_validated_cache_persistence_failure_rolls_back_revision(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LiveDeadline:
+        def remaining(self, operation_limit_s: float | None = None) -> float:
+            return 30.0 if operation_limit_s is None else min(30.0, operation_limit_s)
+
+    class ExpireOnSecondAsset:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def remaining(self, operation_limit_s: float | None = None) -> float:
+            self.calls += 1
+            if self.calls == 2:
+                raise worker_pipeline.FigureAssetError(
+                    "materialization_timeout", "synthetic persistence deadline expired"
+                )
+            return 30.0 if operation_limit_s is None else min(30.0, operation_limit_s)
+
+    starts = 0
+
+    def start_deadline(
+        _cls: type[worker_pipeline.MaterializationDeadline],
+        **_kwargs: Any,
+    ) -> Any:
+        nonlocal starts
+        starts += 1
+        return LiveDeadline() if starts == 1 else ExpireOnSecondAsset()
+
+    monkeypatch.setattr(
+        worker_pipeline.MaterializationDeadline,
+        "start",
+        classmethod(start_deadline),
+    )
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_latex_arxiv_stub(_build_latex_archive(_LATEX_TWO_VALID_FIGURES_TEX))
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        with pytest.raises(worker_pipeline.FigureAssetError, match="deadline expired"):
+            await run_ingest(ctx, store, job)
+
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        )
+    ).scalars()
+    assert revisions.all() == []
+
+
+async def test_nested_figure_fetch_timeout_remains_retryable_when_all_candidates_fail(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def timeout_asset(*_args: Any, **_kwargs: Any) -> Any:
+        raise worker_pipeline.FigureAssetError(
+            "asset_fetch_timeout", "synthetic figure fetch timeout"
+        )
+
+    monkeypatch.setattr(worker_pipeline, "fetch_html_asset", timeout_asset)
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=200,
+            eprint_body=b"not a latex archive",
+            html_status=200,
+            html_body=_VALID_EXTERNAL_FIGURE_HTML,
+            pdf_bytes=_incomplete_original_pdf(),
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        with pytest.raises(FetchError) as error:
+            await run_ingest(ctx, store, job)
+
+    assert error.value.kind == "asset_fetch_timeout"
+    diagnostics = json.loads(str(error.value))
+    html_failure = next(
+        item for item in diagnostics["candidates"] if item["format"] == "arxiv_html"
+    )
+    assert html_failure["code"] == "figure_asset_unresolved"
+    assert html_failure["figure_asset_failures"][0]["code"] == "asset_fetch_timeout"
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        )
+    ).scalars()
+    assert revisions.all() == []
+
+
+@pytest.mark.parametrize(
+    ("raised_code", "expected_code"),
+    [
+        ("conversion_crashed", "conversion_crashed"),
+        ("conversion_lifecycle", "conversion_lifecycle"),
+        ("conversion_timeout", "conversion_timeout"),
+        ("materialization_timeout", "materialization_timeout"),
+        (None, "figure_asset_error"),
+    ],
+    ids=[
+        "conversion-crashed",
+        "conversion-lifecycle",
+        "conversion-timeout",
+        "materialization-timeout",
+        "generic-child-error",
+    ],
+)
+async def test_fresh_candidate_operational_figure_failure_remains_retryable(
+    raised_code: str | None,
+    expected_code: str,
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_asset(*_args: Any, **_kwargs: Any) -> Any:
+        if raised_code is None:
+            raise RuntimeError("synthetic child worker failure")
+        raise worker_pipeline.FigureAssetError(raised_code, "synthetic operational failure")
+
+    monkeypatch.setattr(worker_pipeline, "fetch_html_asset", fail_asset)
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=200,
+            eprint_body=b"not a latex archive",
+            html_status=200,
+            html_body=_VALID_EXTERNAL_FIGURE_HTML,
+            pdf_bytes=_incomplete_original_pdf(),
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        with pytest.raises(FetchError) as error:
+            await run_ingest(ctx, store, job)
+
+    assert error.value.kind == expected_code
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        )
+    ).scalars()
+    assert revisions.all() == []
+
+
+async def test_all_deterministic_figure_gate_failures_preserve_unresolved_code(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+) -> None:
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=200,
+            eprint_body=_build_latex_archive(_LATEX_MISSING_ASSET_TEX),
+            html_status=200,
+            html_body=_VALID_EXTERNAL_FIGURE_HTML,
+            pdf_bytes=_incomplete_original_pdf(),
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        with pytest.raises(FetchError) as error:
+            await run_ingest(ctx, store, job)
+
+    assert error.value.kind == "figure_asset_unresolved"
+    diagnostics = json.loads(str(error.value))
+    unresolved = [
+        failure
+        for failure in diagnostics["candidates"]
+        if failure.get("code") == "figure_asset_unresolved"
     ]
-    assert missing.asset_key is None
+    assert [failure["format"] for failure in unresolved] == ["latex", "arxiv_html"]
+    assert all(failure["figure_asset_failures"] for failure in unresolved)
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_code"),
+    [
+        (408, "asset_fetch_timeout"),
+        (429, "rate_limited"),
+        (503, "upstream_5xx"),
+    ],
+)
+async def test_html_figure_http_status_remains_retryable_after_candidate_exhaustion(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    status_code: int,
+    expected_code: str,
+) -> None:
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(app=_make_html_figure_status_stub(status_code))
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        with pytest.raises(FetchError) as error:
+            await run_ingest(ctx, store, job)
+
+    assert error.value.kind == expected_code
+    diagnostics = json.loads(str(error.value))
+    html_failure = next(
+        failure for failure in diagnostics["candidates"] if failure["format"] == "arxiv_html"
+    )
+    assert html_failure["figure_asset_failures"][0]["code"] == expected_code
+
+
+async def test_candidate_with_broken_html_figure_falls_back_to_pdf_extraction(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+) -> None:
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=200,
+            eprint_body=b"not a latex archive",
+            html_status=200,
+            html_body=_VALID_EXTERNAL_FIGURE_HTML,
+            pdf_bytes=_VALID_MULTI_PARAGRAPH_PDF,
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert revision.source_format == "pdf"
+    html_failure = next(
+        item for item in revision.stats["candidate_failures"] if item["format"] == "arxiv_html"
+    )
+    assert html_failure["code"] == "figure_asset_unresolved"
+    assert html_failure["unresolved_figures"] == 1
+    assert html_failure["figure_asset_failures"][0]["figure_id"]
+    content = DocumentContent.model_validate(revision.content)
+    figures = [block for _section, block in content.iter_blocks() if block.type == "figure"]
+    assert figures
+    assert all(
+        block.asset_key and block.asset_key.startswith(f"figures/{ids['paper_id']}/{revision.id}/")
+        for block in figures
+    )
 
 
 async def test_latex_wrapper_promotes_embedded_pdf_to_pdf_candidate(
@@ -1337,6 +2590,15 @@ async def test_embedded_pdf_parsing_checkpoint_reuses_exact_archive_member(
     async def crash_after_parsing_checkpoint(_run: IngestRun, _data: bytes) -> None:
         raise RuntimeError("simulated crash after parsing checkpoint")
 
+    original_structure_pdf = IngestRun._structure_pdf
+
+    async def structure_with_container_provenance(run: IngestRun, data: bytes) -> None:
+        assert data == _VALID_MULTI_PARAGRAPH_PDF
+        assert run._latex_archive_bytes == archive
+        assert run.latex_binary_files["body.pdf"] == _VALID_MULTI_PARAGRAPH_PDF
+        assert run.latex_main_tex_name == "main.tex"
+        await original_structure_pdf(run, data)
+
     async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
         ctx = {
             "router": router,
@@ -1377,7 +2639,9 @@ async def test_embedded_pdf_parsing_checkpoint_reuses_exact_archive_member(
         await db_session.commit()
         resumed_job = await store.claim(ids["job_id"])
         assert resumed_job is not None
-        await run_ingest(ctx, store, resumed_job)
+        with monkeypatch.context() as patch:
+            patch.setattr(IngestRun, "_structure_pdf", structure_with_container_provenance)
+            await run_ingest(ctx, store, resumed_job)
 
     assert calls == {"pdf": 0, "eprint": 0, "html": 0}
     revision = (
@@ -1467,6 +2731,8 @@ async def test_embedded_pdf_wrapper_failure_continues_to_html(
         .one()
     )
     assert revision.source_format == "arxiv_html"
+    assert revision.stats["completeness"]["figure_count"] == 0
+    assert revision.stats["figure_asset_manifest"] == []
     assert [failure["code"] for failure in revision.stats["candidate_failures"]] == (
         expected_failure_codes
     )
@@ -1752,20 +3018,16 @@ async def test_unsafe_inline_svg_css_failure_does_not_persist_raw(
         .scalars()
         .one()
     )
-    figure = next(
-        block
-        for _section, block in DocumentContent.model_validate(revision.content).iter_blocks()
-        if block.type == "figure"
+    assert revision.source_format == "pdf"
+    html_failure = next(
+        failure
+        for failure in revision.stats["candidate_failures"]
+        if failure["format"] == "arxiv_html"
     )
-    assert figure.raw is None
-    assert figure.asset_key is None
-    assert revision.stats["figure_asset_failures"] == [
-        {
-            "code": "unsafe_inline_figure",
-            "figure_id": figure.id,
-            "source": "arxiv_html",
-        }
-    ]
+    assert html_failure["code"] == "figure_asset_unresolved"
+    assert html_failure["figure_asset_failures"][0]["code"] == "unsafe_inline_figure"
+    assert "@import" not in json.dumps(revision.content)
+    assert revision.stats["figure_asset_failures"] == []
 
 
 async def test_reingest_creates_repaired_revision_after_html_parser_rollout(
@@ -1866,7 +3128,12 @@ async def test_ingest_backfills_diagnostics_on_existing_same_parser_revision(
         .one()
     )
     revision_id = str(revision.id)
-    revision.stats = {"legacy": True}
+    revision.stats = {
+        **revision.stats,
+        "legacy": True,
+    }
+    revision.stats.pop("candidate_failures", None)
+    revision.stats.pop("completeness", None)
     await db_session.commit()
 
     job_id = await store.enqueue(
@@ -1922,7 +3189,8 @@ async def test_ingest_rejects_incomplete_existing_same_parser_revision(
         .one()
     )
     revision.content = {"quality_level": "A", "sections": []}
-    revision.stats = {"legacy": True}
+    revision.stats = {**revision.stats, "legacy": True}
+    revision.stats.pop("completeness", None)
     await db_session.commit()
 
     job_id = await store.enqueue(
@@ -1945,9 +3213,9 @@ async def test_ingest_rejects_incomplete_existing_same_parser_revision(
     job = await store.get(job_id)
     assert job is not None
     assert job.status == "failed"
-    assert json.loads(job.error or "{}")["code"] == "document_incomplete"
+    assert json.loads(job.error or "{}")["code"] == "parse_error"
     await db_session.refresh(revision)
-    assert revision.stats["completeness"]["accepted"] is False
+    assert "completeness" not in revision.stats
 
 
 async def test_ingest_falls_back_to_stored_pdf_when_latex_and_html_fail(
@@ -1977,7 +3245,7 @@ async def test_ingest_falls_back_to_stored_pdf_when_latex_and_html_fail(
         .one()
     )
     assert rev.source_format == "pdf"
-    assert rev.parser_version == "pdf-1.0.0"
+    assert rev.parser_version == "pdf-1.1.0"
     assert rev.quality_level == "B"
     assert rev.stats["candidate_failures"] == [
         {
@@ -2464,7 +3732,11 @@ async def test_ingest_resume_uses_structuring_checkpoint_without_reselecting_can
             .scalars()
             .one()
         )
-        revision.stats = {}
+        revision.stats = {
+            key: value
+            for key, value in revision.stats.items()
+            if key not in {"candidate_failures", "completeness"}
+        }
         await db_session.commit()
 
         for _attempt in range(2):
@@ -2498,9 +3770,7 @@ async def test_ingest_resume_uses_structuring_checkpoint_without_reselecting_can
             refreshed_revision = await db_session.get(DocumentRevision, revision.id)
             assert refreshed_revision is not None
             assert refreshed_revision.stats["completeness"]["accepted"] is True
-            assert refreshed_revision.stats["candidate_failures"][0]["code"] == (
-                "historical_diagnostics_unavailable"
-            )
+            assert refreshed_revision.stats["candidate_failures"] == []
 
     revisions = (
         await db_session.execute(
@@ -2629,6 +3899,177 @@ async def test_ingest_parsing_checkpoint_reuses_stored_candidate_without_reselec
     assert revision.stats["completeness"]["accepted"] is True
 
 
+async def test_parsing_checkpoint_revalidates_figures_before_creating_revision(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    storage = S3Storage()
+    pdf_key = StorageKeys.original_pdf(ids["paper_id"], "v1")
+    html_key = StorageKeys.arxiv_html(ids["paper_id"], "v1")
+    await storage.put(
+        storage.sources_bucket,
+        pdf_key,
+        _VALID_PRIORITY_PDF,
+        content_type="application/pdf",
+    )
+    await storage.put(
+        storage.sources_bucket,
+        html_key,
+        _VALID_INLINE_SVG_HTML,
+        content_type="text/html; charset=utf-8",
+    )
+    store = JobStore(db_session)
+    await store.checkpoint(ids["job_id"], "fetching", {"source_version": "v1"}, progress=10)
+    await store.checkpoint(
+        ids["job_id"],
+        "parsing",
+        {
+            "source_format": "arxiv_html",
+            "parser_version": HTML_PARSER_VERSION,
+            "candidate_failures": [],
+            "completeness": {"accepted": True, "code": None},
+            "adopt_from_revision_id": None,
+            "source_storage_key": html_key,
+            "source_sha256": hashlib.sha256(_VALID_INLINE_SVG_HTML).hexdigest(),
+        },
+        progress=20,
+    )
+    materialized: list[str] = []
+
+    async def reject_asset(
+        _data: bytes,
+        source_name: str,
+        _content_type: str | None = None,
+        **_kwargs: Any,
+    ) -> Any:
+        materialized.append(source_name)
+        raise worker_pipeline.FigureAssetError("image_invalid", "synthetic invalid image")
+
+    monkeypatch.setattr(worker_pipeline, "_materialize_figure_payload", reject_asset)
+    calls = {"pdf": 0, "eprint": 0, "html": 0}
+    transport = httpx.ASGITransport(
+        app=_make_counting_arxiv_stub(calls, pdf_status=500, latex_available=True)
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "failed"
+    assert json.loads(completed.error or "{}")["code"] == "figure_asset_unresolved"
+    assert materialized == ["inline.svg"]
+    assert calls == {"pdf": 0, "eprint": 0, "html": 0}
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        )
+    ).scalars()
+    assert revisions.all() == []
+
+
+@pytest.mark.parametrize(
+    "failure_code",
+    [
+        "asset_fetch_timeout",
+        "asset_fetch_failed",
+        "rate_limited",
+        "upstream_5xx",
+        "conversion_crashed",
+        "conversion_lifecycle",
+        "conversion_timeout",
+        "materialization_timeout",
+        "figure_asset_error",
+    ],
+)
+async def test_parsing_checkpoint_preserves_retryable_nested_figure_failure(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_code: str,
+) -> None:
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    storage = S3Storage()
+    pdf_key = StorageKeys.original_pdf(ids["paper_id"], "v1")
+    html_key = StorageKeys.arxiv_html(ids["paper_id"], "v1")
+    await storage.put(
+        storage.sources_bucket,
+        pdf_key,
+        _VALID_PRIORITY_PDF,
+        content_type="application/pdf",
+    )
+    await storage.put(
+        storage.sources_bucket,
+        html_key,
+        _VALID_EXTERNAL_FIGURE_HTML,
+        content_type="text/html; charset=utf-8",
+    )
+    store = JobStore(db_session)
+    await store.checkpoint(ids["job_id"], "fetching", {"source_version": "v1"}, progress=10)
+    await store.checkpoint(
+        ids["job_id"],
+        "parsing",
+        {
+            "source_format": "arxiv_html",
+            "parser_version": HTML_PARSER_VERSION,
+            "candidate_failures": [],
+            "completeness": {"accepted": True, "code": None},
+            "adopt_from_revision_id": None,
+            "source_storage_key": html_key,
+            "source_sha256": hashlib.sha256(_VALID_EXTERNAL_FIGURE_HTML).hexdigest(),
+        },
+        progress=20,
+    )
+
+    async def fail_asset(*_args: Any, **_kwargs: Any) -> Any:
+        raise worker_pipeline.FigureAssetError(failure_code, "synthetic transient failure")
+
+    monkeypatch.setattr(worker_pipeline, "fetch_html_asset", fail_asset)
+    transport = httpx.ASGITransport(
+        app=_make_counting_arxiv_stub(
+            {"pdf": 0, "eprint": 0, "html": 0},
+            pdf_status=500,
+            latex_available=True,
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        with pytest.raises(FetchError) as error:
+            await run_ingest(ctx, store, job)
+
+    assert error.value.kind == failure_code
+    diagnostics = json.loads(str(error.value))
+    failure = diagnostics["candidates"][0]
+    assert failure["code"] == "figure_asset_unresolved"
+    assert failure["figure_asset_failures"][0]["code"] == failure_code
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        )
+    ).scalars()
+    assert revisions.all() == []
+
+
 @pytest.mark.parametrize(
     "parsing_checkpoint",
     [
@@ -2638,8 +4079,39 @@ async def test_ingest_parsing_checkpoint_reuses_stored_candidate_without_reselec
             "parser_version": HTML_PARSER_VERSION,
             "candidate_failures": "not-a-list",
         },
+        {
+            "source_format": "arxiv_html",
+            "parser_version": HTML_PARSER_VERSION,
+            "candidate_failures": [],
+            "completeness": {"accepted": True},
+        },
+        {
+            "source_format": "arxiv_html",
+            "parser_version": "html-999.0.0",
+            "candidate_failures": [],
+            "completeness": {"accepted": True},
+        },
+        {
+            "source_format": "arxiv_html",
+            "parser_version": worker_pipeline.LATEX_PARSER_VERSION,
+            "candidate_failures": [],
+            "completeness": {"accepted": True},
+        },
+        {
+            "source_format": "arxiv_html",
+            "parser_version": "html-not-semver",
+            "candidate_failures": [],
+            "completeness": {"accepted": True},
+        },
     ],
-    ids=["missing-source-format", "candidate-failures-not-list"],
+    ids=[
+        "missing-source-format",
+        "candidate-failures-not-list",
+        "current-missing-source-identity",
+        "newer-version-is-not-stale",
+        "other-family-is-not-stale",
+        "malformed-version-is-not-stale",
+    ],
 )
 async def test_ingest_rejects_malformed_parsing_checkpoint_without_reselection(
     db_session: AsyncSession,
@@ -2751,7 +4223,11 @@ async def test_ingest_rejects_malformed_structuring_checkpoint_without_reselecti
     assert calls == {"pdf": 0, "eprint": 0, "html": 0}
 
 
-async def test_ingest_parsing_checkpoint_finds_exact_persisted_parser_revision(
+@pytest.mark.parametrize(
+    "resume_stage", ["parsing", "structuring"], ids=["parsing", "structuring"]
+)
+async def test_stale_parser_checkpoint_reselects_current_parser_and_completes(
+    resume_stage: str,
     db_session: AsyncSession,
     router: LLMRouter,
     seed_ingest_job: Any,
@@ -2808,6 +4284,13 @@ async def test_ingest_parsing_checkpoint_finds_exact_persisted_parser_revision(
         },
         progress=20,
     )
+    if resume_stage == "structuring":
+        await store.checkpoint(
+            ids["job_id"],
+            "structuring",
+            {"revision_id": revision_id, "adopt_from_revision_id": None},
+            progress=35,
+        )
     calls = {"pdf": 0, "eprint": 0, "html": 0}
     transport = httpx.ASGITransport(
         app=_make_counting_arxiv_stub(calls, pdf_status=500, latex_available=True)
@@ -2824,17 +4307,31 @@ async def test_ingest_parsing_checkpoint_finds_exact_persisted_parser_revision(
         assert job is not None
         await ingest_paper(ctx, store, job)
 
-    assert calls == {"pdf": 0, "eprint": 0, "html": 0}
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
+    assert calls == {"pdf": 0, "eprint": 1, "html": 0}
     revisions = (
         (
             await db_session.execute(
-                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+                select(DocumentRevision)
+                .where(DocumentRevision.paper_id == ids["paper_id"])
+                .order_by(DocumentRevision.created_at, DocumentRevision.id)
             )
         )
         .scalars()
         .all()
     )
-    assert [str(item.id) for item in revisions] == [revision_id]
+    assert [str(item.id) for item in revisions if item.parser_version == "html-0.9.0"] == [
+        revision_id
+    ]
+    current = [
+        item for item in revisions if item.parser_version == worker_pipeline.LATEX_PARSER_VERSION
+    ]
+    assert len(current) == 1
+    paper = await db_session.get(Paper, ids["paper_id"])
+    assert paper is not None
+    assert str(paper.latest_revision_id) == str(current[0].id)
 
 
 async def test_ingest_rejects_incomplete_legacy_structuring_checkpoint(
@@ -2892,12 +4389,9 @@ async def test_ingest_rejects_incomplete_legacy_structuring_checkpoint(
     with pytest.raises(FetchError) as error:
         await run_ingest(worker_ctx, store, job)
 
-    assert error.value.kind == "document_incomplete"
+    assert error.value.kind == "parse_error"
     await db_session.refresh(legacy_revision)
-    assert legacy_revision.stats["completeness"]["accepted"] is False
-    assert legacy_revision.stats["candidate_failures"][0]["code"] == (
-        "historical_diagnostics_unavailable"
-    )
+    assert legacy_revision.stats == {}
 
 
 async def test_ingest_requires_pdf_after_cache_and_network_both_fail(
@@ -3050,6 +4544,96 @@ async def test_all_candidate_failures_raise_first_retryable_error(
     diagnostics = json.loads(str(error.value))["candidates"]
     assert [item["format"] for item in diagnostics] == ["latex", "arxiv_html", "pdf"]
     assert diagnostics[0]["code"] == "network_error"
+
+
+@pytest.mark.parametrize("length_mode", ["declared", "lying"])
+@pytest.mark.parametrize("source", ["eprint", "html", "pdf"])
+async def test_arxiv_source_download_bounds_declared_and_actual_lengths_without_partial_persistence(
+    source: str,
+    length_mode: str,
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limit = 32
+    declared_length = 128 if length_mode == "declared" else 1
+    if source == "eprint":
+        monkeypatch.setattr(worker_pipeline, "MAX_ARXIV_EPRINT_BYTES", limit)
+    elif source == "html":
+        monkeypatch.setattr(worker_pipeline, "MAX_ARXIV_HTML_BYTES", limit)
+    else:
+        monkeypatch.setattr(worker_pipeline, "MAX_ARXIV_PDF_BYTES", limit)
+
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_oversized_source_stub(source, declared_length=declared_length)
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    storage = S3Storage()
+    if source == "pdf":
+        assert completed.status == "failed"
+        assert json.loads(completed.error or "{}")["code"] == "source_too_large"
+        revisions = (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        ).scalars()
+        assert revisions.all() == []
+        oversized_key = StorageKeys.original_pdf(ids["paper_id"], "v1")
+        oversized_kind = "pdf"
+    else:
+        assert completed.status == "succeeded", completed.error
+        revision = (
+            (
+                await db_session.execute(
+                    select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+                )
+            )
+            .scalars()
+            .one()
+        )
+        expected_format = "arxiv_html" if source == "eprint" else "pdf"
+        assert revision.source_format == expected_format
+        failed_format = "latex" if source == "eprint" else "arxiv_html"
+        failure = next(
+            item
+            for item in revision.stats["candidate_failures"]
+            if item["format"] == failed_format
+        )
+        assert failure["code"] == "source_too_large"
+        oversized_key = (
+            StorageKeys.latex_tar(ids["paper_id"], "v1")
+            if source == "eprint"
+            else StorageKeys.arxiv_html(ids["paper_id"], "v1")
+        )
+        oversized_kind = "arxiv_latex" if source == "eprint" else "arxiv_html"
+
+    source_assets = (
+        await db_session.execute(
+            select(SourceAsset).where(
+                SourceAsset.paper_id == ids["paper_id"],
+                SourceAsset.kind == oversized_kind,
+            )
+        )
+    ).scalars()
+    assert source_assets.all() == []
+    with pytest.raises(ClientError):
+        await storage.get(storage.sources_bucket, oversized_key)
 
 
 async def test_all_deterministic_candidate_failures_finish_job(

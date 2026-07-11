@@ -38,7 +38,7 @@ def _main_doc() -> ParsedPdfDocument:
 
 def test_parser_version_and_quality_level() -> None:
     doc = _main_doc()
-    assert PARSER_VERSION == "pdf-1.0.0"
+    assert PARSER_VERSION == "pdf-1.1.0"
     assert doc.parser_version == PARSER_VERSION
     assert doc.quality_level == "B"
     assert doc.source_format == "pdf"

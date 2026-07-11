@@ -1839,6 +1839,14 @@ async def fetch_html_asset(
                         )
                     url = html_asset_url(base, versioned, urljoin(url, location))
                     continue
+                if response.status_code == 408:
+                    raise FigureAssetError(
+                        "asset_fetch_timeout", "figure request returned HTTP 408"
+                    )
+                if response.status_code == 429:
+                    raise FigureAssetError("rate_limited", "figure request was rate limited")
+                if response.status_code >= 500:
+                    raise FigureAssetError("upstream_5xx", "figure request upstream failed")
                 if response.status_code != 200:
                     raise FigureAssetError(
                         "asset_http_status", f"figure request returned HTTP {response.status_code}"

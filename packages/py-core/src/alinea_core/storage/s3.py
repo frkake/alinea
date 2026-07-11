@@ -19,6 +19,15 @@ from botocore.config import Config
 from alinea_core.settings import CoreSettings, get_settings
 
 _STORAGE_KEY_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
+_BOUNDED_READ_CHUNK_BYTES = 64 * 1024
+
+
+class S3ObjectTooLargeError(Exception):
+    """An S3 object exceeded the caller's explicit in-memory read limit."""
+
+    def __init__(self, *, max_bytes: int) -> None:
+        self.max_bytes = max_bytes
+        super().__init__("S3 object exceeds bounded read limit")
 
 
 class StorageKeys:
@@ -134,6 +143,30 @@ class S3Storage:
             async with resp["Body"] as stream:
                 data: bytes = await stream.read()
                 return data
+
+    async def get_bounded(self, bucket: str, key: str, *, max_bytes: int) -> bytes:
+        """Read at most ``max_bytes`` while defending against a false length header."""
+
+        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
+            raise ValueError("max_bytes must be a non-negative integer")
+        async with self._client_ctx() as client:
+            resp = await client.get_object(Bucket=bucket, Key=key)
+            async with resp["Body"] as stream:
+                sized_reader = getattr(stream, "content", stream)
+                content_length = resp.get("ContentLength")
+                if isinstance(content_length, int) and content_length > max_bytes:
+                    raise S3ObjectTooLargeError(max_bytes=max_bytes)
+                data = bytearray()
+                while True:
+                    remaining = max_bytes + 1 - len(data)
+                    if remaining <= 0:
+                        raise S3ObjectTooLargeError(max_bytes=max_bytes)
+                    chunk = await sized_reader.read(min(_BOUNDED_READ_CHUNK_BYTES, remaining))
+                    if not chunk:
+                        return bytes(data)
+                    data.extend(chunk)
+                    if len(data) > max_bytes:
+                        raise S3ObjectTooLargeError(max_bytes=max_bytes)
 
     async def delete_many(self, bucket: str, keys: Iterable[str]) -> None:
         unique_keys = [key for key in dict.fromkeys(keys) if key]

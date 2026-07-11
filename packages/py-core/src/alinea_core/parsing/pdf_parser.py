@@ -1,7 +1,7 @@
 """PDF パイプライン(品質 B。plans/05 §6)。
 
 PyMuPDF(fitz)を主、表セル抽出のみ pdfplumber を併用する(spec-decisions C7)。
-`parser_version='pdf-1.0.0'` / `source_format='pdf'` / `quality_level='B'`。
+`parser_version='pdf-1.1.0'` / `source_format='pdf'` / `quality_level='B'`。
 数値はすべて pt(1/72 インチ、PyMuPDF の既定単位のまま)。
 
 処理順は §6 の節番号のとおり: 6.1 抽出 → 6.2 ヘッダ/フッタ除去 → 6.3 段組み判定・
@@ -27,7 +27,7 @@ from alinea_core.document.blocks import Block, DocumentContent, Section, Section
 from alinea_core.document.inlines import Inline
 from alinea_core.parsing.block_ids import assign_block_ids
 
-PARSER_VERSION = "pdf-1.0.0"
+PARSER_VERSION = "pdf-1.1.0"
 
 _WS = re.compile(r"\s+")
 

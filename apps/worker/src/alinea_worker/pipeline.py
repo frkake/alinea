@@ -22,7 +22,7 @@ import hashlib
 import json
 import math
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -38,6 +38,13 @@ from alinea_core.arxiv.fetch import (
     make_arxiv_client,
 )
 from alinea_core.arxiv.ids import ArxivId, eprint_url, normalize_arxiv_id
+from alinea_core.arxiv.limits import (
+    MAX_ARXIV_EPRINT_BYTES,
+    MAX_ARXIV_HTML_BYTES,
+    MAX_ARXIV_PDF_BYTES,
+    HttpSourceTooLargeError,
+    read_bounded_http_body,
+)
 from alinea_core.arxiv.metadata import ArxivMeta, fetch_metadata
 from alinea_core.db.models import (
     DocumentRevision,
@@ -74,7 +81,7 @@ from alinea_core.parsing.pdf_parser import (
 )
 from alinea_core.search.rebuild import rebuild_block_search_index
 from alinea_core.settings import CoreSettings, get_settings
-from alinea_core.storage.s3 import S3Storage, StorageKeys
+from alinea_core.storage.s3 import S3ObjectTooLargeError, S3Storage, StorageKeys
 from alinea_core.translation.glossary import build_snapshot
 from alinea_core.translation.pipeline import (
     TranslationContext,
@@ -151,9 +158,13 @@ MAX_TOTAL_FIGURE_MATERIALIZED_BYTES = 128 * 1024 * 1024
 # for the full 200-figure document cap plus conversion overhead.
 MAX_DOCUMENT_MATERIALIZATION_SECONDS = 660.0
 MAX_HTML_ASSET_FETCH_SECONDS = 45.0
+FIGURE_MATERIALIZATION_VERSION = "figure-assets-1.0.0"
+MAX_EXISTING_ASSET_VERIFY_SECONDS = 45.0
+_PDF_DISPLAY_ASSET_BLOCK_TYPES = frozenset({"figure", "table", "equation"})
 REVISION_ASSET_CLEANUP_TIMEOUT_S = 5.0
 REVISION_ASSET_CLEANUP_CANCEL_GRACE_S = 1.0
 REVISION_ASSET_CLEANUP_CANCEL_POLL_S = 0.05
+REVISION_COMMIT_RECONCILIATION_TIMEOUT_S = 5.0
 _INLINE_RESOURCE_FAILURE_CODES = frozenset(
     {
         "asset_too_large",
@@ -295,6 +306,13 @@ log = structlog.get_logger("alinea.worker.pipeline")
 _BACKGROUND_REVISION_CLEANUPS: set[asyncio.Task[None]] = set()
 
 
+@dataclass
+class _RevisionCommitState:
+    revision_id: str
+    attempted: bool = False
+    succeeded: bool = False
+
+
 def _revision_cleanup_error(cleanup: asyncio.Task[None]) -> BaseException | None:
     if cleanup.cancelled():
         return None
@@ -368,6 +386,8 @@ async def _staged_revision_assets(
     storage: Any,
     *,
     restore_thumbnail_on_failure: Any | None = None,
+    commit_state: _RevisionCommitState | None = None,
+    reconcile_commit: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncIterator[list[str]]:
     """Track immutable uploads and clean them after any failed publication phase."""
 
@@ -380,7 +400,47 @@ async def _staged_revision_assets(
     try:
         yield uploaded_keys
     except BaseException:
-        if restore_thumbnail_on_failure is not None:
+        cleanup_allowed = True
+        if commit_state is not None and commit_state.attempted:
+            cleanup_allowed = False
+            if not commit_state.succeeded and reconcile_commit is not None:
+                try:
+                    async with asyncio.timeout(REVISION_COMMIT_RECONCILIATION_TIMEOUT_S):
+                        committed = await reconcile_commit()
+                except BaseException as reconcile_error:
+                    log.warning(
+                        "revision_asset_orphan_gc_required",
+                        revision_id=commit_state.revision_id,
+                        error_type=type(reconcile_error).__name__,
+                        key_count=len(uploaded_keys),
+                    )
+                else:
+                    if committed:
+                        log.info(
+                            "revision_commit_reconciled",
+                            revision_id=commit_state.revision_id,
+                            committed=True,
+                            key_count=len(uploaded_keys),
+                        )
+                    else:
+                        # COMMIT 応答を失った直後の read miss は、rollback の証明にならない
+                        # (replica lag / timeout / visibility race)。参照され得る immutable
+                        # assets は保持し、後続の orphan GC に委ねる。
+                        log.warning(
+                            "revision_asset_orphan_gc_required",
+                            revision_id=commit_state.revision_id,
+                            error_type="RevisionNotVisible",
+                            key_count=len(uploaded_keys),
+                        )
+            elif not commit_state.succeeded:
+                log.warning(
+                    "revision_asset_orphan_gc_required",
+                    revision_id=commit_state.revision_id,
+                    error_type="ReconciliationUnavailable",
+                    key_count=len(uploaded_keys),
+                )
+
+        if cleanup_allowed and restore_thumbnail_on_failure is not None:
             try:
                 restore_thumbnail_on_failure.thumbnail_key = previous_thumbnail_key
             except BaseException as restore_error:
@@ -388,7 +448,7 @@ async def _staged_revision_assets(
                     "revision_thumbnail_pointer_restore_failed",
                     error_type=type(restore_error).__name__,
                 )
-        if uploaded_keys:
+        if cleanup_allowed and uploaded_keys:
             cleanup = asyncio.create_task(
                 storage.delete_many(storage.assets_bucket, uploaded_keys.copy()),
                 name="alinea-revision-asset-cleanup",
@@ -411,8 +471,21 @@ _HISTORICAL_CANDIDATE_FAILURES = [
     }
 ]
 _RETRYABLE_CANDIDATE_CODES = frozenset(
-    {"network_error", "rate_limited", "upstream_5xx", "storage_error"}
+    {
+        "network_error",
+        "rate_limited",
+        "upstream_5xx",
+        "storage_error",
+        "asset_fetch_failed",
+        "asset_fetch_timeout",
+        "conversion_crashed",
+        "conversion_lifecycle",
+        "conversion_timeout",
+        "figure_asset_error",
+        "materialization_timeout",
+    }
 )
+_RETRYABLE_OPERATIONAL_SUFFIXES = ("_crashed", "_lifecycle", "_timeout")
 
 
 class IngestJobPayload(BaseModel):
@@ -444,6 +517,7 @@ class IngestDeps:
     arq_pool: Any | None = None
     throttle: Throttle = arxiv_throttle
     translation_quota_limit: int | None = None  # テスト上書き用(§2.6)
+    session_factory: Any | None = None
 
 
 def deps_from_ctx(ctx: dict[str, Any]) -> IngestDeps:
@@ -459,6 +533,7 @@ def deps_from_ctx(ctx: dict[str, Any]) -> IngestDeps:
         arq_pool=ctx.get("arq_pool"),
         throttle=ctx.get("throttle", arxiv_throttle),
         translation_quota_limit=ctx.get("translation_quota_limit"),
+        session_factory=ctx.get("sessionmaker"),
     )
 
 
@@ -490,6 +565,106 @@ def _extract_pdf_text(data: bytes) -> str:
             doc.close()
     except Exception:
         return ""
+
+
+def _canonical_content_sha256(content: Any) -> str:
+    """Hash revision JSON with a deterministic, ordering-independent encoding."""
+
+    encoded = json.dumps(
+        content,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _figure_asset_manifest(
+    blocks: list[Block], figure_bytes: dict[str, bytes]
+) -> list[dict[str, Any]]:
+    """Build deterministic, content-addressed evidence for persisted display assets."""
+
+    blocks_by_id = {block.id: block for block in blocks}
+    manifest: list[dict[str, Any]] = []
+    for block_id, content in sorted(figure_bytes.items()):
+        block = blocks_by_id.get(block_id)
+        if block is None or not block.asset_key:
+            raise FetchError(
+                "figure_asset_unresolved",
+                "persisted figure is missing its canonical block identity",
+            )
+        manifest.append(
+            {
+                "block_id": block_id,
+                "key": block.asset_key,
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "byte_size": len(content),
+            }
+        )
+    return manifest
+
+
+def _candidate_failure_record(candidate: SourceCandidate, **extra: Any) -> dict[str, Any]:
+    failure: dict[str, Any] = {
+        "format": candidate.source_format,
+        **candidate.report.as_dict(),
+        **extra,
+    }
+    if candidate.figure_asset_failures:
+        failure["figure_asset_failures"] = [dict(item) for item in candidate.figure_asset_failures]
+    return failure
+
+
+def _candidate_failure_code(failures: list[dict[str, Any]]) -> str:
+    """Choose the stable top-level error for an exhausted candidate set."""
+
+    for failure in failures:
+        codes: list[Any] = [failure.get("code")]
+        nested = failure.get("figure_asset_failures")
+        if isinstance(nested, list):
+            codes.extend(item.get("code") for item in nested if isinstance(item, dict))
+        for code in codes:
+            if isinstance(code, str) and (
+                code in _RETRYABLE_CANDIDATE_CODES
+                or code.endswith(_RETRYABLE_OPERATIONAL_SUFFIXES)
+            ):
+                return code
+    if any(failure.get("code") == "figure_asset_unresolved" for failure in failures):
+        return "figure_asset_unresolved"
+    return "document_incomplete"
+
+
+def _parser_version_identity(version: str) -> tuple[str, tuple[int, int, int]] | None:
+    family, separator, numeric = version.partition("-")
+    parts = numeric.split(".")
+    if not separator or len(parts) != 3 or not all(part.isdigit() for part in parts):
+        return None
+    return family, (int(parts[0]), int(parts[1]), int(parts[2]))
+
+
+def _current_parser_for_source_format(source_format: Any) -> str | None:
+    return {
+        "latex": LATEX_PARSER_VERSION,
+        "arxiv_html": HTML_PARSER_VERSION,
+        "pdf": PDF_PARSER_VERSION,
+        "pdf_upload": PDF_PARSER_VERSION,
+    }.get(source_format)
+
+
+def _is_stale_parser_checkpoint(checkpoint: dict[str, Any]) -> bool:
+    version = checkpoint.get("parser_version")
+    current = _current_parser_for_source_format(checkpoint.get("source_format"))
+    if not isinstance(version, str) or current is None:
+        return False
+    parsed = _parser_version_identity(version)
+    parsed_current = _parser_version_identity(current)
+    return (
+        parsed is not None
+        and parsed_current is not None
+        and parsed[0] == parsed_current[0]
+        and parsed[1] < parsed_current[1]
+    )
 
 
 def _embedded_pdf_identity(
@@ -579,6 +754,10 @@ class IngestRun:
         self._candidate_storage_key: str | None = None
         self._candidate_sha256: str | None = None
         self._candidate_provenance_validation_required = False
+        self._candidate_materialized_figures: dict[str, FigureAssetPayload] = {}
+        self._candidate_figure_failures: list[dict[str, str]] = []
+        self._candidate_materialization_validated = False
+        self._candidate_parsed_content_sha256: str | None = None
         self.style: str = "natural"
         self._settings_obj: TranslationSettings | None = None
 
@@ -705,10 +884,31 @@ class IngestRun:
     async def run(self) -> None:
         await self._stage_fetching()
         await self._stage_parse_and_structure()
+        self._release_candidate_buffers()
         await self._stage_translating_abstract()
         await self._ensure_translation_set()
         await self._stage_readable()
         await self._stage_translating_body()
+
+    def _release_candidate_buffers(self) -> None:
+        """Drop source/parser payloads once the verified revision is durable.
+
+        Translation only consumes ``self.content`` and durable DB/S3 identities.  Keeping
+        source archives, original PDFs, extracted images, and their parsed wrappers alive
+        through the LLM stages multiplies peak worker memory without providing recovery data.
+        """
+
+        if self.parsed_pdf is not None:
+            self.parsed_pdf.figure_images.clear()
+        self.parsed = None
+        self.parsed_pdf = None
+        self._candidate_materialized_figures.clear()
+        self._candidate_materialized_figures = {}
+        self.latex_binary_files.clear()
+        self.latex_binary_files = {}
+        self._latex_archive_bytes = None
+        self._pdf_bytes = None
+        self._pdf_text = None
 
     # -- fetching ---------------------------------------------------------
 
@@ -824,6 +1024,7 @@ class IngestRun:
             reconcile_assets.extend(latest_assets)
         cache_diagnostics: list[str] = []
         cache_storage_failed = False
+        cache_oversized = False
         keys: list[tuple[str, str, str | None]] = []
 
         def add_key(label: str, key: str, canonical_version: str | None = None) -> None:
@@ -845,9 +1046,22 @@ class IngestRun:
         for label, key, canonical_version in keys:
             try:
                 if canonical_version is not None:
-                    data = await load_original_pdf(self.deps.s3, self.paper_id, canonical_version)
+                    data = await load_original_pdf(
+                        self.deps.s3,
+                        self.paper_id,
+                        canonical_version,
+                        max_bytes=MAX_ARXIV_PDF_BYTES,
+                    )
                 else:
-                    data = await self.deps.s3.get(self.deps.s3.sources_bucket, key)
+                    data = await self.deps.s3.get_bounded(
+                        self.deps.s3.sources_bucket,
+                        key,
+                        max_bytes=MAX_ARXIV_PDF_BYTES,
+                    )
+            except S3ObjectTooLargeError:
+                cache_oversized = True
+                cache_diagnostics.append(f"{label}_oversized")
+                continue
             except ClientError as exc:
                 if not _is_missing_s3_object(exc):
                     cache_storage_failed = True
@@ -885,9 +1099,12 @@ class IngestRun:
         context = ",".join(cache_diagnostics) or "cache_miss"
 
         def unavailable(kind: str, network: str) -> FetchError:
-            effective_kind = (
-                "storage_error" if cache_storage_failed and kind == "source_not_found" else kind
-            )
+            if cache_oversized and kind == "source_not_found":
+                effective_kind = "source_too_large"
+            elif cache_storage_failed and kind == "source_not_found":
+                effective_kind = "storage_error"
+            else:
+                effective_kind = kind
             return FetchError(
                 effective_kind,
                 f"original pdf unavailable: cache={context}; network={network}",
@@ -895,20 +1112,31 @@ class IngestRun:
 
         try:
             await self._throttle()
-            resp = await http.get(url, timeout=httpx.Timeout(120.0, connect=5.0))
+            response_context = http.stream(
+                "GET", url, timeout=httpx.Timeout(120.0, connect=5.0)
+            )
         except httpx.HTTPError as exc:
             raise unavailable("network_error", "request_failed") from exc
-        if resp.status_code == 429:
-            raise unavailable("rate_limited", "http_429")
-        if resp.status_code == 408:
-            raise unavailable("network_error", "http_408")
-        if resp.status_code == 404:
-            raise unavailable("source_not_found", "http_404")
-        if resp.status_code >= 500:
-            raise unavailable("upstream_5xx", "upstream_5xx")
-        if resp.status_code != 200:
-            raise unavailable("source_not_found", f"http_{resp.status_code}")
-        data = resp.content
+        try:
+            async with response_context as resp:
+                if resp.status_code == 429:
+                    raise unavailable("rate_limited", "http_429")
+                if resp.status_code == 408:
+                    raise unavailable("network_error", "http_408")
+                if resp.status_code == 404:
+                    raise unavailable("source_not_found", "http_404")
+                if resp.status_code >= 500:
+                    raise unavailable("upstream_5xx", "upstream_5xx")
+                if resp.status_code != 200:
+                    raise unavailable("source_not_found", f"http_{resp.status_code}")
+                try:
+                    data = await read_bounded_http_body(
+                        resp, max_bytes=MAX_ARXIV_PDF_BYTES
+                    )
+                except HttpSourceTooLargeError as exc:
+                    raise unavailable("source_too_large", "payload_too_large") from exc
+        except httpx.HTTPError as exc:
+            raise unavailable("network_error", "request_failed") from exc
         if not _is_pdf_like(data):
             raise unavailable("source_not_found", "invalid_pdf")
         try:
@@ -958,10 +1186,14 @@ class IngestRun:
         if self._pdf_bytes is not None:
             return self._pdf_bytes
         assert self.paper_id is not None
-        data = await self.deps.s3.get(
-            self.deps.s3.sources_bucket,
-            StorageKeys.original_pdf(self.paper_id, self.source_version or "v1"),
-        )
+        try:
+            data = await self.deps.s3.get_bounded(
+                self.deps.s3.sources_bucket,
+                StorageKeys.original_pdf(self.paper_id, self.source_version or "v1"),
+                max_bytes=MAX_ARXIV_PDF_BYTES,
+            )
+        except S3ObjectTooLargeError as exc:
+            raise FetchError("source_too_large", "stored original pdf exceeds size limit") from exc
         self._pdf_bytes = data
         return data
 
@@ -1018,7 +1250,8 @@ class IngestRun:
         assert self.ref is not None
         try:
             await self._throttle()
-            resp = await http.get(
+            response_context = http.stream(
+                "GET",
                 eprint_url(self.ref, self.deps.settings.alinea_arxiv_base_url or None),
                 timeout=httpx.Timeout(60.0, connect=5.0),
             )
@@ -1026,57 +1259,98 @@ class IngestRun:
             raise CandidateUnavailable(
                 "latex", "network_error", "arxiv e-print request failed"
             ) from exc
-        if resp.status_code == 408:
-            raise CandidateUnavailable("latex", "network_error", "arxiv e-print request timed out")
-        if resp.status_code == 429:
+        try:
+            async with response_context as resp:
+                if resp.status_code == 408:
+                    raise CandidateUnavailable(
+                        "latex", "network_error", "arxiv e-print request timed out"
+                    )
+                if resp.status_code == 429:
+                    raise CandidateUnavailable(
+                        "latex", "rate_limited", "arxiv e-print request was rate limited"
+                    )
+                if resp.status_code == 404:
+                    raise CandidateUnavailable(
+                        "latex", "source_not_found", "arxiv e-print returned 404"
+                    )
+                if resp.status_code >= 500:
+                    raise CandidateUnavailable(
+                        "latex", "upstream_5xx", "arxiv e-print upstream failure"
+                    )
+                if resp.status_code != 200:
+                    raise CandidateUnavailable(
+                        "latex", "source_not_found", "arxiv e-print was unavailable"
+                    )
+                if "pdf" in resp.headers.get("content-type", "").lower():
+                    raise CandidateUnavailable(
+                        "latex",
+                        "source_not_found",
+                        "arxiv e-print returned PDF instead of LaTeX source",
+                    )
+                try:
+                    return await read_bounded_http_body(
+                        resp, max_bytes=MAX_ARXIV_EPRINT_BYTES
+                    )
+                except HttpSourceTooLargeError as exc:
+                    raise CandidateUnavailable(
+                        "latex", "source_too_large", "arxiv e-print exceeds size limit"
+                    ) from exc
+        except httpx.HTTPError as exc:
             raise CandidateUnavailable(
-                "latex", "rate_limited", "arxiv e-print request was rate limited"
-            )
-        if resp.status_code == 404:
-            raise CandidateUnavailable("latex", "source_not_found", "arxiv e-print returned 404")
-        if resp.status_code >= 500:
-            raise CandidateUnavailable("latex", "upstream_5xx", "arxiv e-print upstream failure")
-        if resp.status_code != 200:
-            raise CandidateUnavailable("latex", "source_not_found", "arxiv e-print was unavailable")
-        if "pdf" in resp.headers.get("content-type", "").lower():
-            raise CandidateUnavailable(
-                "latex",
-                "source_not_found",
-                "arxiv e-print returned PDF instead of LaTeX source",
-            )
-        return resp.content
+                "latex", "network_error", "arxiv e-print request failed"
+            ) from exc
 
     async def _fetch_html_candidate_bytes(self, http: httpx.AsyncClient) -> bytes:
         assert self.ref is not None
         url = f"{_www_base(self.deps.settings)}/html/{self.ref.versioned}"
         try:
             await self._throttle()
-            resp = await http.get(url, timeout=httpx.Timeout(30.0, connect=5.0))
+            response_context = http.stream(
+                "GET", url, timeout=httpx.Timeout(30.0, connect=5.0)
+            )
         except httpx.HTTPError as exc:
             raise CandidateUnavailable(
                 "arxiv_html", "network_error", "arxiv html request failed"
             ) from exc
-        if resp.status_code == 408:
+        try:
+            async with response_context as resp:
+                if resp.status_code == 408:
+                    raise CandidateUnavailable(
+                        "arxiv_html", "network_error", "arxiv html request timed out"
+                    )
+                if resp.status_code == 429:
+                    raise CandidateUnavailable(
+                        "arxiv_html", "rate_limited", "arxiv html request was rate limited"
+                    )
+                if resp.status_code == 404:
+                    raise CandidateUnavailable(
+                        "arxiv_html", "source_not_found", "arxiv html returned 404"
+                    )
+                if resp.status_code >= 500:
+                    raise CandidateUnavailable(
+                        "arxiv_html", "upstream_5xx", "arxiv html upstream failure"
+                    )
+                if resp.status_code != 200:
+                    raise CandidateUnavailable(
+                        "arxiv_html", "source_not_found", "arxiv html was unavailable"
+                    )
+                try:
+                    data = await read_bounded_http_body(
+                        resp, max_bytes=MAX_ARXIV_HTML_BYTES
+                    )
+                except HttpSourceTooLargeError as exc:
+                    raise CandidateUnavailable(
+                        "arxiv_html", "source_too_large", "arxiv html exceeds size limit"
+                    ) from exc
+        except httpx.HTTPError as exc:
             raise CandidateUnavailable(
-                "arxiv_html", "network_error", "arxiv html request timed out"
-            )
-        if resp.status_code == 429:
-            raise CandidateUnavailable(
-                "arxiv_html", "rate_limited", "arxiv html request was rate limited"
-            )
-        if resp.status_code == 404:
-            raise CandidateUnavailable("arxiv_html", "source_not_found", "arxiv html returned 404")
-        if resp.status_code >= 500:
-            raise CandidateUnavailable("arxiv_html", "upstream_5xx", "arxiv html upstream failure")
-        if resp.status_code != 200:
-            raise CandidateUnavailable(
-                "arxiv_html", "source_not_found", "arxiv html was unavailable"
-            )
-        if "ltx_document" not in resp.text:
+                "arxiv_html", "network_error", "arxiv html request failed"
+            ) from exc
+        if b"ltx_document" not in data:
             raise CandidateUnavailable(
                 "arxiv_html", "source_not_found", "arxiv html has no ltx_document"
             )
-        return resp.content
+        return data
 
     def _pdf_text_for_completeness(self) -> str:
         if self._pdf_text is not None:
@@ -1088,32 +1362,259 @@ class IngestRun:
 
     async def _latex_candidate(self, http: httpx.AsyncClient) -> SourceCandidate:
         raw = await self._fetch_latex_candidate_bytes(http)
-        candidate, binary_files, main_tex_name = parse_latex_candidate(
+        candidate, _binary_files, _main_tex_name = parse_latex_candidate(
             raw, pdf_text=self._pdf_text_for_completeness()
         )
-        self._latex_archive_bytes = raw
-        self.latex_binary_files = binary_files
-        self.latex_main_tex_name = main_tex_name
-        self.latex_graphicspaths = list(candidate.graphicspaths)
         return candidate
 
     async def _html_candidate(self, http: httpx.AsyncClient) -> SourceCandidate:
         raw = await self._fetch_html_candidate_bytes(http)
-        candidate = parse_html_candidate(raw, pdf_text=self._pdf_text_for_completeness())
-        self._latex_archive_bytes = None
-        self.latex_binary_files = {}
-        self.latex_main_tex_name = None
-        self.latex_graphicspaths = []
-        return candidate
+        return parse_html_candidate(raw, pdf_text=self._pdf_text_for_completeness())
 
     async def _pdf_candidate(self) -> SourceCandidate:
         data = await self._get_pdf_bytes()
-        candidate = parse_pdf_candidate(data, pdf_text=self._pdf_text_for_completeness())
-        self._latex_archive_bytes = None
-        self.latex_binary_files = {}
-        self.latex_main_tex_name = None
-        self.latex_graphicspaths = []
+        return parse_pdf_candidate(data, pdf_text=self._pdf_text_for_completeness())
+
+    async def _validated_pdf_upload_candidate(self, data: bytes) -> SourceCandidate:
+        """Parse and preflight a retained upload before revision lookup or creation."""
+
+        assert self.paper_id is not None
+        try:
+            candidate = parse_pdf_candidate(data, pdf_text=self._pdf_text_for_completeness())
+        except CandidateUnavailable as exc:
+            raise FetchError(exc.code, exc.message) from exc
+        if candidate.report.accepted:
+            await self._materialize_candidate_figures(
+                candidate,
+                http=None,
+                deadline=MaterializationDeadline.start(
+                    timeout_s=MAX_DOCUMENT_MATERIALIZATION_SECONDS
+                ),
+            )
+        if not candidate.report.accepted:
+            failure = _candidate_failure_record(candidate)
+            raise FetchError(
+                _candidate_failure_code([failure]),
+                json.dumps(
+                    {"candidates": [failure]},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+        self._set_candidate_state(candidate, [])
+        self.source_format = "pdf_upload"
+        self._candidate_storage_key = StorageKeys.original_pdf(self.paper_id, self.source_version)
+        self._candidate_sha256 = hashlib.sha256(data).hexdigest()
         return candidate
+
+    @staticmethod
+    def _candidate_asset_blocks(
+        candidate: SourceCandidate,
+    ) -> tuple[list[Block], list[str], list[str]]:
+        blocks = [block for _section, block in candidate.content.iter_blocks()]
+        blocks_by_id = {block.id: block for block in blocks}
+        required_ids = {block.id for block in blocks if block.type == "figure"}
+        invalid_type_ids: list[str] = []
+        if isinstance(candidate.parsed, ParsedPdfDocument):
+            required_ids.update(candidate.parsed.figure_images)
+            invalid_type_ids = sorted(
+                block_id
+                for block_id in candidate.parsed.figure_images
+                if (block := blocks_by_id.get(block_id)) is not None
+                and block.type not in _PDF_DISPLAY_ASSET_BLOCK_TYPES
+            )
+        missing_ids = sorted(required_ids - blocks_by_id.keys())
+        invalid_ids = set(invalid_type_ids)
+        return (
+            [block for block in blocks if block.id in required_ids and block.id not in invalid_ids],
+            missing_ids,
+            invalid_type_ids,
+        )
+
+    async def _materialize_candidate_figures(
+        self,
+        candidate: SourceCandidate,
+        *,
+        http: httpx.AsyncClient | None,
+        deadline: MaterializationDeadline,
+    ) -> None:
+        """Validate every declared display asset before a source can be selected."""
+
+        materialized: dict[str, FigureAssetPayload] = {}
+        blocks, missing_block_ids, invalid_type_ids = self._candidate_asset_blocks(candidate)
+        declared_ids = sorted(
+            [*(block.id for block in blocks), *missing_block_ids, *invalid_type_ids]
+        )
+        if len(declared_ids) > MAX_FIGURES_PER_DOCUMENT:
+            failures: list[dict[str, str]] = [
+                {
+                    "code": "figure_limit_exceeded",
+                    "figure_id": declared_ids[MAX_FIGURES_PER_DOCUMENT],
+                    "source": candidate.source_format,
+                }
+            ]
+            blocks = []
+        else:
+            failures = [
+                {
+                    "code": "missing_figure_block",
+                    "figure_id": block_id,
+                    "source": candidate.source_format,
+                }
+                for block_id in missing_block_ids
+            ]
+            failures.extend(
+                {
+                    "code": "invalid_figure_block_type",
+                    "figure_id": block_id,
+                    "source": candidate.source_format,
+                }
+                for block_id in invalid_type_ids
+            )
+        materialized_bytes = 0
+        for figure_index, block in enumerate(blocks):
+            try:
+                deadline.remaining()
+                if figure_index >= MAX_FIGURES_PER_DOCUMENT:
+                    raise FigureAssetError("figure_limit_exceeded", "document has too many figures")
+                materialized_budget = MAX_TOTAL_FIGURE_MATERIALIZED_BYTES - materialized_bytes
+                if materialized_budget <= 0:
+                    raise FigureAssetError(
+                        "figure_bytes_exceeded",
+                        "document figure bytes exceed the aggregate safe limit",
+                    )
+
+                payload: FigureAssetPayload | None = None
+                source_key = (block.asset_key or "").strip()
+                if isinstance(candidate.parsed, ParsedPdfDocument):
+                    source = candidate.parsed.figure_images.get(block.id)
+                    if source is None:
+                        raise FigureAssetError(
+                            "missing_asset_key", "PDF figure has no extracted display asset"
+                        )
+                    payload = await _materialize_figure_payload(
+                        source,
+                        f"{block.id}.png",
+                        "image/png",
+                        materialized_budget=materialized_budget,
+                        deadline=deadline,
+                    )
+                elif candidate.source_format == "latex":
+                    if not source_key:
+                        raise FigureAssetError(
+                            "missing_asset_key", "figure has no materializable asset"
+                        )
+                    resolved = resolve_latex_source(
+                        binary_files=candidate.latex_binary_files,
+                        requested=source_key,
+                        main_tex_name=candidate.latex_main_tex_name,
+                        graphicspaths=candidate.graphicspaths,
+                    )
+                    payload = await _materialize_figure_payload(
+                        resolved.content,
+                        resolved.source_name,
+                        materialized_budget=materialized_budget,
+                        deadline=deadline,
+                    )
+                else:
+                    inline_failure: FigureAssetError | None = None
+                    if isinstance(block.raw, str) and block.raw.strip():
+                        try:
+                            payload = await _materialize_inline_svg(
+                                block.raw,
+                                materialized_budget=materialized_budget,
+                                deadline=deadline,
+                            )
+                        except FigureAssetError as exc:
+                            inline_failure = exc
+                    if payload is None and not source_key:
+                        if inline_failure is not None:
+                            raise inline_failure
+                        raise FigureAssetError(
+                            "missing_asset_key", "figure has no materializable asset"
+                        )
+                    if payload is None:
+                        if http is None or self.ref is None:
+                            raise FigureAssetError(
+                                "source_not_found", "HTML figure source is not available"
+                            )
+
+                        async def load_with_budget(
+                            data: bytes,
+                            source_name: str,
+                            content_type: str | None,
+                            budget: int = materialized_budget,
+                        ) -> FigureAssetPayload:
+                            return await _materialize_figure_payload(
+                                data,
+                                source_name,
+                                content_type,
+                                materialized_budget=budget,
+                                deadline=deadline,
+                            )
+
+                        fetch_timeout = _operation_timeout(deadline, MAX_HTML_ASSET_FETCH_SECONDS)
+                        try:
+                            payload = await fetch_html_asset(
+                                http,
+                                base=_www_base(self.deps.settings),
+                                versioned=self.ref.versioned,
+                                source=source_key,
+                                payload_loader=load_with_budget,
+                                before_request=self._throttle,
+                                total_timeout_s=fetch_timeout.seconds,
+                            )
+                        except FigureAssetError as exc:
+                            mapped = _map_document_limited_timeout(
+                                exc,
+                                timeout=fetch_timeout,
+                                operation_code="asset_fetch_timeout",
+                            )
+                            if mapped is exc:
+                                raise
+                            raise mapped from exc
+
+                assert payload is not None
+                retained_bytes = payload.source_size or len(payload.content)
+                next_materialized_bytes = materialized_bytes + retained_bytes + len(payload.content)
+                if next_materialized_bytes > MAX_TOTAL_FIGURE_MATERIALIZED_BYTES:
+                    raise FigureAssetError(
+                        "figure_bytes_exceeded",
+                        "document figure bytes exceed the aggregate safe limit",
+                    )
+                materialized[block.id] = payload
+                materialized_bytes = next_materialized_bytes
+            except FigureAssetError as exc:
+                failures.append(
+                    {
+                        "code": exc.code,
+                        "figure_id": block.id,
+                        "source": candidate.source_format,
+                    }
+                )
+            except Exception:
+                failures.append(
+                    {
+                        "code": "figure_asset_error",
+                        "figure_id": block.id,
+                        "source": candidate.source_format,
+                    }
+                )
+
+        candidate.materialized_figures = materialized
+        candidate.figure_asset_failures = failures
+        candidate.figure_materialization_validated = True
+        comparison_text = (
+            _extract_pdf_text(candidate.source_bytes)
+            if candidate.container_source_bytes is not None
+            else self._pdf_text_for_completeness()
+        )
+        candidate.report = assess_document_completeness(
+            candidate.content,
+            pdf_text=comparison_text,
+            source_manifest=candidate.source_manifest,
+            unresolved_figures=len(failures),
+        )
 
     def _set_candidate_state(
         self,
@@ -1128,6 +1629,12 @@ class IngestRun:
         self._candidate_failures = failures
         self._candidate_diagnostics = [dict(item) for item in candidate.diagnostics]
         self._candidate_completeness = completeness or candidate.report.as_dict()
+        self._candidate_materialized_figures = dict(candidate.materialized_figures)
+        self._candidate_figure_failures = [dict(item) for item in candidate.figure_asset_failures]
+        self._candidate_materialization_validated = candidate.figure_materialization_validated
+        self._candidate_parsed_content_sha256 = _canonical_content_sha256(
+            candidate.content.model_dump()
+        )
         try:
             embedded_pdf = _embedded_pdf_identity(self._candidate_diagnostics)
         except ValueError as exc:
@@ -1138,6 +1645,14 @@ class IngestRun:
             self.latex_main_tex_name = None
             self.latex_graphicspaths = []
         elif candidate.source_format == "latex":
+            self._latex_archive_bytes = candidate.source_bytes
+            self.latex_binary_files = dict(candidate.latex_binary_files)
+            self.latex_main_tex_name = candidate.latex_main_tex_name
+            self.latex_graphicspaths = list(candidate.graphicspaths)
+        else:
+            self._latex_archive_bytes = candidate.container_source_bytes
+            self.latex_binary_files = dict(candidate.latex_binary_files)
+            self.latex_main_tex_name = candidate.latex_main_tex_name
             self.latex_graphicspaths = list(candidate.graphicspaths)
         if isinstance(candidate.parsed, ParsedPdfDocument):
             self.parsed = None
@@ -1238,10 +1753,26 @@ class IngestRun:
             if selected_key is not None
             else list(dict.fromkeys([canonical_key, *(asset.storage_key for asset in assets)]))
         )
+        max_bytes = {
+            "arxiv_latex": MAX_ARXIV_EPRINT_BYTES,
+            "arxiv_html": MAX_ARXIV_HTML_BYTES,
+            "pdf": MAX_ARXIV_PDF_BYTES,
+        }.get(kind)
+        if max_bytes is None:
+            raise FetchError("parse_error", f"unsupported retained source kind: {kind}")
         storage_failed = False
         for key in keys:
             try:
-                data = await self.deps.s3.get(self.deps.s3.sources_bucket, key)
+                data = await self.deps.s3.get_bounded(
+                    self.deps.s3.sources_bucket,
+                    key,
+                    max_bytes=max_bytes,
+                )
+            except S3ObjectTooLargeError as exc:
+                raise FetchError(
+                    "source_too_large",
+                    f"stored selected source exceeds size limit: format={source_format}",
+                ) from exc
             except ClientError as exc:
                 if _is_missing_s3_object(exc):
                     continue
@@ -1273,6 +1804,8 @@ class IngestRun:
         selected_sha_value = checkpoint.get("source_sha256")
         if (selected_key_value is None) != (selected_sha_value is None):
             raise FetchError("parse_error", "parsing checkpoint has incomplete source identity")
+        if selected_key_value is None:
+            raise FetchError("parse_error", "parsing checkpoint source identity is missing")
         if selected_key_value is not None and (
             not isinstance(selected_key_value, str)
             or not selected_key_value
@@ -1348,6 +1881,10 @@ class IngestRun:
                     member_bytes, pdf_text=_extract_pdf_text(member_bytes)
                 )
                 candidate.diagnostics = diagnostics
+                candidate.container_source_bytes = raw
+                candidate.latex_binary_files = dict(binary_files)
+                candidate.latex_main_tex_name = main_tex_name
+                candidate.graphicspaths = wrapper.graphicspaths
             elif source_format in {"pdf", "pdf_upload"}:
                 raw = await self._load_retained_source_bytes(
                     kind="pdf",
@@ -1373,10 +1910,26 @@ class IngestRun:
                 "parse_error",
                 f"stored selected source parser mismatch: format={source_format}",
             )
+        if candidate.report.accepted:
+            candidate_http = self.deps.http
+            owns_candidate_http = candidate.source_format == "arxiv_html" and candidate_http is None
+            if owns_candidate_http:
+                candidate_http = make_arxiv_client(self.deps.settings)
+            try:
+                await self._materialize_candidate_figures(
+                    candidate,
+                    http=candidate_http,
+                    deadline=MaterializationDeadline.start(
+                        timeout_s=MAX_DOCUMENT_MATERIALIZATION_SECONDS
+                    ),
+                )
+            finally:
+                if owns_candidate_http and candidate_http is not None:
+                    await candidate_http.aclose()
         if not candidate.report.accepted:
-            failure = {"format": candidate.source_format, **candidate.report.as_dict()}
+            failure = _candidate_failure_record(candidate)
             raise FetchError(
-                "document_incomplete",
+                _candidate_failure_code([failure]),
                 json.dumps({"candidates": [failure]}, ensure_ascii=False, sort_keys=True),
             )
 
@@ -1384,7 +1937,13 @@ class IngestRun:
         completeness = candidate.report.as_dict()
         stored_completeness = checkpoint.get("completeness")
         if isinstance(stored_completeness, dict):
-            completeness.update(stored_completeness)
+            completeness.update(
+                {
+                    key: value
+                    for key, value in stored_completeness.items()
+                    if key not in completeness
+                }
+            )
         if not completeness.get("accepted"):
             raise FetchError("document_incomplete", "stored selected source is incomplete")
         self._set_candidate_state(candidate, failures, completeness=completeness)
@@ -1438,7 +1997,7 @@ class IngestRun:
                         "latex ソース候補は不完全です(埋め込み PDF を確認)",
                         detail=wrapper_failure,
                     )
-                    selected = embedded_pdf_bytes(candidate.report, self.latex_binary_files)
+                    selected = embedded_pdf_bytes(candidate.report, candidate.latex_binary_files)
                     if selected is None:
                         continue
                     member_name, member_bytes = selected
@@ -1466,13 +2025,21 @@ class IngestRun:
                             "embedded_pdf_sha256": hashlib.sha256(member_bytes).hexdigest(),
                         }
                     ]
+                    promoted.container_source_bytes = candidate.source_bytes
+                    promoted.latex_binary_files = dict(candidate.latex_binary_files)
+                    promoted.latex_main_tex_name = candidate.latex_main_tex_name
+                    promoted.graphicspaths = candidate.graphicspaths
+                    if promoted.report.accepted:
+                        await self._materialize_candidate_figures(
+                            promoted,
+                            http=http,
+                            deadline=MaterializationDeadline.start(
+                                timeout_s=MAX_DOCUMENT_MATERIALIZATION_SECONDS
+                            ),
+                        )
                     if promoted.report.accepted:
                         return promoted, failures
-                    failure = {
-                        "format": promoted.source_format,
-                        **promoted.report.as_dict(),
-                        "embedded_pdf_source": member_name,
-                    }
+                    failure = _candidate_failure_record(promoted, embedded_pdf_source=member_name)
                     failures.append(failure)
                     await self._log(
                         "parsing",
@@ -1483,8 +2050,16 @@ class IngestRun:
                     continue
 
                 if candidate.report.accepted:
+                    await self._materialize_candidate_figures(
+                        candidate,
+                        http=http,
+                        deadline=MaterializationDeadline.start(
+                            timeout_s=MAX_DOCUMENT_MATERIALIZATION_SECONDS
+                        ),
+                    )
+                if candidate.report.accepted:
                     return candidate, failures
-                failure = {"format": candidate.source_format, **candidate.report.as_dict()}
+                failure = _candidate_failure_record(candidate)
                 failures.append(failure)
                 await self._log(
                     "parsing",
@@ -1497,15 +2072,204 @@ class IngestRun:
                 await http.aclose()
 
         diagnostics = json.dumps({"candidates": failures}, ensure_ascii=False, sort_keys=True)
-        retryable = next(
-            (
-                str(failure.get("code"))
-                for failure in failures
-                if failure.get("code") in _RETRYABLE_CANDIDATE_CODES
-            ),
-            None,
-        )
-        raise FetchError(retryable or "document_incomplete", diagnostics)
+        raise FetchError(_candidate_failure_code(failures), diagnostics)
+
+    def _expected_existing_figure_manifest(
+        self,
+        candidate: SourceCandidate,
+        revision: DocumentRevision,
+    ) -> list[dict[str, Any]]:
+        if (
+            not candidate.figure_materialization_validated
+            or candidate.figure_asset_failures
+            or len(candidate.materialized_figures) > MAX_FIGURES_PER_DOCUMENT
+        ):
+            raise FetchError(
+                "figure_asset_unresolved",
+                "selected candidate figure materialization identity is incomplete",
+            )
+        expected: list[dict[str, Any]] = []
+        aggregate_bytes = 0
+        for block_id, payload in sorted(candidate.materialized_figures.items()):
+            aggregate_bytes += len(payload.content)
+            if aggregate_bytes > MAX_TOTAL_FIGURE_MATERIALIZED_BYTES:
+                raise FetchError(
+                    "figure_asset_unresolved",
+                    "selected candidate figure manifest exceeds the aggregate safe limit",
+                )
+            expected.append(
+                {
+                    "block_id": block_id,
+                    "key": StorageKeys.figure(
+                        str(revision.paper_id), str(revision.id), block_id, payload.ext
+                    ),
+                    "sha256": hashlib.sha256(payload.content).hexdigest(),
+                    "byte_size": len(payload.content),
+                }
+            )
+        return expected
+
+    def _selected_source_identity(self) -> dict[str, str]:
+        key = self._candidate_storage_key
+        digest = self._candidate_sha256
+        if (
+            not isinstance(key, str)
+            or not key
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise FetchError("parse_error", "selected source identity is incomplete")
+        return {"storage_key": key, "sha256": digest}
+
+    def _selected_parsed_content_sha256(self) -> str:
+        digest = self._candidate_parsed_content_sha256
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise FetchError("parse_error", "selected parsed content identity is incomplete")
+        return digest
+
+    async def _verify_or_repair_existing_revision_assets(
+        self,
+        revision: DocumentRevision,
+        candidate: SourceCandidate,
+    ) -> None:
+        """Boundedly verify an existing revision before reusing it.
+
+        Missing or corrupt objects with an exact manifest/candidate identity are safely
+        restored at the same canonical key. Unverifiable legacy identities are never reused.
+        """
+
+        stats = revision.stats if isinstance(revision.stats, dict) else {}
+        if stats.get("selected_source") != self._selected_source_identity():
+            raise FetchError(
+                "parse_error",
+                "existing revision selected source identity is invalid",
+            )
+        candidate_parsed_content_sha256 = _canonical_content_sha256(candidate.content.model_dump())
+        if stats.get("parsed_content_sha256") != candidate_parsed_content_sha256:
+            raise FetchError(
+                "parse_error",
+                "existing revision parsed content identity is invalid",
+            )
+        expected = self._expected_existing_figure_manifest(candidate, revision)
+        manifest = stats.get("figure_asset_manifest")
+        if (
+            stats.get("figure_materialization_version") != FIGURE_MATERIALIZATION_VERSION
+            or not isinstance(manifest, list)
+            or manifest != expected
+        ):
+            raise FetchError(
+                "parse_error",
+                "existing revision figure materialization identity is invalid",
+            )
+        try:
+            content = DocumentContent.model_validate(revision.content)
+            actual_content_sha256 = _canonical_content_sha256(revision.content)
+        except (TypeError, ValueError) as exc:
+            raise FetchError("parse_error", "existing revision content is invalid") from exc
+        if stats.get("revision_content_sha256") != actual_content_sha256:
+            raise FetchError(
+                "parse_error",
+                "existing revision content identity is invalid",
+            )
+        blocks_by_id = {block.id: block for _section, block in content.iter_blocks()}
+        candidate_blocks_by_id = {
+            block.id: block for _section, block in candidate.content.iter_blocks()
+        }
+        revision_figure_ids = {
+            block.id for block in blocks_by_id.values() if block.type == "figure"
+        }
+        candidate_figure_ids = {
+            block.id for block in candidate_blocks_by_id.values() if block.type == "figure"
+        }
+        if (
+            any(
+                (block := blocks_by_id.get(str(entry["block_id"]))) is None
+                or (candidate_block := candidate_blocks_by_id.get(str(entry["block_id"]))) is None
+                or block.type != candidate_block.type
+                or block.asset_key != entry["key"]
+                for entry in expected
+            )
+            or revision_figure_ids != candidate_figure_ids
+        ):
+            raise FetchError(
+                "parse_error",
+                "existing revision figure block identity is invalid",
+            )
+
+        try:
+            async with asyncio.timeout(MAX_EXISTING_ASSET_VERIFY_SECONDS):
+                for entry in expected:
+                    block_id = str(entry["block_id"])
+                    key = str(entry["key"])
+                    payload = candidate.materialized_figures[block_id]
+                    repair = False
+                    try:
+                        stored = await self.deps.s3.get_bounded(
+                            self.deps.s3.assets_bucket,
+                            key,
+                            max_bytes=int(entry["byte_size"]),
+                        )
+                    except S3ObjectTooLargeError:
+                        repair = True
+                        stored = b""
+                    except ClientError as exc:
+                        if not _is_missing_s3_object(exc):
+                            raise FetchError(
+                                "storage_error",
+                                "existing revision figure verification failed",
+                            ) from exc
+                        repair = True
+                        stored = b""
+                    except Exception as exc:
+                        raise FetchError(
+                            "storage_error",
+                            "existing revision figure verification failed",
+                        ) from exc
+                    if (
+                        len(stored) != entry["byte_size"]
+                        or hashlib.sha256(stored).hexdigest() != entry["sha256"]
+                    ):
+                        repair = True
+                    if repair:
+                        try:
+                            await self.deps.s3.put(
+                                self.deps.s3.assets_bucket,
+                                key,
+                                payload.content,
+                                content_type=payload.content_type,
+                            )
+                            stored = await self.deps.s3.get_bounded(
+                                self.deps.s3.assets_bucket,
+                                key,
+                                max_bytes=int(entry["byte_size"]),
+                            )
+                        except S3ObjectTooLargeError as exc:
+                            raise FetchError(
+                                "storage_error",
+                                "existing revision figure repair verification failed",
+                            ) from exc
+                        except Exception as exc:
+                            raise FetchError(
+                                "storage_error",
+                                "existing revision figure repair failed",
+                            ) from exc
+                        if (
+                            len(stored) != entry["byte_size"]
+                            or hashlib.sha256(stored).hexdigest() != entry["sha256"]
+                        ):
+                            raise FetchError(
+                                "storage_error",
+                                "existing revision figure repair verification failed",
+                            )
+        except TimeoutError as exc:
+            raise FetchError(
+                "storage_error", "existing revision figure verification timed out"
+            ) from exc
 
     async def _adopt_source_candidate(
         self, candidate: SourceCandidate, failures: list[dict[str, Any]]
@@ -1543,6 +2307,7 @@ class IngestRun:
         existing_revision_id: str | None = None
         if existing is not None:
             self._validate_revision_candidate_provenance(existing)
+            await self._verify_or_repair_existing_revision_assets(existing, candidate)
             existing_revision_id = str(existing.id)
 
         if kind is not None:
@@ -1631,6 +2396,26 @@ class IngestRun:
             DocumentRevision.parser_version == (parser_version or self.parser_version),
         )
         return (await self.session.execute(stmt)).scalars().first()
+
+    async def _rollback_failed_revision(self) -> None:
+        self.revision_id = None
+        try:
+            await self.session.rollback()
+        except BaseException as exc:
+            log.warning(
+                "revision_database_rollback_failed",
+                error_type=type(exc).__name__,
+            )
+
+    async def _committed_revision_exists(self, revision_id: str) -> bool:
+        """Reconcile an uncertain COMMIT through an independent DB connection."""
+
+        factory = getattr(self.deps, "session_factory", None)
+        if factory is None:
+            raise RuntimeError("fresh database session is unavailable for commit reconciliation")
+        async with factory() as reconciliation_session:
+            revision = await reconciliation_session.get(DocumentRevision, revision_id)
+            return revision is not None and str(revision.paper_id) == self.paper_id
 
     def _restore_revision(self, revision: DocumentRevision) -> None:
         self.source_format = revision.source_format
@@ -1744,43 +2529,19 @@ class IngestRun:
 
     async def _restore_structuring_checkpoint_candidate(self, revision: DocumentRevision) -> None:
         assert self.paper_id is not None
-        stats = revision.stats if isinstance(revision.stats, dict) else {}
-        revision_has_embedded_provenance = any(
-            key in stats for key in _EMBEDDED_PDF_PROVENANCE_KEYS
-        )
         raw_parse_ck = self.ckpt.get("parsing")
         if raw_parse_ck is None:
-            if revision_has_embedded_provenance:
-                raise FetchError(
-                    "parse_error", "embedded revision parsing checkpoint is unavailable"
-                )
-            return
-        if not isinstance(raw_parse_ck, dict):
-            if revision_has_embedded_provenance:
-                raise FetchError("parse_error", "parsing checkpoint is not an object")
-            return
-        raw_diagnostics = raw_parse_ck.get("candidate_diagnostics", [])
-        checkpoint_has_embedded_provenance = isinstance(raw_diagnostics, list) and any(
-            isinstance(item, dict)
-            and (
-                item.get("kind") == "embedded_pdf"
-                or "embedded_pdf_source" in item
-                or "embedded_pdf_sha256" in item
+            raise FetchError(
+                "parse_error", "revision parsing checkpoint is unavailable for verification"
             )
-            for item in raw_diagnostics
-        )
-        checkpoint_has_embedded_provenance = checkpoint_has_embedded_provenance or (
-            raw_parse_ck.get("source_format") == "pdf"
-            and raw_parse_ck.get("source_storage_key")
-            == StorageKeys.latex_tar(self.paper_id, self.source_version)
-        )
-        if not revision_has_embedded_provenance and not checkpoint_has_embedded_provenance:
-            return
+        if not isinstance(raw_parse_ck, dict):
+            raise FetchError("parse_error", "parsing checkpoint is not an object")
 
         checkpoint_format = raw_parse_ck.get("source_format")
         checkpoint_parser = raw_parse_ck.get("parser_version")
+        revision_format = "pdf" if checkpoint_format == "pdf_upload" else checkpoint_format
         if (
-            checkpoint_format != revision.source_format
+            revision_format != revision.source_format
             or checkpoint_parser != revision.parser_version
         ):
             raise FetchError(
@@ -1790,17 +2551,29 @@ class IngestRun:
         self._candidate_provenance_validation_required = True
         self._candidate_failures = self._checkpoint_candidate_failures(raw_parse_ck)
         self._candidate_diagnostics = self._checkpoint_candidate_diagnostics(raw_parse_ck)
-        if _embedded_pdf_identity(self._candidate_diagnostics) is None:
-            raise FetchError("parse_error", "embedded parsing checkpoint identity is incomplete")
-        await self._load_checkpoint_candidate(raw_parse_ck)
+        candidate = await self._load_checkpoint_candidate(raw_parse_ck)
+        self._validate_revision_candidate_provenance(revision)
+        await self._verify_or_repair_existing_revision_assets(revision, candidate)
 
     async def _stage_parse_and_structure(self) -> None:
         checkpoint_revision = await self._checkpoint_revision()
         if checkpoint_revision is not None:
             revision, adopt_from_revision_id = checkpoint_revision
-            await self._restore_structuring_checkpoint_candidate(revision)
-            await self._finalize_revision(revision, adopt_from_revision_id=adopt_from_revision_id)
-            return
+            raw_parse_ck = self.ckpt.get("parsing")
+            stale_structuring_checkpoint = False
+            if isinstance(raw_parse_ck, dict) and _is_stale_parser_checkpoint(raw_parse_ck):
+                checkpoint_format = raw_parse_ck.get("source_format")
+                revision_format = "pdf" if checkpoint_format == "pdf_upload" else checkpoint_format
+                stale_structuring_checkpoint = (
+                    revision.source_format == revision_format
+                    and revision.parser_version == raw_parse_ck.get("parser_version")
+                )
+            if not stale_structuring_checkpoint:
+                await self._restore_structuring_checkpoint_candidate(revision)
+                await self._finalize_revision(
+                    revision, adopt_from_revision_id=adopt_from_revision_id
+                )
+                return
         checkpoint_candidate: SourceCandidate | None = None
         parse_ck: dict[str, Any] = {}
         if self.is_pdf_upload:
@@ -1817,15 +2590,38 @@ class IngestRun:
                     or not checkpoint_parser
                 ):
                     raise FetchError("parse_error", "parsing checkpoint identity is invalid")
-                checkpoint_candidate = await self._load_checkpoint_candidate(parse_ck)
-                existing = await self._find_revision(parser_version=checkpoint_parser)
-            else:
+                if _is_stale_parser_checkpoint(parse_ck):
+                    parse_ck = {}
+                else:
+                    checkpoint_candidate = await self._load_checkpoint_candidate(parse_ck)
+                    existing = await self._find_revision(parser_version=checkpoint_parser)
+            if not parse_ck:
                 existing = await self._find_revision()
             if existing is not None:
                 if existing.source_format != "pdf":
                     raise FetchError(
                         "parse_error", "parsing checkpoint source format does not match revision"
                     )
+                if checkpoint_candidate is None:
+                    data = await self._get_pdf_bytes()
+                    checkpoint_candidate = await self._validated_pdf_upload_candidate(data)
+                    await self.store.checkpoint(
+                        self.job_id,
+                        "parsing",
+                        {
+                            "source_format": "pdf_upload",
+                            "parser_version": self.parser_version,
+                            "candidate_failures": [],
+                            "completeness": checkpoint_candidate.report.as_dict(),
+                            "adopt_from_revision_id": None,
+                            "source_storage_key": self._candidate_storage_key,
+                            "source_sha256": self._candidate_sha256,
+                        },
+                        progress=20,
+                    )
+                await self._verify_or_repair_existing_revision_assets(
+                    existing, checkpoint_candidate
+                )
                 adopt_from = parse_ck.get("adopt_from_revision_id")
                 await self._finalize_revision(
                     existing,
@@ -1846,33 +2642,37 @@ class IngestRun:
                     or not checkpoint_parser
                 ):
                     raise FetchError("parse_error", "parsing checkpoint identity is invalid")
-                self.source_format = str(checkpoint_format)
-                self._candidate_provenance_validation_required = True
-                self._candidate_failures = self._checkpoint_candidate_failures(parse_ck)
-                self._candidate_diagnostics = self._checkpoint_candidate_diagnostics(parse_ck)
-                checkpoint_completeness = parse_ck.get("completeness")
-                self._candidate_completeness = (
-                    dict(checkpoint_completeness)
-                    if isinstance(checkpoint_completeness, dict)
-                    else None
-                )
-                existing = await self._find_revision(parser_version=checkpoint_parser)
-                if existing is not None:
-                    if existing.source_format != checkpoint_format:
-                        raise FetchError(
-                            "parse_error",
-                            "parsing checkpoint source format does not match revision",
-                        )
-                    embedded_pdf = _embedded_pdf_identity(self._candidate_diagnostics)
-                    if embedded_pdf is not None:
-                        checkpoint_candidate = await self._load_checkpoint_candidate(parse_ck)
-                    adopt_from = parse_ck.get("adopt_from_revision_id")
-                    await self._finalize_revision(
-                        existing,
-                        adopt_from_revision_id=(str(adopt_from) if adopt_from else None),
+                if _is_stale_parser_checkpoint(parse_ck):
+                    parse_ck = {}
+                else:
+                    self.source_format = str(checkpoint_format)
+                    self._candidate_provenance_validation_required = True
+                    self._candidate_failures = self._checkpoint_candidate_failures(parse_ck)
+                    self._candidate_diagnostics = self._checkpoint_candidate_diagnostics(parse_ck)
+                    checkpoint_completeness = parse_ck.get("completeness")
+                    self._candidate_completeness = (
+                        dict(checkpoint_completeness)
+                        if isinstance(checkpoint_completeness, dict)
+                        else None
                     )
-                    return
-                checkpoint_candidate = await self._load_checkpoint_candidate(parse_ck)
+                    existing = await self._find_revision(parser_version=checkpoint_parser)
+                    checkpoint_candidate = await self._load_checkpoint_candidate(parse_ck)
+                    if existing is not None:
+                        if existing.source_format != checkpoint_format:
+                            raise FetchError(
+                                "parse_error",
+                                "parsing checkpoint source format does not match revision",
+                            )
+                        self._validate_revision_candidate_provenance(existing)
+                        await self._verify_or_repair_existing_revision_assets(
+                            existing, checkpoint_candidate
+                        )
+                        adopt_from = parse_ck.get("adopt_from_revision_id")
+                        await self._finalize_revision(
+                            existing,
+                            adopt_from_revision_id=(str(adopt_from) if adopt_from else None),
+                        )
+                        return
 
         await self.store.set_progress(self.job_id, 20, stage="parsing")
         await self._publish_stage("parsing", 20)
@@ -1888,37 +2688,8 @@ class IngestRun:
             upload_candidate = checkpoint_candidate
             if upload_candidate is None:
                 data = await self._get_pdf_bytes()
-                try:
-                    upload_candidate = parse_pdf_candidate(
-                        data, pdf_text=self._pdf_text_for_completeness()
-                    )
-                except CandidateUnavailable as exc:
-                    raise FetchError(exc.code, exc.message) from exc
-                if not upload_candidate.report.accepted:
-                    raise FetchError(
-                        "document_incomplete",
-                        json.dumps(
-                            {
-                                "candidates": [
-                                    {
-                                        "format": upload_candidate.source_format,
-                                        **upload_candidate.report.as_dict(),
-                                    }
-                                ]
-                            },
-                            ensure_ascii=False,
-                            sort_keys=True,
-                        ),
-                    )
+                upload_candidate = await self._validated_pdf_upload_candidate(data)
                 assert isinstance(upload_candidate.parsed, ParsedPdfDocument)
-                self.parsed_pdf = upload_candidate.parsed
-                self.content = upload_candidate.content
-                self._candidate_failures = []
-                self._candidate_completeness = upload_candidate.report.as_dict()
-                self._candidate_storage_key = StorageKeys.original_pdf(
-                    self.paper_id, self.source_version
-                )
-                self._candidate_sha256 = hashlib.sha256(upload_candidate.source_bytes).hexdigest()
                 await self.store.checkpoint(
                     self.job_id,
                     "parsing",
@@ -1997,6 +2768,8 @@ class IngestRun:
             "translatable_blocks": len(scope.in_scope_block_ids),
             "candidate_failures": self._candidate_failures,
             "completeness": self._candidate_completeness,
+            "selected_source": self._selected_source_identity(),
+            "parsed_content_sha256": self._selected_parsed_content_sha256(),
         }
         if self.source_format == "latex":
             stats["latex_source"] = {
@@ -2018,37 +2791,56 @@ class IngestRun:
         await self.session.flush()
         self.revision_id = str(revision.id)
         self.content = content
+        commit_state = _RevisionCommitState(self.revision_id)
 
-        paper = await self._get_paper()
-        materialization_deadline = MaterializationDeadline.start(
-            timeout_s=MAX_DOCUMENT_MATERIALIZATION_SECONDS
-        )
-        async with _staged_revision_assets(
-            self.deps.s3,
-            restore_thumbnail_on_failure=paper,
-        ) as uploaded_keys:
-            figure_bytes, fig_warnings, figure_failures = await self._save_figures(
-                self.revision_id,
-                uploaded_keys=uploaded_keys,
-                deadline=materialization_deadline,
+        try:
+            paper = await self._get_paper()
+            materialization_deadline = MaterializationDeadline.start(
+                timeout_s=MAX_DOCUMENT_MATERIALIZATION_SECONDS
             )
-            warnings.extend(fig_warnings)
-            stats = {**stats, "figure_asset_failures": figure_failures}
-            revision.stats = stats
-            content = self.parsed.to_document_content()
-            revision.content = content.model_dump()
-            self.content = content
-            await rebuild_block_search_index(self.session, self.revision_id, content)
-            warnings.extend(
-                await self._make_thumbnail(
-                    paper,
-                    figure_bytes,
-                    self.parsed.figures,
+            async with _staged_revision_assets(
+                self.deps.s3,
+                restore_thumbnail_on_failure=paper,
+                commit_state=commit_state,
+                reconcile_commit=lambda: self._committed_revision_exists(
+                    commit_state.revision_id
+                ),
+            ) as uploaded_keys:
+                figure_bytes, fig_warnings, figure_failures = await self._save_figures(
+                    self.revision_id,
                     uploaded_keys=uploaded_keys,
                     deadline=materialization_deadline,
                 )
-            )
-            await self.session.commit()
+                warnings.extend(fig_warnings)
+                stats = {
+                    **stats,
+                    "figure_asset_failures": figure_failures,
+                    "figure_materialization_version": FIGURE_MATERIALIZATION_VERSION,
+                    "figure_asset_manifest": _figure_asset_manifest(
+                        self.parsed.figures, figure_bytes
+                    ),
+                }
+                content = self.parsed.to_document_content()
+                revision.content = content.model_dump()
+                stats["revision_content_sha256"] = _canonical_content_sha256(revision.content)
+                revision.stats = stats
+                self.content = content
+                await rebuild_block_search_index(self.session, self.revision_id, content)
+                warnings.extend(
+                    await self._make_thumbnail(
+                        paper,
+                        figure_bytes,
+                        self.parsed.figures,
+                        uploaded_keys=uploaded_keys,
+                        deadline=materialization_deadline,
+                    )
+                )
+                commit_state.attempted = True
+                await self.session.commit()
+                commit_state.succeeded = True
+        except BaseException:
+            await self._rollback_failed_revision()
+            raise
 
         for warning in warnings:
             await self._log("structuring", "warn", warning)
@@ -2081,6 +2873,16 @@ class IngestRun:
         materialized_bytes = 0
         if self.parsed is None or self.paper_id is None:
             return out, warnings, failures
+        validated_cache = getattr(self, "_candidate_materialization_validated", False)
+        if validated_cache:
+            expected_ids = {figure.id for figure in self.parsed.figures}
+            if self._candidate_figure_failures or set(self._candidate_materialized_figures) != (
+                expected_ids
+            ):
+                raise FetchError(
+                    "figure_asset_unresolved",
+                    "selected candidate figure cache is incomplete",
+                )
         for figure_index, fig in enumerate(self.parsed.figures):
             staged_key: str | None = None
             inline_raw = fig.raw
@@ -2098,10 +2900,13 @@ class IngestRun:
                         "figure_bytes_exceeded",
                         "document figure bytes exceed the aggregate safe limit",
                     )
-                payload: FigureAssetPayload | None = None
+                payload: FigureAssetPayload | None = (
+                    self._candidate_materialized_figures[fig.id] if validated_cache else None
+                )
                 inline_failure: FigureAssetError | None = None
                 if (
-                    self.source_format == "arxiv_html"
+                    payload is None
+                    and self.source_format == "arxiv_html"
                     and isinstance(inline_raw, str)
                     and bool(inline_raw.strip())
                 ):
@@ -2199,7 +3004,7 @@ class IngestRun:
                 out[fig.id] = payload.content
                 materialized_bytes = next_materialized_bytes
             except FigureAssetError as exc:
-                if staged_key is not None:
+                if staged_key is not None or validated_cache:
                     raise
                 fig.asset_key = None
                 failures.append(
@@ -2211,7 +3016,7 @@ class IngestRun:
                 )
                 warnings.append(f"図の保存に失敗(続行): {fig.id} [{exc.code}]")
             except Exception as exc:
-                if staged_key is not None:
+                if staged_key is not None or validated_cache:
                     raise
                 fig.asset_key = None
                 failures.append(
@@ -2238,8 +3043,11 @@ class IngestRun:
         if self.paper_id is None or self.revision_id is None:
             return []
         selected = select_thumbnail_figure(figures)
-        if selected is None or selected.id not in figure_bytes:
-            return []  # 図なし → thumbnail_key は NULL のまま(§8 ③④)
+        if selected is None:
+            paper.thumbnail_key = None
+            return []  # 新リビジョンが図なしなら旧リビジョンの pointer を残さない。
+        if selected.id not in figure_bytes:
+            return []
         timeout: _OperationTimeout | None = None
         try:
             timeout = _operation_timeout(deadline, DEFAULT_CONVERSION_TIMEOUT_S)
@@ -2296,6 +3104,8 @@ class IngestRun:
         stats["translatable_blocks"] = len(scope.in_scope_block_ids)
         stats["candidate_failures"] = self._candidate_failures
         stats["completeness"] = self._candidate_completeness
+        stats["selected_source"] = self._selected_source_identity()
+        stats["parsed_content_sha256"] = self._selected_parsed_content_sha256()
         embedded_pdf_provenance = self._selected_embedded_pdf_provenance()
         if embedded_pdf_provenance is not None:
             stats.update(embedded_pdf_provenance)
@@ -2312,45 +3122,64 @@ class IngestRun:
         self.session.add(revision)
         await self.session.flush()
         self.revision_id = str(revision.id)
+        commit_state = _RevisionCommitState(self.revision_id)
 
-        # 図・表・数式の切り出し画像は既にパーサが切り出し済み(HTTP 再取得不要)。
-        # S3 保存後に block.asset_key を確定してから再シリアライズする(§6.6.3)。
-        materialization_deadline = MaterializationDeadline.start(
-            timeout_s=MAX_DOCUMENT_MATERIALIZATION_SECONDS
-        )
-        paper = await self._get_paper()
-        async with _staged_revision_assets(
-            self.deps.s3,
-            restore_thumbnail_on_failure=paper,
-        ) as uploaded_keys:
-            figure_bytes, fig_warnings, figure_failures = await self._save_pdf_assets(
-                self.revision_id,
-                uploaded_keys=uploaded_keys,
-                deadline=materialization_deadline,
+        try:
+            # 図・表・数式の切り出し画像は既にパーサが切り出し済み(HTTP 再取得不要)。
+            # S3 保存後に block.asset_key を確定してから再シリアライズする(§6.6.3)。
+            materialization_deadline = MaterializationDeadline.start(
+                timeout_s=MAX_DOCUMENT_MATERIALIZATION_SECONDS
             )
-            warnings.extend(fig_warnings)
-            stats = {**stats, "figure_asset_failures": figure_failures}
-            revision.stats = stats
-            revision.content = content.model_dump()
-            self.content = content
-
-            abstract_text = _extract_pdf_abstract(content)
-            if abstract_text and not paper.abstract:
-                paper.abstract = abstract_text
-            if self.is_pdf_upload:
-                await self._apply_bib_estimate(paper, data)
-
-            await rebuild_block_search_index(self.session, self.revision_id, content)
-            warnings.extend(
-                await self._make_thumbnail(
-                    paper,
-                    figure_bytes,
-                    self.parsed_pdf.figures,
+            paper = await self._get_paper()
+            async with _staged_revision_assets(
+                self.deps.s3,
+                restore_thumbnail_on_failure=paper,
+                commit_state=commit_state,
+                reconcile_commit=lambda: self._committed_revision_exists(
+                    commit_state.revision_id
+                ),
+            ) as uploaded_keys:
+                figure_bytes, fig_warnings, figure_failures = await self._save_pdf_assets(
+                    self.revision_id,
                     uploaded_keys=uploaded_keys,
                     deadline=materialization_deadline,
                 )
-            )
-            await self.session.commit()
+                warnings.extend(fig_warnings)
+                stats = {
+                    **stats,
+                    "figure_asset_failures": figure_failures,
+                    "figure_materialization_version": FIGURE_MATERIALIZATION_VERSION,
+                    "figure_asset_manifest": _figure_asset_manifest(
+                        self.parsed_pdf.blocks, figure_bytes
+                    ),
+                }
+                revision.content = content.model_dump()
+                stats["revision_content_sha256"] = _canonical_content_sha256(revision.content)
+                revision.stats = stats
+                self.content = content
+
+                abstract_text = _extract_pdf_abstract(content)
+                if abstract_text and not paper.abstract:
+                    paper.abstract = abstract_text
+                if self.is_pdf_upload:
+                    await self._apply_bib_estimate(paper, data)
+
+                await rebuild_block_search_index(self.session, self.revision_id, content)
+                warnings.extend(
+                    await self._make_thumbnail(
+                        paper,
+                        figure_bytes,
+                        self.parsed_pdf.figures,
+                        uploaded_keys=uploaded_keys,
+                        deadline=materialization_deadline,
+                    )
+                )
+                commit_state.attempted = True
+                await self.session.commit()
+                commit_state.succeeded = True
+        except BaseException:
+            await self._rollback_failed_revision()
+            raise
 
         for warning in warnings:
             await self._log("structuring", "warn", warning)
@@ -2376,12 +3205,44 @@ class IngestRun:
         materialized_bytes = 0
         if self.parsed_pdf is None or self.paper_id is None:
             return output, warnings, failures
+        validated_cache = getattr(self, "_candidate_materialization_validated", False)
+        if validated_cache:
+            expected_ids = set(self.parsed_pdf.figure_images)
+            expected_ids.update(figure.id for figure in self.parsed_pdf.figures)
+            if self._candidate_figure_failures or set(self._candidate_materialized_figures) != (
+                expected_ids
+            ):
+                raise FetchError(
+                    "figure_asset_unresolved",
+                    "selected PDF candidate figure cache is incomplete",
+                )
         blocks_by_id = {b.id: b for b in self.parsed_pdf.blocks}
         for figure_index, (block_id, png) in enumerate(self.parsed_pdf.figure_images.items()):
             staged_key: str | None = None
             block = blocks_by_id.get(block_id)
-            if block is None:
+            structural_failure = (
+                "missing_figure_block"
+                if block is None
+                else (
+                    "invalid_figure_block_type"
+                    if block.type not in _PDF_DISPLAY_ASSET_BLOCK_TYPES
+                    else None
+                )
+            )
+            if structural_failure is not None:
+                if validated_cache:
+                    raise FetchError(
+                        "figure_asset_unresolved",
+                        "selected PDF candidate figure block identity is invalid",
+                    )
+                failures.append(
+                    {"code": structural_failure, "figure_id": block_id, "source": "pdf"}
+                )
+                warnings.append(
+                    f"図/表アセットの保存に失敗(続行): {block_id} [{structural_failure}]"
+                )
                 continue
+            assert block is not None
             try:
                 if deadline is not None:
                     deadline.remaining()
@@ -2393,13 +3254,16 @@ class IngestRun:
                         "figure_bytes_exceeded",
                         "document figure bytes exceed the aggregate safe limit",
                     )
-                payload = await _materialize_figure_payload(
-                    png,
-                    f"{block_id}.png",
-                    "image/png",
-                    materialized_budget=materialized_budget,
-                    deadline=deadline,
-                )
+                if validated_cache:
+                    payload = self._candidate_materialized_figures[block_id]
+                else:
+                    payload = await _materialize_figure_payload(
+                        png,
+                        f"{block_id}.png",
+                        "image/png",
+                        materialized_budget=materialized_budget,
+                        deadline=deadline,
+                    )
                 next_materialized_bytes = materialized_bytes + len(png) + len(payload.content)
                 if next_materialized_bytes > MAX_TOTAL_FIGURE_MATERIALIZED_BYTES:
                     raise FigureAssetError(
@@ -2425,13 +3289,13 @@ class IngestRun:
                 output[block_id] = payload.content
                 materialized_bytes = next_materialized_bytes
             except FigureAssetError as exc:
-                if staged_key is not None:
+                if staged_key is not None or validated_cache:
                     raise
                 block.asset_key = None
                 failures.append({"code": exc.code, "figure_id": block_id, "source": "pdf"})
                 warnings.append(f"図/表アセットの保存に失敗(続行): {block_id} [{exc.code}]")
             except Exception as exc:
-                if staged_key is not None:
+                if staged_key is not None or validated_cache:
                     raise
                 block.asset_key = None
                 failures.append(

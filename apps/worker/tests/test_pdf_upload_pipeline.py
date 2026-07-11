@@ -10,6 +10,7 @@ fetching(HTML/PDF 取得・レート制限)は一切経由しない(§9.2「ロ�
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import uuid
@@ -26,10 +27,11 @@ from alinea_core.ingest import build_timeline
 from alinea_core.jobs.store import JobStore
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from alinea_core.translation.pipeline import compute_translation_scope
+from alinea_worker import pipeline as worker_pipeline
 from alinea_worker.tasks.ingest import ingest_paper
 from botocore.exceptions import ClientError
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 _FIXTURES = Path(__file__).resolve().parents[3] / "packages" / "py-core" / "tests" / "fixtures"
 
@@ -60,6 +62,11 @@ class _RaisingStorage:
         self.error = error
 
     async def get(self, bucket: str, key: str) -> bytes:
+        del bucket, key
+        raise AssertionError("retained source reads must be bounded")
+
+    async def get_bounded(self, bucket: str, key: str, *, max_bytes: int) -> bytes:
+        del bucket, key, max_bytes
         raise self.error
 
 
@@ -154,8 +161,23 @@ async def _personal_set(db: AsyncSession, revision_id: str, user_id: str) -> Tra
 
 
 async def test_pdf_upload_ingest_reaches_complete_quality_b(
-    db_session: AsyncSession, worker_ctx: dict[str, Any]
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    materialized_sources: list[str] = []
+    original_materialize = worker_pipeline._materialize_figure_payload
+
+    async def counting_materialize(
+        data: bytes,
+        source_name: str,
+        content_type: str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        materialized_sources.append(source_name)
+        return await original_materialize(data, source_name, content_type, **kwargs)
+
+    monkeypatch.setattr(worker_pipeline, "_materialize_figure_payload", counting_materialize)
     pdf_bytes = _load_pdf("pdf_quality_b_sample.pdf")
     ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=pdf_bytes)
     store = JobStore(db_session)
@@ -173,14 +195,47 @@ async def test_pdf_upload_ingest_reaches_complete_quality_b(
     rev = await _revision(db_session, ids["paper_id"])
     assert rev.quality_level == "B"
     assert rev.source_format == "pdf"
-    assert rev.parser_version == "pdf-1.0.0"
+    assert rev.parser_version == "pdf-1.1.0"
     assert rev.source_version == "v1"
+    source_key = StorageKeys.original_pdf(ids["paper_id"], "v1")
+    assert rev.stats["selected_source"] == {
+        "storage_key": source_key,
+        "sha256": hashlib.sha256(pdf_bytes).hexdigest(),
+    }
+    assert rev.stats["revision_content_sha256"] == (
+        worker_pipeline._canonical_content_sha256(rev.content)
+    )
+    parsed_candidate = worker_pipeline.parse_pdf_candidate(pdf_bytes, pdf_text="")
+    assert rev.stats["parsed_content_sha256"] == worker_pipeline._canonical_content_sha256(
+        parsed_candidate.content.model_dump()
+    )
     content = DocumentContent.model_validate(rev.content)
     assert content.sections
 
     # 図(Figure 1)は S3 保存後に asset_key が確定し、そのままサムネイルに使われる。
     figures = [blk for _sec, blk in content.iter_blocks() if blk.type == "figure"]
     assert figures and all(f.asset_key for f in figures)
+    assert len(materialized_sources) == 2
+    assert len(set(materialized_sources)) == 2
+    assert all(source.endswith(".png") for source in materialized_sources)
+    manifest = rev.stats["figure_asset_manifest"]
+    assert rev.stats["figure_materialization_version"] == (
+        worker_pipeline.FIGURE_MATERIALIZATION_VERSION
+    )
+    assert len(manifest) == 2
+    asset_blocks = {
+        block.id: block
+        for _section, block in content.iter_blocks()
+        if block.id in {entry["block_id"] for entry in manifest}
+    }
+    assert {block.type for block in asset_blocks.values()} == {"equation", "figure"}
+    storage = S3Storage()
+    for entry in manifest:
+        block = asset_blocks[entry["block_id"]]
+        assert block.asset_key == entry["key"]
+        stored = await storage.get(storage.assets_bucket, entry["key"])
+        assert len(stored) == entry["byte_size"]
+        assert hashlib.sha256(stored).hexdigest() == entry["sha256"]
 
     paper = await db_session.get(Paper, ids["paper_id"])
     assert paper is not None
@@ -205,6 +260,300 @@ async def test_pdf_upload_ingest_reaches_complete_quality_b(
     assert "全文翻訳 完了" in timeline[2]["label"]
 
 
+async def test_pdf_upload_rejects_candidate_when_extracted_asset_cannot_validate(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def reject_asset(*_args: Any, **_kwargs: Any) -> Any:
+        raise worker_pipeline.FigureAssetError("image_invalid", "synthetic invalid image")
+
+    monkeypatch.setattr(worker_pipeline, "_materialize_figure_payload", reject_asset)
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf"))
+    store = JobStore(db_session)
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(worker_ctx, store, job)
+
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "failed"
+    error = json.loads(completed.error or "{}")
+    assert error["code"] == "figure_asset_unresolved"
+    diagnostics = json.loads(error["message"])
+    assert diagnostics["candidates"][0]["figure_asset_failures"] == [
+        {
+            "code": "image_invalid",
+            "figure_id": "blk-2-eq1-1e91",
+            "source": "pdf",
+        },
+        {
+            "code": "image_invalid",
+            "figure_id": "blk-2-fig1-15cb",
+            "source": "pdf",
+        },
+    ]
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        )
+    ).scalars()
+    assert revisions.all() == []
+
+
+@pytest.mark.parametrize(
+    ("raised_code", "expected_code"),
+    [
+        ("conversion_crashed", "conversion_crashed"),
+        ("conversion_lifecycle", "conversion_lifecycle"),
+        ("conversion_timeout", "conversion_timeout"),
+        ("materialization_timeout", "materialization_timeout"),
+        (None, "figure_asset_error"),
+    ],
+    ids=[
+        "conversion-crashed",
+        "conversion-lifecycle",
+        "conversion-timeout",
+        "materialization-timeout",
+        "generic-child-error",
+    ],
+)
+async def test_pdf_upload_operational_figure_failure_is_left_for_job_retry(
+    raised_code: str | None,
+    expected_code: str,
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_materialization(*_args: Any, **_kwargs: Any) -> Any:
+        if raised_code is None:
+            raise RuntimeError("synthetic child worker failure")
+        raise worker_pipeline.FigureAssetError(raised_code, "synthetic operational failure")
+
+    monkeypatch.setattr(worker_pipeline, "_materialize_figure_payload", fail_materialization)
+    ids = await _seed_pdf_ingest_job(
+        db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf")
+    )
+    store = JobStore(db_session)
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+
+    with pytest.raises(FetchError) as error:
+        await ingest_paper(worker_ctx, store, job)
+
+    assert error.value.kind == expected_code
+    persisted_job = await store.get(ids["job_id"])
+    assert persisted_job is not None
+    assert persisted_job.status != "failed"
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        )
+    ).scalars()
+    assert revisions.all() == []
+
+
+async def test_pdf_validated_cache_persistence_failure_rolls_back_revision(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LiveDeadline:
+        def remaining(self, operation_limit_s: float | None = None) -> float:
+            return 30.0 if operation_limit_s is None else min(30.0, operation_limit_s)
+
+    class ExpireOnSecondAsset:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def remaining(self, operation_limit_s: float | None = None) -> float:
+            self.calls += 1
+            if self.calls == 2:
+                raise worker_pipeline.FigureAssetError(
+                    "materialization_timeout", "synthetic PDF persistence deadline expired"
+                )
+            return 30.0 if operation_limit_s is None else min(30.0, operation_limit_s)
+
+    starts = 0
+
+    def start_deadline(
+        _cls: type[worker_pipeline.MaterializationDeadline],
+        **_kwargs: Any,
+    ) -> Any:
+        nonlocal starts
+        starts += 1
+        return LiveDeadline() if starts == 1 else ExpireOnSecondAsset()
+
+    monkeypatch.setattr(
+        worker_pipeline.MaterializationDeadline,
+        "start",
+        classmethod(start_deadline),
+    )
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf"))
+    store = JobStore(db_session)
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    with pytest.raises(worker_pipeline.FigureAssetError, match="deadline expired"):
+        await worker_pipeline.run_ingest(worker_ctx, store, job)
+
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        )
+    ).scalars()
+    assert revisions.all() == []
+
+
+@pytest.mark.parametrize(
+    "commit_error",
+    [ConnectionError("commit acknowledgement lost"), asyncio.CancelledError("commit cancelled")],
+    ids=["connection-lost-after-commit", "cancelled-after-commit"],
+)
+async def test_ambiguous_commit_preserves_committed_revision_assets_and_retry_succeeds(
+    commit_error: BaseException,
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ids = await _seed_pdf_ingest_job(
+        db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf")
+    )
+    maker = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
+    ctx = {**worker_ctx, "sessionmaker": maker}
+    store = JobStore(db_session)
+    original_commit = db_session.commit
+    injected = False
+
+    async def commit_then_lose_acknowledgement() -> None:
+        nonlocal injected
+        ready_revision = next(
+            (
+                value
+                for value in db_session.identity_map.values()
+                if isinstance(value, DocumentRevision)
+                and "revision_content_sha256" in (value.stats or {})
+            ),
+            None,
+        )
+        await original_commit()
+        if ready_revision is not None and not injected:
+            injected = True
+            raise commit_error
+
+    monkeypatch.setattr(db_session, "commit", commit_then_lose_acknowledgement)
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+
+    attempt = asyncio.create_task(worker_pipeline.run_ingest(ctx, store, job))
+    with pytest.raises(type(commit_error)) as caught:
+        await attempt
+    assert caught.value is commit_error
+    assert injected is True
+
+    db_session.expire_all()
+    revision = await _revision(db_session, ids["paper_id"])
+    paper = await db_session.get(Paper, ids["paper_id"])
+    assert paper is not None and paper.thumbnail_key is not None
+    committed_keys = [entry["key"] for entry in revision.stats["figure_asset_manifest"]]
+    committed_keys.extend(
+        [
+            paper.thumbnail_key,
+            StorageKeys.thumbnail_retina_sibling(
+                paper.thumbnail_key, paper_id=ids["paper_id"]
+            ),
+        ]
+    )
+    assert all(isinstance(key, str) for key in committed_keys)
+    storage = S3Storage()
+    for key in committed_keys:
+        assert isinstance(key, str)
+        assert await storage.get(storage.assets_bucket, key)
+
+    retry_job = await store.get(ids["job_id"])
+    assert retry_job is not None
+    retry_job.status = "queued"
+    retry_job.error = None
+    retry_job.finished_at = None
+    await db_session.commit()
+    claimed_retry = await store.claim(ids["job_id"])
+    assert claimed_retry is not None
+    await ingest_paper(ctx, store, claimed_retry)
+
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        )
+    ).scalars()
+    assert [str(item.id) for item in revisions.all()] == [str(revision.id)]
+
+
+async def test_pdf_upload_existing_revision_repairs_missing_manifest_asset(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+) -> None:
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf"))
+    store = JobStore(db_session)
+    first_job = await store.claim(ids["job_id"])
+    assert first_job is not None
+    await ingest_paper(worker_ctx, store, first_job)
+    revision = await _revision(db_session, ids["paper_id"])
+    manifest = revision.stats["figure_asset_manifest"]
+    assert manifest
+    missing = manifest[0]
+    storage = S3Storage()
+    await storage.delete_many(storage.assets_bucket, [missing["key"]])
+
+    reingest_job_id = await store.enqueue(
+        kind="ingest",
+        payload={
+            "mode": "reingest",
+            "source": "pdf_upload",
+            "library_item_id": ids["library_item_id"],
+        },
+        priority="bulk",
+        user_id=ids["user_id"],
+        paper_id=ids["paper_id"],
+        library_item_id=ids["library_item_id"],
+    )
+    reingest_job = await store.claim(reingest_job_id)
+    assert reingest_job is not None
+    await ingest_paper(worker_ctx, store, reingest_job)
+
+    completed = await store.get(reingest_job_id)
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
+    repaired = await storage.get(storage.assets_bucket, missing["key"])
+    assert len(repaired) == missing["byte_size"]
+    assert hashlib.sha256(repaired).hexdigest() == missing["sha256"]
+
+    await storage.put(
+        storage.assets_bucket,
+        missing["key"],
+        b"corrupt",
+        content_type="application/octet-stream",
+    )
+    corrupt_repair_job_id = await store.enqueue(
+        kind="ingest",
+        payload={
+            "mode": "reingest",
+            "source": "pdf_upload",
+            "library_item_id": ids["library_item_id"],
+        },
+        priority="bulk",
+        user_id=ids["user_id"],
+        paper_id=ids["paper_id"],
+        library_item_id=ids["library_item_id"],
+    )
+    corrupt_repair_job = await store.claim(corrupt_repair_job_id)
+    assert corrupt_repair_job is not None
+    await ingest_paper(worker_ctx, store, corrupt_repair_job)
+    repaired_corruption = await storage.get(storage.assets_bucket, missing["key"])
+    assert hashlib.sha256(repaired_corruption).hexdigest() == missing["sha256"]
+
+
 async def test_pdf_upload_resume_backfills_diagnostics_from_retained_pdf(
     db_session: AsyncSession, worker_ctx: dict[str, Any]
 ) -> None:
@@ -215,7 +564,11 @@ async def test_pdf_upload_resume_backfills_diagnostics_from_retained_pdf(
     await ingest_paper(worker_ctx, store, job)
 
     revision = await _revision(db_session, ids["paper_id"])
-    revision.stats = {}
+    revision.stats = {
+        key: value
+        for key, value in revision.stats.items()
+        if key not in {"candidate_failures", "completeness"}
+    }
     job = await store.get(ids["job_id"])
     assert job is not None
     job.status = "queued"
@@ -232,6 +585,62 @@ async def test_pdf_upload_resume_backfills_diagnostics_from_retained_pdf(
     await db_session.refresh(revision)
     assert revision.stats["completeness"]["accepted"] is True
     assert revision.stats["candidate_failures"] == []
+
+
+async def test_pdf_upload_stale_parser_checkpoint_reparses_with_current_version(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+) -> None:
+    ids = await _seed_pdf_ingest_job(
+        db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf")
+    )
+    store = JobStore(db_session)
+    first_job = await store.claim(ids["job_id"])
+    assert first_job is not None
+    await ingest_paper(worker_ctx, store, first_job)
+
+    legacy = await _revision(db_session, ids["paper_id"])
+    legacy_id = str(legacy.id)
+    legacy.parser_version = "pdf-1.0.0"
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    payload = json.loads(json.dumps(job.payload))
+    checkpoints = payload["_checkpoint"]
+    checkpoints.pop("structuring", None)
+    checkpoints["parsing"]["parser_version"] = "pdf-1.0.0"
+    job.payload = payload
+    job.status = "queued"
+    job.stage = "parsing"
+    job.error = None
+    job.finished_at = None
+    await db_session.commit()
+
+    resumed = await store.claim(ids["job_id"])
+    assert resumed is not None
+    await ingest_paper(worker_ctx, store, resumed)
+
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
+    revisions = (
+        (
+            await db_session.execute(
+                select(DocumentRevision)
+                .where(DocumentRevision.paper_id == ids["paper_id"])
+                .order_by(DocumentRevision.created_at, DocumentRevision.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [str(item.id) for item in revisions if item.parser_version == "pdf-1.0.0"] == [
+        legacy_id
+    ]
+    current = [item for item in revisions if item.parser_version == "pdf-1.1.0"]
+    assert len(current) == 1
+    paper = await db_session.get(Paper, ids["paper_id"])
+    assert paper is not None
+    assert str(paper.latest_revision_id) == str(current[0].id)
 
 
 @pytest.mark.parametrize("resume", [False, True], ids=["initial", "fetching-checkpoint"])
@@ -308,6 +717,32 @@ async def test_pdf_upload_missing_object_remains_sanitized_source_not_found(
     assert "provider-secret-detail" not in error["message"]
 
 
+async def test_pdf_upload_retained_source_uses_bounded_s3_read_and_fails_terminally(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf = _load_pdf("pdf_quality_b_sample.pdf")
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=pdf)
+    monkeypatch.setattr(worker_pipeline, "MAX_ARXIV_PDF_BYTES", len(pdf) - 1)
+    store = JobStore(db_session)
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+
+    await ingest_paper(worker_ctx, store, job)
+
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "failed"
+    assert json.loads(completed.error or "{}")["code"] == "source_too_large"
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        )
+    ).scalars()
+    assert revisions.all() == []
+
+
 async def test_pdf_upload_non_object_fetching_checkpoint_fails_with_parse_error(
     db_session: AsyncSession,
     worker_ctx: dict[str, Any],
@@ -347,7 +782,7 @@ async def test_pdf_upload_parsing_checkpoint_rejects_changed_source_bytes(
         "parsing",
         {
             "source_format": "pdf_upload",
-            "parser_version": "pdf-1.0.0",
+            "parser_version": "pdf-1.1.0",
             "candidate_failures": [],
             "completeness": {"accepted": True},
             "adopt_from_revision_id": None,

@@ -202,6 +202,127 @@ def test_figure_asset_caption_and_number() -> None:
     assert "Figure 1" not in cap
 
 
+def test_figure_emits_every_safe_raster_panel_in_order() -> None:
+    html = """
+    <article class="ltx_document"><section class="ltx_section">
+      <h2 class="ltx_title">Panels</h2>
+      <figure id="S1.F2" class="ltx_figure">
+        <div class="ltx_flex_figure">
+          <img class="ltx_graphics" src="panel-a.png" alt="panel a"/>
+          <img class="ltx_graphics" src="panel-b.png" alt="panel b"/>
+        </div>
+        <figcaption class="ltx_caption">
+          <span class="ltx_tag ltx_tag_figure">Figure 2: </span>Shared panel caption.
+        </figcaption>
+      </figure>
+    </section></article>
+    """
+
+    first = parse_arxiv_html(html)
+    repeated = parse_arxiv_html(html)
+    figures = first.figures
+
+    assert [figure.asset_key for figure in figures] == ["panel-a.png", "panel-b.png"]
+    assert all(figure.raw is None for figure in figures)
+    assert figures[0].number == "2"
+    assert figures[0].label == "S1.F2"
+    assert "Shared panel caption" in " ".join(
+        inline.v for inline in figures[0].caption if inline.t == "text"
+    )
+    assert figures[1].number is None
+    assert figures[1].label is None
+    assert figures[1].caption == []
+    assert [figure.id for figure in figures] == [figure.id for figure in repeated.figures]
+    assert len({figure.id for figure in figures}) == 2
+
+
+def test_figure_emits_every_sibling_svg_panel_in_document_order() -> None:
+    html = """
+    <article class="ltx_document"><section class="ltx_section">
+      <h2 class="ltx_title">SVG panels</h2>
+      <figure id="S1.F3" class="ltx_figure">
+        <svg id="panel-a" width="10" height="10"><path d="M0 0L1 1"/></svg>
+        <svg id="panel-b" width="10" height="10"><path d="M1 0L0 1"/></svg>
+        <figcaption class="ltx_caption">
+          <span class="ltx_tag ltx_tag_figure">Figure 3: </span>Two SVG panels.
+        </figcaption>
+      </figure>
+    </section></article>
+    """
+
+    figures = parse_arxiv_html(html).figures
+
+    assert len(figures) == 2
+    assert ["panel-a" in (figure.raw or "") for figure in figures] == [True, False]
+    assert ["panel-b" in (figure.raw or "") for figure in figures] == [False, True]
+    assert all(figure.asset_key is None for figure in figures)
+    assert figures[0].number == "3"
+    assert figures[0].label == "S1.F3"
+    assert figures[1].number is None
+    assert figures[1].label is None
+    assert figures[1].caption == []
+
+
+def test_figure_keeps_direct_sibling_svg_and_raster_as_distinct_panels() -> None:
+    html = """
+    <article class="ltx_document"><section class="ltx_section">
+      <h2 class="ltx_title">Mixed panels</h2>
+      <figure id="S1.F4" class="ltx_figure">
+        <svg id="vector-panel" width="10" height="10"><path d="M0 0L1 1"/></svg>
+        <img class="ltx_graphics" src="raster-panel.png" alt="raster panel"/>
+      </figure>
+    </section></article>
+    """
+
+    figures = parse_arxiv_html(html).figures
+
+    assert len(figures) == 2
+    assert "vector-panel" in (figures[0].raw or "")
+    assert figures[0].asset_key is None
+    assert figures[1].raw is None
+    assert figures[1].asset_key == "raster-panel.png"
+
+
+def test_figure_excludes_images_inside_caption_content() -> None:
+    html = """
+    <article class="ltx_document"><section class="ltx_section">
+      <h2 class="ltx_title">Caption icon</h2>
+      <figure id="S1.F5" class="ltx_figure">
+        <img class="ltx_graphics" src="actual-panel.png" alt="actual panel"/>
+        <figcaption class="ltx_caption">
+          <span class="ltx_tag ltx_tag_figure">Figure 5: </span>
+          Result <img src="caption-icon.png" alt="status icon"/>.
+        </figcaption>
+      </figure>
+    </section></article>
+    """
+
+    figures = parse_arxiv_html(html).figures
+
+    assert len(figures) == 1
+    assert figures[0].asset_key == "actual-panel.png"
+
+
+def test_figure_pairs_svg_with_raster_only_inside_explicit_fallback_wrapper() -> None:
+    html = """
+    <article class="ltx_document"><section class="ltx_section">
+      <h2 class="ltx_title">Fallback</h2>
+      <figure id="S1.F6" class="ltx_figure">
+        <picture>
+          <svg id="preferred" width="10" height="10"><path d="M0 0L1 1"/></svg>
+          <img src="fallback.png" alt="raster fallback"/>
+        </picture>
+      </figure>
+    </section></article>
+    """
+
+    figures = parse_arxiv_html(html).figures
+
+    assert len(figures) == 1
+    assert "preferred" in (figures[0].raw or "")
+    assert figures[0].asset_key == "fallback.png"
+
+
 def test_table_keeps_cell_html() -> None:
     doc = _doc()
     tbl = next(b for b in doc.blocks if b.type == "table")
@@ -256,7 +377,7 @@ def test_metadata_sections_skipped() -> None:
 
 def test_parser_version_and_quality() -> None:
     doc = _doc()
-    assert doc.parser_version == PARSER_VERSION == "html-1.2.0"
+    assert doc.parser_version == PARSER_VERSION == "html-1.3.0"
     assert doc.quality_level == "A"
     assert doc.source_format == "arxiv_html"
 

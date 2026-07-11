@@ -17,7 +17,13 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 import pytest_asyncio
-from alinea_core.arxiv.fetch import RedisLike, arxiv_throttle, probe_latex_available
+from alinea_core.arxiv.fetch import (
+    FetchError,
+    RedisLike,
+    arxiv_throttle,
+    fetch_pdf,
+    probe_latex_available,
+)
 from alinea_core.arxiv.ids import ArxivId, normalize_arxiv_id, parse_arxiv_url
 from alinea_core.arxiv.licenses import normalize_license_url
 from alinea_core.arxiv.metadata import fetch_metadata
@@ -249,6 +255,28 @@ async def _noop_throttle(redis: RedisLike) -> None:
     return None
 
 
+class _RecordingByteStream(httpx.AsyncByteStream):
+    def __init__(
+        self,
+        chunks: list[bytes],
+        *,
+        read_error: httpx.HTTPError | None = None,
+    ) -> None:
+        self.chunks = chunks
+        self.read_error = read_error
+        self.iterated = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        self.iterated = True
+        for chunk in self.chunks:
+            yield chunk
+        if self.read_error is not None:
+            raise self.read_error
+
+    async def aclose(self) -> None:
+        return None
+
+
 @pytest.fixture
 def settings() -> CoreSettings:
     # ASGITransport はホストを無視しパスでルーティングするため任意の URL でよい
@@ -265,6 +293,88 @@ async def http() -> AsyncIterator[httpx.AsyncClient]:
 @pytest.fixture
 def redis() -> RedisLike:
     return FakeRedis()
+
+
+# --------------------------------------------------------------------------- #
+# PDF ストリーム上限・通信失敗
+# --------------------------------------------------------------------------- #
+
+
+async def test_fetch_pdf_rejects_declared_oversize_before_stream_read(
+    settings: CoreSettings,
+) -> None:
+    stream = _RecordingByteStream([b"%PDF-small"])
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-length": "9"},
+            stream=stream,
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(FetchError) as caught:
+            await fetch_pdf(
+                ArxivId("2401.00001", 1),
+                http=client,
+                settings=settings,
+                max_bytes=8,
+            )
+
+    assert caught.value.kind == "payload_too_large"
+    assert stream.iterated is False
+
+
+async def test_fetch_pdf_rejects_actual_oversize_when_content_length_lies(
+    settings: CoreSettings,
+) -> None:
+    stream = _RecordingByteStream([b"%PDF-", b"payload-over-limit"])
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-length": "5"},
+            stream=stream,
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(FetchError) as caught:
+            await fetch_pdf(
+                ArxivId("2401.00001", 1),
+                http=client,
+                settings=settings,
+                max_bytes=8,
+            )
+
+    assert caught.value.kind == "payload_too_large"
+    assert stream.iterated is True
+
+
+async def test_fetch_pdf_maps_stream_read_error_to_network_error(
+    settings: CoreSettings,
+) -> None:
+    request = httpx.Request("GET", "http://arxiv.test/pdf/2401.00001v1")
+    stream = _RecordingByteStream(
+        [b"%PDF-"],
+        read_error=httpx.ReadError("stream failed", request=request),
+    )
+
+    def respond(response_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream, request=response_request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(FetchError) as caught:
+            await fetch_pdf(
+                ArxivId("2401.00001", 1),
+                http=client,
+                settings=settings,
+                max_bytes=32,
+            )
+
+    assert caught.value.kind == "network_error"
+    assert stream.iterated is True
 
 
 # --------------------------------------------------------------------------- #

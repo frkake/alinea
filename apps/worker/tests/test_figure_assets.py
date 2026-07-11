@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import hashlib
 import io
 import multiprocessing as mp
 import tarfile
@@ -15,9 +16,11 @@ from typing import Any
 import fitz
 import httpx
 import pytest
-from alinea_core.document.blocks import Block
+from alinea_core.document.blocks import Block, DocumentContent, Section
+from alinea_core.ingest import DocumentCompleteness
 from alinea_core.parsing.html_parser import parse_arxiv_html
-from alinea_core.storage.s3 import StorageKeys
+from alinea_core.parsing.pdf_parser import ParsedPdfDocument
+from alinea_core.storage.s3 import S3ObjectTooLargeError, StorageKeys
 from alinea_worker import figure_assets
 from alinea_worker import pipeline as worker_pipeline
 from alinea_worker.figure_assets import (
@@ -40,7 +43,7 @@ from alinea_worker.figure_assets import (
     _validate_image_payload_trusted as validate_image_payload,
 )
 from alinea_worker.pipeline import IngestRun
-from alinea_worker.source_candidates import parse_latex_candidate
+from alinea_worker.source_candidates import SourceCandidate, parse_latex_candidate
 from PIL import Image
 from starlette.applications import Starlette
 from starlette.responses import RedirectResponse, Response
@@ -1691,6 +1694,38 @@ async def test_fetch_html_asset_rejects_bad_status_and_oversized_response(
     assert caught.value.code == expected_code
 
 
+@pytest.mark.parametrize(
+    ("status_code", "expected_code"),
+    [
+        (408, "asset_fetch_timeout"),
+        (429, "rate_limited"),
+        (500, "upstream_5xx"),
+        (503, "upstream_5xx"),
+        (404, "asset_http_status"),
+    ],
+)
+async def test_fetch_html_asset_classifies_retryable_http_status(
+    status_code: int,
+    expected_code: str,
+) -> None:
+    async def figure(_request: Any) -> Response:
+        return Response("unavailable", status_code=status_code)
+
+    app = Starlette(routes=[Route("/html/2401.00001v2/figure.png", figure)])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://arxiv.org"
+    ) as client:
+        with pytest.raises(FigureAssetError) as caught:
+            await fetch_html_asset(
+                client,
+                base="https://arxiv.org",
+                versioned="2401.00001v2",
+                source="figure.png",
+            )
+
+    assert caught.value.code == expected_code
+
+
 async def test_fetch_html_asset_applies_one_wall_deadline_across_redirects() -> None:
     png = _raster_bytes("PNG")
 
@@ -1763,6 +1798,17 @@ class _StructuringSession:
     async def commit(self) -> None:
         if self.commit_error is not None:
             raise self.commit_error
+
+
+class _AbsentRevisionSession:
+    async def __aenter__(self) -> _AbsentRevisionSession:
+        return self
+
+    async def __aexit__(self, *_args: Any) -> None:
+        return None
+
+    async def get(self, _model: Any, _key: Any) -> None:
+        return None
 
 
 async def test_staged_assets_cleanup_after_index_failure_preserves_original() -> None:
@@ -2089,6 +2135,171 @@ async def test_cleanup_failure_does_not_replace_commit_failure() -> None:
     assert storage.deletes == [("assets", [new_key])]
 
 
+@pytest.mark.parametrize(
+    "failure_code",
+    [
+        "unsafe_inline_figure",
+        "missing_asset_key",
+        "asset_not_found",
+        "asset_ambiguous",
+        "image_invalid",
+        "image_dimensions_exceeded",
+        "figure_limit_exceeded",
+        "figure_bytes_exceeded",
+        "asset_too_large",
+        "conversion_oversize",
+    ],
+)
+def test_deterministic_nested_figure_failures_remain_terminal(
+    failure_code: str,
+) -> None:
+    failures = [
+        {
+            "format": "latex",
+            "code": "figure_asset_unresolved",
+            "figure_asset_failures": [{"code": failure_code}],
+        }
+    ]
+
+    assert worker_pipeline._candidate_failure_code(failures) == "figure_asset_unresolved"
+
+
+@pytest.mark.parametrize(
+    "failure_code",
+    [
+        "conversion_crashed",
+        "conversion_lifecycle",
+        "conversion_timeout",
+        "materialization_timeout",
+        "figure_asset_error",
+        "renderer_crashed",
+        "renderer_lifecycle",
+        "renderer_timeout",
+    ],
+)
+def test_operational_nested_figure_failures_are_retryable(failure_code: str) -> None:
+    failures = [
+        {
+            "format": "latex",
+            "code": "figure_asset_unresolved",
+            "figure_asset_failures": [{"code": failure_code}],
+        }
+    ]
+
+    assert worker_pipeline._candidate_failure_code(failures) == failure_code
+
+
+@pytest.mark.parametrize(
+    "reconciliation_error",
+    [RuntimeError("database unavailable"), asyncio.CancelledError("reconciliation cancelled")],
+    ids=["failed", "cancelled"],
+)
+async def test_ambiguous_commit_reconciliation_failure_preserves_assets_for_orphan_gc(
+    reconciliation_error: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RecordingLog:
+        def __init__(self) -> None:
+            self.warnings: list[tuple[str, dict[str, Any]]] = []
+
+        def warning(self, event: str, **fields: Any) -> None:
+            self.warnings.append((event, fields))
+
+    async def fail_reconciliation() -> bool:
+        raise reconciliation_error
+
+    storage = _RecordingStorage()
+    paper = SimpleNamespace(thumbnail_key="thumbnails/paper/revision-new/card.webp")
+    commit_state = worker_pipeline._RevisionCommitState(
+        "revision-new", attempted=True
+    )
+    recording_log = RecordingLog()
+    monkeypatch.setattr(worker_pipeline, "log", recording_log)
+    original = RuntimeError("commit outcome unknown")
+
+    with pytest.raises(RuntimeError) as caught:
+        async with worker_pipeline._staged_revision_assets(
+            storage,
+            restore_thumbnail_on_failure=paper,
+            commit_state=commit_state,
+            reconcile_commit=fail_reconciliation,
+        ) as uploaded_keys:
+            uploaded_keys.extend(
+                [
+                    "figures/paper/revision-new/one.png",
+                    "thumbnails/paper/revision-new/card.webp",
+                    "thumbnails/paper/revision-new/card@2x.webp",
+                ]
+            )
+            raise original
+
+    assert caught.value is original
+    assert storage.deletes == []
+    assert paper.thumbnail_key == "thumbnails/paper/revision-new/card.webp"
+    assert (
+        "revision_asset_orphan_gc_required",
+        {
+            "revision_id": "revision-new",
+            "error_type": type(reconciliation_error).__name__,
+            "key_count": 3,
+        },
+    ) in recording_log.warnings
+
+
+async def test_ambiguous_commit_negative_reconciliation_preserves_assets_for_orphan_gc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RecordingLog:
+        def __init__(self) -> None:
+            self.warnings: list[tuple[str, dict[str, Any]]] = []
+
+        def warning(self, event: str, **fields: Any) -> None:
+            self.warnings.append((event, fields))
+
+        def info(self, _event: str, **_fields: Any) -> None:
+            return None
+
+    async def revision_not_visible() -> bool:
+        return False
+
+    storage = _RecordingStorage()
+    new_thumbnail = "thumbnails/paper/revision-new/card.webp"
+    paper = SimpleNamespace(thumbnail_key=new_thumbnail)
+    commit_state = worker_pipeline._RevisionCommitState(
+        "revision-new", attempted=True
+    )
+    recording_log = RecordingLog()
+    monkeypatch.setattr(worker_pipeline, "log", recording_log)
+    original = RuntimeError("commit outcome unknown")
+    keys = [
+        "figures/paper/revision-new/one.png",
+        new_thumbnail,
+        "thumbnails/paper/revision-new/card@2x.webp",
+    ]
+
+    with pytest.raises(RuntimeError) as caught:
+        async with worker_pipeline._staged_revision_assets(
+            storage,
+            restore_thumbnail_on_failure=paper,
+            commit_state=commit_state,
+            reconcile_commit=revision_not_visible,
+        ) as uploaded_keys:
+            uploaded_keys.extend(keys)
+            raise original
+
+    assert caught.value is original
+    assert storage.deletes == []
+    assert paper.thumbnail_key == new_thumbnail
+    assert (
+        "revision_asset_orphan_gc_required",
+        {
+            "revision_id": "revision-new",
+            "error_type": "RevisionNotVisible",
+            "key_count": 3,
+        },
+    ) in recording_log.warnings
+
+
 @pytest.mark.parametrize("failure_phase", ["index", "commit"])
 async def test_structure_stage_cleans_uploads_and_restores_pointer_on_failure(
     monkeypatch: pytest.MonkeyPatch,
@@ -2112,13 +2323,16 @@ async def test_structure_stage_cleans_uploads_and_restores_pointer_on_failure(
     run.is_pdf_upload = False
     run._candidate_failures = []
     run._candidate_completeness = {}
+    run._candidate_storage_key = "sources/paper-id/v1/arxiv.html"
+    run._candidate_sha256 = "1" * 64
+    run._candidate_parsed_content_sha256 = "2" * 64
     run.revision_id = None
     run.content = None
     run.session = _StructuringSession(
         paper,
         error if failure_phase == "commit" else None,
     )
-    run.deps = SimpleNamespace(s3=storage)
+    run.deps = SimpleNamespace(s3=storage, session_factory=_AbsentRevisionSession)
     figure_key = "figures/paper-id/revision-new/figure.png"
 
     async def save_figures(
@@ -2156,16 +2370,12 @@ async def test_structure_stage_cleans_uploads_and_restores_pointer_on_failure(
         await run._structure()
 
     assert caught.value is error
-    assert paper.thumbnail_key == old_thumbnail
-    expected_keys = [figure_key]
-    if failure_phase == "commit":
-        expected_keys.extend(
-            [
-                "thumbnails/paper-id/revision-new/card.webp",
-                "thumbnails/paper-id/revision-new/card@2x.webp",
-            ]
-        )
-    assert storage.deletes == [("assets", expected_keys)]
+    if failure_phase == "index":
+        assert paper.thumbnail_key == old_thumbnail
+        assert storage.deletes == [("assets", [figure_key])]
+    else:
+        assert paper.thumbnail_key == "thumbnails/paper-id/revision-new/card.webp"
+        assert storage.deletes == []
 
 
 def _figure_run(
@@ -2197,6 +2407,379 @@ def _pdf_figure_run(
     run.parsed_pdf = SimpleNamespace(blocks=blocks, figure_images=figure_images)
     run.deps = SimpleNamespace(s3=storage)
     return run, storage, blocks
+
+
+async def test_pdf_candidate_rejects_orphan_extracted_asset_before_persistence() -> None:
+    content = DocumentContent(
+        quality_level="B",
+        sections=[
+            Section(
+                id="sec-1",
+                blocks=[
+                    Block(
+                        id="p-1",
+                        type="paragraph",
+                        inlines=[{"t": "text", "v": "First complete synthetic paragraph."}],
+                    ),
+                    Block(
+                        id="p-2",
+                        type="paragraph",
+                        inlines=[{"t": "text", "v": "Second complete synthetic paragraph."}],
+                    ),
+                ],
+            )
+        ],
+    )
+    parsed = ParsedPdfDocument(
+        sections=content.sections,
+        figure_images={"orphan-image": _raster_bytes("PNG")},
+    )
+    candidate = SourceCandidate(
+        source_format="pdf",
+        content=content,
+        parsed=parsed,
+        report=DocumentCompleteness(True, None, 0, 70, 2, 0),
+        source_bytes=b"%PDF synthetic",
+        diagnostics=[],
+    )
+    run = object.__new__(IngestRun)
+    run._pdf_text = ""
+    run._pdf_bytes = b"%PDF synthetic"
+
+    await run._materialize_candidate_figures(
+        candidate,
+        http=None,
+        deadline=worker_pipeline.MaterializationDeadline.start(timeout_s=30.0),
+    )
+
+    assert candidate.report.accepted is False
+    assert candidate.report.code == "figure_asset_unresolved"
+    assert candidate.figure_asset_failures == [
+        {
+            "code": "missing_figure_block",
+            "figure_id": "orphan-image",
+            "source": "pdf",
+        }
+    ]
+    assert candidate.materialized_figures == {}
+
+
+async def test_existing_revision_repairs_oversized_asset_with_bounded_reads() -> None:
+    paper_id = "00000000-0000-0000-0000-000000000001"
+    revision_id = "00000000-0000-0000-0000-000000000002"
+    source_key = StorageKeys.original_pdf(paper_id, "v1")
+    source_sha256 = "1" * 64
+    png = _raster_bytes("PNG")
+    payload = FigureAssetPayload(png, "png", "image/png", 16, 12, len(png))
+    candidate_block = Block(id="fig-1", type="figure", asset_key="source.png")
+    candidate_content = DocumentContent(
+        quality_level="B",
+        sections=[Section(id="sec-1", blocks=[candidate_block])],
+    )
+    candidate = SourceCandidate(
+        source_format="pdf",
+        content=candidate_content,
+        parsed=SimpleNamespace(),
+        report=DocumentCompleteness(True, None, 0, 70, 2, 1),
+        source_bytes=b"%PDF synthetic",
+        diagnostics=[],
+        materialized_figures={candidate_block.id: payload},
+        figure_materialization_validated=True,
+    )
+    canonical_key = StorageKeys.figure(paper_id, revision_id, candidate_block.id, payload.ext)
+    revision_block = Block(id=candidate_block.id, type="figure", asset_key=canonical_key)
+    revision_content = DocumentContent(
+        quality_level="B",
+        sections=[Section(id="sec-1", blocks=[revision_block])],
+    ).model_dump()
+    revision = worker_pipeline.DocumentRevision(
+        id=revision_id,
+        paper_id=paper_id,
+        source_version="v1",
+        parser_version="pdf-1.1.0",
+        quality_level="B",
+        source_format="pdf",
+        content=revision_content,
+        stats={
+            "selected_source": {"storage_key": source_key, "sha256": source_sha256},
+            "parsed_content_sha256": worker_pipeline._canonical_content_sha256(
+                candidate_content.model_dump()
+            ),
+            "revision_content_sha256": worker_pipeline._canonical_content_sha256(revision_content),
+            "figure_materialization_version": worker_pipeline.FIGURE_MATERIALIZATION_VERSION,
+            "figure_asset_manifest": [
+                {
+                    "block_id": candidate_block.id,
+                    "key": canonical_key,
+                    "sha256": hashlib.sha256(png).hexdigest(),
+                    "byte_size": len(png),
+                }
+            ],
+        },
+    )
+
+    class OversizedStorage:
+        assets_bucket = "assets"
+
+        def __init__(self) -> None:
+            self.objects = {canonical_key: png + b"oversized corruption"}
+            self.read_limits: list[int] = []
+            self.puts: list[bytes] = []
+
+        async def get(self, _bucket: str, _key: str) -> bytes:
+            raise AssertionError("integrity verification must never use unbounded get")
+
+        async def get_bounded(self, _bucket: str, key: str, *, max_bytes: int) -> bytes:
+            self.read_limits.append(max_bytes)
+            value = self.objects[key]
+            if len(value) > max_bytes:
+                raise S3ObjectTooLargeError(max_bytes=max_bytes)
+            return value
+
+        async def put(
+            self,
+            _bucket: str,
+            key: str,
+            body: bytes,
+            *,
+            content_type: str = "application/octet-stream",
+        ) -> None:
+            del content_type
+            self.puts.append(body)
+            self.objects[key] = body
+
+    storage = OversizedStorage()
+    run = object.__new__(IngestRun)
+    run._candidate_storage_key = source_key
+    run._candidate_sha256 = source_sha256
+    run.deps = SimpleNamespace(s3=storage)
+
+    await run._verify_or_repair_existing_revision_assets(revision, candidate)
+
+    assert storage.read_limits == [len(png), len(png)]
+    assert storage.puts == [png]
+    assert storage.objects[canonical_key] == png
+
+
+async def test_pdf_candidate_rejects_extracted_asset_bound_to_paragraph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paragraph = Block(
+        id="p-image",
+        type="paragraph",
+        inlines=[{"t": "text", "v": "A complete synthetic paragraph."}],
+    )
+    content = DocumentContent(
+        quality_level="B",
+        sections=[
+            Section(
+                id="sec-1",
+                blocks=[
+                    paragraph,
+                    Block(
+                        id="p-2",
+                        type="paragraph",
+                        inlines=[{"t": "text", "v": "Another complete paragraph."}],
+                    ),
+                ],
+            )
+        ],
+    )
+    parsed = ParsedPdfDocument(
+        sections=content.sections,
+        figure_images={paragraph.id: _raster_bytes("PNG")},
+    )
+    candidate = SourceCandidate(
+        source_format="pdf",
+        content=content,
+        parsed=parsed,
+        report=DocumentCompleteness(True, None, 0, 70, 2, 0),
+        source_bytes=b"%PDF synthetic",
+        diagnostics=[],
+    )
+    materialized: list[str] = []
+
+    async def unexpected_materialization(*_args: Any, **_kwargs: Any) -> FigureAssetPayload:
+        materialized.append("called")
+        raise AssertionError("invalid block type must be rejected before conversion")
+
+    monkeypatch.setattr(worker_pipeline, "_materialize_figure_payload", unexpected_materialization)
+    run = object.__new__(IngestRun)
+    run._pdf_text = ""
+    run._pdf_bytes = b"%PDF synthetic"
+
+    await run._materialize_candidate_figures(
+        candidate,
+        http=None,
+        deadline=worker_pipeline.MaterializationDeadline.start(timeout_s=30.0),
+    )
+
+    assert materialized == []
+    assert candidate.report.code == "figure_asset_unresolved"
+    assert candidate.materialized_figures == {}
+    assert candidate.figure_asset_failures == [
+        {
+            "code": "invalid_figure_block_type",
+            "figure_id": paragraph.id,
+            "source": "pdf",
+        }
+    ]
+
+
+async def test_save_pdf_assets_rejects_extracted_asset_bound_to_paragraph() -> None:
+    png = _raster_bytes("PNG")
+    run = object.__new__(IngestRun)
+    storage = _RecordingStorage()
+    paragraph = Block(
+        id="p-image",
+        type="paragraph",
+        inlines=[{"t": "text", "v": "A paragraph cannot own a display image."}],
+    )
+    run.paper_id = "paper-id"
+    run.parsed_pdf = SimpleNamespace(blocks=[paragraph], figure_images={paragraph.id: png})
+    run.deps = SimpleNamespace(s3=storage)
+
+    output, warnings, failures = await run._save_pdf_assets("revision-id")
+
+    assert output == {}
+    assert storage.puts == []
+    assert failures == [
+        {
+            "code": "invalid_figure_block_type",
+            "figure_id": paragraph.id,
+            "source": "pdf",
+        }
+    ]
+    assert warnings == [
+        f"図/表アセットの保存に失敗(続行): {paragraph.id} [invalid_figure_block_type]"
+    ]
+
+
+async def test_over_limit_candidate_is_rejected_before_any_asset_materialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paragraphs = [
+        Block(
+            id=f"p-{index}",
+            type="paragraph",
+            inlines=[{"t": "text", "v": f"Complete synthetic paragraph {index}."}],
+        )
+        for index in range(2)
+    ]
+    asset_blocks = [
+        Block(id=f"asset-{index:03d}", type="equation", latex="x")
+        for index in range(worker_pipeline.MAX_FIGURES_PER_DOCUMENT + 1)
+    ]
+    content = DocumentContent(
+        quality_level="B",
+        sections=[Section(id="sec-1", blocks=[*paragraphs, *asset_blocks])],
+    )
+    png = _raster_bytes("PNG")
+    parsed = ParsedPdfDocument(
+        sections=content.sections,
+        figure_images={block.id: png for block in asset_blocks},
+    )
+    candidate = SourceCandidate(
+        source_format="pdf",
+        content=content,
+        parsed=parsed,
+        report=DocumentCompleteness(True, None, 0, 70, 2, 0),
+        source_bytes=b"%PDF synthetic",
+        diagnostics=[],
+    )
+    calls: list[str] = []
+
+    async def unexpected_materialization(
+        _data: bytes,
+        source_name: str,
+        _content_type: str | None = None,
+        **_kwargs: Any,
+    ) -> FigureAssetPayload:
+        calls.append(source_name)
+        return FigureAssetPayload(png, "png", "image/png", 16, 12, len(png))
+
+    monkeypatch.setattr(worker_pipeline, "_materialize_figure_payload", unexpected_materialization)
+    run = object.__new__(IngestRun)
+    run._pdf_text = ""
+    run._pdf_bytes = b"%PDF synthetic"
+
+    await run._materialize_candidate_figures(
+        candidate,
+        http=None,
+        deadline=worker_pipeline.MaterializationDeadline.start(timeout_s=30.0),
+    )
+
+    assert calls == []
+    assert candidate.report.code == "figure_asset_unresolved"
+    assert candidate.materialized_figures == {}
+    assert candidate.figure_asset_failures == [
+        {
+            "code": "figure_limit_exceeded",
+            "figure_id": asset_blocks[worker_pipeline.MAX_FIGURES_PER_DOCUMENT].id,
+            "source": "pdf",
+        }
+    ]
+
+
+class _ExpireOnSecondAsset:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def remaining(self, _operation_limit_s: float | None = None) -> float:
+        self.calls += 1
+        if self.calls == 2:
+            raise FigureAssetError("materialization_timeout", "synthetic document deadline expired")
+        return 30.0
+
+
+async def test_validated_latex_cache_timeout_is_fatal_and_cleans_staged_asset() -> None:
+    png = _raster_bytes("PNG")
+    figures = [
+        Block(id="fig-first", type="figure", asset_key="first.png"),
+        Block(id="fig-second", type="figure", asset_key="second.png"),
+    ]
+    run, storage = _figure_run(figures[0], {})
+    run.parsed = SimpleNamespace(figures=figures)
+    run._candidate_materialization_validated = True
+    run._candidate_figure_failures = []
+    run._candidate_materialized_figures = {
+        figure.id: FigureAssetPayload(png, "png", "image/png", 16, 12, len(png))
+        for figure in figures
+    }
+
+    with pytest.raises(FigureAssetError, match="deadline expired"):
+        async with worker_pipeline._staged_revision_assets(storage) as uploaded_keys:
+            await run._save_figures(
+                "revision-id",
+                uploaded_keys=uploaded_keys,
+                deadline=_ExpireOnSecondAsset(),
+            )
+
+    first_key = StorageKeys.figure("paper-id", "revision-id", "fig-first", "png")
+    assert storage.deletes == [("assets", [first_key])]
+
+
+async def test_validated_pdf_cache_timeout_is_fatal_and_cleans_staged_asset() -> None:
+    png = _raster_bytes("PNG")
+    figure_images = {"pdf-first": png, "pdf-second": png}
+    run, storage, blocks = _pdf_figure_run(figure_images)
+    run.parsed_pdf.figures = blocks
+    run._candidate_materialization_validated = True
+    run._candidate_figure_failures = []
+    run._candidate_materialized_figures = {
+        block.id: FigureAssetPayload(png, "png", "image/png", 16, 12, len(png)) for block in blocks
+    }
+
+    with pytest.raises(FigureAssetError, match="deadline expired"):
+        async with worker_pipeline._staged_revision_assets(storage) as uploaded_keys:
+            await run._save_pdf_assets(
+                "revision-id",
+                uploaded_keys=uploaded_keys,
+                deadline=_ExpireOnSecondAsset(),
+            )
+
+    first_key = StorageKeys.figure("paper-id", "revision-id", "pdf-first", "png")
+    assert storage.deletes == [("assets", [first_key])]
 
 
 async def test_first_figure_put_failure_is_cleaned_by_revision_stage() -> None:
@@ -3132,6 +3715,59 @@ async def test_commit_failure_restores_previous_thumbnail_pointer(
     ]
 
 
+async def test_verified_figureless_revision_clears_previous_thumbnail_pointer() -> None:
+    run = object.__new__(IngestRun)
+    storage = _RecordingStorage()
+    run.paper_id = "paper-id"
+    run.revision_id = "revision-new"
+    run.deps = SimpleNamespace(s3=storage)
+    old_key = "thumbnails/paper-id/revision-old/card.webp"
+    paper = SimpleNamespace(thumbnail_key=old_key)
+
+    async with worker_pipeline._staged_revision_assets(
+        storage, restore_thumbnail_on_failure=paper
+    ) as uploaded_keys:
+        warnings = await run._make_thumbnail(
+            paper,
+            {},
+            [],
+            uploaded_keys=uploaded_keys,
+        )
+
+    assert warnings == []
+    assert paper.thumbnail_key is None
+    assert storage.puts == []
+    assert storage.deletes == []
+
+
+async def test_failed_figureless_revision_restores_previous_thumbnail_pointer() -> None:
+    run = object.__new__(IngestRun)
+    storage = _RecordingStorage()
+    run.paper_id = "paper-id"
+    run.revision_id = "revision-new"
+    run.deps = SimpleNamespace(s3=storage)
+    old_key = "thumbnails/paper-id/revision-old/card.webp"
+    paper = SimpleNamespace(thumbnail_key=old_key)
+    failure = RuntimeError("index failed after thumbnail selection")
+
+    with pytest.raises(RuntimeError) as caught:
+        async with worker_pipeline._staged_revision_assets(
+            storage, restore_thumbnail_on_failure=paper
+        ) as uploaded_keys:
+            await run._make_thumbnail(
+                paper,
+                {},
+                [],
+                uploaded_keys=uploaded_keys,
+            )
+            raise failure
+
+    assert caught.value is failure
+    assert paper.thumbnail_key == old_key
+    assert storage.puts == []
+    assert storage.deletes == []
+
+
 def test_thumbnail_retina_sibling_parser_accepts_only_strict_current_keys() -> None:
     paper_id = "paper-id"
     valid = {
@@ -3216,9 +3852,11 @@ async def test_pipeline_falls_back_to_img_when_inline_svg_is_rejected(
     parsed = parse_arxiv_html(
         """<article class="ltx_document"><section class="ltx_section">
 <h2 class="ltx_title">Result</h2><figure id="fig-fallback" class="ltx_figure">
+<picture>
 <svg width="10" height="10"><style>@import url(https://example.org/a.css);</style>
 <rect width="10" height="10"/></svg>
 <img class="ltx_graphics" src="good.png" alt="fallback"/>
+</picture>
 </figure></section></article>"""
     )
     fig = parsed.figures[0]

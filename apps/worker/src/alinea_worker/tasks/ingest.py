@@ -23,7 +23,14 @@ from alinea_worker.pipeline import run_ingest
 
 # 非リトライのエラー分類(§2.4)。到達で即 failed。
 _NON_RETRYABLE = frozenset(
-    {"source_not_found", "no_text_layer", "parse_error", "document_incomplete"}
+    {
+        "source_not_found",
+        "no_text_layer",
+        "parse_error",
+        "document_incomplete",
+        "figure_asset_unresolved",
+        "source_too_large",
+    }
 )
 
 

@@ -16,6 +16,11 @@ from typing import Protocol, runtime_checkable
 import httpx
 
 from alinea_core.arxiv.ids import ArxivId, eprint_url, pdf_url
+from alinea_core.arxiv.limits import (
+    MAX_ARXIV_PDF_BYTES,
+    HttpSourceTooLargeError,
+    read_bounded_http_body,
+)
 from alinea_core.settings import CoreSettings, get_settings
 
 _THROTTLE_KEY = "arxiv:throttle"
@@ -98,7 +103,7 @@ async def fetch_pdf(
     *,
     http: httpx.AsyncClient | None = None,
     settings: CoreSettings | None = None,
-    max_bytes: int = 50 * 1024 * 1024,
+    max_bytes: int = MAX_ARXIV_PDF_BYTES,
 ) -> bytes:
     """arXiv の PDF を取得する。解析とは独立した即時表示用にも使う。"""
     s = settings or get_settings()
@@ -109,18 +114,25 @@ async def fetch_pdf(
         http = make_arxiv_client(s)
     try:
         try:
-            resp = await http.get(url, timeout=httpx.Timeout(120.0, connect=5.0))
+            response_context = http.stream(
+                "GET", url, timeout=httpx.Timeout(120.0, connect=5.0)
+            )
         except httpx.HTTPError as exc:
             raise FetchError("network_error", f"arxiv pdf fetch failed: {exc}") from exc
-        if resp.status_code == 404:
-            raise FetchError("source_not_found", f"arxiv pdf 404: {url}")
-        if resp.status_code >= 500:
-            raise FetchError("upstream_5xx", f"arxiv pdf {resp.status_code}")
-        if resp.status_code != 200:
-            raise FetchError("source_not_found", f"arxiv pdf {resp.status_code}: {url}")
-        data = resp.content
-        if len(data) > max_bytes:
-            raise FetchError("payload_too_large", "arxiv pdf exceeds size limit")
+        try:
+            async with response_context as resp:
+                if resp.status_code == 404:
+                    raise FetchError("source_not_found", f"arxiv pdf 404: {url}")
+                if resp.status_code >= 500:
+                    raise FetchError("upstream_5xx", f"arxiv pdf {resp.status_code}")
+                if resp.status_code != 200:
+                    raise FetchError("source_not_found", f"arxiv pdf {resp.status_code}: {url}")
+                try:
+                    data = await read_bounded_http_body(resp, max_bytes=max_bytes)
+                except HttpSourceTooLargeError as exc:
+                    raise FetchError("payload_too_large", "arxiv pdf exceeds size limit") from exc
+        except httpx.HTTPError as exc:
+            raise FetchError("network_error", f"arxiv pdf fetch failed: {exc}") from exc
         if not data.startswith(b"%PDF-"):
             raise FetchError("source_not_found", "arxiv pdf response is not a PDF")
         return data

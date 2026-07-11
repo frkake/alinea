@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
+from alinea_core.arxiv.limits import MAX_ARXIV_PDF_BYTES
 from alinea_core.document.blocks import DocumentContent
 from alinea_core.ingest import DocumentCompleteness, assess_document_completeness
 from alinea_core.parsing.html_parser import ParsedDocument, parse_arxiv_html
@@ -20,10 +21,15 @@ from alinea_core.parsing.latex_parser import (
 from alinea_core.parsing.pdf_parser import ParsedPdfDocument, PdfParseError, parse_pdf
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 
-from alinea_worker.figure_assets import extract_graphicspaths
+from alinea_worker.figure_assets import FigureAssetPayload, extract_graphicspaths
 
 _LATEX_CANDIDATE_MESSAGES = {
+    "archive_expanded_too_large": "e-print archive expands beyond the safe limit",
+    "archive_member_limit": "e-print archive has too many members",
+    "archive_member_too_large": "e-print archive member exceeds the safe limit",
+    "archive_too_large": "e-print archive exceeds the safe input limit",
     "empty_archive": "e-print archive is empty",
+    "invalid_archive": "e-print archive is invalid",
     "no_main_tex": "no .tex content found in e-print archive",
     "unbalanced_braces": "latex source contains unbalanced braces",
     "unterminated_environment": "latex source contains an unterminated environment",
@@ -41,10 +47,17 @@ class SourceCandidate:
     report: DocumentCompleteness
     source_bytes: bytes
     diagnostics: list[dict[str, Any]]
+    source_manifest: dict[str, Any] = field(default_factory=dict)
     graphicspaths: tuple[str, ...] = ()
+    latex_binary_files: dict[str, bytes] = field(default_factory=dict, repr=False)
+    latex_main_tex_name: str | None = None
+    container_source_bytes: bytes | None = field(default=None, repr=False)
+    materialized_figures: dict[str, FigureAssetPayload] = field(default_factory=dict, repr=False)
+    figure_asset_failures: list[dict[str, str]] = field(default_factory=list)
+    figure_materialization_validated: bool = False
 
 
-@dataclass(frozen=True)
+@dataclass
 class CandidateUnavailable(Exception):  # noqa: N818 - task-defined public API
     """A source-specific failure that permits trying the next candidate."""
 
@@ -126,7 +139,10 @@ def parse_latex_candidate(
         report=report,
         source_bytes=source_bytes,
         diagnostics=[],
+        source_manifest={"binary_files": sorted(extracted.binary_files)},
         graphicspaths=extract_graphicspaths(extracted.text_files, main_tex_name),
+        latex_binary_files=extracted.binary_files,
+        latex_main_tex_name=main_tex_name,
     )
     return candidate, extracted.binary_files, main_tex_name
 
@@ -154,6 +170,7 @@ def parse_html_candidate(source_bytes: bytes, *, pdf_text: str) -> SourceCandida
         report=report,
         source_bytes=source_bytes,
         diagnostics=[],
+        source_manifest={},
     )
 
 
@@ -180,14 +197,23 @@ def parse_pdf_candidate(source_bytes: bytes, *, pdf_text: str) -> SourceCandidat
         report=report,
         source_bytes=source_bytes,
         diagnostics=[],
+        source_manifest={},
     )
 
 
-async def load_original_pdf(storage: S3Storage, paper_id: str, source_version: str) -> bytes:
+async def load_original_pdf(
+    storage: S3Storage,
+    paper_id: str,
+    source_version: str,
+    *,
+    max_bytes: int = MAX_ARXIV_PDF_BYTES,
+) -> bytes:
     """Load the canonical original-PDF object for an ingest source version."""
 
-    return await storage.get(
-        storage.sources_bucket, StorageKeys.original_pdf(paper_id, source_version)
+    return await storage.get_bounded(
+        storage.sources_bucket,
+        StorageKeys.original_pdf(paper_id, source_version),
+        max_bytes=max_bytes,
     )
 
 
