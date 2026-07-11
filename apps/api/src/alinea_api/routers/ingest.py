@@ -13,7 +13,6 @@ arq へは起床通知(``run_job``)を best-effort で投げる(plans/01 §4)。
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
@@ -34,10 +33,8 @@ from alinea_core.db.models import (
     SourceAsset,
 )
 from alinea_core.document.blocks import DocumentContent
-from alinea_core.ingest import joblog
 from alinea_core.ingest.dedupe import detect_duplicate
 from alinea_core.jobs.store import JobStore
-from alinea_core.parsing.pdf_parser import PdfParseError, check_text_layer
 from alinea_core.settings import CoreSettings
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from fastapi import APIRouter, Depends, Form, Header, Query, Request, UploadFile
@@ -832,17 +829,11 @@ async def ingest_pdf(
 
     await db.commit()
 
-    # テキストレイヤ判定(plans/05 §6.1・§9.2)。無ければジョブ側で即 failed(202 は維持)。
+    # テキストレイヤ判定と最終 OCR fallback は bounded worker 側で行う。
     user_id = str(user.id)
-    try:
-        check_text_layer(data)
-        job_id = await _enqueue_pdf_ingest(
-            db, wakeup, idempotency_key, user_id, paper_id, library_item_id
-        )
-    except PdfParseError as exc:
-        job_id = await _fail_pdf_ingest(
-            db, idempotency_key, user_id, paper_id, library_item_id, exc
-        )
+    job_id = await _enqueue_pdf_ingest(
+        db, wakeup, idempotency_key, user_id, paper_id, library_item_id
+    )
 
     return IngestArxivResponse(paper_id=paper_id, library_item_id=library_item_id, job_id=job_id)
 
@@ -867,40 +858,6 @@ async def _enqueue_pdf_ingest(
     )
     await wakeup(job_id)
     return job_id
-
-
-async def _fail_pdf_ingest(
-    db: DbDep,
-    idempotency_key: str | None,
-    user_id: str,
-    paper_id: str,
-    library_item_id: str,
-    exc: PdfParseError,
-) -> str:
-    """テキストレイヤ無し PDF は受け口の同期チェックで即 failed にする(§6.1・§9.2)。
-
-    apps/worker の PDF パイプライン結線は本タスクの所有範囲外のため、軽量な
-    ``check_text_layer`` のみを受け口で同期実行する(deviations 参照)。
-    """
-    job = Job(
-        kind="ingest",
-        stage="parsing",
-        status="failed",
-        progress=0,
-        payload={"mode": "initial", "source": "pdf_upload", "library_item_id": library_item_id},
-        idempotency_key=idempotency_key,
-        user_id=user_id,
-        paper_id=paper_id,
-        library_item_id=library_item_id,
-        error=json.dumps(
-            {"stage": "parsing", "code": exc.kind, "message": exc.message}, ensure_ascii=False
-        ),
-        log=[joblog.log_entry("parsing", "error", exc.message, detail={"code": exc.kind})],
-        finished_at=dt.datetime.now(dt.UTC),
-    )
-    db.add(job)
-    await db.commit()
-    return str(job.id)
 
 
 # --- GET /api/ingest/recent ---------------------------------------------------------

@@ -461,6 +461,50 @@ def test_accepts_structured_text_at_exactly_thirty_five_percent() -> None:
     assert report.structured_chars == 350
 
 
+def test_explicit_source_char_count_replaces_untrusted_pdf_text_length() -> None:
+    report = assess_document_completeness(
+        _doc(
+            _text_block("p1", "paragraph", "First recovered OCR paragraph." * 12),
+            _text_block("p2", "paragraph", "Second recovered OCR paragraph." * 12),
+        ),
+        pdf_text="x" * 10_000,
+        source_char_count=677,
+        source_manifest={},
+    )
+
+    assert report.accepted
+    assert report.source_chars == 677
+
+
+def test_explicit_source_char_count_still_rejects_low_structured_coverage() -> None:
+    report = assess_document_completeness(
+        _doc(
+            _text_block("p1", "paragraph", "Short OCR paragraph."),
+            _text_block("p2", "paragraph", "Another short OCR paragraph."),
+        ),
+        pdf_text="",
+        source_char_count=10_000,
+        source_manifest={},
+    )
+
+    assert not report.accepted
+    assert report.code == "document_incomplete"
+    assert report.source_chars == 10_000
+
+
+@pytest.mark.parametrize("source_char_count", [-1, True])
+def test_explicit_source_char_count_must_be_non_negative_integer(
+    source_char_count: object,
+) -> None:
+    with pytest.raises(ValueError, match="source_char_count"):
+        assess_document_completeness(
+            _doc(_text_block("p1", "paragraph", "Visible paragraph.")),
+            pdf_text="",
+            source_char_count=source_char_count,  # type: ignore[arg-type]
+            source_manifest={},
+        )
+
+
 def test_rejects_empty_document() -> None:
     report = assess_document_completeness(
         DocumentContent(quality_level="A", sections=[]),

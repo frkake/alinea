@@ -21,13 +21,13 @@ import datetime as dt
 import hashlib
 import json
 import math
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
-import fitz  # PyMuPDF
 import httpx
 import structlog
 from alinea_core.arxiv.fetch import (
@@ -74,10 +74,11 @@ from alinea_core.parsing.latex_parser import (
     PARSER_VERSION as LATEX_PARSER_VERSION,
 )
 from alinea_core.parsing.pdf_parser import (
-    PARSER_VERSION as PDF_PARSER_VERSION,
+    MAX_PDF_EXTRACTED_CHARS,
+    ParsedPdfDocument,
 )
 from alinea_core.parsing.pdf_parser import (
-    ParsedPdfDocument,
+    PARSER_VERSION as PDF_PARSER_VERSION,
 )
 from alinea_core.search.rebuild import rebuild_block_search_index
 from alinea_core.settings import CoreSettings, get_settings
@@ -110,13 +111,16 @@ from alinea_worker.figure_assets import (
 )
 from alinea_worker.latex_pdf import LatexPdfBuildError, build_latex_translation_pdfs_if_ready
 from alinea_worker.source_candidates import (
+    PDF_OCR_CANDIDATE_VERSION,
     CandidateUnavailable,
     SourceCandidate,
+    count_pdf_text_evidence_isolated,
     embedded_pdf_bytes,
     load_original_pdf,
     parse_html_candidate,
     parse_latex_candidate,
-    parse_pdf_candidate,
+    parse_pdf_candidate_async,
+    parse_pdf_ocr_candidate,
 )
 
 # 論文概要 + 提案タグ(1 呼び出しで生成)。DB フィールド名は後方互換のため summary_lines のまま。
@@ -483,9 +487,48 @@ _RETRYABLE_CANDIDATE_CODES = frozenset(
         "conversion_timeout",
         "figure_asset_error",
         "materialization_timeout",
+        "ocr_failed",
     }
 )
 _RETRYABLE_OPERATIONAL_SUFFIXES = ("_crashed", "_lifecycle", "_timeout")
+_DETERMINISTIC_OCR_CANDIDATE_CODES = frozenset(
+    {
+        "ocr_engine_unavailable",
+        "ocr_language_invalid",
+        "ocr_language_unavailable",
+        "ocr_output_too_large",
+        "ocr_platform_unsupported",
+        "pdf_block_limit",
+        "pdf_figure_bytes_limit",
+        "pdf_figure_limit",
+        "pdf_geometry_limit",
+        "pdf_layout_limit",
+        "pdf_open_error",
+        "pdf_output_too_large",
+        "pdf_page_limit",
+        "pdf_platform_unsupported",
+        "pdf_section_limit",
+        "pdf_text_error",
+        "pdf_text_limit",
+    }
+)
+
+
+def _is_retryable_candidate_code(code: Any) -> bool:
+    return isinstance(code, str) and (
+        code in _RETRYABLE_CANDIDATE_CODES or code.endswith(_RETRYABLE_OPERATIONAL_SUFFIXES)
+    )
+
+
+def _stable_selected_pdf_error_code(code: Any) -> str | None:
+    if isinstance(code, str) and _is_retryable_candidate_code(code):
+        return code
+    if isinstance(code, str) and (
+        code in _DETERMINISTIC_OCR_CANDIDATE_CODES
+        or code in {"document_incomplete", "no_text_layer", "source_too_large"}
+    ):
+        return code
+    return None
 
 
 class IngestJobPayload(BaseModel):
@@ -556,17 +599,6 @@ def _is_pdf_like(data: bytes) -> bool:
     return len(data) >= 8 and data[:1024].lstrip().startswith(b"%PDF-")
 
 
-def _extract_pdf_text(data: bytes) -> str:
-    try:
-        doc = fitz.open(stream=data, filetype="pdf")
-        try:
-            return "\n".join(page.get_text("text", sort=True) for page in doc)
-        finally:
-            doc.close()
-    except Exception:
-        return ""
-
-
 def _canonical_content_sha256(content: Any) -> str:
     """Hash revision JSON with a deterministic, ordering-independent encoding."""
 
@@ -605,15 +637,30 @@ def _figure_asset_manifest(
     return manifest
 
 
-def _candidate_failure_record(candidate: SourceCandidate, **extra: Any) -> dict[str, Any]:
+def _candidate_failure_record(source_candidate: SourceCandidate, **extra: Any) -> dict[str, Any]:
     failure: dict[str, Any] = {
-        "format": candidate.source_format,
-        **candidate.report.as_dict(),
+        "format": source_candidate.source_format,
+        **source_candidate.report.as_dict(),
         **extra,
     }
-    if candidate.figure_asset_failures:
-        failure["figure_asset_failures"] = [dict(item) for item in candidate.figure_asset_failures]
+    if source_candidate.figure_asset_failures:
+        failure["figure_asset_failures"] = [
+            dict(item) for item in source_candidate.figure_asset_failures
+        ]
     return failure
+
+
+def _release_rejected_pdf_candidate(candidate: SourceCandidate) -> None:
+    """Release heavyweight buffers before starting a replacement PDF parse."""
+
+    if isinstance(candidate.parsed, ParsedPdfDocument):
+        candidate.parsed.figure_images.clear()
+        candidate.parsed.sections.clear()
+    candidate.content.sections.clear()
+    candidate.materialized_figures.clear()
+    candidate.latex_binary_files.clear()
+    candidate.container_source_bytes = None
+    candidate.source_bytes = b""
 
 
 def _candidate_failure_code(failures: list[dict[str, Any]]) -> str:
@@ -625,13 +672,14 @@ def _candidate_failure_code(failures: list[dict[str, Any]]) -> str:
         if isinstance(nested, list):
             codes.extend(item.get("code") for item in nested if isinstance(item, dict))
         for code in codes:
-            if isinstance(code, str) and (
-                code in _RETRYABLE_CANDIDATE_CODES
-                or code.endswith(_RETRYABLE_OPERATIONAL_SUFFIXES)
-            ):
+            if isinstance(code, str) and _is_retryable_candidate_code(code):
                 return code
     if any(failure.get("code") == "figure_asset_unresolved" for failure in failures):
         return "figure_asset_unresolved"
+    for failure in failures:
+        code = failure.get("code")
+        if isinstance(code, str) and code in _DETERMINISTIC_OCR_CANDIDATE_CODES:
+            return code
     return "document_incomplete"
 
 
@@ -696,6 +744,88 @@ def _embedded_pdf_identity(
     return source, digest
 
 
+def _pdf_ocr_identity(diagnostics: list[dict[str, Any]]) -> dict[str, str] | None:
+    entries = [item for item in diagnostics if item.get("kind") == "pdf_ocr"]
+    if not entries:
+        return None
+    if len(entries) != 1:
+        raise ValueError("PDF OCR diagnostics are ambiguous")
+    entry = entries[0]
+    language = entry.get("language")
+    if (
+        set(entry) != {"kind", "version", "language"}
+        or entry.get("version") != PDF_OCR_CANDIDATE_VERSION
+        or not isinstance(language, str)
+        or not re.fullmatch(r"[A-Za-z0-9_]+(?:\+[A-Za-z0-9_]+)*", language)
+        or len(language) > 64
+    ):
+        raise ValueError("PDF OCR diagnostics are invalid")
+    return {
+        "kind": "pdf_ocr",
+        "version": PDF_OCR_CANDIDATE_VERSION,
+        "language": language,
+    }
+
+
+def _validate_pdf_ocr_stats_identity(
+    diagnostics: list[dict[str, Any]],
+    stats: dict[str, Any],
+) -> dict[str, str] | None:
+    """Require OCR provenance and parser statistics to describe the same path."""
+
+    try:
+        identity = _pdf_ocr_identity(diagnostics)
+    except ValueError as exc:
+        raise FetchError("parse_error", "PDF OCR identity and stats are invalid") from exc
+
+    is_ocr = stats.get("ocr")
+    extracted_chars = stats.get("extracted_chars")
+    if identity is None:
+        if is_ocr is True:
+            raise FetchError("parse_error", "PDF OCR identity and stats are inconsistent")
+        return None
+    if (
+        is_ocr is not True
+        or type(extracted_chars) is not int
+        or extracted_chars < 0
+        or extracted_chars > MAX_PDF_EXTRACTED_CHARS
+    ):
+        raise FetchError("parse_error", "PDF OCR identity and stats are inconsistent")
+    return identity
+
+
+def _validate_pdf_revision_parser_provenance(
+    revision: DocumentRevision,
+    parsed: ParsedPdfDocument,
+) -> None:
+    revision_stats = revision.stats if isinstance(revision.stats, dict) else {}
+    parsed_stats = parsed.stats if isinstance(parsed.stats, dict) else {}
+    expected_ocr = parsed_stats.get("ocr")
+    expected_pages = parsed_stats.get("pages")
+    expected_chars = parsed_stats.get("extracted_chars")
+    if (
+        revision.source_format != "pdf"
+        or revision.quality_level != "B"
+        or revision.parser_version != parsed.parser_version
+        or parsed.quality_level != "B"
+        or parsed.source_format != "pdf"
+        or type(expected_ocr) is not bool
+        or type(expected_pages) is not int
+        or expected_pages < 1
+        or type(expected_chars) is not int
+        or expected_chars < 0
+        or revision_stats.get("ocr") is not expected_ocr
+        or type(revision_stats.get("pages")) is not int
+        or revision_stats.get("pages") != expected_pages
+        or type(revision_stats.get("extracted_chars")) is not int
+        or revision_stats.get("extracted_chars") != expected_chars
+    ):
+        raise FetchError(
+            "parse_error",
+            "selected PDF parser provenance does not match existing revision",
+        )
+
+
 _EMBEDDED_PDF_PROVENANCE_KEYS = (
     "embedded_pdf_source",
     "embedded_pdf_sha256",
@@ -750,6 +880,7 @@ class IngestRun:
         self._pdf_text: str | None = None
         self._candidate_failures: list[dict[str, Any]] = []
         self._candidate_diagnostics: list[dict[str, Any]] = []
+        self._candidate_identity: dict[str, str] | None = None
         self._candidate_completeness: dict[str, Any] | None = None
         self._candidate_storage_key: str | None = None
         self._candidate_sha256: str | None = None
@@ -1112,9 +1243,7 @@ class IngestRun:
 
         try:
             await self._throttle()
-            response_context = http.stream(
-                "GET", url, timeout=httpx.Timeout(120.0, connect=5.0)
-            )
+            response_context = http.stream("GET", url, timeout=httpx.Timeout(120.0, connect=5.0))
         except httpx.HTTPError as exc:
             raise unavailable("network_error", "request_failed") from exc
         try:
@@ -1130,9 +1259,7 @@ class IngestRun:
                 if resp.status_code != 200:
                     raise unavailable("source_not_found", f"http_{resp.status_code}")
                 try:
-                    data = await read_bounded_http_body(
-                        resp, max_bytes=MAX_ARXIV_PDF_BYTES
-                    )
+                    data = await read_bounded_http_body(resp, max_bytes=MAX_ARXIV_PDF_BYTES)
                 except HttpSourceTooLargeError as exc:
                     raise unavailable("source_too_large", "payload_too_large") from exc
         except httpx.HTTPError as exc:
@@ -1288,9 +1415,7 @@ class IngestRun:
                         "arxiv e-print returned PDF instead of LaTeX source",
                     )
                 try:
-                    return await read_bounded_http_body(
-                        resp, max_bytes=MAX_ARXIV_EPRINT_BYTES
-                    )
+                    return await read_bounded_http_body(resp, max_bytes=MAX_ARXIV_EPRINT_BYTES)
                 except HttpSourceTooLargeError as exc:
                     raise CandidateUnavailable(
                         "latex", "source_too_large", "arxiv e-print exceeds size limit"
@@ -1305,9 +1430,7 @@ class IngestRun:
         url = f"{_www_base(self.deps.settings)}/html/{self.ref.versioned}"
         try:
             await self._throttle()
-            response_context = http.stream(
-                "GET", url, timeout=httpx.Timeout(30.0, connect=5.0)
-            )
+            response_context = http.stream("GET", url, timeout=httpx.Timeout(30.0, connect=5.0))
         except httpx.HTTPError as exc:
             raise CandidateUnavailable(
                 "arxiv_html", "network_error", "arxiv html request failed"
@@ -1335,9 +1458,7 @@ class IngestRun:
                         "arxiv_html", "source_not_found", "arxiv html was unavailable"
                     )
                 try:
-                    data = await read_bounded_http_body(
-                        resp, max_bytes=MAX_ARXIV_HTML_BYTES
-                    )
+                    data = await read_bounded_http_body(resp, max_bytes=MAX_ARXIV_HTML_BYTES)
                 except HttpSourceTooLargeError as exc:
                     raise CandidateUnavailable(
                         "arxiv_html", "source_too_large", "arxiv html exceeds size limit"
@@ -1353,12 +1474,31 @@ class IngestRun:
         return data
 
     def _pdf_text_for_completeness(self) -> str:
-        if self._pdf_text is not None:
-            return self._pdf_text
-        assert self._pdf_bytes is not None
-        # Shallow acquisition deliberately leaves deep validation to the PDF candidate.
-        self._pdf_text = _extract_pdf_text(self._pdf_bytes)
+        """Return already-isolated evidence without blocking the event-loop thread."""
+
+        assert self._pdf_text is not None
         return self._pdf_text
+
+    async def _ensure_pdf_text_evidence(self, data: bytes) -> str:
+        """Extract bounded count-only evidence and cache the retained original PDF."""
+
+        if data is self._pdf_bytes and self._pdf_text is not None:
+            return self._pdf_text
+        try:
+            counts = await count_pdf_text_evidence_isolated(data)
+        except CandidateUnavailable:
+            evidence = ""
+        else:
+            evidence = "x" * counts.extracted_chars
+        if data is self._pdf_bytes:
+            self._pdf_text = evidence
+        return evidence
+
+    @staticmethod
+    async def _parse_pdf_text_bytes(data: bytes, *, pdf_text: str) -> SourceCandidate:
+        """Wait for isolated normal-PDF parsing outside the event-loop thread."""
+
+        return await parse_pdf_candidate_async(data, pdf_text=pdf_text)
 
     async def _latex_candidate(self, http: httpx.AsyncClient) -> SourceCandidate:
         raw = await self._fetch_latex_candidate_bytes(http)
@@ -1373,16 +1513,75 @@ class IngestRun:
 
     async def _pdf_candidate(self) -> SourceCandidate:
         data = await self._get_pdf_bytes()
-        return parse_pdf_candidate(data, pdf_text=self._pdf_text_for_completeness())
+        return await self._parse_pdf_text_bytes(
+            data,
+            pdf_text=self._pdf_text_for_completeness(),
+        )
+
+    async def _parse_pdf_ocr_bytes(
+        self,
+        data: bytes,
+        *,
+        pdf_text: str,
+        ocr_language: str = "eng",
+    ) -> SourceCandidate:
+        return await parse_pdf_ocr_candidate(
+            data,
+            pdf_text=pdf_text,
+            ocr_language=ocr_language,
+            admission_limit=self.deps.settings.alinea_pdf_ocr_max_concurrency,
+        )
+
+    async def _parse_pdf_candidate_sequence(
+        self,
+        data: bytes,
+        *,
+        pdf_text: str,
+    ) -> tuple[SourceCandidate | None, list[dict[str, Any]]]:
+        """Evaluate text PDF first and OCR only for missing/insufficient visible text."""
+
+        failures: list[dict[str, Any]] = []
+        try:
+            text_candidate = await IngestRun._parse_pdf_text_bytes(data, pdf_text=pdf_text)
+        except CandidateUnavailable as exc:
+            if exc.code != "no_text_layer":
+                raise
+            failures.append({**exc.as_dict(), "candidate": "pdf_text"})
+        else:
+            if (
+                text_candidate.report.accepted
+                or text_candidate.report.code != "document_incomplete"
+            ):
+                return text_candidate, failures
+            failures.append(_candidate_failure_record(text_candidate, candidate="pdf_text"))
+            _release_rejected_pdf_candidate(text_candidate)
+            del text_candidate
+            # Let the completed thread-future drop its result before allocating OCR buffers.
+            await asyncio.sleep(0)
+
+        try:
+            ocr_candidate = await self._parse_pdf_ocr_bytes(data, pdf_text=pdf_text)
+        except CandidateUnavailable as exc:
+            failures.append({**exc.as_dict(), "candidate": "pdf_ocr"})
+            return None, failures
+        return ocr_candidate, failures
 
     async def _validated_pdf_upload_candidate(self, data: bytes) -> SourceCandidate:
         """Parse and preflight a retained upload before revision lookup or creation."""
 
         assert self.paper_id is not None
         try:
-            candidate = parse_pdf_candidate(data, pdf_text=self._pdf_text_for_completeness())
+            candidate, failures = await self._parse_pdf_candidate_sequence(
+                data,
+                pdf_text=self._pdf_text_for_completeness(),
+            )
         except CandidateUnavailable as exc:
             raise FetchError(exc.code, exc.message) from exc
+        if candidate is None:
+            raise FetchError(
+                _candidate_failure_code(failures),
+                json.dumps({"candidates": failures}, ensure_ascii=False, sort_keys=True),
+            )
         if candidate.report.accepted:
             await self._materialize_candidate_figures(
                 candidate,
@@ -1392,16 +1591,20 @@ class IngestRun:
                 ),
             )
         if not candidate.report.accepted:
-            failure = _candidate_failure_record(candidate)
+            candidate_label = (
+                "pdf_ocr" if _pdf_ocr_identity(candidate.diagnostics) is not None else "pdf_text"
+            )
+            failure = _candidate_failure_record(candidate, candidate=candidate_label)
+            failures.append(failure)
             raise FetchError(
-                _candidate_failure_code([failure]),
+                _candidate_failure_code(failures),
                 json.dumps(
-                    {"candidates": [failure]},
+                    {"candidates": failures},
                     ensure_ascii=False,
                     sort_keys=True,
                 ),
             )
-        self._set_candidate_state(candidate, [])
+        self._set_candidate_state(candidate, failures)
         self.source_format = "pdf_upload"
         self._candidate_storage_key = StorageKeys.original_pdf(self.paper_id, self.source_version)
         self._candidate_sha256 = hashlib.sha256(data).hexdigest()
@@ -1416,6 +1619,13 @@ class IngestRun:
         required_ids = {block.id for block in blocks if block.type == "figure"}
         invalid_type_ids: list[str] = []
         if isinstance(candidate.parsed, ParsedPdfDocument):
+            required_ids.update(
+                block.id
+                for block in blocks
+                if block.type == "table"
+                and not (isinstance(block.raw, str) and block.raw.strip())
+                and not (isinstance(block.asset_key, str) and block.asset_key.strip())
+            )
             required_ids.update(candidate.parsed.figure_images)
             invalid_type_ids = sorted(
                 block_id
@@ -1604,14 +1814,10 @@ class IngestRun:
         candidate.materialized_figures = materialized
         candidate.figure_asset_failures = failures
         candidate.figure_materialization_validated = True
-        comparison_text = (
-            _extract_pdf_text(candidate.source_bytes)
-            if candidate.container_source_bytes is not None
-            else self._pdf_text_for_completeness()
-        )
         candidate.report = assess_document_completeness(
             candidate.content,
-            pdf_text=comparison_text,
+            pdf_text="",
+            source_char_count=candidate.report.source_chars,
             source_manifest=candidate.source_manifest,
             unresolved_figures=len(failures),
         )
@@ -1628,6 +1834,18 @@ class IngestRun:
         self._candidate_provenance_validation_required = True
         self._candidate_failures = failures
         self._candidate_diagnostics = [dict(item) for item in candidate.diagnostics]
+        parsed_stats = (
+            candidate.parsed.stats
+            if isinstance(candidate.parsed, ParsedPdfDocument)
+            and isinstance(candidate.parsed.stats, dict)
+            else {}
+        )
+        self._candidate_identity = _validate_pdf_ocr_stats_identity(
+            self._candidate_diagnostics,
+            parsed_stats,
+        )
+        if self._candidate_identity is not None and candidate.source_format != "pdf":
+            raise FetchError("parse_error", "selected PDF OCR identity and format are inconsistent")
         self._candidate_completeness = completeness or candidate.report.as_dict()
         self._candidate_materialized_figures = dict(candidate.materialized_figures)
         self._candidate_figure_failures = [dict(item) for item in candidate.figure_asset_failures]
@@ -1684,8 +1902,27 @@ class IngestRun:
     def _validate_revision_candidate_provenance(self, revision: DocumentRevision) -> None:
         if not self._candidate_provenance_validation_required:
             return
-        expected = self._selected_embedded_pdf_provenance()
+        parsed_pdf = getattr(self, "parsed_pdf", None)
+        if isinstance(parsed_pdf, ParsedPdfDocument):
+            _validate_pdf_revision_parser_provenance(revision, parsed_pdf)
         stats = revision.stats if isinstance(revision.stats, dict) else {}
+        actual_candidate_identity = stats.get("candidate_identity")
+        if self._candidate_identity is None:
+            if actual_candidate_identity is not None:
+                raise FetchError(
+                    "parse_error", "selected source does not match existing OCR provenance"
+                )
+        elif (
+            revision.source_format != "pdf" or actual_candidate_identity != self._candidate_identity
+        ):
+            raise FetchError(
+                "parse_error", "selected source does not match existing OCR provenance"
+            )
+        revision_diagnostics = (
+            [dict(actual_candidate_identity)] if isinstance(actual_candidate_identity, dict) else []
+        )
+        _validate_pdf_ocr_stats_identity(revision_diagnostics, stats)
+        expected = self._selected_embedded_pdf_provenance()
         if expected is None:
             if any(key in stats for key in _EMBEDDED_PDF_PROVENANCE_KEYS):
                 raise FetchError(
@@ -1717,11 +1954,34 @@ class IngestRun:
         diagnostics = [dict(item) for item in raw_diagnostics]
         try:
             _embedded_pdf_identity(diagnostics)
+            _pdf_ocr_identity(diagnostics)
         except ValueError as exc:
             raise FetchError(
-                "parse_error", "parsing checkpoint embedded source identity is invalid"
+                "parse_error", "parsing checkpoint candidate identity is invalid"
             ) from exc
         return diagnostics
+
+    @staticmethod
+    def _checkpoint_candidate_identity(
+        checkpoint: dict[str, Any],
+        diagnostics: list[dict[str, Any]],
+        *,
+        source_format: str,
+    ) -> dict[str, str] | None:
+        diagnostics_identity = _pdf_ocr_identity(diagnostics)
+        raw_identity = checkpoint.get("candidate_identity")
+        if raw_identity is None:
+            if diagnostics_identity is not None:
+                raise FetchError("parse_error", "parsing checkpoint OCR identity is missing")
+            return None
+        if (
+            not isinstance(raw_identity, dict)
+            or diagnostics_identity is None
+            or raw_identity != diagnostics_identity
+            or source_format not in {"pdf", "pdf_upload"}
+        ):
+            raise FetchError("parse_error", "parsing checkpoint OCR identity is invalid")
+        return diagnostics_identity
 
     async def _load_retained_source_bytes(
         self,
@@ -1798,6 +2058,11 @@ class IngestRun:
         source_format = str(checkpoint.get("source_format") or "")
         diagnostics = self._checkpoint_candidate_diagnostics(checkpoint)
         embedded_pdf = _embedded_pdf_identity(diagnostics)
+        ocr_identity = self._checkpoint_candidate_identity(
+            checkpoint,
+            diagnostics,
+            source_format=source_format,
+        )
         if embedded_pdf is not None and source_format != "pdf":
             raise FetchError("parse_error", "parsing checkpoint embedded source format is invalid")
         selected_key_value = checkpoint.get("source_storage_key")
@@ -1877,9 +2142,23 @@ class IngestRun:
                 self.latex_binary_files = binary_files
                 self.latex_main_tex_name = main_tex_name
                 self.latex_graphicspaths = list(wrapper.graphicspaths)
-                candidate = parse_pdf_candidate(
-                    member_bytes, pdf_text=_extract_pdf_text(member_bytes)
-                )
+                member_pdf_text = await self._ensure_pdf_text_evidence(member_bytes)
+                if ocr_identity is None:
+                    candidate = await self._parse_pdf_text_bytes(
+                        member_bytes,
+                        pdf_text=member_pdf_text,
+                    )
+                else:
+                    candidate = await parse_pdf_ocr_candidate(
+                        member_bytes,
+                        pdf_text=member_pdf_text,
+                        ocr_language=ocr_identity["language"],
+                        admission_limit=self.deps.settings.alinea_pdf_ocr_max_concurrency,
+                    )
+                    if _pdf_ocr_identity(candidate.diagnostics) != ocr_identity:
+                        raise FetchError(
+                            "parse_error", "stored embedded OCR source identity is invalid"
+                        )
                 candidate.diagnostics = diagnostics
                 candidate.container_source_bytes = raw
                 candidate.latex_binary_files = dict(binary_files)
@@ -1894,11 +2173,26 @@ class IngestRun:
                     expected_sha256=selected_sha256,
                 )
                 self._pdf_bytes = raw
-                candidate = parse_pdf_candidate(raw, pdf_text=self._pdf_text_for_completeness())
+                if ocr_identity is None:
+                    candidate = await self._parse_pdf_text_bytes(
+                        raw,
+                        pdf_text=self._pdf_text_for_completeness(),
+                    )
+                else:
+                    candidate = await parse_pdf_ocr_candidate(
+                        raw,
+                        pdf_text=self._pdf_text_for_completeness(),
+                        ocr_language=ocr_identity["language"],
+                        admission_limit=self.deps.settings.alinea_pdf_ocr_max_concurrency,
+                    )
+                    if _pdf_ocr_identity(candidate.diagnostics) != ocr_identity:
+                        raise FetchError(
+                            "parse_error", "stored selected OCR source identity is invalid"
+                        )
             else:
                 raise FetchError("parse_error", "parsing checkpoint has an invalid source format")
         except CandidateUnavailable as exc:
-            code = "no_text_layer" if exc.code == "no_text_layer" else "parse_error"
+            code = _stable_selected_pdf_error_code(exc.code) or "parse_error"
             raise FetchError(
                 code,
                 f"stored selected source is invalid: format={source_format}; code={exc.code}",
@@ -1965,9 +2259,29 @@ class IngestRun:
                     elif source_format == "arxiv_html":
                         candidate = await self._html_candidate(http)
                     else:
-                        candidate = await self._pdf_candidate()
+                        pdf_data = await self._get_pdf_bytes()
+                        (
+                            pdf_candidate,
+                            pdf_attempt_failures,
+                        ) = await self._parse_pdf_candidate_sequence(
+                            pdf_data,
+                            pdf_text=self._pdf_text_for_completeness(),
+                        )
+                        failures.extend(pdf_attempt_failures)
+                        for attempt_failure in pdf_attempt_failures:
+                            await self._log(
+                                "parsing",
+                                "warn",
+                                "PDF ソース候補から次の候補へフォールバック",
+                                detail=attempt_failure,
+                            )
+                        if pdf_candidate is None:
+                            continue
+                        candidate = pdf_candidate
                 except CandidateUnavailable as exc:
                     failure: dict[str, Any] = exc.as_dict()
+                    if source_format == "pdf":
+                        failure["candidate"] = "pdf_text"
                     failures.append(failure)
                     display_format = {
                         "latex": "LaTeX",
@@ -2002,8 +2316,12 @@ class IngestRun:
                         continue
                     member_name, member_bytes = selected
                     try:
-                        promoted = parse_pdf_candidate(
-                            member_bytes, pdf_text=_extract_pdf_text(member_bytes)
+                        (
+                            promoted,
+                            embedded_attempt_failures,
+                        ) = await self._parse_pdf_candidate_sequence(
+                            member_bytes,
+                            pdf_text=await self._ensure_pdf_text_evidence(member_bytes),
                         )
                     except CandidateUnavailable as exc:
                         failure = {
@@ -2018,12 +2336,27 @@ class IngestRun:
                             detail=failure,
                         )
                         continue
+                    for attempt_failure in embedded_attempt_failures:
+                        failure = {
+                            **attempt_failure,
+                            "embedded_pdf_source": member_name,
+                        }
+                        failures.append(failure)
+                        await self._log(
+                            "parsing",
+                            "warn",
+                            "埋め込み PDF ソース候補から次の候補へフォールバック",
+                            detail=failure,
+                        )
+                    if promoted is None:
+                        continue
                     promoted.diagnostics = [
+                        *promoted.diagnostics,
                         {
                             "kind": "embedded_pdf",
                             "embedded_pdf_source": member_name,
                             "embedded_pdf_sha256": hashlib.sha256(member_bytes).hexdigest(),
-                        }
+                        },
                     ]
                     promoted.container_source_bytes = candidate.source_bytes
                     promoted.latex_binary_files = dict(candidate.latex_binary_files)
@@ -2049,6 +2382,12 @@ class IngestRun:
                     )
                     continue
 
+                try:
+                    _pdf_ocr_identity(candidate.diagnostics)
+                except ValueError as exc:
+                    raise FetchError(
+                        "parse_error", "PDF OCR candidate identity is invalid"
+                    ) from exc
                 if candidate.report.accepted:
                     await self._materialize_candidate_figures(
                         candidate,
@@ -2059,7 +2398,14 @@ class IngestRun:
                     )
                 if candidate.report.accepted:
                     return candidate, failures
-                failure = _candidate_failure_record(candidate)
+                failure_extra: dict[str, Any] = {}
+                if source_format == "pdf":
+                    failure_extra["candidate"] = (
+                        "pdf_ocr"
+                        if _pdf_ocr_identity(candidate.diagnostics) is not None
+                        else "pdf_text"
+                    )
+                failure = _candidate_failure_record(candidate, **failure_extra)
                 failures.append(failure)
                 await self._log(
                     "parsing",
@@ -2556,6 +2902,8 @@ class IngestRun:
         await self._verify_or_repair_existing_revision_assets(revision, candidate)
 
     async def _stage_parse_and_structure(self) -> None:
+        original_pdf = await self._get_pdf_bytes()
+        await self._ensure_pdf_text_evidence(original_pdf)
         checkpoint_revision = await self._checkpoint_revision()
         if checkpoint_revision is not None:
             revision, adopt_from_revision_id = checkpoint_revision
@@ -2611,7 +2959,9 @@ class IngestRun:
                         {
                             "source_format": "pdf_upload",
                             "parser_version": self.parser_version,
-                            "candidate_failures": [],
+                            "candidate_failures": self._candidate_failures,
+                            "candidate_diagnostics": self._candidate_diagnostics,
+                            "candidate_identity": self._candidate_identity,
                             "completeness": checkpoint_candidate.report.as_dict(),
                             "adopt_from_revision_id": None,
                             "source_storage_key": self._candidate_storage_key,
@@ -2696,7 +3046,9 @@ class IngestRun:
                     {
                         "source_format": "pdf_upload",
                         "parser_version": self.parser_version,
-                        "candidate_failures": [],
+                        "candidate_failures": self._candidate_failures,
+                        "candidate_diagnostics": self._candidate_diagnostics,
+                        "candidate_identity": self._candidate_identity,
                         "completeness": self._candidate_completeness,
                         "adopt_from_revision_id": old_revision_id,
                         "source_storage_key": self._candidate_storage_key,
@@ -2728,6 +3080,7 @@ class IngestRun:
                     "parser_version": self.parser_version,
                     "candidate_failures": self._candidate_failures,
                     "candidate_diagnostics": self._candidate_diagnostics,
+                    "candidate_identity": self._candidate_identity,
                     "completeness": self._candidate_completeness,
                     "adopt_from_revision_id": old_revision_id,
                     "source_storage_key": self._candidate_storage_key,
@@ -2802,9 +3155,7 @@ class IngestRun:
                 self.deps.s3,
                 restore_thumbnail_on_failure=paper,
                 commit_state=commit_state,
-                reconcile_commit=lambda: self._committed_revision_exists(
-                    commit_state.revision_id
-                ),
+                reconcile_commit=lambda: self._committed_revision_exists(commit_state.revision_id),
             ) as uploaded_keys:
                 figure_bytes, fig_warnings, figure_failures = await self._save_figures(
                     self.revision_id,
@@ -3106,6 +3457,8 @@ class IngestRun:
         stats["completeness"] = self._candidate_completeness
         stats["selected_source"] = self._selected_source_identity()
         stats["parsed_content_sha256"] = self._selected_parsed_content_sha256()
+        if self._candidate_identity is not None:
+            stats["candidate_identity"] = dict(self._candidate_identity)
         embedded_pdf_provenance = self._selected_embedded_pdf_provenance()
         if embedded_pdf_provenance is not None:
             stats.update(embedded_pdf_provenance)
@@ -3135,9 +3488,7 @@ class IngestRun:
                 self.deps.s3,
                 restore_thumbnail_on_failure=paper,
                 commit_state=commit_state,
-                reconcile_commit=lambda: self._committed_revision_exists(
-                    commit_state.revision_id
-                ),
+                reconcile_commit=lambda: self._committed_revision_exists(commit_state.revision_id),
             ) as uploaded_keys:
                 figure_bytes, fig_warnings, figure_failures = await self._save_pdf_assets(
                     self.revision_id,

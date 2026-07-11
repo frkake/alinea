@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import threading
+
+import pytest
+from alinea_api.routers import health as health_router
+from alinea_core.parsing.pdf_parser import PdfOcrReadiness
 from httpx import AsyncClient
 
 
@@ -18,6 +23,67 @@ async def test_readyz_reports_dependencies(client: AsyncClient) -> None:
     assert body["status"] == "ready"
     assert body["checks"]["db"] == "ok"
     assert body["checks"]["redis"] == "ok"
+
+
+async def test_readyz_reports_optional_ocr_unavailable_without_failing_service(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main_thread = threading.current_thread()
+    probe_threads: list[threading.Thread] = []
+
+    def probe() -> PdfOcrReadiness:
+        probe_threads.append(threading.current_thread())
+        return PdfOcrReadiness(False, "ocr_engine_unavailable", "eng")
+
+    monkeypatch.setattr(
+        health_router,
+        "check_pdf_ocr_readiness",
+        probe,
+        raising=False,
+    )
+
+    response = await client.get("/api/readyz")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ready"
+    assert body["checks"]["pdf_ocr"] == "unavailable"
+    assert body["diagnostics"]["pdf_ocr"] == {
+        "available": False,
+        "code": "ocr_engine_unavailable",
+        "language": "eng",
+    }
+    assert probe_threads and probe_threads[0] is not main_thread
+
+
+async def test_readyz_contains_unexpected_optional_ocr_probe_failure(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_probe() -> PdfOcrReadiness:
+        raise RuntimeError("synthetic OCR probe failure")
+
+    monkeypatch.setattr(
+        health_router,
+        "check_pdf_ocr_readiness",
+        fail_probe,
+        raising=False,
+    )
+
+    response = await client.get("/api/readyz")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ready"
+    assert body["checks"]["db"] == "ok"
+    assert body["checks"]["redis"] == "ok"
+    assert body["checks"]["pdf_ocr"] == "unavailable"
+    assert body["diagnostics"]["pdf_ocr"] == {
+        "available": False,
+        "code": "ocr_readiness_failed",
+        "language": "eng",
+    }
 
 
 async def test_not_found_is_problem_json(client: AsyncClient) -> None:

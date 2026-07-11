@@ -384,7 +384,7 @@ Response 202: {
 Response 202: { paper_id: string; library_item_id: string; job_id: string; duplicate: false }
 ```
 - Paper は `visibility: "private"`・`pdf_sha256` で重複検知(同一ユーザーの同一 SHA-256 は 409 `duplicate`、他ユーザーとは共有しない)。
-- エラー: 413 `payload_too_large`、415 `unsupported_media_type`、422(meta 不正)。テキストレイヤ無し PDF はジョブ側で `failed(parsing, "テキストが抽出できません")`(docs/02 §3)。
+- エラー: 413 `payload_too_large`、415 `unsupported_media_type`、422(meta 不正)。PDF はテキスト層の有無にかかわらず bounded upload 後に worker へ enqueue する。通常抽出が `no_text_layer` または `document_incomplete` の場合は OCR 最終候補へ進み、OCR 不可/不完全時は安定 code と理由をジョブ側で返す(plans/05 §6.1)。
 
 ### 3.4 GET /api/ingest/recent
 

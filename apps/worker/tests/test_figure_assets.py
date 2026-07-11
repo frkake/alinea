@@ -2496,7 +2496,7 @@ async def test_existing_revision_repairs_oversized_asset_with_bounded_reads() ->
         id=revision_id,
         paper_id=paper_id,
         source_version="v1",
-        parser_version="pdf-1.1.0",
+        parser_version="pdf-1.2.0",
         quality_level="B",
         source_format="pdf",
         content=revision_content,

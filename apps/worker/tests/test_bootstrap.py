@@ -21,8 +21,10 @@ import pytest
 import pytest_asyncio
 import redis.asyncio as redis
 from alinea_core.db.models import LibraryItem, Paper, User
+from alinea_core.parsing.pdf_parser import PdfOcrReadiness
 from alinea_llm.router import LLMRouter
 from alinea_llm.testing.fake_provider import FakeLLMProvider
+from alinea_worker import bootstrap as worker_bootstrap
 from alinea_worker.bootstrap import (
     TaskAwareLLMRouter,
     build_fake_router,
@@ -322,6 +324,58 @@ async def test_on_startup_configures_ctx_with_fake_llm(
         assert ctx["arxiv_http"] is not None
         assert callable(ctx["publish"])
         assert ctx["settings"] is not None
+    finally:
+        await on_shutdown(ctx)
+
+
+async def test_on_startup_reports_ocr_unavailable_without_failing_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ALINEA_FAKE_LLM", "1")
+    monkeypatch.setattr(
+        worker_bootstrap,
+        "check_pdf_ocr_readiness",
+        lambda: PdfOcrReadiness(False, "ocr_language_unavailable", "eng"),
+        raising=False,
+    )
+    ctx: dict[str, Any] = {}
+
+    await on_startup(ctx)
+    try:
+        assert ctx["pdf_ocr_readiness"] == {
+            "available": False,
+            "code": "ocr_language_unavailable",
+            "language": "eng",
+        }
+        assert isinstance(ctx["router"], LLMRouter)
+    finally:
+        await on_shutdown(ctx)
+
+
+async def test_on_startup_contains_unexpected_optional_ocr_probe_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ALINEA_FAKE_LLM", "1")
+
+    def fail_probe() -> PdfOcrReadiness:
+        raise RuntimeError("synthetic OCR probe failure")
+
+    monkeypatch.setattr(
+        worker_bootstrap,
+        "check_pdf_ocr_readiness",
+        fail_probe,
+        raising=False,
+    )
+    ctx: dict[str, Any] = {}
+
+    await on_startup(ctx)
+    try:
+        assert ctx["pdf_ocr_readiness"] == {
+            "available": False,
+            "code": "ocr_readiness_failed",
+            "language": "eng",
+        }
+        assert isinstance(ctx["router"], LLMRouter)
     finally:
         await on_shutdown(ctx)
 

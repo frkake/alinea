@@ -67,12 +67,17 @@ def assess_document_completeness(
     content: DocumentContent,
     *,
     pdf_text: str,
+    source_char_count: int | None = None,
     source_manifest: Mapping[str, Any],
     unresolved_figures: int = 0,
 ) -> DocumentCompleteness:
     """Assess whether a structured candidate contains a complete, usable document."""
     if unresolved_figures < 0:
         raise ValueError("unresolved_figures must be non-negative")
+    if source_char_count is not None and (
+        type(source_char_count) is not int or source_char_count < 0
+    ):
+        raise ValueError("source_char_count must be a non-negative integer")
 
     blocks = [block for _section, block in content.iter_blocks()]
     visible_blocks = []
@@ -84,6 +89,12 @@ def assess_document_completeness(
             visible_blocks.append((block, plain))
     visible = "\n".join(plain for _block, plain in visible_blocks)
     stripped_pdf_text = pdf_text.strip()
+    reported_source_chars = (
+        source_char_count if source_char_count is not None else len(pdf_text)
+    )
+    coverage_source_chars = (
+        source_char_count if source_char_count is not None else len(stripped_pdf_text)
+    )
     paragraph_count = sum(block.type in _PARAGRAPH_TYPES for block in blocks)
     visible_paragraph_count = sum(
         block.type in _PARAGRAPH_TYPES for block, _plain in visible_blocks
@@ -94,7 +105,7 @@ def assess_document_completeness(
         return DocumentCompleteness(
             accepted=accepted,
             code=code,
-            source_chars=len(pdf_text),
+            source_chars=reported_source_chars,
             structured_chars=len(visible),
             paragraph_count=paragraph_count,
             figure_count=figure_count,
@@ -116,7 +127,7 @@ def assess_document_completeness(
         return report(False, "embedded_pdf_wrapper")
     if unresolved_figures > 0:
         return report(False, "figure_asset_unresolved")
-    if len(stripped_pdf_text) >= 1_000 and len(visible) * 100 < len(stripped_pdf_text) * 35:
+    if coverage_source_chars >= 1_000 and len(visible) * 100 < coverage_source_chars * 35:
         return report(False, "document_incomplete")
 
     accepted = bool(visible) and (

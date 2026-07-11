@@ -170,7 +170,7 @@ async def user(db):        # factories.py 参照。以降 as_user(client, user) 
 | PY-ING-01 | integration | `POST /api/ingest/arxiv`: 202 で paper/library_item/job 作成、`Idempotency-Key` 再送で初回レスポンス再生 |
 | PY-ING-02 | integration | 取り込みパイプライン(worker、arXiv/LLM モック): stage が `queued→fetching→parsing→structuring→translating_abstract→readable→translating_body→complete` を逐語遷移し、quality A・タイムライン 3 段(ソース取得→構造化・図表抽出→全文翻訳)がタイムスタンプ付きで jobs.log に残る |
 | PY-ING-03 | integration | `GET /api/ingest/check`: arXiv URL 正規化・LaTeX 有無(Redis 24h キャッシュ)・saved 状態の 3 分岐 |
-| PY-ING-04 | integration | `POST /api/ingest/pdf`: private Paper 作成・pdf_sha256 重複 409・50MB 超 413・非 PDF 415・テキストレイヤ無し PDF は `failed(parsing, "テキストが抽出できません")` |
+| PY-ING-04 | integration | `POST /api/ingest/pdf`: private Paper 作成・pdf_sha256 重複 409・50MB 超 413・非 PDF 415・テキストレイヤ無し/可視本文不足 PDF は enqueue 後に worker の OCR 最終候補で記事化。OCR unavailable/timeout/incomplete の安定 code、再試行分類、キャンセル時の子プロセス reap も検証 |
 | PY-ING-05 | integration | 重複検知: 同一 arXiv ID 再保存で 409 `duplicate` + `existing`(進捗・前回位置)。別バージョンは 202 で新 source_version。参考文献 `in_library` 判定 |
 | PY-ING-06 | integration | `reingest` + `ingest-log`: 実行中の二重 reingest は 409、ログがフォールバック・使用モデルを含む |
 | PY-ING-07 | integration | B→A 昇格: LaTeX 発見→`status_suggestion`(promote_revision)通知生成→`adopt-revision` で新リビジョン適用+リアンカー結果 `{moved, unplaced}`。自動適用が発生しないこと(通知のみ) |

@@ -59,6 +59,33 @@ Amazon SES(または同等の SMTP サービス)を使用:
 - Sentry プロジェクトを api+worker / web の 2 面で作成し `SENTRY_DSN_API` / `SENTRY_DSN_WEB` を取得(`traces_sample_rate=0.1`)。
 - UptimeRobot で `https://alinea.app/api/healthz` を 5 分間隔の外形監視に登録。
 
+### 1.7 PDF OCR (Tesseract)
+
+画像だけの PDF を最終候補として処理するため、**api と worker の両イメージ**に
+Tesseract 本体と英語 traineddata を入れる。Debian/Ubuntu ベースでは次をイメージ build
+中に実行する。
+
+```bash
+apt-get update
+apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng
+rm -rf /var/lib/apt/lists/*
+command -v tesseract
+tesseract --list-langs | grep -Fx eng
+```
+
+`TESSDATA_PREFIX` を明示する場合は、`eng.traineddata` を直接含むディレクトリを指定する。
+設定後は api / worker を再起動する(readiness 結果はプロセス内でキャッシュされる)。
+
+`GET /api/readyz` は `checks.pdf_ocr` と `diagnostics.pdf_ocr` に binary / `eng` の状態を返す。
+OCR が未導入でも `status=ready` のままで、通常のテキストレイヤ付き PDF と他機能は停止しない。
+一方、OCR が必要なジョブは `ocr_engine_unavailable` / `ocr_language_unavailable` を記録して
+安全に終了する。worker 起動ログの `worker_pdf_ocr_unavailable` も同じ状態を示す。
+
+PDF 解析と OCR は Linux の resource limit を適用した spawn 子プロセスで実行する。Linux
+以外では分離保証を提供できないため `pdf_platform_unsupported` /
+`ocr_platform_unsupported` で fail-closed になる。OCR の既定同時実行数は worker
+プロセスあたり 1 で、待機時間もジョブの OCR deadline に含まれる。
+
 ## 2. 環境変数チェックリスト(.env.production)
 
 `.env.example` を元に `/opt/alinea/.env.production` を作成する。**dev との差分**は以下(全変数の意味は `.env.example` のコメントと plans/01 §8.4 を正とする):
@@ -85,6 +112,7 @@ Amazon SES(または同等の SMTP サービス)を使用:
 | `SENTRY_DSN_API` / `SENTRY_DSN_WEB` | §1.6 の値 |
 | `ARXIV_USER_AGENT` | `alinea/1.0 (contact: admin@alinea.app)` |
 | `ALINEA_TEXLIVE_IMAGE` | `alinea-texlive-ja:latest`。LaTeX 由来論文の日本語PDFビルド用 |
+| `ALINEA_PDF_OCR_MAX_CONCURRENCY` | `1`(1〜4)。OCR 子プロセスの worker 単位同時実行数。ホストメモリを確認して増やす |
 
 > **注意**: 秘匿値に `NEXT_PUBLIC_` / `WXT_` 接頭辞を付けない(CI の grep 検査対象)。LLM のモデル ID・ルーティングは環境変数ではなく DB の設定テーブルで管理し、管理 UI /シードで変更する(再デプロイ不要 — docs/09 §3.2)。
 
@@ -221,7 +249,7 @@ docker compose -f docker-compose.prod.yml up -d
 
 # 3. 動作確認
 curl -fsS https://alinea.app/api/healthz   # {"status":"ok"}
-curl -fsS https://alinea.app/api/readyz    # PG・Redis・S3 疎通
+curl -fsS https://alinea.app/api/readyz    # DB・Redis 必須依存 + 任意 PDF OCR 診断
 ```
 
 初回のみ追加で:
@@ -295,7 +323,7 @@ docker compose -f docker-compose.prod.yml start api worker-interactive worker-bu
 
 - [ ] `https://alinea.app` でログイン(Google / GitHub / メールリンク)ができる
 - [ ] 拡張(unpacked または ストア版)から arXiv 論文を保存 → 1 分以内に readable
-- [ ] `GET /api/readyz` が green(PG・Redis・R2 疎通)
+- [ ] `GET /api/readyz` が green(DB・Redis)で、`checks.pdf_ocr=ok` / language=`eng`
 - [ ] Grafana ダッシュボードにメトリクスが流れている
 - [ ] Sentry にテストイベントが届く(`sentry-cli send-event`)
 - [ ] バックアップ cron が初回実行され R2 にダンプが存在する

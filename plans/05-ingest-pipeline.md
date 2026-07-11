@@ -34,7 +34,7 @@ libs/alinea_core/src/alinea_core/
     carryover.py       # リビジョン間 ID 引き継ぎ(§4.5)
     html_parser.py     # arXiv HTML / ar5iv パーサ(§4)— parser_version 'html-1.3.0'
     latex_parser.py    # LaTeX パーサ(§5, M2)— parser_version 'latex-1.3.0'
-    pdf_parser.py      # PDF パーサ(§6)— parser_version 'pdf-1.1.0'
+    pdf_parser.py      # PDF パーサ(§6)— parser_version 'pdf-1.2.0'
     pdf_sync.py        # 品質 A の page+bbox 同期(§4.6)
   ingest/
     dedupe.py          # 重複検知(§7)
@@ -133,7 +133,9 @@ plans/03 §1.7 `PipelineState` の定義「0–100(translating_body 中は翻訳
 | `upstream_5xx` | arXiv 503 | する |
 | `rate_limited` | arXiv 429 | する(バックオフ延長: 次回 `defer_by` を 2 倍) |
 | `source_not_found` | メタデータ API が 0 件 / HTML・PDF とも 404 | しない(即 failed) |
-| `no_text_layer` | テキストレイヤ無し PDF(docs/02 §3) | しない。`error='テキストが抽出できません'` |
+| `no_text_layer` / `document_incomplete` | テキストレイヤ無し、または可視本文が不足する PDF | 通常抽出後に最終 OCR 候補を 1 回試す。OCR 候補も不完全なら `document_incomplete` として再試行しない |
+| `ocr_engine_unavailable` / `ocr_language_unavailable` / `ocr_language_invalid` / `ocr_output_too_large` | Tesseract・言語データ・入力設定・出力上限の決定的な問題 | しない。機械判定可能な code を保持して failed |
+| `ocr_timeout` / `ocr_crashed` / `ocr_lifecycle` / `ocr_failed` | OCR 子プロセスの期限超過・異常終了・後始末失敗・一時的実行失敗 | する。子プロセスを terminate/kill/reap してから既定バックオフ |
 | `parse_error` | パーサ内部例外 | しない(パーサのバグ。Sentry 送信) |
 | `llm_chain_exhausted` | 翻訳の全プロバイダ失敗(plans/04 §9) | する(arq 再試行がそのまま docs/09 §2 の 3 回) |
 
@@ -539,13 +541,18 @@ def carry_over_ids(old_blocks: list[BlockRef], new_sections: list[Section]) -> C
 
 ## 6. PDF パイプライン(品質 B)
 
-タブ内 PDF 送信(§9)と、arXiv で HTML が取得できなかった場合のフォールバック。PyMuPDF(fitz)を主、表セル抽出のみ pdfplumber(spec-decisions C7)。`parser_version='pdf-1.1.0'`, `source_format='pdf'`, `quality_level='B'`。数値はすべて pt(1/72 インチ)。
+タブ内 PDF 送信(§9)と、arXiv で HTML が取得できなかった場合のフォールバック。PyMuPDF(fitz)を主、表セル抽出のみ pdfplumber(spec-decisions C7)。`parser_version='pdf-1.2.0'`, `source_format='pdf'`, `quality_level='B'`。数値はすべて pt(1/72 インチ)。
 
 ### 6.1 テキスト・bbox 抽出
 
 - `page.get_text("dict", flags=fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES)` で block/line/span(bbox・size・font・flags)を取得。
 - 全ページの span フォントサイズの最頻値(0.1pt 丸め)を `body_size`、本文行高の中央値を `line_h` とする。
-- **テキストレイヤ判定**: 全ページの抽出文字数合計 < `40 × ページ数` なら `no_text_layer` で即 failed(`error='テキストが抽出できません'`。docs/02 §3。OCR は v1 スコープ外)。
+- **候補順序**: 原本 arXiv PDF・HTML 内埋め込み PDF・PDF アップロードのすべてで、まず通常の PDF テキスト抽出を行う。`no_text_layer`、または抽出後の可視本文が `document_incomplete` と判定された場合に限り、同じ PDF bytes を使う OCR 候補を最終候補として 1 回試す。通常候補を採用できた場合、無関係な parse error、図表アセット materialize の失敗では OCR を起動しない。
+- **テキストレイヤ判定**: 全ページの抽出文字数合計 < `40 × ページ数` なら通常候補を `no_text_layer` とし、上記 OCR 候補へ進む。OCR 後も本文不足なら `document_incomplete` として failed にする。
+- **OCR 抽出**: ページごとに `page.get_textpage_ocr(language='eng', dpi=200, full=True)` をちょうど 1 回生成し、そのページの文字数判定と `get_text("dict", …, textpage=ocr_textpage)` の双方に同一 `TextPage` を渡す。ページ処理終了時に解放し、全ページ分を保持しない。OCR は可視テキストと bbox の復元だけを目的とし、§6.8 の数式 OCR(LaTeX 化)は引き続き行わない。
+- **実行隔離と上限**: OCR は worker から kill 可能な spawn 子プロセスで実行する。既定 deadline は 300 秒、子プロセスには CPU・アドレス空間・ファイルサイズ・open files の上限を課し、親子間の結果 payload は 160MiB を上限とする。deadline、キャンセル、異常終了時は terminate → kill → join により必ず reap してから終了する。子へ渡すのは PDF bytes と検証済み language、親へ戻すのは parser 結果のみとする。
+- **readiness**: API `/api/readyz` と worker 起動時に Tesseract binary と要求言語 traineddata(既定 `eng`)を検査する。OCR 不可は通常のテキスト PDF を処理できるためサービス全体を unready にせず、診断を `pdf_ocr` として公開・記録する。実際に OCR が必要な job は上表の安定 code で失敗する。
+- **再開の同一性**: OCR 候補を採用した checkpoint と `document_revisions.stats` に `candidate_identity={"kind":"pdf_ocr","version":"pdf-ocr-1.0.0","language":"eng"}` を保存する。再開時は完全一致した OCR mode/language でのみ再解析・再利用し、改ざんまたは不明な identity は `parse_error` とする。OCR 導入前の非 OCR checkpoint は identity が無くても後方互換で再開できる。
 
 ### 6.2 ヘッダ・フッタ・ページ番号の除去
 
@@ -598,7 +605,7 @@ def carry_over_ids(old_blocks: list[BlockRef], new_sections: list[Section]) -> C
 
 ### 6.10 stats と品質記録
 
-`document_revisions.stats` に `{"pages": 24, "figures": 8, "tables": 4, "blocks": 412, "translatable_blocks": 388, "columns": 2, "pdf_sync_rate": null, "figure_caption_match_rate": 0.88, "equation_latex_rate": 0.0}` を格納する(タイムライン 2 段目「(24p / 図8 / 表4)」と処理ログの到達度表示の源泉。pages はどのパーサでも原文 PDF から、PDF が無い HTML 経路では NULL)。
+`document_revisions.stats` に `{"pages": 24, "figures": 8, "tables": 4, "blocks": 412, "translatable_blocks": 388, "columns": 2, "ocr": false, "pdf_sync_rate": null, "figure_caption_match_rate": 0.88, "equation_latex_rate": 0.0}` を格納する(タイムライン 2 段目「(24p / 図8 / 表4)」と処理ログの到達度表示の源泉。pages はどのパーサでも原文 PDF から、PDF が無い HTML 経路では NULL)。OCR 採用時は `ocr: true` と上記 `candidate_identity` を加える。
 
 全 source_format 共通で、採用した canonical source の `storage_key` と SHA-256 を `selected_source`、parser 出力直後(未解決参照の縮退・asset key 公開前)の canonical JSON SHA-256 を `parsed_content_sha256`、永続化する最終 `content` の canonical JSON SHA-256 を `revision_content_sha256`、全 display asset の block ID・canonical key・SHA-256・byte size を `figure_asset_manifest` に記録する。既存 revision の再利用・parsing/structuring checkpoint 再開では、retained source から再parseした候補を含めてこれらを完全一致で検証し、identity 不明・source/parser output/final content 不一致なら再利用しない。manifest と一致する図表 object の欠損・破損だけは採用候補の検証済みcacheから同じkeyへ修復し、object read は manifest byte size を上限とする ContentLength 事前検査 + max+1 streaming 検査でメモリを制限する。
 
@@ -784,7 +791,7 @@ WHERE NOT EXISTS (
 - [ ] ブロック ID が `blk-3-p2-a1f9` / `blk-3-eq5-77c2` 形式で決定的に生成され、同一入力から常に同一 ID になる
 - [ ] リビジョン更新(reingest)で内容不変ブロックの ID が 100% 引き継がれ、注釈が無傷で移行する。失敗分は「未配置」に退避する
 - [ ] 品質 A の論文で PDF 位置同期が動作し、「同期: p.n ≒ §x.y」と bbox チップ(2a)が成立する
-- [ ] テキストレイヤ無し PDF が `failed(parsing, "テキストが抽出できません")` になり、段階・理由・再試行が UI に出る
+- [ ] テキストレイヤ無し/可視本文不足の PDF は frontend の通常操作だけで OCR 候補へ進み、成功時は品質 B の記事・図表・日本語 PDF 生成へ進める。Tesseract/言語データ不足または OCR 後も不完全な場合は、安定 code・段階・理由・再試行可否が UI に出る
 - [ ] 2 段組 PDF の読み順・見出しツリー・図キャプション対応付けが §6 の閾値どおり動作し、到達度が stats と処理ログに記録される
 - [ ] 51MB の PDF 送信が 413、非 PDF が 415、同一ユーザー同一 SHA-256 が 409 になる。private 論文が共有ページに一切露出しない
 - [ ] ジョブを translating_body の途中で SIGKILL → 再実行しても、訳済みブロックが再課金されず二重行も生じない(§2.3)

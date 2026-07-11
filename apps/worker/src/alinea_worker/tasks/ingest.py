@@ -30,6 +30,23 @@ _NON_RETRYABLE = frozenset(
         "document_incomplete",
         "figure_asset_unresolved",
         "source_too_large",
+        "ocr_engine_unavailable",
+        "ocr_language_invalid",
+        "ocr_language_unavailable",
+        "ocr_output_too_large",
+        "ocr_platform_unsupported",
+        "pdf_block_limit",
+        "pdf_figure_bytes_limit",
+        "pdf_figure_limit",
+        "pdf_geometry_limit",
+        "pdf_layout_limit",
+        "pdf_open_error",
+        "pdf_output_too_large",
+        "pdf_page_limit",
+        "pdf_platform_unsupported",
+        "pdf_section_limit",
+        "pdf_text_error",
+        "pdf_text_limit",
     }
 )
 

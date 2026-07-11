@@ -28,6 +28,7 @@ from alinea_core.jobs.store import JobStore
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from alinea_core.translation.pipeline import compute_translation_scope
 from alinea_worker import pipeline as worker_pipeline
+from alinea_worker.source_candidates import parse_pdf_candidate
 from alinea_worker.tasks.ingest import ingest_paper
 from botocore.exceptions import ClientError
 from sqlalchemy import select
@@ -195,7 +196,7 @@ async def test_pdf_upload_ingest_reaches_complete_quality_b(
     rev = await _revision(db_session, ids["paper_id"])
     assert rev.quality_level == "B"
     assert rev.source_format == "pdf"
-    assert rev.parser_version == "pdf-1.1.0"
+    assert rev.parser_version == "pdf-1.2.0"
     assert rev.source_version == "v1"
     source_key = StorageKeys.original_pdf(ids["paper_id"], "v1")
     assert rev.stats["selected_source"] == {
@@ -205,7 +206,7 @@ async def test_pdf_upload_ingest_reaches_complete_quality_b(
     assert rev.stats["revision_content_sha256"] == (
         worker_pipeline._canonical_content_sha256(rev.content)
     )
-    parsed_candidate = worker_pipeline.parse_pdf_candidate(pdf_bytes, pdf_text="")
+    parsed_candidate = parse_pdf_candidate(pdf_bytes, pdf_text="")
     assert rev.stats["parsed_content_sha256"] == worker_pipeline._canonical_content_sha256(
         parsed_candidate.content.model_dump()
     )
@@ -258,6 +259,129 @@ async def test_pdf_upload_ingest_reaches_complete_quality_b(
     assert timeline[0]["label"] == "PDF 取得(拡張から直接送信)"
     assert "構造化" in timeline[1]["label"]
     assert "全文翻訳 完了" in timeline[2]["label"]
+
+
+async def test_pdf_upload_uses_ocr_after_no_text_layer_and_persists_identity(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanned_pdf = _load_pdf("pdf_no_text_layer.pdf")
+    readable_pdf = _load_pdf("pdf_quality_b_sample.pdf")
+    original_parse_candidate = parse_pdf_candidate
+    text_calls: list[bytes] = []
+    ocr_calls: list[bytes] = []
+
+    async def no_text_candidate(data: bytes, *, pdf_text: str, **_kwargs: Any) -> Any:
+        del pdf_text
+        text_calls.append(data)
+        raise worker_pipeline.CandidateUnavailable(
+            "pdf", "no_text_layer", "synthetic uploaded PDF has no text layer"
+        )
+
+    async def ocr_candidate(
+        data: bytes,
+        *,
+        pdf_text: str,
+        ocr_language: str = "eng",
+        **_kwargs: Any,
+    ) -> Any:
+        ocr_calls.append(data)
+        candidate = original_parse_candidate(readable_pdf, pdf_text=pdf_text)
+        candidate.source_bytes = data
+        candidate.parsed.stats["ocr"] = True
+        candidate.diagnostics = [
+            {
+                "kind": "pdf_ocr",
+                "version": worker_pipeline.PDF_OCR_CANDIDATE_VERSION,
+                "language": ocr_language,
+            }
+        ]
+        return candidate
+
+    monkeypatch.setattr(worker_pipeline, "parse_pdf_candidate_async", no_text_candidate)
+    monkeypatch.setattr(worker_pipeline, "parse_pdf_ocr_candidate", ocr_candidate)
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=scanned_pdf)
+    store = JobStore(db_session)
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+
+    await ingest_paper(worker_ctx, store, job)
+
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
+    assert text_calls == [scanned_pdf]
+    assert ocr_calls == [scanned_pdf]
+    identity = {
+        "kind": "pdf_ocr",
+        "version": worker_pipeline.PDF_OCR_CANDIDATE_VERSION,
+        "language": "eng",
+    }
+    checkpoint = JobStore.get_checkpoint(completed)["parsing"]
+    assert checkpoint["candidate_identity"] == identity
+    revision = await _revision(db_session, ids["paper_id"])
+    assert revision.stats["ocr"] is True
+    assert revision.stats["candidate_identity"] == identity
+    assert revision.stats["selected_source"]["sha256"] == hashlib.sha256(scanned_pdf).hexdigest()
+
+    completed.status = "queued"
+    completed.stage = "structuring"
+    completed.error = None
+    completed.finished_at = None
+    await db_session.commit()
+    resumed = await store.claim(ids["job_id"])
+    assert resumed is not None
+    await ingest_paper(worker_ctx, store, resumed)
+
+    assert text_calls == [scanned_pdf]
+    assert ocr_calls == [scanned_pdf, scanned_pdf]
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        )
+    ).scalars()
+    assert [str(item.id) for item in revisions.all()] == [str(revision.id)]
+
+
+@pytest.mark.parametrize("failure_code", ["pdf_timeout", "pdf_crashed", "pdf_lifecycle"])
+async def test_normal_pdf_checkpoint_resume_preserves_retryable_parser_failure(
+    failure_code: str,
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ids = await _seed_pdf_ingest_job(
+        db_session,
+        pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf"),
+    )
+    store = JobStore(db_session)
+    first = await store.claim(ids["job_id"])
+    assert first is not None
+    await ingest_paper(worker_ctx, store, first)
+
+    async def fail_resume(*_args: Any, **_kwargs: Any) -> Any:
+        raise worker_pipeline.CandidateUnavailable(
+            "pdf",
+            failure_code,
+            "synthetic resume parser failure",
+        )
+
+    monkeypatch.setattr(worker_pipeline, "parse_pdf_candidate_async", fail_resume)
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    completed.status = "queued"
+    completed.stage = "structuring"
+    completed.error = None
+    completed.finished_at = None
+    await db_session.commit()
+    resumed = await store.claim(ids["job_id"])
+    assert resumed is not None
+
+    with pytest.raises(FetchError) as exc_info:
+        await worker_pipeline.run_ingest(worker_ctx, store, resumed)
+
+    assert exc_info.value.kind == failure_code
 
 
 async def test_pdf_upload_rejects_candidate_when_extracted_asset_cannot_validate(
@@ -571,6 +695,11 @@ async def test_pdf_upload_resume_backfills_diagnostics_from_retained_pdf(
     }
     job = await store.get(ids["job_id"])
     assert job is not None
+    payload = json.loads(json.dumps(job.payload))
+    parsing_checkpoint = payload["_checkpoint"]["parsing"]
+    parsing_checkpoint.pop("candidate_identity", None)
+    parsing_checkpoint.pop("candidate_diagnostics", None)
+    job.payload = payload
     job.status = "queued"
     job.finished_at = None
     await db_session.commit()
@@ -636,7 +765,7 @@ async def test_pdf_upload_stale_parser_checkpoint_reparses_with_current_version(
     assert [str(item.id) for item in revisions if item.parser_version == "pdf-1.0.0"] == [
         legacy_id
     ]
-    current = [item for item in revisions if item.parser_version == "pdf-1.1.0"]
+    current = [item for item in revisions if item.parser_version == "pdf-1.2.0"]
     assert len(current) == 1
     paper = await db_session.get(Paper, ids["paper_id"])
     assert paper is not None
@@ -782,7 +911,7 @@ async def test_pdf_upload_parsing_checkpoint_rejects_changed_source_bytes(
         "parsing",
         {
             "source_format": "pdf_upload",
-            "parser_version": "pdf-1.1.0",
+            "parser_version": "pdf-1.2.0",
             "candidate_failures": [],
             "completeness": {"accepted": True},
             "adopt_from_revision_id": None,
@@ -817,14 +946,41 @@ async def test_pdf_upload_parsing_checkpoint_rejects_changed_source_bytes(
     assert revisions == []
 
 
+async def test_corrupt_pdf_upload_preserves_stable_open_error(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+) -> None:
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=b"%PDF- corrupt")
+    store = JobStore(db_session)
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+
+    await ingest_paper(worker_ctx, store, job)
+
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "failed"
+    assert json.loads(completed.error or "{}")["code"] == "pdf_open_error"
+
+
 # ===========================================================================
 # テキストレイヤ無し PDF: 段階名(parsing)+理由+再試行なしで failed(§2.4・§6.1)
 # ===========================================================================
 
 
-async def test_pdf_upload_ingest_no_text_layer_fails_parsing(
-    db_session: AsyncSession, worker_ctx: dict[str, Any]
+async def test_pdf_upload_ingest_reports_unavailable_ocr_for_no_text_layer(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    async def unavailable_ocr(*_args: Any, **_kwargs: Any) -> Any:
+        raise worker_pipeline.CandidateUnavailable(
+            "pdf_ocr",
+            "ocr_engine_unavailable",
+            "PDF OCR engine is unavailable",
+        )
+
+    monkeypatch.setattr(worker_pipeline, "parse_pdf_ocr_candidate", unavailable_ocr)
     pdf_bytes = _load_pdf("pdf_no_text_layer.pdf")
     ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=pdf_bytes)
     store = JobStore(db_session)
@@ -838,8 +994,8 @@ async def test_pdf_upload_ingest_no_text_layer_fails_parsing(
     assert job.status == "failed"
     assert job.stage == "parsing"
     error = json.loads(job.error or "{}")
-    assert error["code"] == "no_text_layer"
-    assert "テキストが抽出できません" in error["message"]
+    assert error["code"] == "ocr_engine_unavailable"
+    assert "ocr_engine_unavailable" in error["message"]
 
     # structuring には到達しない(DocumentRevision が作られない)。
     revs = (
@@ -855,8 +1011,18 @@ async def test_pdf_upload_ingest_no_text_layer_fails_parsing(
 
 
 async def test_pdf_upload_incomplete_document_fails_before_revision_promotion(
-    db_session: AsyncSession, worker_ctx: dict[str, Any]
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    async def still_incomplete(*_args: Any, **_kwargs: Any) -> Any:
+        raise worker_pipeline.CandidateUnavailable(
+            "pdf_ocr",
+            "no_text_layer",
+            "OCR did not recover enough visible text",
+        )
+
+    monkeypatch.setattr(worker_pipeline, "parse_pdf_ocr_candidate", still_incomplete)
     ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=_single_paragraph_pdf())
     store = JobStore(db_session)
 

@@ -1,7 +1,7 @@
 """PDF パイプライン(品質 B。plans/05 §6)。
 
 PyMuPDF(fitz)を主、表セル抽出のみ pdfplumber を併用する(spec-decisions C7)。
-`parser_version='pdf-1.1.0'` / `source_format='pdf'` / `quality_level='B'`。
+`parser_version='pdf-1.2.0'` / `source_format='pdf'` / `quality_level='B'`。
 数値はすべて pt(1/72 インチ、PyMuPDF の既定単位のまま)。
 
 処理順は §6 の節番号のとおり: 6.1 抽出 → 6.2 ヘッダ/フッタ除去 → 6.3 段組み判定・
@@ -14,7 +14,12 @@ PyMuPDF(fitz)を主、表セル抽出のみ pdfplumber を併用する(spec-deci
 
 from __future__ import annotations
 
+import functools
+import math
 import re
+import shutil
+import subprocess
+import sys
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
@@ -27,9 +32,22 @@ from alinea_core.document.blocks import Block, DocumentContent, Section, Section
 from alinea_core.document.inlines import Inline
 from alinea_core.parsing.block_ids import assign_block_ids
 
-PARSER_VERSION = "pdf-1.1.0"
+PARSER_VERSION = "pdf-1.2.0"
+MAX_PDF_PAGES = 2_000
+MAX_PDF_EXTRACTED_CHARS = 20_000_000
+MAX_PDF_LAYOUT_BLOCKS = 200_000
+MAX_PDF_LAYOUT_LINES = 500_000
+MAX_PDF_LAYOUT_SPANS = 1_000_000
+MAX_PDF_STRUCTURED_BLOCKS = 200_000
+MAX_PDF_SECTIONS = 20_000
+MAX_PDF_PAGE_DIMENSION = 20_000.0
+MAX_PDF_PAGE_AREA = 100_000_000.0
+MAX_PDF_FIGURE_IMAGES = 200
+MAX_PDF_SINGLE_FIGURE_BYTES = 32 * 1024 * 1024
+MAX_PDF_FIGURE_BYTES = 128 * 1024 * 1024
 
 _WS = re.compile(r"\s+")
+_OCR_LANGUAGE_RE = re.compile(r"[A-Za-z0-9_]+(?:\+[A-Za-z0-9_]+)*\Z")
 
 # --- 例外 -----------------------------------------------------------------------
 
@@ -41,6 +59,90 @@ class PdfParseError(Exception):
         self.kind = kind
         self.message = message
         super().__init__(message)
+
+
+@dataclass(frozen=True)
+class PdfTextEvidence:
+    """Bounded visible-text evidence used by candidate completeness checks."""
+
+    text: str
+    pages: int
+    extracted_chars: int
+
+
+@dataclass(frozen=True)
+class PdfTextEvidenceCounts:
+    """Count-only PDF text evidence safe to transfer across process boundaries."""
+
+    pages: int
+    extracted_chars: int
+
+
+@dataclass(frozen=True)
+class PdfOcrReadiness:
+    """Non-fatal availability report for the optional PDF OCR capability."""
+
+    available: bool
+    code: str
+    language: str
+
+    def as_dict(self) -> dict[str, str | bool]:
+        return {
+            "available": self.available,
+            "code": self.code,
+            "language": self.language,
+        }
+
+
+@functools.lru_cache(maxsize=8)
+def check_pdf_ocr_readiness(
+    *,
+    language: str = "eng",
+    timeout_s: float = 2.0,
+) -> PdfOcrReadiness:
+    """Probe the Tesseract executable and requested traineddata without raising."""
+
+    try:
+        if not sys.platform.startswith("linux"):
+            return PdfOcrReadiness(False, "ocr_platform_unsupported", language)
+        binary = shutil.which("tesseract")
+        if binary is None:
+            return PdfOcrReadiness(False, "ocr_engine_unavailable", language)
+        completed = subprocess.run(  # noqa: S603 - resolved executable, fixed argument
+            [binary, "--list-langs"],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+            shell=False,
+        )
+        if not isinstance(completed.returncode, int):
+            return PdfOcrReadiness(False, "ocr_readiness_failed", language)
+        if completed.returncode != 0:
+            return PdfOcrReadiness(False, "ocr_readiness_failed", language)
+        if not isinstance(completed.stdout, str) or not isinstance(completed.stderr, str):
+            return PdfOcrReadiness(False, "ocr_readiness_failed", language)
+        available_languages = {
+            line.strip()
+            for line in f"{completed.stdout}\n{completed.stderr}".splitlines()
+            if line.strip()
+        }
+        required_languages = {item for item in language.split("+") if item}
+        if not required_languages or not required_languages.issubset(available_languages):
+            return PdfOcrReadiness(False, "ocr_language_unavailable", language)
+        return PdfOcrReadiness(True, "ready", language)
+    except subprocess.TimeoutExpired:
+        return PdfOcrReadiness(False, "ocr_readiness_timeout", language)
+    except OSError:
+        return PdfOcrReadiness(False, "ocr_engine_unavailable", language)
+    except Exception:
+        return PdfOcrReadiness(False, "ocr_readiness_failed", language)
+
+
+def clear_pdf_ocr_readiness_cache() -> None:
+    """Reset the process-local readiness cache (tests and controlled reloads)."""
+
+    check_pdf_ocr_readiness.cache_clear()
 
 
 # --- 見出し検出(§6.5) -----------------------------------------------------------
@@ -119,6 +221,15 @@ class _Region:
     page: int
     bbox: list[float]
     claimed: bool = False
+    from_scan_background: bool = False
+
+
+@dataclass
+class _ScanBackground:
+    """OCR ページを覆う走査ラスター。意味的な図候補には直接しない。"""
+
+    page: int
+    bbox: list[float]
 
 
 @dataclass
@@ -129,6 +240,7 @@ class _TableCandidate:
     bbox: list[float]
     rows: list[list[Any]] | None
     claimed: bool = False
+    from_scan_background: bool = False
 
 
 @dataclass
@@ -185,32 +297,170 @@ def _iter_blocks(sections: list[Section]) -> list[Block]:
 # ============================ §6.1 抽出・テキストレイヤ判定 ============================
 
 
+def _open_pdf(data: bytes) -> fitz.Document:
+    try:
+        return fitz.open(stream=data, filetype="pdf")
+    except Exception as exc:
+        raise PdfParseError("pdf_open_error", "PDFを開けません") from exc
+
+
+def _validate_pdf_page_count(doc: fitz.Document) -> int:
+    try:
+        pages = int(doc.page_count)
+    except Exception as exc:
+        raise PdfParseError("pdf_page_limit", "PDFページ数を検証できません") from exc
+    if pages > MAX_PDF_PAGES:
+        raise PdfParseError("pdf_page_limit", "PDFページ数が上限を超えています")
+    return pages
+
+
+def _validate_pdf_page_geometry(page: fitz.Page) -> tuple[float, float]:
+    try:
+        width = float(page.rect.width)
+        height = float(page.rect.height)
+    except Exception as exc:
+        raise PdfParseError("pdf_geometry_limit", "PDFページ寸法を検証できません") from exc
+    if (
+        not math.isfinite(width)
+        or not math.isfinite(height)
+        or width <= 0
+        or height <= 0
+        or width > MAX_PDF_PAGE_DIMENSION
+        or height > MAX_PDF_PAGE_DIMENSION
+        or width * height > MAX_PDF_PAGE_AREA
+    ):
+        raise PdfParseError("pdf_geometry_limit", "PDFページ寸法が上限を超えています")
+    return width, height
+
+
+def _extract_bounded_page_text(page: fitz.Page, *, sort: bool = False) -> str:
+    _validate_pdf_page_geometry(page)
+    try:
+        return str(page.get_text("text", sort=sort))
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise PdfParseError("pdf_text_error", "PDFテキストを抽出できません") from exc
+
+
 def _count_extractable_chars(doc: fitz.Document) -> int:
-    return sum(len(page.get_text().strip()) for page in doc)
+    _validate_pdf_page_count(doc)
+    total = 0
+    for page in doc:
+        total += len(_extract_bounded_page_text(page).strip())
+        if total > MAX_PDF_EXTRACTED_CHARS:
+            raise PdfParseError("pdf_text_limit", "PDF抽出テキストが上限を超えています")
+    return total
+
+
+def extract_pdf_text_evidence(data: bytes) -> PdfTextEvidence:
+    """Extract bounded PDF text once, with counts shared by completeness and parsing."""
+
+    doc = _open_pdf(data)
+    try:
+        pages = _validate_pdf_page_count(doc)
+        text_pages: list[str] = []
+        extracted_chars = 0
+        retained_chars = 0
+        for page in doc:
+            text = _extract_bounded_page_text(page)
+            extracted_chars += len(text.strip())
+            retained_chars += len(text)
+            if (
+                extracted_chars > MAX_PDF_EXTRACTED_CHARS
+                or retained_chars > MAX_PDF_EXTRACTED_CHARS
+            ):
+                raise PdfParseError("pdf_text_limit", "PDF抽出テキストが上限を超えています")
+            text_pages.append(text)
+        return PdfTextEvidence(
+            text="\n".join(text_pages),
+            pages=pages,
+            extracted_chars=extracted_chars,
+        )
+    finally:
+        doc.close()
+
+
+def count_pdf_text_evidence(data: bytes) -> PdfTextEvidenceCounts:
+    """Count bounded visible text without retaining or returning page contents."""
+
+    doc = _open_pdf(data)
+    try:
+        pages = _validate_pdf_page_count(doc)
+        return PdfTextEvidenceCounts(
+            pages=pages,
+            extracted_chars=_count_extractable_chars(doc),
+        )
+    finally:
+        doc.close()
 
 
 def check_text_layer(data: bytes) -> None:
     """テキストレイヤ判定(§6.1)。抽出文字数 < 40 x ページ数 なら :class:`PdfParseError`。
 
-    受け口(``POST /api/ingest/pdf``)が同期的に呼ぶ軽量チェック(dict 抽出は行わない)。
+    worker の bounded evidence / parser 経路と同じページ・文字数上限を適用する。
+    core の軽量呼び出し用であり、レイアウト dict は抽出しない。
     """
-    doc = fitz.open(stream=data, filetype="pdf")
+    doc = _open_pdf(data)
     try:
-        n_pages = doc.page_count
+        n_pages = _validate_pdf_page_count(doc)
         if n_pages == 0 or _count_extractable_chars(doc) < 40 * n_pages:
             raise PdfParseError("no_text_layer", "テキストが抽出できません")
     finally:
         doc.close()
 
 
-def _extract_page_lines(page: fitz.Page, page_no: int) -> list[_Line]:
-    raw = page.get_text("dict", flags=fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES)
+@dataclass
+class _PdfLayoutBudget:
+    blocks: int = 0
+    lines: int = 0
+    spans: int = 0
+
+    def charge(self, *, blocks: int = 0, lines: int = 0, spans: int = 0) -> None:
+        self.blocks += blocks
+        self.lines += lines
+        self.spans += spans
+        if (
+            self.blocks > MAX_PDF_LAYOUT_BLOCKS
+            or self.lines > MAX_PDF_LAYOUT_LINES
+            or self.spans > MAX_PDF_LAYOUT_SPANS
+        ):
+            raise PdfParseError("pdf_layout_limit", "PDFレイアウト要素が上限を超えています")
+
+
+def _extract_page_lines(
+    page: fitz.Page,
+    page_no: int,
+    *,
+    textpage: fitz.TextPage | None = None,
+    budget: _PdfLayoutBudget | None = None,
+) -> list[_Line]:
+    if textpage is None:
+        raw = page.get_text("dict", flags=fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES)
+    else:
+        raw = page.get_text(
+            "dict",
+            flags=fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES,
+            textpage=textpage,
+        )
+    raw_blocks = raw.get("blocks", [])
+    if not isinstance(raw_blocks, list):
+        raise PdfParseError("pdf_layout_limit", "PDFレイアウトが不正です")
+    if budget is not None:
+        budget.charge(blocks=len(raw_blocks))
     lines: list[_Line] = []
-    for block in raw.get("blocks", []):
+    for block in raw_blocks:
         if block.get("type") != 0:
             continue
-        for line in block.get("lines", []):
+        raw_lines = block.get("lines", [])
+        if not isinstance(raw_lines, list):
+            raise PdfParseError("pdf_layout_limit", "PDFレイアウトが不正です")
+        if budget is not None:
+            budget.charge(lines=len(raw_lines))
+        for line in raw_lines:
             spans = line.get("spans", [])
+            if not isinstance(spans, list):
+                raise PdfParseError("pdf_layout_limit", "PDFレイアウトが不正です")
+            if budget is not None:
+                budget.charge(spans=len(spans))
             if not spans:
                 continue
             text = "".join(str(s.get("text", "")) for s in spans)
@@ -226,6 +476,24 @@ def _extract_page_lines(page: fitz.Page, page_no: int) -> list[_Line]:
                 _Line(page=page_no, text=text, x0=x0, y0=y0, x1=x1, y1=y1, size=size, bold=bold)
             )
     return lines
+
+
+def _extract_ocr_page(
+    page: fitz.Page,
+    page_no: int,
+    *,
+    language: str,
+    budget: _PdfLayoutBudget | None = None,
+) -> tuple[int, list[_Line]]:
+    """Extract one OCR page and release its heavyweight TextPage before returning."""
+
+    textpage = page.get_textpage_ocr(language=language, dpi=200, full=True)
+    try:
+        extractable_chars = len(page.get_text(textpage=textpage).strip())
+        lines = _extract_page_lines(page, page_no, textpage=textpage, budget=budget)
+        return extractable_chars, lines
+    finally:
+        del textpage
 
 
 def _compute_body_metrics(pages_lines: list[list[_Line]]) -> tuple[float, float]:
@@ -502,6 +770,744 @@ def _detect_figure_regions(page: fitz.Page, page_no: int) -> list[_Region]:
     ]
 
 
+def _clip_bbox_to_page(bbox: list[float], page_width: float, page_height: float) -> list[float]:
+    return [
+        min(max(0.0, bbox[0]), page_width),
+        min(max(0.0, bbox[1]), page_height),
+        min(max(0.0, bbox[2]), page_width),
+        min(max(0.0, bbox[3]), page_height),
+    ]
+
+
+def _grid_coverage_ratio(regions: list[_Region], *, page_width: float, page_height: float) -> float:
+    """Approximate union coverage with a fixed grid, keeping tiled detection bounded."""
+
+    columns = 30
+    rows = 40
+    cell_width = page_width / columns
+    cell_height = page_height / rows
+    covered: set[int] = set()
+    for region in regions:
+        x0, y0, x1, y1 = _clip_bbox_to_page(region.bbox, page_width, page_height)
+        first_column = max(0, math.ceil(x0 / cell_width - 0.5))
+        last_column = min(columns - 1, math.floor(x1 / cell_width - 0.5))
+        first_row = max(0, math.ceil(y0 / cell_height - 0.5))
+        last_row = min(rows - 1, math.floor(y1 / cell_height - 0.5))
+        for row in range(first_row, last_row + 1):
+            offset = row * columns
+            for column in range(first_column, last_column + 1):
+                covered.add(offset + column)
+    return len(covered) / (columns * rows)
+
+
+def _contains_page_ocr(bbox: list[float], lines: list[_Line]) -> bool:
+    visible_lines = [line for line in lines if line.text.strip()]
+    total_chars = sum(len(line.text.strip()) for line in visible_lines)
+    contained_lines = [
+        line
+        for line in visible_lines
+        if bbox[0] <= line.cx <= bbox[2] and bbox[1] <= (line.y0 + line.y1) / 2.0 <= bbox[3]
+    ]
+    contained_chars = sum(len(line.text.strip()) for line in contained_lines)
+    return (
+        total_chars > 0
+        and contained_chars * 100 >= total_chars * 80
+        and (len(contained_lines) >= 2 or contained_chars >= 40)
+    )
+
+
+def _has_inset_scan_geometry(bbox: list[float], *, page_width: float, page_height: float) -> bool:
+    width = max(0.0, bbox[2] - bbox[0])
+    height = max(0.0, bbox[3] - bbox[1])
+    page_area = page_width * page_height
+    return (
+        width / page_width >= 0.65
+        and height / page_height >= 0.85
+        and width * height / page_area >= 0.65
+    )
+
+
+def _partition_ocr_scan_background_regions(
+    regions: list[_Region],
+    *,
+    page_width: float,
+    page_height: float,
+    lines: list[_Line],
+) -> tuple[list[_Region], list[_ScanBackground]]:
+    """Separate page-covering scan geometry from semantic image regions."""
+
+    page_area = page_width * page_height
+    semantic_regions: list[_Region] = []
+    backgrounds: list[_ScanBackground] = []
+    for region in regions:
+        bbox = _clip_bbox_to_page(region.bbox, page_width, page_height)
+        width = max(0.0, bbox[2] - bbox[0])
+        height = max(0.0, bbox[3] - bbox[1])
+        dominant_geometry = (
+            width / page_width >= 0.78
+            and height / page_height >= 0.68
+            and width * height / page_area >= 0.55
+        )
+        if dominant_geometry or (
+            _has_inset_scan_geometry(
+                bbox,
+                page_width=page_width,
+                page_height=page_height,
+            )
+            and _contains_page_ocr(bbox, lines)
+        ):
+            backgrounds.append(_ScanBackground(page=region.page, bbox=bbox))
+        else:
+            semantic_regions.append(region)
+
+    if len(semantic_regions) < 2:
+        return semantic_regions, backgrounds
+
+    first_bbox = semantic_regions[0].bbox
+    union = (first_bbox[0], first_bbox[1], first_bbox[2], first_bbox[3])
+    for region in semantic_regions[1:]:
+        bbox = region.bbox
+        union = _union_box(union, (bbox[0], bbox[1], bbox[2], bbox[3]))
+    union_bbox = _clip_bbox_to_page(list(union), page_width, page_height)
+    union_width = union_bbox[2] - union_bbox[0]
+    union_height = union_bbox[3] - union_bbox[1]
+    coverage = _grid_coverage_ratio(
+        semantic_regions,
+        page_width=page_width,
+        page_height=page_height,
+    )
+    if union_width / page_width >= 0.78 and union_height / page_height >= 0.68 and coverage >= 0.52:
+        backgrounds.append(_ScanBackground(page=semantic_regions[0].page, bbox=union_bbox))
+        semantic_regions = []
+    return semantic_regions, backgrounds
+
+
+def _bbox_iou(a: list[float], b: list[float]) -> float:
+    x0 = max(a[0], b[0])
+    y0 = max(a[1], b[1])
+    x1 = min(a[2], b[2])
+    y1 = min(a[3], b[3])
+    intersection = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+    a_area = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    b_area = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+    union = a_area + b_area - intersection
+    return intersection / union if union > 0 else 0.0
+
+
+def _normalized_bbox(bbox: list[float], *, page_width: float, page_height: float) -> list[float]:
+    return [
+        bbox[0] / page_width,
+        bbox[1] / page_height,
+        bbox[2] / page_width,
+        bbox[3] / page_height,
+    ]
+
+
+def _scan_profiles_match(candidate: list[float], confirmed: list[float]) -> bool:
+    edge_delta = max(abs(left - right) for left, right in zip(candidate, confirmed, strict=True))
+    return edge_delta <= 0.035 and _bbox_iou(candidate, confirmed) >= 0.90
+
+
+def _partition_ocr_document_scan_regions(
+    regions_by_page: list[list[_Region]],
+    *,
+    page_sizes: list[tuple[float, float]],
+    pages_lines: list[list[_Line]],
+) -> list[tuple[list[_Region], list[_ScanBackground]]]:
+    """Infer OCR-confirmed scan profiles before inheriting them across all pages."""
+
+    partitions: list[tuple[list[_Region], list[_ScanBackground]]] = []
+    confirmed_profiles: list[list[float]] = []
+    for regions, (page_width, page_height), lines in zip(
+        regions_by_page,
+        page_sizes,
+        pages_lines,
+        strict=True,
+    ):
+        partitions.append(
+            _partition_ocr_scan_background_regions(
+                regions,
+                page_width=page_width,
+                page_height=page_height,
+                lines=lines,
+            )
+        )
+        for region in regions:
+            bbox = _clip_bbox_to_page(region.bbox, page_width, page_height)
+            if _has_inset_scan_geometry(
+                bbox,
+                page_width=page_width,
+                page_height=page_height,
+            ) and _contains_page_ocr(bbox, lines):
+                confirmed_profiles.append(
+                    _normalized_bbox(
+                        bbox,
+                        page_width=page_width,
+                        page_height=page_height,
+                    )
+                )
+
+    if not confirmed_profiles:
+        return partitions
+
+    inherited_partitions: list[tuple[list[_Region], list[_ScanBackground]]] = []
+    for (semantic_regions, backgrounds), (page_width, page_height) in zip(
+        partitions,
+        page_sizes,
+        strict=True,
+    ):
+        retained: list[_Region] = []
+        for region in semantic_regions:
+            bbox = _clip_bbox_to_page(region.bbox, page_width, page_height)
+            profile = _normalized_bbox(
+                bbox,
+                page_width=page_width,
+                page_height=page_height,
+            )
+            if _has_inset_scan_geometry(
+                bbox,
+                page_width=page_width,
+                page_height=page_height,
+            ) and any(_scan_profiles_match(profile, confirmed) for confirmed in confirmed_profiles):
+                backgrounds.append(_ScanBackground(page=region.page, bbox=bbox))
+            else:
+                retained.append(region)
+        inherited_partitions.append((retained, backgrounds))
+    return inherited_partitions
+
+
+def _scan_crop_x_bounds(
+    caption_bbox: list[float],
+    background_bbox: list[float],
+    lines: list[_Line],
+    *,
+    page_width: float,
+    columns: int,
+    body_size: float,
+) -> tuple[float, float]:
+    """Return the usable page or inferred column width around a caption."""
+
+    page_center = page_width / 2.0
+    caption_center = (caption_bbox[0] + caption_bbox[2]) / 2.0
+    center_band = 0.12 * page_width
+    crosses_center = (
+        caption_bbox[0] <= page_center <= caption_bbox[2]
+        or abs(caption_center - page_center) <= center_band
+    )
+    if columns != 2 or crosses_center:
+        return background_bbox[0], background_bbox[2]
+
+    left_lines, right_lines = _body_column_lines(lines, page_width, body_size)
+    split = page_center
+    if left_lines and right_lines:
+        left_edge = max(line.x1 for line in left_lines)
+        right_edge = min(line.x0 for line in right_lines)
+        if left_edge < right_edge:
+            split = (left_edge + right_edge) / 2.0
+    if caption_center < page_center:
+        return background_bbox[0], min(background_bbox[2], split)
+    return max(background_bbox[0], split), background_bbox[2]
+
+
+def _is_scan_gap_boundary(line: _Line, *, body_size: float) -> bool:
+    text = _WS.sub(" ", line.text).strip()
+    if not text:
+        return False
+    return _CAPTION_RE.match(text) is not None or _heading_info(line, body_size) is not None
+
+
+def _scan_gap_candidates(
+    caption_run: list[_Line],
+    lines: list[_Line],
+    background: _ScanBackground,
+    *,
+    page_width: float,
+    line_height: float,
+    columns: int,
+    body_size: float,
+    force_full_width: bool = False,
+) -> list[tuple[str, list[float]]]:
+    caption_bbox = _union_bbox(caption_run)
+    if force_full_width:
+        x0, x1 = background.bbox[0], background.bbox[2]
+    else:
+        x0, x1 = _scan_crop_x_bounds(
+            caption_bbox,
+            background.bbox,
+            lines,
+            page_width=page_width,
+            columns=columns,
+            body_size=body_size,
+        )
+    horizontal_bbox = [x0, background.bbox[1], x1, background.bbox[3]]
+    excluded = {id(line) for line in caption_run}
+    padding = max(2.0, min(6.0, line_height * 0.25))
+    above_y0 = background.bbox[1] + padding
+    below_y1 = background.bbox[3] - padding
+    for line in lines:
+        if id(line) in excluded:
+            continue
+        line_bbox = [line.x0, line.y0, line.x1, line.y1]
+        if _h_overlap_ratio(horizontal_bbox, line_bbox) < 0.15:
+            continue
+        if not _is_scan_gap_boundary(line, body_size=body_size):
+            continue
+        if line.y1 <= caption_bbox[1]:
+            above_y0 = max(above_y0, line.y1 + padding)
+        if line.y0 >= caption_bbox[3]:
+            below_y1 = min(below_y1, line.y0 - padding)
+
+    minimum_height = max(24.0, line_height * 2.0)
+    candidates: list[tuple[str, list[float]]] = []
+    above_y1 = min(background.bbox[3], caption_bbox[1] - padding)
+    if above_y1 - above_y0 >= minimum_height:
+        candidates.append(("above", [x0, above_y0, x1, above_y1]))
+    below_y0 = max(background.bbox[1], caption_bbox[3] + padding)
+    if below_y1 - below_y0 >= minimum_height:
+        candidates.append(("below", [x0, below_y0, x1, below_y1]))
+    return candidates
+
+
+def _projection_clusters(indices: list[int], *, maximum_gap: int) -> list[tuple[int, int]]:
+    if not indices:
+        return []
+    clusters: list[tuple[int, int]] = []
+    start = indices[0]
+    previous = start
+    for value in indices[1:]:
+        if value - previous > maximum_gap:
+            clusters.append((start, previous))
+            start = value
+        previous = value
+    clusters.append((start, previous))
+    return clusters
+
+
+def _visual_content_crop(
+    page: fitz.Page,
+    candidate_bbox: list[float],
+    *,
+    page_width: float,
+    page_height: float,
+    target_x: float,
+    target_y: float,
+    masked_text_bboxes: list[list[float]],
+    allow_component_union: bool,
+) -> tuple[float, list[float]] | None:
+    """Select a connected non-paper extent nearest the caption target."""
+
+    rect = fitz.Rect(*candidate_bbox)
+    if rect.width <= 0 or rect.height <= 0:
+        return None
+    scale = min(1.0, math.sqrt(160_000.0 / max(1.0, rect.get_area())))
+    try:
+        pixmap = page.get_pixmap(
+            matrix=fitz.Matrix(scale, scale),
+            clip=rect,
+            colorspace=fitz.csGRAY,
+            alpha=False,
+        )
+        width = int(pixmap.width)
+        height = int(pixmap.height)
+        stride = int(pixmap.stride)
+        samples = pixmap.samples
+    except Exception:
+        return None
+    if width < 2 or height < 2 or not samples:
+        return None
+
+    masked_pixels = bytearray(width * height)
+    for text_bbox in masked_text_bboxes:
+        intersection = fitz.Rect(*text_bbox) & rect
+        if intersection.is_empty:
+            continue
+        first_column = max(
+            0,
+            math.floor((intersection.x0 - rect.x0) / rect.width * width) - 1,
+        )
+        last_column = min(
+            width,
+            math.ceil((intersection.x1 - rect.x0) / rect.width * width) + 1,
+        )
+        first_row = max(
+            0,
+            math.floor((intersection.y0 - rect.y0) / rect.height * height) - 1,
+        )
+        last_row = min(
+            height,
+            math.ceil((intersection.y1 - rect.y0) / rect.height * height) + 1,
+        )
+        masked_width = last_column - first_column
+        if masked_width <= 0:
+            continue
+        masked_run = b"\x01" * masked_width
+        for row in range(first_row, last_row):
+            offset = row * width + first_column
+            masked_pixels[offset : offset + masked_width] = masked_run
+
+    values = [samples[row * stride + column] for row in range(height) for column in range(width)]
+    ordered_values = sorted(values)
+    paper_level = ordered_values[round(0.90 * (len(ordered_values) - 1))]
+    contrast = paper_level - ordered_values[0]
+    if contrast < 24:
+        return None
+    dark_threshold = paper_level - max(18, round(contrast * 0.15))
+    dark_by_row = [0] * height
+    dark_by_column = [0] * width
+    dark_pixels = 0
+    dark_points: list[tuple[int, int]] = []
+    for row in range(height):
+        row_offset = row * stride
+        for column in range(width):
+            if (
+                not masked_pixels[row * width + column]
+                and samples[row_offset + column] <= dark_threshold
+            ):
+                dark_pixels += 1
+                dark_by_row[row] += 1
+                dark_by_column[column] += 1
+                dark_points.append((column, row))
+    if dark_pixels < max(16, round(width * height * 0.002)):
+        return None
+
+    active_rows = [row for row, count in enumerate(dark_by_row) if count >= max(2, width // 250)]
+    active_columns = [
+        column for column, count in enumerate(dark_by_column) if count >= max(2, height // 250)
+    ]
+    if not active_rows or not active_columns:
+        return None
+
+    x_clusters = _projection_clusters(
+        active_columns,
+        maximum_gap=max(6, round(width * 0.04)),
+    )
+    y_clusters = _projection_clusters(
+        active_rows,
+        maximum_gap=max(4, round(height * 0.025)),
+    )
+    x_membership = [-1] * width
+    y_membership = [-1] * height
+    for cluster_index, (start, end) in enumerate(x_clusters):
+        for column in range(start, end + 1):
+            x_membership[column] = cluster_index
+    for cluster_index, (start, end) in enumerate(y_clusters):
+        for row in range(start, end + 1):
+            y_membership[row] = cluster_index
+
+    component_points: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for column, row in dark_points:
+        x_cluster = x_membership[column]
+        y_cluster = y_membership[row]
+        if x_cluster >= 0 and y_cluster >= 0:
+            component_points.setdefault((x_cluster, y_cluster), []).append((column, row))
+
+    page_area = page_width * page_height
+    components: list[tuple[float, list[float], float]] = []
+    padding = 4.0
+    for points in component_points.values():
+        minimum_points = max(16, round(width * height * 0.002))
+        if len(points) < minimum_points:
+            continue
+        min_column = min(point[0] for point in points)
+        max_column = max(point[0] for point in points)
+        min_row = min(point[1] for point in points)
+        max_row = max(point[1] for point in points)
+        content_bbox = [
+            max(rect.x0, rect.x0 + min_column / width * rect.width - padding),
+            max(rect.y0, rect.y0 + min_row / height * rect.height - padding),
+            min(
+                rect.x1,
+                rect.x0 + (max_column + 1) / width * rect.width + padding,
+            ),
+            min(
+                rect.y1,
+                rect.y0 + (max_row + 1) / height * rect.height + padding,
+            ),
+        ]
+        content_width = content_bbox[2] - content_bbox[0]
+        content_height = content_bbox[3] - content_bbox[1]
+        content_area = content_width * content_height
+        if (
+            content_width < max(36.0, page_width * 0.12)
+            or content_height < 24.0
+            or content_area < 1600.0
+            or content_area > page_area * 0.58
+            or content_width > page_width * 0.96
+            or content_height > page_height * 0.80
+        ):
+            continue
+        if target_x < content_bbox[0]:
+            horizontal_distance = content_bbox[0] - target_x
+        elif target_x > content_bbox[2]:
+            horizontal_distance = target_x - content_bbox[2]
+        else:
+            horizontal_distance = 0.0
+        if target_y < content_bbox[1]:
+            vertical_distance = content_bbox[1] - target_y
+        elif target_y > content_bbox[3]:
+            vertical_distance = target_y - content_bbox[3]
+        else:
+            vertical_distance = 0.0
+        distance_penalty = (
+            1.0 + 4.0 * horizontal_distance / page_width + 1.5 * vertical_distance / page_height
+        )
+        score = contrast * (len(points) + content_area * 0.04) / distance_penalty
+        rounded_bbox = [round(value, 2) for value in content_bbox]
+        components.append((score, rounded_bbox, content_area))
+    if not components:
+        return None
+
+    primary = max(components, key=lambda item: item[0])
+    if not allow_component_union:
+        return primary[0], primary[1]
+
+    grouped_score = primary[0]
+    grouped_bbox = list(primary[1])
+    primary_area = primary[2]
+    search_width = candidate_bbox[2] - candidate_bbox[0]
+
+    def overlap_ratio(a0: float, a1: float, b0: float, b1: float) -> float:
+        overlap = max(0.0, min(a1, b1) - max(a0, b0))
+        narrower = min(a1 - a0, b1 - b0)
+        return overlap / narrower if narrower > 0 else 0.0
+
+    def axis_gap(a0: float, a1: float, b0: float, b1: float) -> float:
+        return max(0.0, max(a0, b0) - min(a1, b1))
+
+    for score, bbox, area in sorted(components, key=lambda item: item[0], reverse=True):
+        if bbox == primary[1]:
+            continue
+        if score < primary[0] * 0.12 or area < primary_area * 0.12:
+            continue
+        horizontal_gap = axis_gap(grouped_bbox[0], grouped_bbox[2], bbox[0], bbox[2])
+        vertical_gap = axis_gap(grouped_bbox[1], grouped_bbox[3], bbox[1], bbox[3])
+        aligned_side_by_side = overlap_ratio(
+            grouped_bbox[1], grouped_bbox[3], bbox[1], bbox[3]
+        ) >= 0.55 and horizontal_gap <= max(18.0, search_width * 0.18)
+        aligned_stacked = overlap_ratio(
+            grouped_bbox[0], grouped_bbox[2], bbox[0], bbox[2]
+        ) >= 0.55 and vertical_gap <= max(18.0, page_height * 0.10)
+        if not aligned_side_by_side and not aligned_stacked:
+            continue
+        union_bbox = [
+            min(grouped_bbox[0], bbox[0]),
+            min(grouped_bbox[1], bbox[1]),
+            max(grouped_bbox[2], bbox[2]),
+            max(grouped_bbox[3], bbox[3]),
+        ]
+        union_width = union_bbox[2] - union_bbox[0]
+        union_height = union_bbox[3] - union_bbox[1]
+        union_area = union_width * union_height
+        if (
+            union_area > page_area * 0.58
+            or union_width > page_width * 0.96
+            or union_height > page_height * 0.80
+        ):
+            continue
+        grouped_bbox = union_bbox
+        grouped_score += score
+    return grouped_score, [round(value, 2) for value in grouped_bbox]
+
+
+def _has_competing_display_caption(
+    lines: list[_Line],
+    caption_run: list[_Line],
+    caption_bbox: list[float],
+    *,
+    line_height: float,
+) -> bool:
+    current_ids = {id(line) for line in caption_run}
+    caption_center_y = (caption_bbox[1] + caption_bbox[3]) / 2.0
+    maximum_distance = max(24.0, line_height * 4.0)
+    for line in lines:
+        if id(line) in current_ids:
+            continue
+        match = _CAPTION_RE.match(line.text.strip())
+        if match is None:
+            continue
+        line_center_y = (line.y0 + line.y1) / 2.0
+        if abs(line_center_y - caption_center_y) <= maximum_distance:
+            return True
+    return False
+
+
+def _derive_ocr_scan_display_regions(
+    page: fitz.Page,
+    page_no: int,
+    ordered: list[_Line],
+    backgrounds: list[_ScanBackground],
+    *,
+    page_width: float,
+    page_height: float,
+    line_height: float,
+    body_size: float,
+    columns: int,
+) -> tuple[list[_Region], list[_TableCandidate]]:
+    """Derive non-overlapping semantic crops without exposing scan backgrounds."""
+
+    figure_regions: list[_Region] = []
+    table_candidates: list[_TableCandidate] = []
+    derived_bboxes: list[list[float]] = []
+    index = 0
+    while index < len(ordered):
+        line = ordered[index]
+        match = _CAPTION_RE.match(line.text.strip())
+        if match is None:
+            index += 1
+            continue
+        is_figure = match.group(1) in ("Figure", "Fig.")
+        caption_run, next_index = _collect_caption_run(ordered, index, line_height, body_size)
+        caption_bbox = _union_bbox(caption_run)
+        caption_center = (caption_bbox[0] + caption_bbox[2]) / 2.0
+        caption_line_ids = {id(item) for item in caption_run}
+        masked_text_bboxes = [
+            [item.x0, item.y0, item.x1, item.y1]
+            for item in ordered
+            if id(item) not in caption_line_ids
+        ]
+        best_above: tuple[float, list[float]] | None = None
+        best_below: tuple[float, list[float]] | None = None
+        for background in backgrounds:
+            if background.page != page_no:
+                continue
+            if not (
+                background.bbox[0]
+                <= (caption_bbox[0] + caption_bbox[2]) / 2.0
+                <= background.bbox[2]
+                and background.bbox[1]
+                <= (caption_bbox[1] + caption_bbox[3]) / 2.0
+                <= background.bbox[3]
+            ):
+                continue
+            for direction, gap_bbox in _scan_gap_candidates(
+                caption_run,
+                ordered,
+                background,
+                page_width=page_width,
+                line_height=line_height,
+                columns=columns,
+                body_size=body_size,
+            ):
+                visual = _visual_content_crop(
+                    page,
+                    gap_bbox,
+                    page_width=page_width,
+                    page_height=page_height,
+                    target_x=caption_center,
+                    target_y=caption_bbox[1] if direction == "above" else caption_bbox[3],
+                    masked_text_bboxes=masked_text_bboxes,
+                    allow_component_union=(gap_bbox[2] - gap_bbox[0]) >= page_width * 0.75,
+                )
+                if visual is None:
+                    continue
+                score, crop_bbox = visual
+                column_scoped = (gap_bbox[2] - gap_bbox[0]) < page_width * 0.75
+                if column_scoped and not _has_competing_display_caption(
+                    ordered,
+                    caption_run,
+                    caption_bbox,
+                    line_height=line_height,
+                ):
+                    full_gap = next(
+                        (
+                            candidate
+                            for candidate_direction, candidate in _scan_gap_candidates(
+                                caption_run,
+                                ordered,
+                                background,
+                                page_width=page_width,
+                                line_height=line_height,
+                                columns=columns,
+                                body_size=body_size,
+                                force_full_width=True,
+                            )
+                            if candidate_direction == direction
+                        ),
+                        None,
+                    )
+                    if full_gap is not None:
+                        full_visual = _visual_content_crop(
+                            page,
+                            full_gap,
+                            page_width=page_width,
+                            page_height=page_height,
+                            target_x=caption_center,
+                            target_y=(caption_bbox[1] if direction == "above" else caption_bbox[3]),
+                            masked_text_bboxes=masked_text_bboxes,
+                            allow_component_union=True,
+                        )
+                        if full_visual is not None:
+                            full_score, full_bbox = full_visual
+                            split = (
+                                gap_bbox[2] if caption_center < page_width / 2.0 else gap_bbox[0]
+                            )
+                            minimum_crossing = page_width * 0.08
+                            crosses_split = (
+                                full_bbox[0] <= split - minimum_crossing
+                                and full_bbox[2] >= split + minimum_crossing
+                            )
+                            vertical_overlap = max(
+                                0.0,
+                                min(crop_bbox[3], full_bbox[3]) - max(crop_bbox[1], full_bbox[1]),
+                            )
+                            original_height = crop_bbox[3] - crop_bbox[1]
+                            vertically_related = (
+                                original_height > 0 and vertical_overlap / original_height >= 0.55
+                            )
+                            if crosses_split and vertically_related and full_score >= score * 1.10:
+                                score, crop_bbox = full_score, full_bbox
+                if any(_bbox_iou(crop_bbox, bbox) >= 0.35 for bbox in derived_bboxes):
+                    continue
+                selected_visual = (score, crop_bbox)
+                current = best_above if direction == "above" else best_below
+                if current is None or score > current[0]:
+                    if direction == "above":
+                        best_above = selected_visual
+                    else:
+                        best_below = selected_visual
+        selected = best_above
+        if best_below is not None and (selected is None or best_below[0] > selected[0] * 1.5):
+            selected = best_below
+        if selected is not None:
+            derived_bboxes.append(selected[1])
+            if is_figure:
+                figure_regions.append(
+                    _Region(
+                        page=page_no,
+                        bbox=selected[1],
+                        from_scan_background=True,
+                    )
+                )
+            else:
+                table_candidates.append(
+                    _TableCandidate(
+                        page=page_no,
+                        bbox=selected[1],
+                        rows=None,
+                        from_scan_background=True,
+                    )
+                )
+        index = max(index + 1, next_index)
+    return figure_regions, table_candidates
+
+
+def _exclude_scan_display_labels(lines: list[_Line], scan_bboxes: list[list[float]]) -> list[_Line]:
+    """Keep crop-internal OCR labels in the image, not structured paragraphs."""
+
+    retained: list[_Line] = []
+    for line in lines:
+        if _CAPTION_RE.match(line.text.strip()) is not None:
+            retained.append(line)
+            continue
+        center_y = (line.y0 + line.y1) / 2.0
+        inside_crop = any(
+            bbox[0] <= line.cx <= bbox[2] and bbox[1] <= center_y <= bbox[3] for bbox in scan_bboxes
+        )
+        if not inside_crop:
+            retained.append(line)
+    return retained
+
+
 def _h_overlap_ratio(a: list[float], b: list[float]) -> float:
     left = max(a[0], b[0])
     right = min(a[2], b[2])
@@ -689,8 +1695,9 @@ def _collect_caption_run(
 class _PdfParser:
     """1 回のパースの状態を保持する(見出しスタック・段落バッファ・警告)。"""
 
-    def __init__(self, pdf_bytes: bytes) -> None:
+    def __init__(self, pdf_bytes: bytes, *, use_ocr: bool = False) -> None:
         self._pdf_bytes = pdf_bytes
+        self._use_ocr = use_ocr
         self.warnings: list[str] = []
         self.body_size = 10.0
         self.line_h = 12.0
@@ -711,6 +1718,38 @@ class _PdfParser:
         self._orphan_figures = 0
         self._table_captions_total = 0
         self._table_caption_matches = 0
+        self._structured_blocks = 0
+        self._section_count = 1
+        self._pending_image_bytes = 0
+
+    def _append_block(self, block: Block, *, section: Section | None = None) -> None:
+        if self._structured_blocks >= MAX_PDF_STRUCTURED_BLOCKS:
+            raise PdfParseError("pdf_block_limit", "PDF構造化ブロック数が上限を超えています")
+        (section or self.current).blocks.append(block)
+        self._structured_blocks += 1
+
+    def _extend_blocks(self, blocks: list[Block], *, section: Section | None = None) -> None:
+        if self._structured_blocks + len(blocks) > MAX_PDF_STRUCTURED_BLOCKS:
+            raise PdfParseError("pdf_block_limit", "PDF構造化ブロック数が上限を超えています")
+        (section or self.current).blocks.extend(blocks)
+        self._structured_blocks += len(blocks)
+
+    def _append_section(self, sections: list[Section], section: Section) -> None:
+        if self._section_count >= MAX_PDF_SECTIONS:
+            raise PdfParseError("pdf_section_limit", "PDFセクション数が上限を超えています")
+        sections.append(section)
+        self._section_count += 1
+
+    def _append_pending_image(self, block: Block, payload: bytes) -> None:
+        if len(self._pending_images) >= MAX_PDF_FIGURE_IMAGES:
+            raise PdfParseError("pdf_figure_limit", "PDF図表数が上限を超えています")
+        if (
+            len(payload) > MAX_PDF_SINGLE_FIGURE_BYTES
+            or self._pending_image_bytes + len(payload) > MAX_PDF_FIGURE_BYTES
+        ):
+            raise PdfParseError("pdf_figure_bytes_limit", "PDF図表バイト数が上限を超えています")
+        self._pending_images.append((block, payload))
+        self._pending_image_bytes += len(payload)
 
     # ---- 段落 ----
     def _accumulate_paragraph_line(self, line: _Line) -> None:
@@ -740,7 +1779,7 @@ class _PdfParser:
             page=first_page,
             bbox=_union_bbox(same_page_lines),
         )
-        self.current.blocks.append(block)
+        self._append_block(block)
         self._last_flushed_paragraph = block
         self._last_flushed_lines = list(self._para_lines)
         self._para_lines = []
@@ -756,6 +1795,7 @@ class _PdfParser:
         first_char = line.text.strip()[:1]
         if text and text[-1] not in _SENTENCE_END and first_char.islower():
             self.current.blocks.pop()
+            self._structured_blocks -= 1
             self._para_lines = [*lines, line]
             self._last_flushed_paragraph = None
             self._last_flushed_lines = None
@@ -781,14 +1821,14 @@ class _PdfParser:
             bbox=_union_bbox(self._eq_lines),
         )
         png = self._crop(self._page_obj, block.bbox or [])
-        self._pending_images.append((block, png))
-        self.current.blocks.append(block)
+        self._append_pending_image(block, png)
+        self._append_block(block)
         self._eq_lines = []
 
     # ---- 見出し ----
     def _finalize_references_if_needed(self) -> None:
         if self._in_references and self._ref_buffer:
-            self.current.blocks.extend(_split_references(self._ref_buffer))
+            self._extend_blocks(_split_references(self._ref_buffer))
         self._ref_buffer = []
         self._in_references = False
 
@@ -824,7 +1864,7 @@ class _PdfParser:
         parent_list = self.stack[-1][1].sections if self.stack else self.top_sections
         path = self._make_path(number, title, parent_list)
         sec = Section(id=f"sec-{path}", heading=SectionHeading(number=number, title=title))
-        sec.blocks.append(
+        self._append_block(
             Block(
                 id="",
                 type="heading",
@@ -833,9 +1873,10 @@ class _PdfParser:
                 title=title,
                 page=page_no,
                 bbox=bbox,
-            )
+            ),
+            section=sec,
         )
-        parent_list.append(sec)
+        self._append_section(parent_list, sec)
         self.stack.append((level, sec))
         self.current = sec
         self._in_references = title.strip().lower() in ("references", "bibliography")
@@ -854,8 +1895,18 @@ class _PdfParser:
         for r in regions:
             if r.claimed or r.page != page_no:
                 continue
-            dist = cap_bbox[1] - r.bbox[3]
-            if dist < -2.0 or dist > 90.0:
+            if not r.from_scan_background:
+                dist = cap_bbox[1] - r.bbox[3]
+                if dist < -2.0:
+                    continue
+            elif cap_bbox[1] >= r.bbox[3]:
+                dist = cap_bbox[1] - r.bbox[3]
+            elif cap_bbox[3] <= r.bbox[1]:
+                dist = r.bbox[1] - cap_bbox[3]
+            else:
+                dist = 0.0
+            maximum_distance = 120.0 if r.from_scan_background else 90.0
+            if dist > maximum_distance:
                 continue
             if _h_overlap_ratio(cap_bbox, r.bbox) < 0.5:
                 continue
@@ -877,7 +1928,8 @@ class _PdfParser:
                 dist = c.bbox[1] - cap_bbox[3]
             else:
                 dist = 0.0
-            if dist > 90.0:
+            maximum_distance = 120.0 if c.from_scan_background else 90.0
+            if dist > maximum_distance:
                 continue
             if _h_overlap_ratio(cap_bbox, c.bbox) < 0.5:
                 continue
@@ -915,12 +1967,12 @@ class _PdfParser:
                     page=page_no,
                     bbox=region.bbox,
                 )
-                self._pending_images.append((block, self._crop(page, region.bbox)))
-                self.current.blocks.append(block)
+                self._append_pending_image(block, self._crop(page, region.bbox))
+                self._append_block(block)
                 self._figure_caption_matches += 1
             else:
                 self.warnings.append(f"Figure {number} の図領域が見つかりません(キャプションのみ)")
-                self.current.blocks.append(
+                self._append_block(
                     Block(
                         id="",
                         type="figure",
@@ -956,12 +2008,12 @@ class _PdfParser:
                     page=page_no,
                     bbox=candidate.bbox,
                 )
-                self._pending_images.append((block, self._crop(page, candidate.bbox)))
-            self.current.blocks.append(block)
+                self._append_pending_image(block, self._crop(page, candidate.bbox))
+            self._append_block(block)
             self._table_caption_matches += 1
         else:
             self.warnings.append(f"Table {number} の表領域が見つかりません(キャプションのみ)")
-            self.current.blocks.append(
+            self._append_block(
                 Block(
                     id="",
                     type="table",
@@ -974,7 +2026,7 @@ class _PdfParser:
 
     def _attach_orphan_regions(self, page_no: int, figure_regions: list[_Region]) -> None:
         for r in figure_regions:
-            if r.claimed or r.page != page_no:
+            if r.claimed or r.page != page_no or r.from_scan_background:
                 continue
             block = Block(
                 id="",
@@ -985,8 +2037,8 @@ class _PdfParser:
                 page=page_no,
                 bbox=r.bbox,
             )
-            self._pending_images.append((block, self._crop(self._page_obj, r.bbox)))
-            self.current.blocks.append(block)
+            self._append_pending_image(block, self._crop(self._page_obj, r.bbox))
+            self._append_block(block)
             self._orphan_figures += 1
             self.warnings.append("キャプション無しの図領域を検出しました(番号なし)")
 
@@ -1071,20 +2123,56 @@ class _PdfParser:
         self._pending_cross_page = True
         self._attach_orphan_regions(page_no, figure_regions)
 
-    def parse(self, doc: fitz.Document) -> ParsedPdfDocument:
-        n_pages = doc.page_count
-        if n_pages == 0 or _count_extractable_chars(doc) < 40 * n_pages:
-            raise PdfParseError("no_text_layer", "テキストが抽出できません")
-
+    def parse(
+        self,
+        doc: fitz.Document,
+        *,
+        ocr_language: str = "eng",
+    ) -> ParsedPdfDocument:
+        n_pages = _validate_pdf_page_count(doc)
         pages_lines: list[list[_Line]] = []
         page_sizes: list[tuple[float, float]] = []
-        for i in range(n_pages):
-            page = doc[i]
-            pages_lines.append(_extract_page_lines(page, i + 1))
-            page_sizes.append((page.rect.width, page.rect.height))
+        layout_budget = _PdfLayoutBudget()
+        if self._use_ocr:
+            extractable_chars = 0
+            for i in range(n_pages):
+                page = doc[i]
+                page_size = _validate_pdf_page_geometry(page)
+                page_chars, page_lines = _extract_ocr_page(
+                    page,
+                    i + 1,
+                    language=ocr_language,
+                    budget=layout_budget,
+                )
+                extractable_chars += page_chars
+                if extractable_chars > MAX_PDF_EXTRACTED_CHARS:
+                    raise PdfParseError("pdf_text_limit", "PDF抽出テキストが上限を超えています")
+                pages_lines.append(page_lines)
+                page_sizes.append(page_size)
+                del page
+            if n_pages == 0 or extractable_chars < 40 * n_pages:
+                raise PdfParseError("no_text_layer", "テキストが抽出できません")
+        else:
+            extractable_chars = _count_extractable_chars(doc)
+            if n_pages == 0 or extractable_chars < 40 * n_pages:
+                raise PdfParseError("no_text_layer", "テキストが抽出できません")
+            for i in range(n_pages):
+                page = doc[i]
+                page_size = _validate_pdf_page_geometry(page)
+                pages_lines.append(_extract_page_lines(page, i + 1, budget=layout_budget))
+                page_sizes.append(page_size)
 
         self.body_size, self.line_h = _compute_body_metrics(pages_lines)
         _remove_headers_footers(pages_lines, [h for _, h in page_sizes])
+
+        ocr_region_partitions: list[tuple[list[_Region], list[_ScanBackground]]] = []
+        if self._use_ocr:
+            regions_by_page = [_detect_figure_regions(doc[i], i + 1) for i in range(n_pages)]
+            ocr_region_partitions = _partition_ocr_document_scan_regions(
+                regions_by_page,
+                page_sizes=page_sizes,
+                pages_lines=pages_lines,
+            )
 
         column_counts: list[int] = []
         for i in range(n_pages):
@@ -1093,8 +2181,30 @@ class _PdfParser:
             width, _height = page_sizes[i]
             ordered, columns = _reading_order(pages_lines[i], width, self.body_size)
             column_counts.append(columns)
-            figure_regions = _detect_figure_regions(page, page_no)
+            scan_table_candidates: list[_TableCandidate] = []
+            if self._use_ocr:
+                figure_regions, scan_backgrounds = ocr_region_partitions[i]
+                scan_figure_regions, scan_table_candidates = _derive_ocr_scan_display_regions(
+                    page,
+                    page_no,
+                    ordered,
+                    scan_backgrounds,
+                    page_width=width,
+                    page_height=page_sizes[i][1],
+                    line_height=self.line_h,
+                    body_size=self.body_size,
+                    columns=columns,
+                )
+                figure_regions.extend(scan_figure_regions)
+                ordered = _exclude_scan_display_labels(
+                    ordered,
+                    [region.bbox for region in scan_figure_regions]
+                    + [candidate.bbox for candidate in scan_table_candidates],
+                )
+            else:
+                figure_regions = _detect_figure_regions(page, page_no)
             table_candidates = _detect_table_candidates(page, page_no, self._pdf_bytes)
+            table_candidates.extend(scan_table_candidates)
             self._process_page(page, page_no, ordered, width, figure_regions, table_candidates)
 
         self._flush_paragraph()
@@ -1111,6 +2221,8 @@ class _PdfParser:
         blocks = _iter_blocks(sections)
         stats = {
             "pages": n_pages,
+            "ocr": self._use_ocr,
+            "extracted_chars": extractable_chars,
             "figures": self._figure_captions_total + self._orphan_figures,
             "tables": self._table_captions_total,
             "blocks": len(blocks),
@@ -1128,10 +2240,59 @@ class _PdfParser:
         )
 
 
-def parse_pdf(data: bytes) -> ParsedPdfDocument:
+def _ocr_error(exc: Exception, *, language: str) -> PdfParseError:
+    message = str(exc).lower()
+    if isinstance(exc, TimeoutError) or "timed out" in message or "timeout" in message:
+        return PdfParseError("ocr_timeout", "PDF OCR timed out")
+    if "tesseract" in message and (
+        "not installed" in message or "not found" in message or "no tessdata" in message
+    ):
+        return PdfParseError("ocr_engine_unavailable", "PDF OCR engine is unavailable")
+    if (
+        "traineddata" in message
+        or "failed loading language" in message
+        or "couldn't load any languages" in message
+    ):
+        return PdfParseError(
+            "ocr_language_unavailable",
+            "PDF OCR language data is unavailable",
+        )
+    readiness = check_pdf_ocr_readiness(language=language)
+    if readiness.code == "ocr_engine_unavailable":
+        return PdfParseError("ocr_engine_unavailable", "PDF OCR engine is unavailable")
+    if readiness.code == "ocr_language_unavailable":
+        return PdfParseError(
+            "ocr_language_unavailable",
+            "PDF OCR language data is unavailable",
+        )
+    if readiness.code == "ocr_readiness_timeout":
+        return PdfParseError("ocr_readiness_timeout", "PDF OCR readiness check timed out")
+    return PdfParseError("ocr_failed", "PDF OCR failed")
+
+
+def parse_pdf(
+    data: bytes,
+    *,
+    use_ocr: bool = False,
+    ocr_language: str = "eng",
+) -> ParsedPdfDocument:
     """PDF バイト列を構造化ドキュメントへパースする(品質 B。plans/05 §6)。"""
-    doc = fitz.open(stream=data, filetype="pdf")
+    if use_ocr and not sys.platform.startswith("linux"):
+        raise PdfParseError("ocr_platform_unsupported", "PDF OCR is unsupported on this platform")
+    if use_ocr and (len(ocr_language) > 64 or _OCR_LANGUAGE_RE.fullmatch(ocr_language) is None):
+        raise PdfParseError("ocr_language_invalid", "PDF OCR language is invalid")
+    doc = _open_pdf(data)
     try:
-        return _PdfParser(data).parse(doc)
+        if not use_ocr:
+            return _PdfParser(data).parse(doc)
+        try:
+            return _PdfParser(data, use_ocr=True).parse(
+                doc,
+                ocr_language=ocr_language,
+            )
+        except PdfParseError:
+            raise
+        except Exception as exc:
+            raise _ocr_error(exc, language=ocr_language) from exc
     finally:
         doc.close()

@@ -10,8 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from alinea_core.document.blocks import DocumentContent
+from alinea_core.document.blocks import Block, DocumentContent
 from alinea_core.ingest.bib_estimate import BibEstimate, estimate_bibliography
+from alinea_core.parsing import pdf_parser as pdf_parser_module
 from alinea_core.parsing.pdf_parser import (
     PARSER_VERSION,
     ParsedPdfDocument,
@@ -38,7 +39,7 @@ def _main_doc() -> ParsedPdfDocument:
 
 def test_parser_version_and_quality_level() -> None:
     doc = _main_doc()
-    assert PARSER_VERSION == "pdf-1.1.0"
+    assert PARSER_VERSION == "pdf-1.2.0"
     assert doc.parser_version == PARSER_VERSION
     assert doc.quality_level == "B"
     assert doc.source_format == "pdf"
@@ -172,6 +173,48 @@ def test_stats_shape() -> None:
     assert stats["figures"] == 1
     assert stats["pdf_sync_rate"] is None
     assert stats["blocks"] == len(_main_doc().blocks)
+    assert stats["extracted_chars"] >= stats["blocks"]
+
+
+def test_extract_pdf_text_evidence_is_bounded_and_matches_parser_stats() -> None:
+    data = _load("pdf_quality_b_sample.pdf")
+
+    evidence = pdf_parser_module.extract_pdf_text_evidence(data)
+    parsed = parse_pdf(data)
+
+    assert evidence.pages == parsed.stats["pages"]
+    assert evidence.extracted_chars == parsed.stats["extracted_chars"]
+    assert len(evidence.text) >= evidence.extracted_chars
+
+
+def test_count_pdf_text_evidence_retains_only_bounded_counts() -> None:
+    data = _load("pdf_quality_b_sample.pdf")
+
+    evidence = pdf_parser_module.count_pdf_text_evidence(data)
+    parsed = parse_pdf(data)
+
+    assert evidence.pages == parsed.stats["pages"]
+    assert evidence.extracted_chars == parsed.stats["extracted_chars"]
+    assert not hasattr(evidence, "text")
+
+
+def test_pdf_parser_rejects_figure_count_and_bytes_before_pending_append(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parser = pdf_parser_module._PdfParser(b"%PDF- synthetic")
+    block = Block(id="", type="figure", page=1, bbox=[0, 0, 10, 10])
+    monkeypatch.setattr(pdf_parser_module, "MAX_PDF_FIGURE_IMAGES", 1, raising=False)
+
+    parser._append_pending_image(block, b"png")
+    with pytest.raises(PdfParseError) as count_error:
+        parser._append_pending_image(block, b"png")
+    assert count_error.value.kind == "pdf_figure_limit"
+
+    parser = pdf_parser_module._PdfParser(b"%PDF- synthetic")
+    monkeypatch.setattr(pdf_parser_module, "MAX_PDF_SINGLE_FIGURE_BYTES", 2, raising=False)
+    with pytest.raises(PdfParseError) as bytes_error:
+        parser._append_pending_image(block, b"png")
+    assert bytes_error.value.kind == "pdf_figure_bytes_limit"
 
 
 # ============================ 参考文献分割(§6.9) ============================

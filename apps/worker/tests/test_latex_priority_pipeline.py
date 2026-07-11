@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
+import inspect
 import io
 import json
 import random
@@ -25,6 +26,7 @@ import tarfile
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import fitz
@@ -43,6 +45,7 @@ from alinea_core.settings import CoreSettings
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from alinea_llm.router import LLMRouter
 from alinea_worker import pipeline as worker_pipeline
+from alinea_worker import source_candidates as source_candidate_module
 from alinea_worker.figure_assets import html_asset_url
 from alinea_worker.pipeline import IngestRun, run_ingest
 from alinea_worker.source_candidates import (
@@ -228,6 +231,7 @@ _OAI_XML = """<?xml version="1.0" encoding="UTF-8"?>
 _FIXTURES = Path(__file__).resolve().parents[3] / "packages" / "py-core" / "tests" / "fixtures"
 _VALID_MULTI_PARAGRAPH_PDF = (_FIXTURES / "pdf_quality_b_sample.pdf").read_bytes()
 _VALID_PRIORITY_PDF = (_FIXTURES / "pdf_table_sample.pdf").read_bytes()
+_NO_TEXT_LAYER_PDF = (_FIXTURES / "pdf_no_text_layer.pdf").read_bytes()
 _CORRUPT_PDF_LIKE = b"%PDF-1.4\ncorrupt"
 _VALID_STORED_HTML = b"""<!doctype html><html><body><article class="ltx_document">
 <section class="ltx_section"><h2 class="ltx_title ltx_title_section">1 Stored Method</h2>
@@ -624,6 +628,7 @@ async def _seed_existing_pdf_revision_for_embedded_selection(
     )
     pdf_candidate = parse_pdf_candidate(embedded_pdf, pdf_text="")
     stats: dict[str, Any] = {
+        **pdf_candidate.parsed.stats,
         "marker": "existing revision must not be mutated",
         "candidate_failures": [],
         "completeness": pdf_candidate.report.as_dict(),
@@ -707,6 +712,877 @@ def _completeness_report(code: str | None) -> DocumentCompleteness:
         paragraph_count=0,
         figure_count=0,
     )
+
+
+def test_parse_pdf_candidate_has_no_synchronous_ocr_isolation_bypass() -> None:
+    parameters = inspect.signature(parse_pdf_candidate).parameters
+
+    assert "use_ocr" not in parameters
+    assert "ocr_language" not in parameters
+
+
+async def test_pdf_text_evidence_does_not_call_mupdf_in_parent_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def parent_text_forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("PDF text evidence must execute in the isolated child")
+
+    monkeypatch.setattr(fitz.Page, "get_text", parent_text_forbidden)
+    run = object.__new__(IngestRun)
+    run._pdf_bytes = _VALID_MULTI_PARAGRAPH_PDF
+    run._pdf_text = None
+
+    evidence = await run._ensure_pdf_text_evidence(run._pdf_bytes)
+
+    assert len(evidence) > 100
+    assert set(evidence) == {"x"}
+
+
+async def test_pdf_text_evidence_is_initialized_off_the_event_loop_and_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[bytes] = []
+
+    async def count(data: bytes) -> Any:
+        calls.append(data)
+        return SimpleNamespace(extracted_chars=3, pages=1)
+
+    monkeypatch.setattr(worker_pipeline, "count_pdf_text_evidence_isolated", count)
+    run = object.__new__(IngestRun)
+    run._pdf_bytes = b"pdf"
+    run._pdf_text = None
+
+    evidence = await run._ensure_pdf_text_evidence(run._pdf_bytes)
+    cached = await run._ensure_pdf_text_evidence(run._pdf_bytes)
+
+    assert evidence == cached == "xxx"
+    assert run._pdf_text == "xxx"
+    assert calls == [b"pdf"]
+
+
+def test_pdf_text_for_completeness_is_cache_only() -> None:
+    run = object.__new__(IngestRun)
+    run._pdf_bytes = _VALID_MULTI_PARAGRAPH_PDF
+    run._pdf_text = None
+
+    with pytest.raises(AssertionError):
+        run._pdf_text_for_completeness()
+
+
+async def test_pdf_text_evidence_defers_content_error_to_pdf_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail(_data: bytes) -> Any:
+        raise worker_pipeline.CandidateUnavailable(
+            "pdf", "pdf_open_error", "synthetic corrupt PDF"
+        )
+
+    monkeypatch.setattr(worker_pipeline, "count_pdf_text_evidence_isolated", fail)
+    run = object.__new__(IngestRun)
+    run._pdf_bytes = b"%PDF- corrupt"
+    run._pdf_text = None
+
+    assert await run._ensure_pdf_text_evidence(run._pdf_bytes) == ""
+    assert run._pdf_text == ""
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "pdf_crashed",
+        "pdf_lifecycle",
+        "pdf_output_too_large",
+        "pdf_platform_unsupported",
+        "pdf_timeout",
+    ],
+)
+async def test_pdf_text_evidence_defers_operational_failure_to_pdf_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    code: str,
+) -> None:
+    async def fail(_data: bytes) -> Any:
+        raise worker_pipeline.CandidateUnavailable(
+            "pdf", code, "synthetic child failure"
+        )
+
+    monkeypatch.setattr(worker_pipeline, "count_pdf_text_evidence_isolated", fail)
+    run = object.__new__(IngestRun)
+    run._pdf_bytes = b"%PDF- valid"
+    run._pdf_text = None
+
+    assert await run._ensure_pdf_text_evidence(run._pdf_bytes) == ""
+    assert run._pdf_text == ""
+
+
+def test_pdf_ocr_candidate_uses_bounded_ocr_evidence_instead_of_hidden_pdf_text() -> None:
+    parsed = source_candidate_module.parse_pdf(_VALID_MULTI_PARAGRAPH_PDF)
+    parsed.stats["ocr"] = True
+
+    candidate = source_candidate_module._pdf_candidate_from_parsed(
+        _VALID_MULTI_PARAGRAPH_PDF,
+        pdf_text="x" * 10_000,
+        parsed=parsed,
+        ocr_language="eng",
+    )
+
+    assert candidate.report.accepted
+    assert candidate.report.source_chars == parsed.stats["extracted_chars"]
+    assert candidate.diagnostics == [
+        {
+            "kind": "pdf_ocr",
+            "version": source_candidate_module.PDF_OCR_CANDIDATE_VERSION,
+            "language": "eng",
+        }
+    ]
+
+
+@pytest.mark.parametrize("stats_update", [{"ocr": False}, {"extracted_chars": None}])
+def test_pdf_ocr_candidate_rejects_inconsistent_parser_stats(
+    stats_update: dict[str, Any],
+) -> None:
+    parsed = source_candidate_module.parse_pdf(_VALID_MULTI_PARAGRAPH_PDF)
+    parsed.stats["ocr"] = True
+    parsed.stats.update(stats_update)
+
+    with pytest.raises(worker_pipeline.CandidateUnavailable) as exc_info:
+        source_candidate_module._pdf_candidate_from_parsed(
+            _VALID_MULTI_PARAGRAPH_PDF,
+            pdf_text="",
+            parsed=parsed,
+            ocr_language="eng",
+        )
+
+    assert exc_info.value.code == "ocr_crashed"
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value", "stats_update"),
+    [
+        ("quality_level", "A", {}),
+        ("source_format", "latex", {}),
+        ("parser_version", "pdf-0.0.0", {}),
+        (None, None, {"pages": "2"}),
+        (None, None, {"extracted_chars": None}),
+    ],
+)
+def test_normal_pdf_candidate_rejects_inconsistent_parser_identity(
+    attribute: str | None,
+    value: Any,
+    stats_update: dict[str, Any],
+) -> None:
+    parsed = source_candidate_module.parse_pdf(_VALID_MULTI_PARAGRAPH_PDF)
+    if attribute is not None:
+        setattr(parsed, attribute, value)
+    parsed.stats.update(stats_update)
+
+    with pytest.raises(worker_pipeline.CandidateUnavailable) as exc_info:
+        source_candidate_module._pdf_candidate_from_parsed(
+            _VALID_MULTI_PARAGRAPH_PDF,
+            pdf_text="",
+            parsed=parsed,
+            ocr_language=None,
+        )
+
+    assert exc_info.value.code == "parse_error"
+
+
+@pytest.mark.parametrize(
+    ("ocr_code", "expected"),
+    [
+        ("ocr_engine_unavailable", "ocr_engine_unavailable"),
+        ("ocr_language_unavailable", "ocr_language_unavailable"),
+        ("ocr_language_invalid", "ocr_language_invalid"),
+        ("ocr_output_too_large", "ocr_output_too_large"),
+        ("ocr_platform_unsupported", "ocr_platform_unsupported"),
+        ("pdf_page_limit", "pdf_page_limit"),
+        ("pdf_text_limit", "pdf_text_limit"),
+        ("pdf_layout_limit", "pdf_layout_limit"),
+        ("pdf_figure_bytes_limit", "pdf_figure_bytes_limit"),
+        ("pdf_platform_unsupported", "pdf_platform_unsupported"),
+        ("ocr_failed", "ocr_failed"),
+        ("ocr_timeout", "ocr_timeout"),
+    ],
+)
+def test_ocr_candidate_failure_classification_is_stable(
+    ocr_code: str,
+    expected: str,
+) -> None:
+    failures = [
+        {"format": "pdf", "candidate": "pdf_text", "code": "no_text_layer"},
+        {"format": "pdf_ocr", "candidate": "pdf_ocr", "code": ocr_code},
+    ]
+
+    assert worker_pipeline._candidate_failure_code(failures) == expected
+
+
+async def test_pdf_candidate_sequence_does_not_ocr_after_accepted_text_pdf() -> None:
+    class Runner:
+        async def _parse_pdf_ocr_bytes(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("accepted text PDF must not invoke OCR")
+
+    candidate, failures = await IngestRun._parse_pdf_candidate_sequence(
+        Runner(),  # type: ignore[arg-type]
+        _VALID_MULTI_PARAGRAPH_PDF,
+        pdf_text="",
+    )
+
+    assert candidate is not None and candidate.report.accepted
+    assert candidate.parsed.stats["ocr"] is False
+    assert failures == []
+
+
+async def test_pdf_candidate_sequence_does_not_ocr_after_unrelated_parse_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Runner:
+        async def _parse_pdf_ocr_bytes(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("unrelated parse failures must not invoke OCR")
+
+    async def unrelated_failure(*_args: Any, **_kwargs: Any) -> Any:
+        raise worker_pipeline.CandidateUnavailable("pdf", "parse_error", "synthetic corruption")
+
+    monkeypatch.setattr(worker_pipeline, "parse_pdf_candidate_async", unrelated_failure)
+
+    with pytest.raises(worker_pipeline.CandidateUnavailable) as exc_info:
+        await IngestRun._parse_pdf_candidate_sequence(
+            Runner(),  # type: ignore[arg-type]
+            _CORRUPT_PDF_LIKE,
+            pdf_text="",
+        )
+
+    assert exc_info.value.code == "parse_error"
+
+
+async def test_pdf_candidate_sequence_uses_ocr_before_broken_empty_text_layout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    accepted_ocr_candidate = parse_pdf_candidate(
+        _VALID_MULTI_PARAGRAPH_PDF,
+        pdf_text="",
+    )
+    original_get_text = fitz.Page.get_text
+    dict_calls: list[int] = []
+    ocr_calls: list[bytes] = []
+
+    def empty_text_broken_dict(page: fitz.Page, *args: Any, **kwargs: Any) -> Any:
+        mode = args[0] if args else "text"
+        if mode == "dict":
+            dict_calls.append(page.number)
+            raise RuntimeError("layout extraction must not run without a text layer")
+        if mode == "text":
+            return ""
+        return original_get_text(page, *args, **kwargs)
+
+    class Runner:
+        async def _parse_pdf_ocr_bytes(
+            self,
+            data: bytes,
+            *,
+            pdf_text: str,
+            ocr_language: str = "eng",
+        ) -> Any:
+            del pdf_text, ocr_language
+            ocr_calls.append(data)
+            return accepted_ocr_candidate
+
+    monkeypatch.setattr(fitz.Page, "get_text", empty_text_broken_dict)
+
+    candidate, failures = await IngestRun._parse_pdf_candidate_sequence(
+        Runner(),  # type: ignore[arg-type]
+        _NO_TEXT_LAYER_PDF,
+        pdf_text="",
+    )
+
+    assert candidate is accepted_ocr_candidate
+    assert ocr_calls == [_NO_TEXT_LAYER_PDF]
+    assert failures[0]["code"] == "no_text_layer"
+    assert dict_calls == []
+
+
+async def test_pdf_candidate_sequence_uses_ocr_after_insufficient_visible_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_parse_candidate = source_candidate_module.parse_pdf_candidate
+    ocr_calls: list[bytes] = []
+
+    class Runner:
+        async def _parse_pdf_ocr_bytes(
+            self,
+            data: bytes,
+            *,
+            pdf_text: str,
+            ocr_language: str = "eng",
+        ) -> Any:
+            del ocr_language
+            ocr_calls.append(data)
+            return original_parse_candidate(data, pdf_text=pdf_text)
+
+    async def incomplete_text(data: bytes, *, pdf_text: str, **_kwargs: Any) -> Any:
+        candidate = original_parse_candidate(data, pdf_text=pdf_text)
+        candidate.report = _completeness_report("document_incomplete")
+        return candidate
+
+    monkeypatch.setattr(worker_pipeline, "parse_pdf_candidate_async", incomplete_text)
+
+    candidate, failures = await IngestRun._parse_pdf_candidate_sequence(
+        Runner(),  # type: ignore[arg-type]
+        _VALID_MULTI_PARAGRAPH_PDF,
+        pdf_text="",
+    )
+
+    assert candidate is not None and candidate.report.accepted
+    assert ocr_calls == [_VALID_MULTI_PARAGRAPH_PDF]
+    assert failures[0]["candidate"] == "pdf_text"
+    assert failures[0]["code"] == "document_incomplete"
+
+
+async def test_pdf_candidate_sequence_releases_incomplete_text_candidate_before_ocr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gc
+    import weakref
+
+    class LargeImageSentinel:
+        pass
+
+    original_parse_candidate = source_candidate_module.parse_pdf_candidate
+    accepted_ocr_candidate = original_parse_candidate(
+        _VALID_MULTI_PARAGRAPH_PDF,
+        pdf_text="",
+    )
+    candidate_ref: weakref.ReferenceType[Any] | None = None
+    parsed_ref: weakref.ReferenceType[Any] | None = None
+    image_ref: weakref.ReferenceType[Any] | None = None
+
+    async def incomplete_text(data: bytes, *, pdf_text: str) -> Any:
+        nonlocal candidate_ref, parsed_ref, image_ref
+        candidate = original_parse_candidate(data, pdf_text=pdf_text)
+        candidate.report = _completeness_report("document_incomplete")
+        image = LargeImageSentinel()
+        candidate.parsed.figure_images["large-sentinel"] = image  # type: ignore[assignment]
+        candidate_ref = weakref.ref(candidate)
+        parsed_ref = weakref.ref(candidate.parsed)
+        image_ref = weakref.ref(image)
+        return candidate
+
+    class Runner:
+        async def _parse_pdf_ocr_bytes(self, *_args: Any, **_kwargs: Any) -> Any:
+            gc.collect()
+            assert candidate_ref is not None and candidate_ref() is None
+            assert parsed_ref is not None and parsed_ref() is None
+            assert image_ref is not None and image_ref() is None
+            return accepted_ocr_candidate
+
+    monkeypatch.setattr(worker_pipeline, "parse_pdf_candidate_async", incomplete_text)
+
+    candidate, failures = await IngestRun._parse_pdf_candidate_sequence(
+        Runner(),  # type: ignore[arg-type]
+        _VALID_MULTI_PARAGRAPH_PDF,
+        pdf_text="",
+    )
+
+    assert candidate is accepted_ocr_candidate
+    assert failures[0]["code"] == "document_incomplete"
+
+
+def test_pdf_ocr_checkpoint_identity_rejects_missing_or_mismatched_provenance() -> None:
+    identity = {
+        "kind": "pdf_ocr",
+        "version": source_candidate_module.PDF_OCR_CANDIDATE_VERSION,
+        "language": "eng",
+    }
+    diagnostics = [dict(identity)]
+
+    assert IngestRun._checkpoint_candidate_identity(
+        {"candidate_identity": dict(identity)},
+        diagnostics,
+        source_format="pdf",
+    ) == identity
+    with pytest.raises(FetchError, match="OCR identity is missing"):
+        IngestRun._checkpoint_candidate_identity({}, diagnostics, source_format="pdf")
+    with pytest.raises(FetchError, match="OCR identity is invalid"):
+        IngestRun._checkpoint_candidate_identity(
+            {"candidate_identity": {**identity, "language": "deu"}},
+            diagnostics,
+            source_format="pdf",
+        )
+
+    assert IngestRun._checkpoint_candidate_identity(
+        {},
+        [],
+        source_format="pdf",
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("diagnostics", "stats"),
+    [
+        pytest.param(
+            [
+                {
+                    "kind": "pdf_ocr",
+                    "version": source_candidate_module.PDF_OCR_CANDIDATE_VERSION,
+                    "language": "eng",
+                }
+            ],
+            {"ocr": False, "extracted_chars": 100},
+            id="identity-without-ocr",
+        ),
+        pytest.param([], {"ocr": True, "extracted_chars": 100}, id="ocr-without-identity"),
+        pytest.param(
+            [
+                {
+                    "kind": "pdf_ocr",
+                    "version": source_candidate_module.PDF_OCR_CANDIDATE_VERSION,
+                    "language": "eng",
+                }
+            ],
+            {"ocr": True, "extracted_chars": None},
+            id="missing-evidence",
+        ),
+    ],
+)
+def test_pdf_ocr_identity_requires_consistent_stats(
+    diagnostics: list[dict[str, Any]],
+    stats: dict[str, Any],
+) -> None:
+    with pytest.raises(FetchError, match="OCR.*stats"):
+        worker_pipeline._validate_pdf_ocr_stats_identity(diagnostics, stats)
+
+
+def test_pdf_ocr_identity_accepts_matching_stats() -> None:
+    diagnostics = [
+        {
+            "kind": "pdf_ocr",
+            "version": source_candidate_module.PDF_OCR_CANDIDATE_VERSION,
+            "language": "eng",
+        }
+    ]
+
+    identity = worker_pipeline._validate_pdf_ocr_stats_identity(
+        diagnostics,
+        {"ocr": True, "extracted_chars": 100},
+    )
+
+    assert identity == diagnostics[0]
+
+
+def test_pdf_ocr_revision_provenance_rejects_tampered_parser_stats() -> None:
+    identity = {
+        "kind": "pdf_ocr",
+        "version": source_candidate_module.PDF_OCR_CANDIDATE_VERSION,
+        "language": "eng",
+    }
+    run = object.__new__(IngestRun)
+    run._candidate_provenance_validation_required = True
+    run._candidate_identity = identity
+    run._candidate_diagnostics = []
+    revision = SimpleNamespace(
+        source_format="pdf",
+        stats={
+            "candidate_identity": dict(identity),
+            "ocr": False,
+            "extracted_chars": 100,
+        },
+    )
+
+    with pytest.raises(FetchError, match="OCR.*stats"):
+        run._validate_revision_candidate_provenance(revision)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("revision_update", "stats_update"),
+    [
+        ({"source_format": "latex"}, {}),
+        ({"quality_level": "A"}, {}),
+        ({"parser_version": "pdf-0.0.0"}, {}),
+        ({}, {"ocr": True}),
+        ({}, {"pages": 999}),
+        ({}, {"extracted_chars": 1}),
+    ],
+)
+def test_pdf_revision_provenance_requires_exact_fresh_parser_identity(
+    revision_update: dict[str, Any],
+    stats_update: dict[str, Any],
+) -> None:
+    parsed = source_candidate_module.parse_pdf(_VALID_MULTI_PARAGRAPH_PDF)
+    run = object.__new__(IngestRun)
+    run._candidate_provenance_validation_required = True
+    run._candidate_identity = None
+    run._candidate_diagnostics = []
+    run.parsed_pdf = parsed
+    revision_values: dict[str, Any] = {
+        "source_format": "pdf",
+        "quality_level": "B",
+        "parser_version": PDF_PARSER_VERSION,
+        "stats": {
+            "ocr": False,
+            "pages": parsed.stats["pages"],
+            "extracted_chars": parsed.stats["extracted_chars"],
+        },
+    }
+    revision_values.update(revision_update)
+    revision_values["stats"] = {
+        **revision_values["stats"],
+        **stats_update,
+    }
+
+    with pytest.raises(FetchError, match="parser provenance"):
+        run._validate_revision_candidate_provenance(  # type: ignore[arg-type]
+            SimpleNamespace(**revision_values)
+        )
+
+
+def test_pdf_revision_provenance_accepts_exact_fresh_parser_identity() -> None:
+    parsed = source_candidate_module.parse_pdf(_VALID_MULTI_PARAGRAPH_PDF)
+    run = object.__new__(IngestRun)
+    run._candidate_provenance_validation_required = True
+    run._candidate_identity = None
+    run._candidate_diagnostics = []
+    run.parsed_pdf = parsed
+
+    run._validate_revision_candidate_provenance(  # type: ignore[arg-type]
+        SimpleNamespace(
+            source_format="pdf",
+            quality_level="B",
+            parser_version=PDF_PARSER_VERSION,
+            stats={
+                "ocr": False,
+                "pages": parsed.stats["pages"],
+                "extracted_chars": parsed.stats["extracted_chars"],
+            },
+        )
+    )
+
+
+def _install_no_text_then_ocr_test_doubles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[bytes], list[bytes]]:
+    original_parse_candidate = source_candidate_module.parse_pdf_candidate
+    text_candidate_bytes: list[bytes] = []
+    ocr_candidate_bytes: list[bytes] = []
+
+    async def no_text_candidate(data: bytes, *, pdf_text: str, **_kwargs: Any) -> Any:
+        del pdf_text
+        text_candidate_bytes.append(data)
+        raise worker_pipeline.CandidateUnavailable(
+            "pdf", "no_text_layer", "synthetic PDF has no text layer"
+        )
+
+    async def ocr_candidate(
+        data: bytes,
+        *,
+        pdf_text: str,
+        ocr_language: str = "eng",
+        **_kwargs: Any,
+    ) -> Any:
+        ocr_candidate_bytes.append(data)
+        candidate = original_parse_candidate(data, pdf_text=pdf_text)
+        candidate.parsed.stats["ocr"] = True
+        candidate.diagnostics = [
+            {
+                "kind": "pdf_ocr",
+                "version": source_candidate_module.PDF_OCR_CANDIDATE_VERSION,
+                "language": ocr_language,
+            }
+        ]
+        return candidate
+
+    monkeypatch.setattr(worker_pipeline, "parse_pdf_candidate_async", no_text_candidate)
+    monkeypatch.setattr(worker_pipeline, "parse_pdf_ocr_candidate", ocr_candidate)
+    return text_candidate_bytes, ocr_candidate_bytes
+
+
+async def test_pdf_ocr_is_final_candidate_after_no_text_and_reuses_pdf_bytes_once(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_materialize = IngestRun._materialize_candidate_figures
+    text_candidate_bytes, ocr_candidate_bytes = _install_no_text_then_ocr_test_doubles(
+        monkeypatch
+    )
+    materialized_candidates: list[str] = []
+
+    async def track_materialization(
+        self: IngestRun,
+        candidate: Any,
+        **kwargs: Any,
+    ) -> None:
+        marker = next(
+            (
+                item["kind"]
+                for item in candidate.diagnostics
+                if item.get("kind") == "pdf_ocr"
+            ),
+            "pdf_text",
+        )
+        materialized_candidates.append(marker)
+        await original_materialize(self, candidate, **kwargs)
+
+    monkeypatch.setattr(IngestRun, "_materialize_candidate_figures", track_materialization)
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=404,
+            eprint_body=b"",
+            html_status=404,
+            pdf_bytes=_VALID_MULTI_PARAGRAPH_PDF,
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await run_ingest(ctx, store, job)
+
+    assert len(text_candidate_bytes) == len(ocr_candidate_bytes) == 1
+    assert text_candidate_bytes[0] is ocr_candidate_bytes[0]
+    assert materialized_candidates == ["pdf_ocr"]
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    identity = {
+        "kind": "pdf_ocr",
+        "version": source_candidate_module.PDF_OCR_CANDIDATE_VERSION,
+        "language": "eng",
+    }
+    assert revision.stats["ocr"] is True
+    assert revision.stats["candidate_identity"] == identity
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    parsing_checkpoint = JobStore.get_checkpoint(completed)["parsing"]
+    assert parsing_checkpoint["candidate_identity"] == identity
+    assert parsing_checkpoint["candidate_failures"][-1]["candidate"] == "pdf_text"
+    assert parsing_checkpoint["candidate_failures"][-1]["code"] == "no_text_layer"
+
+    completed.status = "queued"
+    completed.stage = "structuring"
+    completed.error = None
+    completed.finished_at = None
+    await db_session.commit()
+    resumed = await store.claim(ids["job_id"])
+    assert resumed is not None
+    await run_ingest(ctx, store, resumed)
+
+    assert len(text_candidate_bytes) == 1
+    assert len(ocr_candidate_bytes) == 2
+    assert materialized_candidates == ["pdf_ocr", "pdf_ocr"]
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        )
+    ).scalars()
+    assert [str(item.id) for item in revisions.all()] == [str(revision.id)]
+
+    stored = await db_session.get(DocumentRevision, revision.id)
+    assert stored is not None
+    stored_content = json.loads(json.dumps(stored.content))
+    stored.stats = {
+        **stored.stats,
+        "candidate_identity": {**identity, "language": "deu"},
+    }
+    await db_session.commit()
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    completed.status = "queued"
+    completed.stage = "structuring"
+    completed.error = None
+    completed.finished_at = None
+    await db_session.commit()
+    tampered_resume = await store.claim(ids["job_id"])
+    assert tampered_resume is not None
+    with pytest.raises(FetchError) as tampered_error:
+        await run_ingest(ctx, store, tampered_resume)
+
+    assert tampered_error.value.kind == "parse_error"
+    unchanged = await db_session.get(DocumentRevision, revision.id)
+    assert unchanged is not None
+    assert unchanged.content == stored_content
+    assert unchanged.stats["candidate_identity"]["language"] == "deu"
+
+
+async def test_scanned_embedded_pdf_uses_ocr_before_falling_back_to_original_pdf(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    embedded_pdf = _VALID_MULTI_PARAGRAPH_PDF
+    archive = _build_embedded_pdf_archive(embedded_pdf)
+    original_pdf = _incomplete_original_pdf()
+    original_parse_candidate = source_candidate_module.parse_pdf_candidate
+    text_calls: list[bytes] = []
+    ocr_calls: list[bytes] = []
+
+    async def parse_text(data: bytes, *, pdf_text: str, **_kwargs: Any) -> Any:
+        text_calls.append(data)
+        if data == embedded_pdf:
+            raise worker_pipeline.CandidateUnavailable(
+                "pdf", "no_text_layer", "synthetic embedded PDF has no text layer"
+            )
+        return original_parse_candidate(data, pdf_text=pdf_text)
+
+    async def parse_ocr(
+        data: bytes,
+        *,
+        pdf_text: str,
+        ocr_language: str = "eng",
+        **_kwargs: Any,
+    ) -> Any:
+        assert data == embedded_pdf
+        ocr_calls.append(data)
+        candidate = original_parse_candidate(data, pdf_text=pdf_text)
+        candidate.parsed.stats["ocr"] = True
+        candidate.diagnostics = [
+            {
+                "kind": "pdf_ocr",
+                "version": source_candidate_module.PDF_OCR_CANDIDATE_VERSION,
+                "language": ocr_language,
+            }
+        ]
+        return candidate
+
+    monkeypatch.setattr(worker_pipeline, "parse_pdf_candidate_async", parse_text)
+    monkeypatch.setattr(worker_pipeline, "parse_pdf_ocr_candidate", parse_ocr)
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    calls = {"pdf": 0, "eprint": 0, "html": 0}
+    transport = httpx.ASGITransport(
+        app=_make_embedded_pdf_wrapper_stub(
+            calls,
+            archive=archive,
+            original_pdf=original_pdf,
+        )
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await run_ingest(ctx, store, job)
+
+    assert calls == {"pdf": 1, "eprint": 1, "html": 0}
+    assert text_calls == [embedded_pdf]
+    assert ocr_calls == [embedded_pdf]
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert revision.source_format == "pdf"
+    assert revision.stats["ocr"] is True
+    assert revision.stats["embedded_pdf_source"] == "body.pdf"
+    assert revision.stats["candidate_identity"] == {
+        "kind": "pdf_ocr",
+        "version": source_candidate_module.PDF_OCR_CANDIDATE_VERSION,
+        "language": "eng",
+    }
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    diagnostics = JobStore.get_checkpoint(completed)["parsing"]["candidate_diagnostics"]
+    assert {item["kind"] for item in diagnostics} == {"embedded_pdf", "pdf_ocr"}
+
+    completed.status = "queued"
+    completed.stage = "structuring"
+    completed.error = None
+    completed.finished_at = None
+    await db_session.commit()
+    resumed = await store.claim(ids["job_id"])
+    assert resumed is not None
+    await run_ingest(ctx, store, resumed)
+
+    assert calls == {"pdf": 1, "eprint": 1, "html": 0}
+    assert text_calls == [embedded_pdf]
+    assert ocr_calls == [embedded_pdf, embedded_pdf]
+
+
+async def test_pdf_figure_materialization_failure_does_not_trigger_ocr(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ocr_calls = 0
+
+    async def unexpected_ocr(*_args: Any, **_kwargs: Any) -> Any:
+        nonlocal ocr_calls
+        ocr_calls += 1
+        raise AssertionError("figure failures must not trigger OCR")
+
+    async def fail_pdf_figure(
+        _self: IngestRun,
+        candidate: Any,
+        **_kwargs: Any,
+    ) -> None:
+        candidate.figure_asset_failures = [
+            {"code": "image_invalid", "figure_id": "synthetic", "source": "pdf"}
+        ]
+        report = candidate.report
+        candidate.report = DocumentCompleteness(
+            accepted=False,
+            code="figure_asset_unresolved",
+            source_chars=report.source_chars,
+            structured_chars=report.structured_chars,
+            paragraph_count=report.paragraph_count,
+            figure_count=report.figure_count,
+            unresolved_figures=1,
+        )
+
+    monkeypatch.setattr(worker_pipeline, "parse_pdf_ocr_candidate", unexpected_ocr)
+    monkeypatch.setattr(IngestRun, "_materialize_candidate_figures", fail_pdf_figure)
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=404,
+            eprint_body=b"",
+            html_status=404,
+            pdf_bytes=_VALID_MULTI_PARAGRAPH_PDF,
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        with pytest.raises(FetchError) as exc_info:
+            await run_ingest(ctx, store, job)
+
+    assert exc_info.value.kind == "figure_asset_unresolved"
+    assert ocr_calls == 0
+    failure = json.loads(str(exc_info.value))["candidates"][-1]
+    assert failure["candidate"] == "pdf_text"
+    assert failure["code"] == "figure_asset_unresolved"
 
 
 def test_embedded_pdf_bytes_requires_wrapper_report() -> None:
@@ -2680,7 +3556,7 @@ async def test_embedded_pdf_parsing_checkpoint_reuses_exact_archive_member(
     [
         (
             _build_embedded_pdf_archive(_CORRUPT_PDF_LIKE),
-            ["embedded_pdf_wrapper", "parse_error"],
+            ["embedded_pdf_wrapper", "pdf_open_error"],
         ),
         (
             _build_embedded_pdf_archive(additional_pdfs={"appendix.pdf": _VALID_PRIORITY_PDF}),
@@ -3245,7 +4121,7 @@ async def test_ingest_falls_back_to_stored_pdf_when_latex_and_html_fail(
         .one()
     )
     assert rev.source_format == "pdf"
-    assert rev.parser_version == "pdf-1.1.0"
+    assert rev.parser_version == "pdf-1.2.0"
     assert rev.quality_level == "B"
     assert rev.stats["candidate_failures"] == [
         {
@@ -4546,6 +5422,57 @@ async def test_all_candidate_failures_raise_first_retryable_error(
     assert diagnostics[0]["code"] == "network_error"
 
 
+async def test_pdf_evidence_platform_failure_does_not_block_html_candidate(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unsupported(_data: bytes) -> Any:
+        raise worker_pipeline.CandidateUnavailable(
+            "pdf",
+            "pdf_platform_unsupported",
+            "synthetic unsupported platform",
+        )
+
+    monkeypatch.setattr(
+        worker_pipeline,
+        "count_pdf_text_evidence_isolated",
+        unsupported,
+    )
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=404,
+            eprint_body=b"",
+            html_status=200,
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert revision.source_format == "arxiv_html"
+
+
 @pytest.mark.parametrize("length_mode", ["declared", "lying"])
 @pytest.mark.parametrize("source", ["eprint", "html", "pdf"])
 async def test_arxiv_source_download_bounds_declared_and_actual_lengths_without_partial_persistence(
@@ -4636,7 +5563,7 @@ async def test_arxiv_source_download_bounds_declared_and_actual_lengths_without_
         await storage.get(storage.sources_bucket, oversized_key)
 
 
-async def test_all_deterministic_candidate_failures_finish_job(
+async def test_all_deterministic_candidate_failures_preserve_pdf_error(
     db_session: AsyncSession,
     router: LLMRouter,
     seed_ingest_job: Any,
@@ -4667,4 +5594,4 @@ async def test_all_deterministic_candidate_failures_finish_job(
     job = await store.get(ids["job_id"])
     assert job is not None
     assert job.status == "failed"
-    assert json.loads(job.error or "{}")["code"] == "document_incomplete"
+    assert json.loads(job.error or "{}")["code"] == "pdf_open_error"
