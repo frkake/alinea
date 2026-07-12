@@ -24,6 +24,7 @@ export interface PdfPaneProps {
   /** `viewer.last_position.mode==='pdf'` の場合の block_id(§5.10 優先順③)。 */
   lastPositionBlockId?: string | null;
   translationStyle?: PdfTranslationStyle;
+  translationSetId?: string | null;
   onOpenInTranslation: (blockId: string) => void;
 }
 
@@ -92,6 +93,7 @@ export function PdfPane({
   initialPage,
   lastPositionBlockId = null,
   translationStyle = "natural",
+  translationSetId = null,
   onOpenInTranslation,
 }: PdfPaneProps) {
   const router = useRouter();
@@ -108,7 +110,14 @@ export function PdfPane({
   const spreadFirstPageSide = usePdfViewStore((s) => s.spreadFirstPageSide);
   const documentMode = usePdfViewStore((s) => s.documentMode);
   const bilingualMode = documentMode === "bilingual";
-  const translatedPdf = usePdfDocument(paperId, bilingualMode, "translated", translationStyle);
+  const pdfAssetIdentity = { revisionId, translationSetId };
+  const translatedPdf = usePdfDocument(
+    paperId,
+    bilingualMode,
+    "translated",
+    translationStyle,
+    pdfAssetIdentity,
+  );
   const selectedBlockId = usePdfViewStore((s) => s.selectedBlockId);
   const resetForItem = usePdfViewStore((s) => s.resetForItem);
   const setPage = usePdfViewStore((s) => s.setPage);
@@ -139,9 +148,16 @@ export function PdfPane({
   const syncMap = useMemo(() => buildPdfSyncMap(docQuery.data), [docQuery.data]);
   const disabledSyncMap = useMemo(() => buildPdfSyncMap(undefined), []);
   const visibleSyncMap = documentMode === "translated" ? disabledSyncMap : syncMap;
-  const translatedAvailable = usePdfAvailability(paperId, "translated", translationStyle);
+  const translatedAvailable = usePdfAvailability(
+    paperId,
+    "translated",
+    translationStyle,
+    pdfAssetIdentity,
+  );
   const bilingualAvailable = translatedAvailable;
-  const activePageCount = bilingualMode ? maxPageCount(pdf.numPages, translatedPdf.numPages) : pdf.numPages;
+  const activePageCount = bilingualMode
+    ? maxPageCount(pdf.numPages, translatedPdf.numPages)
+    : pdf.numPages;
   const pdfLoading = pdf.loading || (bilingualMode && translatedPdf.loading);
   const pdfError = pdf.error || (bilingualMode && translatedPdf.error);
 
@@ -228,7 +244,13 @@ export function PdfPane({
   }, [fitMode, resolvedScale]);
 
   const pageGroups = useMemo(
-    () => pageGroupsForDocument(page, activePageCount, bilingualMode ? false : spread, spreadFirstPageSide),
+    () =>
+      pageGroupsForDocument(
+        page,
+        activePageCount,
+        bilingualMode ? false : spread,
+        spreadFirstPageSide,
+      ),
     [page, activePageCount, bilingualMode, spread, spreadFirstPageSide],
   );
   const sync = documentMode === "translated" ? null : syncMap.pageToSection(page);

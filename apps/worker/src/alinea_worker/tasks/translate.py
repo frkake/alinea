@@ -49,7 +49,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from alinea_worker import notify
-from alinea_worker.latex_pdf import LatexPdfBuildError, build_latex_translation_pdfs_if_ready
+from alinea_worker.latex_pdf import LatexPdfBuildError, build_translation_pdfs_if_ready
 
 # translate_section が担当する reason(plans/06 §3.1)。
 _SECTION_REASONS = frozenset({"initial", "literal", "on_demand", "table", "retry_failed"})
@@ -335,7 +335,7 @@ async def run_translation_job(ctx: dict[str, Any], store: JobStore, job: Job) ->
     # arq 経路の完了確定(plans/05 §11.3): 初回全文翻訳の最後のジョブが親 ingest
     # ジョブと翻訳セットを complete にする(advisory lock で競合安全)。
     ingest_job_id = payload.get("ingest_job_id")
-    if reason == "initial" and ingest_job_id:
+    if reason in {"initial", "retry_failed"} and ingest_job_id:
         set_id = str(payload["set_id"])
         tset = await store.session.get(TranslationSet, set_id)
         if tset is not None:
@@ -377,7 +377,7 @@ async def _build_latex_translation_pdf_after_complete(
     storage = ctx.get("s3") or S3Storage(settings)
     ingest_job = await store.session.get(Job, ingest_job_id) if ingest_job_id else None
     try:
-        outcome = await build_latex_translation_pdfs_if_ready(
+        outcome = await build_translation_pdfs_if_ready(
             store.session,
             storage,
             settings,
@@ -397,7 +397,7 @@ async def _build_latex_translation_pdf_after_complete(
     if ingest_job is None:
         return
     if not outcome.built:
-        if outcome.skipped_reason not in {"not_latex", "not_shared", "already_built"}:
+        if outcome.skipped_reason not in {"not_shared", "already_built"}:
             await joblog.log(
                 store.session,
                 ingest_job,

@@ -55,6 +55,7 @@ from alinea_core.db.models import (
     Paper,
     User,
 )
+from alinea_core.db.revisions import get_latest_paper_revision
 from alinea_core.document.blocks import DocumentContent
 from alinea_core.document.plaintext import article_block_to_plain
 from alinea_core.jobs.store import JobStore
@@ -92,7 +93,7 @@ async def _load_library_item_context(
     paper = await session.get(Paper, item.paper_id)
     if paper is None or paper.latest_revision_id is None:
         raise LookupError(f"paper/revision not found for library item: {library_item_id}")
-    revision = await session.get(DocumentRevision, paper.latest_revision_id)
+    revision = await get_latest_paper_revision(session, paper)
     if revision is None:
         raise LookupError(f"revision not found: {paper.latest_revision_id}")
     user = await session.get(User, item.user_id)
@@ -455,9 +456,7 @@ async def _run_generate(ctx: dict[str, Any], store: JobStore, job: Job) -> None:
 
     existing = (
         await session.execute(
-            select(Article).where(
-                Article.library_item_id == str(item.id), Article.preset == preset
-            )
+            select(Article).where(Article.library_item_id == str(item.id), Article.preset == preset)
         )
     ).scalar_one_or_none()
     if existing is not None:

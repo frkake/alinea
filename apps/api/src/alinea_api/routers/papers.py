@@ -15,10 +15,12 @@ from __future__ import annotations
 from typing import Annotated
 
 from alinea_core.db.models import DocumentRevision, Job, LibraryItem, Paper, SourceAsset
+from alinea_core.db.revisions import get_latest_paper_revision
 from alinea_core.ingest.joblog import project_ingest_log
 from alinea_core.ingest.reanchor import ReanchorStats, reanchor_paper
 from alinea_core.jobs.store import JobStore
-from alinea_core.storage.s3 import S3Storage
+from alinea_core.storage.s3 import S3Storage, StorageKeys
+from alinea_core.translation import find_effective_set
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -189,21 +191,38 @@ async def paper_pdf(
 
     kinds = _PDF_VARIANT_KINDS.get(variant, _PDF_KINDS)
     conditions = [SourceAsset.paper_id == paper_id, SourceAsset.kind.in_(kinds)]
+    revision = await get_latest_paper_revision(db, paper)
+    canonical_key: str | None = None
     if variant == "translated":
-        conditions.append(SourceAsset.storage_key.endswith(f"/translated-{style}.pdf"))
-        if paper.latest_revision_id:
-            revision = await db.get(DocumentRevision, str(paper.latest_revision_id))
-            if revision is not None:
-                conditions.append(SourceAsset.source_version == revision.source_version)
-    asset = (
-        (
-            await db.execute(
-                select(SourceAsset)
-                .where(*conditions)
-                .order_by(SourceAsset.created_at.desc())
-                .limit(1)
+        if revision is not None:
+            conditions.append(SourceAsset.source_version == revision.source_version)
+            tset = await find_effective_set(db, str(revision.id), style, str(user.id))
+            if tset is None:
+                raise ProblemException("not_found")
+            canonical_key = StorageKeys.translated_pdf(
+                paper_id,
+                revision.source_version,
+                style,
+                translation_set_id=(str(tset.id) if tset.scope == "personal" else None),
             )
+            conditions.append(SourceAsset.storage_key == canonical_key)
+        else:
+            # Legacy rows without a current revision predate translation-set-scoped PDFs.
+            conditions.append(SourceAsset.storage_key.endswith(f"/translated-{style}.pdf"))
+    elif revision is not None:
+        conditions.append(SourceAsset.source_version == revision.source_version)
+        canonical_key = StorageKeys.original_pdf(paper_id, revision.source_version)
+    ordering = (
+        (
+            (SourceAsset.storage_key == canonical_key).desc(),
+            SourceAsset.created_at.desc(),
+            SourceAsset.id.asc(),
         )
+        if canonical_key is not None
+        else (SourceAsset.created_at.desc(), SourceAsset.id.asc())
+    )
+    asset = (
+        (await db.execute(select(SourceAsset).where(*conditions).order_by(*ordering).limit(1)))
         .scalars()
         .first()
     )
@@ -266,8 +285,9 @@ async def adopt_revision(
         )
 
     stats = ReanchorStats()
-    if str(paper.latest_revision_id or "") != str(new_revision.id):
-        old_revision_id = str(paper.latest_revision_id) if paper.latest_revision_id else None
+    current_revision = await get_latest_paper_revision(db, paper)
+    if current_revision is None or str(current_revision.id) != str(new_revision.id):
+        old_revision_id = str(current_revision.id) if current_revision is not None else None
         paper.latest_revision_id = new_revision.id
         await db.flush()
         if old_revision_id is not None:

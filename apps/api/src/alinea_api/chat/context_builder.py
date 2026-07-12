@@ -36,7 +36,7 @@ def _encoder() -> tiktoken.Encoding:
 
 def estimate_tokens(text: str) -> int:
     """tiktoken o200k_base によるローカル見積り(§2.2.1)。"""
-    return len(_encoder().encode(text))
+    return len(_encoder().encode(text, disallowed_special=()))
 
 
 def _block_text(blk: Block) -> str:
@@ -99,7 +99,7 @@ def render_document_context(content: DocumentContent, revision_id: str) -> str:
 def _truncate_to_budget(text: str, budget: int) -> str:
     """予算トークンを超える文脈を切り詰める(M0 の圧縮モード代替)。"""
     enc = _encoder()
-    ids = enc.encode(text)
+    ids = enc.encode(text, disallowed_special=())
     if len(ids) <= budget:
         return text
     return enc.decode(ids[:budget]) + "\n…(文脈が長いため以降を省略しました)"

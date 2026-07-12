@@ -98,8 +98,7 @@ describe("PdfSidebar (2a §4.2.2)", () => {
   test("switching to the 目次 tab renders the TOC rows and on-demand appendix box", () => {
     render(<PdfSidebar {...baseProps()} />);
     fireEvent.click(screen.getByText("目次"));
-    // TocRow は "1 "+"はじめに" を別テキストノードで描画する(TocTree.tsx の既存挙動)。
-    expect(screen.getByText((_, node) => node?.textContent === "1 はじめに")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /1 はじめに/ })).toBeInTheDocument();
     expect(screen.getByText("開くと翻訳します(オンデマンド)")).toBeInTheDocument();
     expect(screen.queryByLabelText("ページ 5")).toBeNull();
   });
@@ -107,7 +106,13 @@ describe("PdfSidebar (2a §4.2.2)", () => {
   test("clicking the on-demand appendix box triggers section click + translate-appendix", () => {
     const onSectionClick = vi.fn();
     const onTranslateAppendix = vi.fn();
-    render(<PdfSidebar {...baseProps()} onSectionClick={onSectionClick} onTranslateAppendix={onTranslateAppendix} />);
+    render(
+      <PdfSidebar
+        {...baseProps()}
+        onSectionClick={onSectionClick}
+        onTranslateAppendix={onTranslateAppendix}
+      />,
+    );
     fireEvent.click(screen.getByText("目次"));
     fireEvent.click(screen.getByText("開くと翻訳します(オンデマンド)"));
     expect(onSectionClick).toHaveBeenCalledWith("sec-app");

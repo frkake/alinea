@@ -30,8 +30,9 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
-from alinea_core.db.models import DocumentRevision, LibraryItem, Paper
+from alinea_core.db.models import LibraryItem, Paper
 from alinea_core.db.models import ResourceLink as ResourceLinkModel
+from alinea_core.db.revisions import get_latest_paper_revision
 from alinea_core.document.blocks import DocumentContent
 from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
@@ -374,7 +375,7 @@ async def _resolve_section_ids(db: DbDep, item: LibraryItem) -> set[str]:
     paper = await db.get(Paper, item.paper_id)
     if paper is None or not paper.latest_revision_id:
         return set()
-    revision = await db.get(DocumentRevision, paper.latest_revision_id)
+    revision = await get_latest_paper_revision(db, paper)
     if revision is None:
         return set()
     try:

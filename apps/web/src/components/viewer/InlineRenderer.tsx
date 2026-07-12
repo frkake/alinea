@@ -221,6 +221,14 @@ export function InlineRenderer({
         return (
           <span
             key={key}
+            className="alinea-inline-math-scroll"
+            style={{
+              display: "inline-block",
+              maxWidth: "100%",
+              overflowX: "auto",
+              overflowY: "hidden",
+              verticalAlign: "middle",
+            }}
             // KaTeX の信頼できる自前レンダリング出力。
             dangerouslySetInnerHTML={{ __html: renderInlineMath(inline.v ?? "") }}
           />

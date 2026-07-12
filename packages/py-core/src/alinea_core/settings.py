@@ -92,6 +92,7 @@ class CoreSettings(BaseSettings):
     alinea_arxiv_base_url: str = ""
     alinea_texlive_image: str = "alinea-texlive-ja:latest"
     alinea_latex_build_timeout_s: int = 360
+    alinea_pdf_ocr_max_concurrency: int = Field(default=1, ge=1, le=4)
 
     @property
     def sync_database_url(self) -> str:

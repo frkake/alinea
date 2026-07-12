@@ -10,7 +10,15 @@ describe("katex-render recovery", () => {
     expect(html).not.toContain("katex-error");
   });
 
-  test("renders known paper-specific macros", () => {
+  test("wraps an outer alignment row that contains a nested matrix", () => {
+    const html = renderBlockMath(String.raw`V &= \begin{pmatrix}0 & I \\ 0 & 0\end{pmatrix}`);
+
+    expect(html).toContain("katex");
+    expect(html).not.toContain("alinea-math-fallback");
+    expect(html).not.toContain("katex-error");
+  });
+
+  test("recovers an undefined textual macro without a paper-specific mapping", () => {
     const html = renderInlineMath("\\student(\\cdot\\mid x)");
 
     expect(html).toContain("katex");
@@ -31,5 +39,13 @@ describe("katex-render recovery", () => {
 
     expect(html).toContain("katex");
     expect(html).not.toContain("alinea-math-fallback");
+  });
+
+  test("does not expose raw LaTeX when an irrecoverable formula falls back", () => {
+    const html = renderInlineMath(String.raw`\begin{broken}`);
+
+    expect(html).toContain("alinea-math-fallback");
+    expect(html).toContain("数式を表示できません");
+    expect(html).not.toContain(String.raw`\begin`);
   });
 });

@@ -8,6 +8,11 @@ import type { DocumentResponse } from "@/components/viewer/document-types";
 import { PdfPane } from "./PdfPane";
 import type { UsePdfDocumentResult } from "./use-pdf-document";
 
+const pdfHookMocks = vi.hoisted(() => ({
+  usePdfDocument: vi.fn(),
+  usePdfAvailability: vi.fn(),
+}));
+
 // jsdom は ResizeObserver も 2D canvas context も実装しない。
 class FakeResizeObserver {
   observe(): void {}
@@ -55,7 +60,10 @@ const pdfContext: UsePdfDocumentResult = {
 
 vi.mock("./use-pdf-document", () => ({
   usePdfDocumentContext: () => pdfContext,
-  usePdfDocument: () => pdfContext,
+  usePdfDocument: pdfHookMocks.usePdfDocument,
+}));
+vi.mock("@/hooks/use-pdf-availability", () => ({
+  usePdfAvailability: pdfHookMocks.usePdfAvailability,
 }));
 
 const doc: DocumentResponse = {
@@ -102,6 +110,8 @@ function renderPane(overrides: Partial<Parameters<typeof PdfPane>[0]> = {}) {
 describe("PdfPane (2a §5)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    pdfHookMocks.usePdfDocument.mockReturnValue(pdfContext);
+    pdfHookMocks.usePdfAvailability.mockReturnValue(true);
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({ status: 200, ok: true, body: { cancel: vi.fn() } }),
@@ -128,6 +138,25 @@ describe("PdfPane (2a §5)", () => {
   test("renders the sync indicator once the document resolves", async () => {
     renderPane();
     expect(await screen.findByText("§2.2 Reflow")).toBeInTheDocument();
+  });
+
+  test("scopes translated PDF hooks to the current revision and translation set", async () => {
+    renderPane({ translationSetId: "set-1" });
+    await screen.findByText("§2.2 Reflow");
+
+    expect(pdfHookMocks.usePdfDocument).toHaveBeenCalledWith(
+      "paper-1",
+      false,
+      "translated",
+      "natural",
+      { revisionId: "rev-1", translationSetId: "set-1" },
+    );
+    expect(pdfHookMocks.usePdfAvailability).toHaveBeenCalledWith(
+      "paper-1",
+      "translated",
+      "natural",
+      { revisionId: "rev-1", translationSetId: "set-1" },
+    );
   });
 
   test("renders all PDF page slots in the main viewer instead of only the current neighborhood", async () => {

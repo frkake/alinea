@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from typing import Any
 
@@ -16,6 +17,17 @@ import aioboto3
 from botocore.config import Config
 
 from alinea_core.settings import CoreSettings, get_settings
+
+_STORAGE_KEY_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
+_BOUNDED_READ_CHUNK_BYTES = 64 * 1024
+
+
+class S3ObjectTooLargeError(Exception):
+    """An S3 object exceeded the caller's explicit in-memory read limit."""
+
+    def __init__(self, *, max_bytes: int) -> None:
+        self.max_bytes = max_bytes
+        super().__init__("S3 object exceeds bounded read limit")
 
 
 class StorageKeys:
@@ -35,8 +47,15 @@ class StorageKeys:
         return f"sources/{paper_id}/{source_version}/original.pdf"
 
     @staticmethod
-    def translated_pdf(paper_id: str, source_version: str, style: str) -> str:
-        return f"sources/{paper_id}/{source_version}/translated-{style}.pdf"
+    def translated_pdf(
+        paper_id: str,
+        source_version: str,
+        style: str,
+        *,
+        translation_set_id: str | None = None,
+    ) -> str:
+        set_suffix = f"-{translation_set_id}" if translation_set_id is not None else ""
+        return f"sources/{paper_id}/{source_version}/translated-{style}{set_suffix}.pdf"
 
     @staticmethod
     def bilingual_pdf(paper_id: str, source_version: str, style: str) -> str:
@@ -52,8 +71,29 @@ class StorageKeys:
         return f"figures/{paper_id}/{revision_id}/{block_id}.{ext}"
 
     @staticmethod
-    def thumbnail(paper_id: str, retina: bool = False) -> str:
-        return f"thumbnails/{paper_id}/card{'@2x' if retina else ''}.webp"
+    def thumbnail(
+        paper_id: str,
+        retina: bool = False,
+        *,
+        revision_id: str | None = None,
+    ) -> str:
+        revision_path = f"/{revision_id}" if revision_id is not None else ""
+        return f"thumbnails/{paper_id}{revision_path}/card{'@2x' if retina else ''}.webp"
+
+    @staticmethod
+    def thumbnail_retina_sibling(key: str, *, paper_id: str) -> str | None:
+        """Derive retina only from an exact legacy/current base-thumbnail key."""
+
+        if _STORAGE_KEY_SEGMENT_RE.fullmatch(paper_id) is None:
+            return None
+        parts = key.split("/")
+        if parts[:2] != ["thumbnails", paper_id] or parts[-1:] != ["card.webp"]:
+            return None
+        if len(parts) == 3:
+            return f"thumbnails/{paper_id}/card@2x.webp"
+        if len(parts) == 4 and _STORAGE_KEY_SEGMENT_RE.fullmatch(parts[2]) is not None:
+            return f"thumbnails/{paper_id}/{parts[2]}/card@2x.webp"
+        return None
 
     @staticmethod
     def overview_svg(article_id: str, version: int) -> str:
@@ -110,6 +150,30 @@ class S3Storage:
             async with resp["Body"] as stream:
                 data: bytes = await stream.read()
                 return data
+
+    async def get_bounded(self, bucket: str, key: str, *, max_bytes: int) -> bytes:
+        """Read at most ``max_bytes`` while defending against a false length header."""
+
+        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
+            raise ValueError("max_bytes must be a non-negative integer")
+        async with self._client_ctx() as client:
+            resp = await client.get_object(Bucket=bucket, Key=key)
+            async with resp["Body"] as stream:
+                sized_reader = getattr(stream, "content", stream)
+                content_length = resp.get("ContentLength")
+                if isinstance(content_length, int) and content_length > max_bytes:
+                    raise S3ObjectTooLargeError(max_bytes=max_bytes)
+                data = bytearray()
+                while True:
+                    remaining = max_bytes + 1 - len(data)
+                    if remaining <= 0:
+                        raise S3ObjectTooLargeError(max_bytes=max_bytes)
+                    chunk = await sized_reader.read(min(_BOUNDED_READ_CHUNK_BYTES, remaining))
+                    if not chunk:
+                        return bytes(data)
+                    data.extend(chunk)
+                    if len(data) > max_bytes:
+                        raise S3ObjectTooLargeError(max_bytes=max_bytes)
 
     async def delete_many(self, bucket: str, keys: Iterable[str]) -> None:
         unique_keys = [key for key in dict.fromkeys(keys) if key]

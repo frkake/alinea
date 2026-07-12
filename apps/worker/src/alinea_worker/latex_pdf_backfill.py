@@ -1,4 +1,4 @@
-"""Build missing or stale translated PDFs for completed LaTeX translation sets."""
+"""Build missing or stale Japanese PDFs for every completed shared translation set."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import datetime as dt
 from collections.abc import Sequence
 from typing import Any
 
-from alinea_core.db.models import DocumentRevision, SourceAsset, TranslationSet, TranslationUnit
+from alinea_core.db.models import DocumentRevision, TranslationSet, TranslationUnit
 from alinea_core.db.session import get_sessionmaker
 from alinea_core.settings import get_settings
 from alinea_core.storage.s3 import S3Storage
@@ -19,33 +19,21 @@ from alinea_worker.latex_pdf import (
     PDF_BUILD_VERSION,
     LatexPdfBuildError,
     _translation_units_digest,
-    build_latex_translation_pdfs_if_ready,
+    build_translation_pdfs_if_ready,
 )
 
-_LATEX_SOURCE_KINDS = ("arxiv_latex", "latex")
 _FAILURE_DETAIL_LIMIT = 1200
 
 
 async def _candidate_set_ids(
     session: AsyncSession, *, paper_id: str | None, limit: int | None
 ) -> list[str]:
-    latex_asset_exists = (
-        select(SourceAsset.id)
-        .where(
-            SourceAsset.paper_id == DocumentRevision.paper_id,
-            SourceAsset.source_version == DocumentRevision.source_version,
-            SourceAsset.kind.in_(_LATEX_SOURCE_KINDS),
-        )
-        .exists()
-    )
     stmt = (
         select(TranslationSet.id, TranslationSet.style, DocumentRevision.stats)
         .join(DocumentRevision, DocumentRevision.id == TranslationSet.revision_id)
         .where(
             TranslationSet.status == "complete",
             TranslationSet.scope == "shared",
-            DocumentRevision.source_format == "latex",
-            latex_asset_exists,
         )
         .order_by(TranslationSet.updated_at.desc())
     )
@@ -141,14 +129,12 @@ async def backfill_latex_translation_pdfs(
     async with maker() as session:
         set_ids = await _candidate_set_ids(session, paper_id=paper_id, limit=limit)
         if not set_ids:
-            print("No missing or stale LaTeX translated PDFs.")
+            print("No missing or stale Japanese PDFs.")
             return 0
-        print(
-            f"Found {len(set_ids)} completed LaTeX translation set(s) with missing or stale PDFs."
-        )
+        print(f"Found {len(set_ids)} completed translation set(s) with missing or stale PDFs.")
         for set_id in set_ids:
             try:
-                outcome = await build_latex_translation_pdfs_if_ready(
+                outcome = await build_translation_pdfs_if_ready(
                     session,
                     storage,
                     settings,

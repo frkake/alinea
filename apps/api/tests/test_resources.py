@@ -575,6 +575,44 @@ async def test_patch_note_with_unknown_section_chip_is_rejected(
     assert r.json()["code"] == "validation_error"
 
 
+async def test_note_chip_does_not_validate_against_foreign_latest_revision(
+    env: tuple[AsyncClient, LibraryItem, Paper, str],
+    db_session: AsyncSession,
+    factories: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, item, paper, uid = env
+    _patch_http(monkeypatch, {})
+    foreign_paper = Paper(
+        title="Foreign private sections",
+        authors=[],
+        visibility="private",
+        owner_user_id=uid,
+    )
+    db_session.add(foreign_paper)
+    await db_session.flush()
+    foreign_content = factories.reduced_rectified_flow_content()
+    foreign_content["sections"][0]["id"] = "sec-foreign"
+    foreign_revision = await factories.make_revision(
+        db_session,
+        paper=foreign_paper,
+        content=foreign_content,
+    )
+    paper.latest_revision_id = foreign_revision.id
+    await db_session.commit()
+
+    response = await client.post(
+        f"/api/library-items/{item.id}/resources",
+        json={
+            "url": "https://github.com/gnobitab/RectifiedFlow",
+            "note": "[[sec:sec-foreign|§秘密]] を参照。",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "validation_error"
+
+
 async def test_patch_note_whitespace_only_clears_it(
     env: tuple[AsyncClient, LibraryItem, Paper, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

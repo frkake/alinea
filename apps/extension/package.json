@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
+    "audit:live-arxiv": "node scripts/live-arxiv-audit.mjs",
     "e2e:report": "playwright show-report"
   },
   "dependencies": {

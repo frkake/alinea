@@ -206,6 +206,7 @@ class TranslationSet(Base):
         UUID(as_uuid=False), ForeignKey("translation_sets.id", ondelete="CASCADE")
     )
     glossary_snapshot: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, server_default="[]")
+    plan: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     prompt_version: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="tr-2026-07-06.1"
     )
@@ -222,7 +223,7 @@ class TranslationUnit(Base):
     )
     block_id: Mapped[str] = mapped_column(Text, nullable=False)
     source_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    content_ja: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    content_ja: Mapped[list[dict[str, Any]] | dict[str, Any]] = mapped_column(JSONB, nullable=False)
     text_ja: Mapped[str] = mapped_column(Text, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False, server_default="machine")
     quality_flags: Mapped[list[str]] = mapped_column(
@@ -523,9 +524,7 @@ class Article(Base):
     created_at: Mapped[dt.datetime] = _now()
     updated_at: Mapped[dt.datetime] = _now()
     __table_args__ = (
-        UniqueConstraint(
-            "library_item_id", "preset", name="uq_articles_library_item_preset"
-        ),
+        UniqueConstraint("library_item_id", "preset", name="uq_articles_library_item_preset"),
     )
 
 

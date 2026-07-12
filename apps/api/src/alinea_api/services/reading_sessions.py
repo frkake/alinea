@@ -24,9 +24,14 @@ import datetime as dt
 from typing import Literal
 
 import redis.asyncio as redis
-from alinea_core.db.models import DocumentRevision, LibraryItem, Paper, ReadingSession, User
+from alinea_core.db.models import LibraryItem, Paper, ReadingSession, User
+from alinea_core.db.revisions import get_paper_revision
 from alinea_core.document.blocks import DocumentContent, Section
-from alinea_core.translation.pipeline import compute_translation_scope
+from alinea_core.translation.pipeline import (
+    compute_translation_scope,
+    find_effective_set,
+    translation_scope_from_plan,
+)
 from pydantic import BaseModel, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -149,7 +154,11 @@ async def _reached_end(db: AsyncSession, item: LibraryItem) -> bool:
     rp = item.reading_position
     if not isinstance(rp, dict) or not rp.get("revision_id") or not rp.get("block_id"):
         return False
-    revision = await db.get(DocumentRevision, str(rp["revision_id"]))
+    revision = await get_paper_revision(
+        db,
+        paper_id=item.paper_id,
+        revision_id=rp["revision_id"],
+    )
     if revision is None:
         return False
     try:
@@ -157,14 +166,32 @@ async def _reached_end(db: AsyncSession, item: LibraryItem) -> bool:
     except (ValueError, TypeError):
         return False
 
-    scope = compute_translation_scope(content)
+    user = await db.get(User, str(item.user_id))
+    tset = None
+    if user is not None:
+        merged = deep_merge(DEFAULTS, user.settings or {})
+        translation = merged.get("translation")
+        configured_style = (
+            translation.get("default_style", "natural")
+            if isinstance(translation, dict)
+            else "natural"
+        )
+        style = str(configured_style) if configured_style in {"natural", "literal"} else "natural"
+        tset = await find_effective_set(db, str(revision.id), style, str(user.id))
+    raw_pages = (revision.stats or {}).get("pages")
+    pages = raw_pages if isinstance(raw_pages, int) and not isinstance(raw_pages, bool) else None
+    scope = (
+        translation_scope_from_plan(content, tset.plan, pages=pages)
+        if tset is not None
+        else compute_translation_scope(content)
+    )
     if not scope.sections:
         return False
     body_order: list[str] = [bid for sec in scope.sections for bid in sec["block_ids"]]
     total = len(body_order)
     block_id = str(rp["block_id"])
     if total == 0 or block_id not in body_order:
-        return False  # 本文ブロック外(参考文献・付録)→ 対象外(§8.2)
+        return False  # 翻訳対象外(参考文献など)→ 対象外(§8.2)
     pos = body_order.index(block_id) + 1
     if pos / total < REACHED_END_RATIO:
         return False

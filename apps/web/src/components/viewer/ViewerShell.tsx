@@ -3,7 +3,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
-import { libraryItemsUpdate, translationsSectionTranslate, type ViewerInit } from "@alinea/api-client";
+import {
+  libraryItemsUpdate,
+  translationsSectionTranslate,
+  type ViewerInit,
+} from "@alinea/api-client";
 import { Z_INDEX, type ReadingStatus } from "@alinea/tokens";
 import { useToast } from "@/components/ui/Toast";
 import { useFinishReadingStore } from "@/components/library/finishReadingStore";
@@ -12,6 +16,7 @@ import { usePdfViewStore } from "@/stores/pdf-view-store";
 import { usePdfAvailability } from "@/hooks/use-pdf-availability";
 import { useIsMobile } from "@/hooks/useMediaQuery";
 import { ViewerHeader } from "@/components/viewer/ViewerHeader";
+import { LongPaperSectionSelection } from "@/components/viewer/LongPaperSectionSelection";
 import { TocTree } from "@/components/viewer/TocTree";
 import { TocDrawer } from "@/components/viewer/toc/TocDrawer";
 import { SidePanel } from "@/components/viewer/SidePanel";
@@ -69,6 +74,7 @@ export function ViewerShell({
   const openSearch = useViewerStore((s) => s.openSearch);
   const activeSectionId = useViewerStore((s) => s.activeSectionId);
   const translationStyle = useViewerStore((s) => s.style);
+  const literalSetId = useViewerStore((s) => s.literalSetId);
   const pdfDocumentMode = usePdfViewStore((s) => s.documentMode);
 
   const isMobile = useIsMobile();
@@ -93,7 +99,10 @@ export function ViewerShell({
   // PDF アセット無し論文(2a §5.3): ヘッダの「PDF」セグメントを disabled にし、
   // URL 直打ちで mode=pdf に来た場合は訳文へフォールバックする(黙って壊さない。P3)。
   // モバイルでは mode を書き換えない(決定)ため、この補正自体もデスクトップ限定とする。
-  const pdfAvailable = usePdfAvailability(paperId);
+  const pdfAvailable = usePdfAvailability(paperId, "source", "natural", {
+    revisionId,
+    translationSetId: null,
+  });
   useEffect(() => {
     if (isMobile) return;
     if (mode === "pdf" && pdfAvailable === false) {
@@ -123,6 +132,16 @@ export function ViewerShell({
         void qc.invalidateQueries({ queryKey: ["viewer", itemId] });
       } else if (e.type === "job.failed") {
         void qc.invalidateQueries({ queryKey: ["viewer", itemId] });
+      } else if (e.type === "job.updated") {
+        const data = e.data;
+        const eventItemId =
+          data != null && typeof data === "object" && "library_item_id" in data
+            ? data.library_item_id
+            : null;
+        if (eventItemId === itemId) {
+          void qc.invalidateQueries({ queryKey: ["pdf-data", paperId, "translated"] });
+          void qc.invalidateQueries({ queryKey: ["pdf-available", paperId, "translated"] });
+        }
       }
     },
   });
@@ -160,26 +179,30 @@ export function ViewerShell({
     );
   };
 
-  const onTranslateAppendix = (sectionId: string) => {
+  const onTranslateSection = (sectionId: string) => {
     const setId = viewer.translation?.set_id;
     if (!setId) return;
     void translationsSectionTranslate({
       path: { set_id: setId, section_id: sectionId },
       body: {},
     }).then(
-      () => toast({ kind: "info", message: "この付録の翻訳を開始しました" }),
+      () => toast({ kind: "info", message: "このセクションの翻訳を開始しました" }),
       () => toast({ kind: "error", message: "翻訳を開始できませんでした" }),
     );
   };
 
   const progressPct = viewer.translation?.progress_pct ?? 0;
+  const translationSetId =
+    viewer.translation?.style === translationStyle
+      ? viewer.translation.set_id
+      : translationStyle === "literal"
+        ? literalSetId
+        : null;
+  const pdfAssetIdentity = { revisionId, translationSetId };
   const pdfFetchMode = pdfDocumentMode === "translated" ? "translated" : "source";
   const pdfVariantQuery =
-    pdfFetchMode === "source"
-      ? ""
-      : `?variant=${pdfFetchMode}&style=${translationStyle}`;
-  const pdfDownloadLabel =
-    pdfFetchMode === "source" ? "原文PDF" : "日本語PDF";
+    pdfFetchMode === "source" ? "" : `?variant=${pdfFetchMode}&style=${translationStyle}`;
+  const pdfDownloadLabel = pdfFetchMode === "source" ? "原文PDF" : "日本語PDF";
 
   return (
     <div
@@ -194,6 +217,15 @@ export function ViewerShell({
         fontFamily: "var(--pr-font-ui)",
       }}
     >
+      {viewer.translation?.section_selection?.required ? (
+        <LongPaperSectionSelection
+          itemId={itemId}
+          setId={viewer.translation.set_id}
+          pageCount={viewer.revision.page_count}
+          toc={viewer.toc}
+          selection={viewer.translation.section_selection}
+        />
+      ) : null}
       <ViewerHeader
         itemId={itemId}
         title={viewer.library_item.paper.title}
@@ -213,12 +245,13 @@ export function ViewerShell({
             paperId={paperId}
             variant={pdfFetchMode}
             style={translationStyle}
+            identity={pdfAssetIdentity}
           >
             <PdfSidebar
               toc={viewer.toc}
               activeSectionId={activeSectionId}
               onSectionClick={(sectionId) => requestScroll({ kind: "section", sectionId })}
-              onTranslateAppendix={onTranslateAppendix}
+              onTranslateAppendix={onTranslateSection}
               pageCountFallback={viewer.revision.page_count}
               pdfDownloadHref={`/api/papers/${paperId}/pdf${pdfVariantQuery}`}
               pdfDownloadLabel={pdfDownloadLabel}
@@ -234,27 +267,28 @@ export function ViewerShell({
                 viewer.last_position?.mode === "pdf" ? viewer.last_position.block_id : null
               }
               translationStyle={translationStyle}
+              translationSetId={translationSetId}
               onOpenInTranslation={onOpenInTranslation}
             />
           </PdfDocumentProvider>
         ) : (
           <>
-            {isMobile ? null : (
-              leftPane ?? (
-                <TocTree
-                  toc={viewer.toc}
-                  progressPct={progressPct}
-                  todayReadingMinutes={viewer.today_reading_minutes}
-                  trackReadingTime={trackReadingTime}
-                  open={tocOpen}
-                  onToggle={setTocOpen}
-                  activeSectionId={activeSectionId}
-                  onSectionClick={onTocSectionClick}
-                  onTranslateAppendix={onTranslateAppendix}
-                  onFocusSearch={() => openSearch()}
-                />
-              )
-            )}
+            {isMobile
+              ? null
+              : (leftPane ?? (
+                  <TocTree
+                    toc={viewer.toc}
+                    progressPct={progressPct}
+                    todayReadingMinutes={viewer.today_reading_minutes}
+                    trackReadingTime={trackReadingTime}
+                    open={tocOpen}
+                    onToggle={setTocOpen}
+                    activeSectionId={activeSectionId}
+                    onSectionClick={onTocSectionClick}
+                    onTranslateAppendix={onTranslateSection}
+                    onFocusSearch={() => openSearch()}
+                  />
+                ))}
             {children}
           </>
         )}
@@ -266,6 +300,7 @@ export function ViewerShell({
               toc={viewer.toc}
               activeSectionId={activeSectionId}
               onSectionClick={(sectionId) => requestScroll({ kind: "section", sectionId })}
+              onTranslateSection={onTranslateSection}
             />
             <MobileSheetFab onOpen={() => setMobileSheetOpen(true)} />
             <MobileBottomSheet
@@ -287,7 +322,8 @@ export function ViewerShell({
             counts={{ annotations: viewer.counts.annotations, resources: viewer.counts.resources }}
             renderTab={(tab) => {
               if (tab === "chat") return <ChatPanel itemId={itemId} />;
-              if (tab === "figures") return <FiguresPanel itemId={itemId} revisionId={revisionId} />;
+              if (tab === "figures")
+                return <FiguresPanel itemId={itemId} revisionId={revisionId} />;
               if (tab === "info")
                 return (
                   <InfoPanel

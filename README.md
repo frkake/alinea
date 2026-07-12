@@ -83,7 +83,7 @@ uv run python -m alinea_api.seed --sample rectified-flow
 - 図表参照クリックでその場ポップオーバー(図+原文/訳キャプション+「図の位置へ移動→」「✦この図を説明」)(1c)
 - 数式ブロックに「✦この式を説明」「LaTeXをコピー」
 - 前回位置の保存と「続きから」再開バナー、ダークモード対応(1c)
-- 品質レベルは **A / B の2段階**をバッジで常時明示: A=LaTeX から完全構造化 / B=PDF 由来。決定: 旧 A〜D の4段階は廃止し C/D は B に統合(理由: ユーザーに意味のある差は「完全構造化か否か」の1点であり、確定デザインも2値バッジのみを持つ。OCR は将来検討)
+- 品質レベルは **A / B の2段階**をバッジで常時明示: A=LaTeX から完全構造化 / B=PDF 由来(テキストレイヤ解析・OCR の両方を含む)。旧 A〜D の4段階は廃止し C/D は B に統合する
 
 詳細: [docs/04-viewer.md](docs/04-viewer.md)
 
@@ -197,7 +197,7 @@ uv run python -m alinea_api.seed --sample rectified-flow
 | 一般の論文 PDF | 開いているタブから拡張で直接送信(private、書誌は推定)                                            | **B**(PDF 由来)                                               |
 
 - メタデータ(DOI・タイトル・著者・年・カテゴリ)取得、重複検知と既存ライブラリへの統合、代表図のサムネイル自動選択
-- OCR が必要な PDF は将来検討。arXiv 以外の HTML 論文サイト(OpenReview、ACL Anthology 等)への対応も将来検討
+- テキストレイヤが無い／不十分な PDF は、通常の PDF 解析が利用できない場合に限り Tesseract OCR を最終候補として試す。OCR の利用可否と失敗理由は readiness・処理ログに明示する。arXiv 以外の HTML 論文サイト(OpenReview、ACL Anthology 等)への対応は将来検討
 
 ## 5. スタイル
 

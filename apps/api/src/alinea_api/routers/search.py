@@ -30,6 +30,8 @@ from alinea_core.db.models import (
     Paper,
     User,
 )
+from alinea_core.db.revisions import get_paper_revisions, reading_position_revision_id
+from alinea_core.document.blocks import DocumentContent
 from alinea_core.search.pgroonga_query import (
     chat_qa_snippet,
     finalize_snippet_html,
@@ -131,10 +133,20 @@ _HITS_SQL: TextClause = text(
     ),
     my_items AS (
       SELECT li.id AS library_item_id, li.paper_id,
-             COALESCE((li.reading_position->>'revision_id')::uuid, p.latest_revision_id)
-                                                                       AS revision_id
+             COALESCE(reading_revision.id, latest_revision.id) AS revision_id
       FROM library_items li
       JOIN papers p ON p.id = li.paper_id
+      LEFT JOIN document_revisions reading_revision
+        ON reading_revision.paper_id = li.paper_id
+       AND reading_revision.id = CASE
+         WHEN (li.reading_position->>'revision_id') ~*
+              '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+           THEN (li.reading_position->>'revision_id')::uuid
+         ELSE NULL
+       END
+      LEFT JOIN document_revisions latest_revision
+        ON latest_revision.paper_id = p.id
+       AND latest_revision.id = p.latest_revision_id
       WHERE li.user_id = CAST(:user_id AS uuid)
     ),
     hit_body_source AS (
@@ -893,39 +905,58 @@ async def _library_item_summaries(
     ).all()
     pairs: dict[str, tuple[LibraryItem, Paper]] = {str(it.id): (it, p) for it, p in rows}
 
-    def _revision_id_of(item: LibraryItem, paper: Paper) -> str | None:
-        rp = item.reading_position
-        if isinstance(rp, dict) and rp.get("revision_id"):
-            return str(rp["revision_id"])
-        return str(paper.latest_revision_id) if paper.latest_revision_id else None
-
-    rev_ids = {rid for it, p in pairs.values() if (rid := _revision_id_of(it, p)) is not None}
-    quality_map: dict[str, str] = {}
-    if rev_ids:
-        qrows = (
-            await db.execute(
-                select(DocumentRevision.id, DocumentRevision.quality_level).where(
-                    DocumentRevision.id.in_(rev_ids)
-                )
-            )
-        ).all()
-        quality_map = {str(rid): q for rid, q in qrows}
+    requested_pairs: list[tuple[object, object]] = []
+    for item, paper in pairs.values():
+        reading_revision_id = reading_position_revision_id(item.reading_position)
+        if reading_revision_id is not None:
+            requested_pairs.append((paper.id, reading_revision_id))
+        if paper.latest_revision_id is not None:
+            requested_pairs.append((paper.id, paper.latest_revision_id))
+    revisions = await get_paper_revisions(db, requested_pairs)
 
     out: dict[str, LibraryItemSummary] = {}
     for lid, (item, paper) in pairs.items():
-        rid = _revision_id_of(item, paper)
-        quality = quality_map.get(rid, "B") if rid else "B"
+        reading_revision_id = reading_position_revision_id(item.reading_position)
+        reading_revision = (
+            revisions.get((str(paper.id), reading_revision_id))
+            if reading_revision_id is not None
+            else None
+        )
+        latest_revision = (
+            revisions.get((str(paper.id), str(paper.latest_revision_id)))
+            if paper.latest_revision_id is not None
+            else None
+        )
+        preferred_revision = reading_revision or latest_revision
+        quality = preferred_revision.quality_level if preferred_revision is not None else "B"
         last_position: LastPosition | None = None
         rp = item.reading_position
-        if isinstance(rp, dict) and rp.get("revision_id") and rp.get("block_id"):
-            updated_at_iso = item.updated_at.isoformat() if item.updated_at else ""
-            last_position = LastPosition(
-                revision_id=str(rp["revision_id"]),
-                block_id=str(rp["block_id"]),
-                mode=rp.get("mode") or rp.get("view_mode") or "translation",
-                section_display="",
-                saved_at=rp.get("saved_at") or updated_at_iso,
+        if reading_revision is not None and isinstance(rp, dict) and rp.get("block_id"):
+            block_id = str(rp["block_id"])
+            try:
+                document = DocumentContent.model_validate(reading_revision.content)
+            except (TypeError, ValueError):
+                document = None
+            section = (
+                next(
+                    (section for section, block in document.iter_blocks() if block.id == block_id),
+                    None,
+                )
+                if document is not None
+                else None
             )
+            if section is not None:
+                number = (section.heading.number or "").strip()
+                title = (section.heading.title or "").strip()
+                section_display = f"§{number} {title}".strip() if number or title else ""
+                updated_at_iso = item.updated_at.isoformat() if item.updated_at else ""
+                last_position = LastPosition(
+                    revision_id=str(reading_revision.id),
+                    block_id=block_id,
+                    mode=rp.get("mode") or rp.get("view_mode") or "translation",
+                    section_display=section_display,
+                    saved_at=rp.get("saved_at") or updated_at_iso,
+                )
         out[lid] = LibraryItemSummary(
             id=lid,
             paper=build_paper_bib(paper),

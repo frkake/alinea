@@ -616,6 +616,127 @@ async def test_search_is_scoped_to_own_library(
         await db_session.commit()
 
 
+async def test_search_never_uses_foreign_reading_position_revision(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    search_ctx: SimpleNamespace,
+    factories: Any,
+) -> None:
+    """壊れた読書位置から他ユーザーの私有本文を検索結果へ出さない。"""
+    other_user = await upsert_user_by_email(
+        db_session, f"search-leak-{uuid.uuid4().hex}@example.com", provider="email"
+    )
+    other_paper = Paper(
+        title="Private foreign search corpus",
+        authors=[],
+        visibility="private",
+        owner_user_id=other_user.id,
+    )
+    db_session.add(other_paper)
+    await db_session.flush()
+    other_content = DocumentContent(
+        quality_level="A",
+        sections=[
+            Section(
+                id="sec-secret",
+                heading=SectionHeading(number="1", title="Secret"),
+                blocks=[
+                    Block(
+                        id="blk-secret",
+                        type="paragraph",
+                        inlines=[Inline(t="text", v="crosspaperleaksecret")],
+                    )
+                ],
+            )
+        ],
+    )
+    other_revision = DocumentRevision(
+        paper_id=other_paper.id,
+        parser_version="test-1",
+        quality_level="B",
+        source_format="arxiv_html",
+        content=other_content.model_dump(),
+    )
+    db_session.add(other_revision)
+    await db_session.flush()
+    other_paper.latest_revision_id = other_revision.id
+    await rebuild_block_search_index(db_session, str(other_revision.id), other_content)
+    foreign_translation_set = await factories.make_translation_set(
+        db_session,
+        revision=other_revision,
+        style="natural",
+        scope="shared",
+        status="complete",
+    )
+    await factories.make_translation_unit(
+        db_session,
+        translation_set=foreign_translation_set,
+        block_id="blk-secret",
+        text_ja="crosspapertranslationleaksecret",
+    )
+    item = await db_session.get(LibraryItem, search_ctx.item_id)
+    assert item is not None
+    item.reading_position = {
+        "revision_id": str(other_revision.id),
+        "block_id": "blk-secret",
+    }
+    await db_session.commit()
+
+    try:
+        response = await client.get("/api/search", params={"q": "crosspaperleaksecret"})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["total"] == 0
+        assert response.json()["groups"] == []
+
+        translation_response = await client.get(
+            "/api/search", params={"q": "crosspapertranslationleaksecret"}
+        )
+        assert translation_response.status_code == 200, translation_response.text
+        assert translation_response.json()["total"] == 0
+        assert translation_response.json()["groups"] == []
+
+        # note ヒットのグループ要約も foreign quality/last_position を採用しない。
+        note_response = await client.get("/api/search", params={"q": "反復回数"})
+        assert note_response.status_code == 200, note_response.text
+        note_summary = note_response.json()["groups"][0]["library_item"]
+        assert note_summary["quality_level"] == "A"
+        assert note_summary["last_position"] is None
+
+        # reading_position が無い場合も、壊れた latest_revision_id は採用しない。
+        item.reading_position = None
+        own_paper = await db_session.get(Paper, search_ctx.paper_id)
+        assert own_paper is not None
+        own_paper.latest_revision_id = other_revision.id
+        await db_session.commit()
+
+        latest_response = await client.get(
+            "/api/search", params={"q": "crosspapertranslationleaksecret"}
+        )
+        assert latest_response.status_code == 200, latest_response.text
+        assert latest_response.json()["total"] == 0
+        assert latest_response.json()["groups"] == []
+    finally:
+        await db_session.rollback()
+        await purge_user(db_session, str(other_user.id))
+        await db_session.commit()
+
+
+async def test_search_invalid_reading_position_revision_does_not_500(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    search_ctx: SimpleNamespace,
+) -> None:
+    item = await db_session.get(LibraryItem, search_ctx.item_id)
+    assert item is not None
+    item.reading_position = {"revision_id": "not-a-uuid", "block_id": "blk-s1"}
+    await db_session.commit()
+
+    response = await client.get("/api/search", params={"q": "rectified flow"})
+
+    assert response.status_code == 200, response.text
+
+
 # ---------------------------------------------------------------------------
 # 検証エラー(422)
 # ---------------------------------------------------------------------------

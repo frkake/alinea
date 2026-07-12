@@ -49,11 +49,28 @@ class TocNode(BaseModel):
     children: list[TocNode] = Field(default_factory=list)
 
 
+class SectionSelectionState(BaseModel):
+    required: bool
+    selectable_section_ids: list[str]
+    selected_section_ids: list[str]
+
+
+class SectionSelectionRequest(BaseModel):
+    section_ids: list[str] = Field(min_length=1, max_length=20_000)
+
+
+class SectionSelectionResponse(BaseModel):
+    set_id: str
+    job_id: str
+    section_ids: list[str]
+
+
 class ViewerTranslation(BaseModel):
     style: str
     set_id: str
     status: str  # "pending" | "partial" | "complete"
     progress_pct: int
+    section_selection: SectionSelectionState | None = None
 
 
 class ViewerCounts(BaseModel):

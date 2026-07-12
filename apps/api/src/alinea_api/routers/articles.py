@@ -37,6 +37,7 @@ from alinea_core.db.models import (
     Paper,
     User,
 )
+from alinea_core.db.revisions import get_latest_paper_revision
 from alinea_core.document.blocks import DocumentContent
 from alinea_core.document.plaintext import article_block_to_plain
 from alinea_core.jobs.store import JobStore
@@ -159,7 +160,7 @@ async def _paper_and_revision(
     paper = await db.get(Paper, item.paper_id)
     if paper is None or paper.latest_revision_id is None:
         raise ProblemException("not_found")
-    revision = await db.get(DocumentRevision, paper.latest_revision_id)
+    revision = await get_latest_paper_revision(db, paper)
     if revision is None:
         raise ProblemException("not_found")
     return paper, revision

@@ -93,6 +93,10 @@ def test_token_estimate_and_budget() -> None:
     assert budget_for(10000, 100) == 10000 - 100 - 2048
 
 
+def test_token_estimate_treats_model_special_token_text_as_plain_input() -> None:
+    assert estimate_tokens_o200k(_user_req("prefix <|endoftext|> suffix")) > 0
+
+
 # ---------------------------------------------------------------------------
 # structured(attach_parsed / json モード再試行)
 # ---------------------------------------------------------------------------

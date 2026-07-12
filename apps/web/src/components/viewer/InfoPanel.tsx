@@ -49,9 +49,11 @@ const STAGE_LABELS: Record<string, string> = {
   readable: "翻訳中",
   translating_body: "翻訳中",
   waiting_quota: "待機中(翻訳上限)",
+  waiting_input: "セクション選択待ち",
 };
 
 function stageLabel(stage: string, status: string): string {
+  if (status === "waiting_input") return STAGE_LABELS.waiting_input ?? "処理中";
   if (status === "waiting_quota") return STAGE_LABELS.waiting_quota ?? "処理中";
   return STAGE_LABELS[stage] ?? "処理中";
 }

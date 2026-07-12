@@ -44,7 +44,7 @@ from alinea_core.db.models import (
     User,
 )
 from alinea_core.settings import CoreSettings, get_settings
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from alinea_worker.bootstrap import _publish_event
@@ -68,7 +68,13 @@ async def _candidate_papers(session: AsyncSession) -> list[Paper]:
     rows = (
         await session.execute(
             select(Paper)
-            .join(DocumentRevision, DocumentRevision.id == Paper.latest_revision_id)
+            .join(
+                DocumentRevision,
+                and_(
+                    DocumentRevision.id == Paper.latest_revision_id,
+                    DocumentRevision.paper_id == Paper.id,
+                ),
+            )
             .where(Paper.arxiv_id.is_not(None), DocumentRevision.quality_level == "B")
         )
     ).scalars()
@@ -228,8 +234,23 @@ async def check_quality_promotions(ctx: dict[str, Any]) -> None:
                 if not available:
                     continue
 
-                assert paper.latest_revision_id is not None
-                current_revision_id = str(paper.latest_revision_id)
+                current_revision = await session.scalar(
+                    select(DocumentRevision)
+                    .join(
+                        Paper,
+                        and_(
+                            Paper.latest_revision_id == DocumentRevision.id,
+                            Paper.id == DocumentRevision.paper_id,
+                        ),
+                    )
+                    .where(
+                        Paper.id == paper.id,
+                        DocumentRevision.quality_level == "B",
+                    )
+                )
+                if current_revision is None:
+                    continue
+                current_revision_id = str(current_revision.id)
                 for user_id in await _notification_recipients(session, str(paper.id)):
                     await _insert_promotion_notification(
                         session,

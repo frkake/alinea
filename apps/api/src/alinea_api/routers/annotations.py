@@ -21,7 +21,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Annotated
 
-from alinea_core.db.models import Annotation, DocumentRevision, LibraryItem
+from alinea_core.db.models import Annotation, LibraryItem
+from alinea_core.db.revisions import get_paper_revision
 from alinea_core.document.blocks import DocumentContent, Section
 from alinea_core.search.rebuild import compute_index_rows
 from fastapi import APIRouter, Query, Response
@@ -128,19 +129,25 @@ def _build_rev_index(content: DocumentContent) -> _RevIndex:
     return index
 
 
-async def _load_rev_index(db: DbDep, revision_id: str, cache: dict[str, _RevIndex]) -> _RevIndex:
-    if revision_id in cache:
-        return cache[revision_id]
+async def _load_rev_index(
+    db: DbDep,
+    paper_id: str,
+    revision_id: str,
+    cache: dict[tuple[str, str], _RevIndex],
+) -> _RevIndex:
+    key = (paper_id, revision_id)
+    if key in cache:
+        return cache[key]
     index = _RevIndex()
     if _valid_uuid(revision_id):
-        rev = await db.get(DocumentRevision, revision_id)
+        rev = await get_paper_revision(db, paper_id=paper_id, revision_id=revision_id)
         if rev is not None:
             try:
                 content = DocumentContent.model_validate(rev.content)
             except (ValueError, TypeError):
                 content = DocumentContent(quality_level="A", sections=[])
             index = _build_rev_index(content)
-    cache[revision_id] = index
+    cache[key] = index
     return index
 
 
@@ -208,8 +215,13 @@ def _to_out(ann: Annotation, index: _RevIndex) -> AnnotationOut:
 async def _out_single(db: DbDep, ann: Annotation) -> AnnotationOut:
     anchor = ann.anchor if isinstance(ann.anchor, dict) else {}
     revision_id = str(anchor.get("revision_id", ""))
-    cache: dict[str, _RevIndex] = {}
-    index = await _load_rev_index(db, revision_id, cache)
+    item = await db.get(LibraryItem, ann.library_item_id)
+    cache: dict[tuple[str, str], _RevIndex] = {}
+    index = (
+        await _load_rev_index(db, str(item.paper_id), revision_id, cache)
+        if item is not None
+        else _RevIndex()
+    )
     return _to_out(ann, index)
 
 
@@ -230,7 +242,7 @@ async def list_annotations(
     placed: Annotated[bool | None, Query()] = None,
     kind: Annotated[str | None, Query()] = None,
 ) -> AnnotationListResponse:
-    await _get_owned_item(db, user.id, item_id)
+    item = await _get_owned_item(db, user.id, item_id)
 
     if color:
         for c in color:
@@ -273,14 +285,14 @@ async def list_annotations(
         filtered.append(a)
 
     # display 導出・出現順のためリビジョン索引を一括ロード。
-    cache: dict[str, _RevIndex] = {}
+    cache: dict[tuple[str, str], _RevIndex] = {}
     rev_ids = {str(a.anchor.get("revision_id", "")) for a in filtered if isinstance(a.anchor, dict)}
     for rid in rev_ids:
-        await _load_rev_index(db, rid, cache)
+        await _load_rev_index(db, str(item.paper_id), rid, cache)
 
     def _index_of(a: Annotation) -> _RevIndex:
         rid = str(a.anchor.get("revision_id", "")) if isinstance(a.anchor, dict) else ""
-        return cache.get(rid, _RevIndex())
+        return cache.get((str(item.paper_id), rid), _RevIndex())
 
     def _start_of(a: Annotation) -> int:
         anchor = a.anchor if isinstance(a.anchor, dict) else {}
@@ -316,7 +328,7 @@ async def list_annotations(
 async def create_annotation(
     item_id: str, body: AnnotationCreate, user: CurrentUser, db: DbDep
 ) -> AnnotationOut:
-    await _get_owned_item(db, user.id, item_id)
+    item = await _get_owned_item(db, user.id, item_id)
 
     # highlight は color 必須(§8.2)。
     if body.kind == "highlight" and body.color is None:
@@ -324,8 +336,8 @@ async def create_annotation(
 
     # anchor のブロック実在検証(§8.2。不存在は 422)。
     revision_id = body.anchor.revision_id
-    cache: dict[str, _RevIndex] = {}
-    index = await _load_rev_index(db, revision_id, cache)
+    cache: dict[tuple[str, str], _RevIndex] = {}
+    index = await _load_rev_index(db, str(item.paper_id), revision_id, cache)
     if not index.block_or_section_exists(body.anchor.block_id):
         raise ProblemException("validation_error", detail="anchor のブロックが存在しません")
 

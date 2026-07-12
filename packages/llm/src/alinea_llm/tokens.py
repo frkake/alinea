@@ -39,11 +39,11 @@ def estimate_tokens_o200k(req: LLMRequest) -> int:
     total = 0
     images = 0
     sys_text, sys_images = _parts_text(req.system)
-    total += len(enc.encode(sys_text))
+    total += len(enc.encode(sys_text, disallowed_special=()))
     images += sys_images
     for msg in req.messages:
         text, imgs = _parts_text(msg.parts)
-        total += len(enc.encode(text))
+        total += len(enc.encode(text, disallowed_special=()))
         images += imgs
     return total + images * IMAGE_TOKEN_COST
 

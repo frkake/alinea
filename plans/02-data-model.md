@@ -353,12 +353,12 @@ CREATE TABLE document_revisions (
     id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     paper_id       UUID        NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
     source_version TEXT        NOT NULL DEFAULT 'v1',   -- arXiv バージョン(PDF 由来は 'v1' 固定)
-    parser_version TEXT        NOT NULL,                -- 例 'latex-1.0.0' / 'pdf-1.2.0'
+    parser_version TEXT        NOT NULL,                -- 例 'latex-1.3.0' / 'pdf-1.2.0'
     quality_level  TEXT        NOT NULL,                -- A / B の2値(docs/02 §4)
     source_format  TEXT        NOT NULL,                -- どの形式から構造化したか(処理ログにも記録)
     content        JSONB       NOT NULL,                -- DocumentContentJson(§3.2)
     -- 構造化結果メタ。タイムライン2段目「(24p / 図8 / 表4)」(2a)の表示元
-    stats          JSONB       NOT NULL DEFAULT '{}',   -- {"pages":24,"figures":8,"tables":4,"blocks":412,"translatable_blocks":388}
+    stats          JSONB       NOT NULL DEFAULT '{}',   -- 表示統計 + selected_source / parsed_content_sha256 / revision_content_sha256 / figure_asset_manifest
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_document_revisions_quality CHECK (quality_level IN ('A', 'B')),
     CONSTRAINT ck_document_revisions_format  CHECK (source_format IN ('latex', 'arxiv_html', 'pdf')),

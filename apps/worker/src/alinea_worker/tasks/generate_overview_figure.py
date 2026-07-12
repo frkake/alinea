@@ -30,6 +30,7 @@ from alinea_core.db.models import (
     Paper,
     User,
 )
+from alinea_core.db.revisions import get_latest_paper_revision
 from alinea_core.jobs.store import JobStore
 from alinea_core.storage.s3 import S3Storage
 from alinea_figures.dsl import (
@@ -253,15 +254,19 @@ _HEADINGS_EN_SCHEMA = _JsonSchemaSpec(
 
 
 def build_overview_raster_prompt(headings_en: tuple[str, str, str]) -> str:
-    """§5.5: §6.2 の共通プリアンブル(``EXPLAINER_STYLE_PREAMBLE``)を再利用する。"""
+    """§5.5: 共通スタイルを再利用しつつ、概要図の文字なし契約を優先する。"""
     from alinea_worker.tasks.generate_explainer_figure import EXPLAINER_STYLE_PREAMBLE
 
+    text_constraint = (
+        "Overview-specific constraint: Strictly NO text, NO letters, NO digits, NO formulas, "
+        "NO labels, NO watermarks, NO logos. The SVG and caption carry all wording."
+    )
     concept = (
         f"Concept: a three-stage flow diagram showing (1) {headings_en[0]}, "
         f"(2) {headings_en[1]}, (3) {headings_en[2]}, connected left to right by arrows. "
         "Abstract shapes only."
     )
-    return f"{EXPLAINER_STYLE_PREAMBLE}\n\n{concept}"
+    return f"{EXPLAINER_STYLE_PREAMBLE}\n{text_constraint}\n\n{concept}"
 
 
 async def _translate_headings_en(
@@ -471,11 +476,11 @@ async def _load_figure_article_context(
     if item is None:
         raise LookupError(f"library item not found: {article.library_item_id}")
     paper = await session.get(Paper, item.paper_id)
-    if paper is None or paper.latest_revision_id is None:
+    if paper is None:
         raise LookupError(f"paper/revision not found for library item: {item.id}")
-    revision = await session.get(DocumentRevision, paper.latest_revision_id)
+    revision = await get_latest_paper_revision(session, paper)
     if revision is None:
-        raise LookupError(f"revision not found: {paper.latest_revision_id}")
+        raise LookupError(f"paper/revision not found for library item: {item.id}")
     user = await session.get(User, item.user_id)
     if user is None:
         raise LookupError(f"user not found: {item.user_id}")

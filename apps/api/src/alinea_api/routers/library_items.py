@@ -35,11 +35,17 @@ from alinea_core.db.models import (
     SourceAsset,
     UsageRecord,
 )
+from alinea_core.db.revisions import (
+    get_paper_revisions,
+    get_preferred_item_revision,
+    reading_position_revision_id,
+)
 from alinea_core.document.blocks import DocumentContent
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import Integer, and_, case, cast, delete, extract, func, or_, select, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
 
 from alinea_api.deps import CurrentUser, CurrentUserOrExt, DbDep, RedisDep
@@ -123,9 +129,7 @@ async def _article_storage_data(
 ) -> tuple[list[str], list[str], set[str]]:
     if not library_item_ids:
         return [], [], set()
-    rows = await db.execute(
-        select(Article.id).where(Article.library_item_id.in_(library_item_ids))
-    )
+    rows = await db.execute(select(Article.id).where(Article.library_item_id.in_(library_item_ids)))
     article_ids = list(rows.scalars())
     if not article_ids:
         return [], [], set()
@@ -170,8 +174,13 @@ async def _paper_storage_keys(db: DbDep, paper: Paper) -> tuple[set[str], set[st
 
     if paper.thumbnail_key:
         _add_storage_key(asset_keys, paper.thumbnail_key)
-        _add_storage_key(asset_keys, StorageKeys.thumbnail(str(paper.id)))
-        _add_storage_key(asset_keys, StorageKeys.thumbnail(str(paper.id), retina=True))
+        _add_storage_key(
+            asset_keys,
+            StorageKeys.thumbnail_retina_sibling(
+                paper.thumbnail_key,
+                paper_id=str(paper.id),
+            ),
+        )
     return source_keys, asset_keys
 
 
@@ -203,6 +212,8 @@ _QUICK: dict[str, list[str]] = {
 }
 _QUICKS = ("all", *_QUICK.keys())
 _PRIORITY_RANK = {"high": 0, "mid": 1, "low": 2}
+_UUID_RE = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+_ReadingRevision = aliased(DocumentRevision, name="reading_revision")
 
 
 def _valid_uuid(value: str) -> bool:
@@ -215,10 +226,15 @@ def _valid_uuid(value: str) -> bool:
 
 # --- クエリ組み立て -----------------------------------------------------------------
 def _rev_id() -> ColumnElement[Any]:
-    """読書位置の revision → 無ければ最新 revision(plans/11 §8.1 の COALESCE)。"""
-    return func.coalesce(
-        cast(LibraryItem.reading_position["revision_id"].astext, PGUUID),
-        Paper.latest_revision_id,
+    """同一論文の読書位置 revision → 無ければ latest revision。"""
+    return func.coalesce(_ReadingRevision.id, Paper.latest_revision_id)
+
+
+def _safe_reading_revision_id() -> ColumnElement[Any]:
+    raw = LibraryItem.reading_position["revision_id"].astext
+    return case(
+        (raw.op("~*")(_UUID_RE), cast(raw, PGUUID)),
+        else_=None,
     )
 
 
@@ -227,7 +243,17 @@ def _scoped(*cols: Any) -> Any:
         select(*cols)
         .select_from(LibraryItem)
         .join(Paper, Paper.id == LibraryItem.paper_id)
-        .outerjoin(DocumentRevision, DocumentRevision.id == _rev_id())
+        .outerjoin(
+            _ReadingRevision,
+            and_(
+                _ReadingRevision.id == _safe_reading_revision_id(),
+                _ReadingRevision.paper_id == Paper.id,
+            ),
+        )
+        .outerjoin(
+            DocumentRevision,
+            and_(DocumentRevision.id == _rev_id(), DocumentRevision.paper_id == Paper.id),
+        )
     )
 
 
@@ -342,34 +368,36 @@ def _keyset(
 
 
 # --- サマリ構築 ---------------------------------------------------------------------
-# revision ごとの (block_id→順序, 総ブロック数, block_id→所属 Section)。
-_RevMap = tuple[dict[str, int], int, dict[str, Any]]
+# item ごとの (revision_id, block_id→順序, 総ブロック数, block_id→所属 Section)。
+_RevMap = tuple[str, dict[str, int], int, dict[str, Any]]
 
 
-async def _reading_maps(db: DbDep, items: list[LibraryItem]) -> dict[str, _RevMap]:
+async def _reading_maps(
+    db: DbDep, item_papers: list[tuple[LibraryItem, Paper]]
+) -> dict[str, _RevMap]:
     """reading_position を持つ item の revision を一括ロードし block 順序と所属節を引く。"""
-    rev_ids = {
-        str(it.reading_position["revision_id"])
-        for it in items
-        if it.reading_position and it.reading_position.get("revision_id")
-    }
-    if not rev_ids:
-        return {}
-    rows = await db.execute(
-        select(DocumentRevision.id, DocumentRevision.content).where(
-            DocumentRevision.id.in_(rev_ids)
-        )
-    )
+    requested = [
+        (paper.id, revision_id)
+        for item, paper in item_papers
+        if (revision_id := reading_position_revision_id(item.reading_position)) is not None
+    ]
+    revisions = await get_paper_revisions(db, requested)
     maps: dict[str, _RevMap] = {}
-    for rid, content in rows.all():
+    for item, paper in item_papers:
+        revision_id = reading_position_revision_id(item.reading_position)
+        if revision_id is None:
+            continue
+        revision = revisions.get((str(paper.id), revision_id))
+        if revision is None:
+            continue
         try:
-            doc = DocumentContent.model_validate(content)
+            doc = DocumentContent.model_validate(revision.content)
         except (ValueError, TypeError):
             continue
-        pairs = doc.iter_blocks()
-        order = {blk.id: idx for idx, (_sec, blk) in enumerate(pairs)}
-        sections = {blk.id: sec for sec, blk in pairs}
-        maps[str(rid)] = (order, len(pairs), sections)
+        blocks = doc.iter_blocks()
+        order = {blk.id: idx for idx, (_sec, blk) in enumerate(blocks)}
+        sections = {blk.id: sec for sec, blk in blocks}
+        maps[str(item.id)] = (str(revision.id), order, len(blocks), sections)
     return maps
 
 
@@ -378,9 +406,9 @@ def _progress(item: LibraryItem, maps: dict[str, _RevMap]) -> int:
         return 100
     rp = item.reading_position
     if rp and rp.get("revision_id") and rp.get("block_id"):
-        m = maps.get(str(rp["revision_id"]))
+        m = maps.get(str(item.id))
         if m is not None:
-            order, total, _sections = m
+            _revision_id, order, total, _sections = m
             bid = rp["block_id"]
             if total > 0 and bid in order:
                 return min(100, (100 * (order[bid] + 1)) // total)
@@ -391,20 +419,25 @@ def _last_position(item: LibraryItem, maps: dict[str, _RevMap]) -> LastPosition 
     rp = item.reading_position
     if not rp or not rp.get("revision_id") or not rp.get("block_id"):
         return None
-    rid = str(rp["revision_id"])
     bid = str(rp["block_id"])
     mode = rp.get("mode") or rp.get("view_mode") or "translation"
-    section_display = ""
-    m = maps.get(rid)
-    if m is not None and bid in m[2]:
-        sec = m[2][bid]
-        num = (sec.heading.number or "").strip()
-        title = (sec.heading.title or "").strip()
-        label = f"§{num} {title}".strip() if (num or title) else ""
-        section_display = label
+    m = maps.get(str(item.id))
+    if m is None:
+        return None
+    revision_id, order, _total, sections = m
+    if bid not in order:
+        return None
+    sec = sections[bid]
+    num = (sec.heading.number or "").strip()
+    title = (sec.heading.title or "").strip()
+    section_display = f"§{num} {title}".strip() if (num or title) else ""
     saved_at = rp.get("saved_at") or (item.updated_at.isoformat() if item.updated_at else "")
     return LastPosition(
-        revision_id=rid, block_id=bid, mode=mode, section_display=section_display, saved_at=saved_at
+        revision_id=revision_id,
+        block_id=bid,
+        mode=mode,
+        section_display=section_display,
+        saved_at=saved_at,
     )
 
 
@@ -437,25 +470,15 @@ def _summary(
 
 
 async def _quality_of(db: DbDep, item: LibraryItem, paper: Paper) -> str | None:
-    rev_id: str | None = None
-    if item.reading_position and item.reading_position.get("revision_id"):
-        rev_id = str(item.reading_position["revision_id"])
-    elif paper.latest_revision_id:
-        rev_id = str(paper.latest_revision_id)
-    if rev_id is None:
-        return None
-    return (
-        await db.execute(
-            select(DocumentRevision.quality_level).where(DocumentRevision.id == rev_id)
-        )
-    ).scalar_one_or_none()
+    revision = await get_preferred_item_revision(db, item=item, paper=paper)
+    return revision.quality_level if revision is not None else None
 
 
 async def _summary_for(db: DbDep, item: LibraryItem) -> LibraryItemSummary:
     paper = await db.get(Paper, item.paper_id)
     assert paper is not None
     quality = await _quality_of(db, item, paper)
-    maps = await _reading_maps(db, [item])
+    maps = await _reading_maps(db, [(item, paper)])
     return _summary(item, paper, quality, maps)
 
 
@@ -538,7 +561,7 @@ async def list_items(
     rows = (await db.execute(stmt)).all()
     has_next = len(rows) > limit
     kept = rows[:limit]
-    maps = await _reading_maps(db, [r[0] for r in kept])
+    maps = await _reading_maps(db, [(r[0], r[1]) for r in kept])
     items = [_summary(r[0], r[1], r[2], maps) for r in kept]
 
     next_cursor: str | None = None
@@ -795,9 +818,11 @@ async def patch_item(
 
 # ============================================================================
 # 削除(§5.5)。論文を再取り込みした際に旧翻訳・生成物を再利用しないよう、同じ Paper を
-# 参照する項目を含めて論文単位で完全削除する。取り込み中(queued/waiting_quota/running)の
+# 参照する項目を含めて論文単位で完全削除する。取り込み中
+# (queued/waiting_quota/waiting_input/running)の
 # 項目に対する呼び出しは取り込みキャンセルとして扱う(docs/08 §2.2)。
-# 未着手(queued/waiting_quota)のジョブは行ごと消えるため claim() が確実に空振りする
+# 未着手・入力待ち(queued/waiting_quota/waiting_input)のジョブは行ごと消えるため
+# claim() が確実に空振りする
 # (main.py run_job の claim=None 経路)。running は次回 DB 書き込みで LookupError となり
 # ベストエフォートで中断(main.py の job_gone_after_cancel 経路)。
 # ============================================================================

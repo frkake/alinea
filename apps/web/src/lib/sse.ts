@@ -11,12 +11,14 @@ import { useEffect, useRef, useState } from "react";
 export type SSEEventType =
   | "job.progress"
   | "job.failed"
+  | "job.updated"
   | "translation.unit_completed"
   | "notification.created";
 
 export const SSE_EVENT_TYPES: readonly SSEEventType[] = [
   "job.progress",
   "job.failed",
+  "job.updated",
   "translation.unit_completed",
   "notification.created",
 ];

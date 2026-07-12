@@ -103,7 +103,8 @@ export function AppHeader({ showSearch = true, initials = "YK", onMenuClick }: A
   const open = showSearch && focused && trimmedValue.length > 0 && !isSearchPage;
   const items = snapshot?.items ?? [];
   const total = snapshot?.total ?? null;
-  const footerShown = total !== null && !previewQuery.isError && !previewQuery.isFetching && items.length > 0;
+  const footerShown =
+    total !== null && !previewQuery.isError && !previewQuery.isFetching && items.length > 0;
   const maxIndex = footerShown ? items.length : items.length - 1;
 
   const closeDropdown = () => {
@@ -162,6 +163,9 @@ export function AppHeader({ showSearch = true, initials = "YK", onMenuClick }: A
         alignItems: "center",
         gap: 14,
         padding: "0 18px",
+        minWidth: 0,
+        maxWidth: "100%",
+        overflow: "hidden",
       }}
     >
       {onMenuClick ? (
@@ -183,14 +187,10 @@ export function AppHeader({ showSearch = true, initials = "YK", onMenuClick }: A
         </button>
       ) : null}
 
-      <AlineaLogo width={198} />
+      <AlineaLogo width={onMenuClick ? 144 : 198} />
 
       {showSearch ? (
-        <div
-          ref={searchWrapRef}
-          style={{ position: "relative" }}
-          onKeyDown={onWrapperKeyDown}
-        >
+        <div ref={searchWrapRef} style={{ position: "relative" }} onKeyDown={onWrapperKeyDown}>
           <SearchBox
             variant="global"
             value={value}

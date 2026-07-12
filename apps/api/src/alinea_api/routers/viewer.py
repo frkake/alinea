@@ -12,6 +12,7 @@ import datetime as dt
 import hashlib
 import json
 import re
+import unicodedata
 from typing import Any, cast
 
 from alinea_core.db.models import (
@@ -24,20 +25,39 @@ from alinea_core.db.models import (
     ReadingSession,
     ResourceLink,
     TranslationSet,
+    TranslationUnit,
     User,
 )
+from alinea_core.db.revisions import get_latest_paper_revision, normalize_uuid
 from alinea_core.document.blocks import Block, DocumentContent, Section
 from alinea_core.document.plaintext import inline_to_plain
 from alinea_core.ingest import joblog
+from alinea_core.translation import (
+    content_to_text_ja,
+    is_reference_section,
+    parse_table_grid,
+    validate_table_translation_content,
+)
 from alinea_core.translation.pipeline import (
     BLOCKING_FLAGS,
+    ScopeResult,
+    TranslationPlan,
     compute_progress,
     compute_translation_scope,
+    find_effective_set,
     resolve_display_units,
+    resolve_effective_translation_plan,
+    resolve_translation_plan,
+    resolve_translation_set_units,
+    selectable_translation_section_ids,
+    translation_execution_scope_from_plan,
+    translation_plan_awaits_section_selection,
+    translation_scope_from_plan,
 )
 from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import JSONResponse
-from sqlalchemy import func, or_, select
+from pydantic import ValidationError
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from alinea_api.deps import CurrentUser, DbDep
@@ -55,6 +75,7 @@ from alinea_api.schemas.viewer import (
     RevisionInfo,
     RevisionListItem,
     RevisionListResponse,
+    SectionSelectionState,
     TimelineEntry,
     TocNode,
     ViewerCounts,
@@ -67,6 +88,10 @@ from alinea_api.schemas.viewer import (
 )
 
 router = APIRouter(tags=["viewer"])
+
+# Bump whenever `_block_wire` changes the computed document representation without changing
+# `revision.content` (for example, canonical source grids added by the API).
+_DOCUMENT_WIRE_VERSION = 2
 
 
 # --- 認可・解決ヘルパ(translations ルータからも import する) -----------------------
@@ -106,13 +131,33 @@ async def resolve_accessible_revision(
     return revision, paper
 
 
+async def _resolve_paper_latest_revision(
+    db: AsyncSession,
+    paper: Paper,
+) -> DocumentRevision:
+    revision = await get_latest_paper_revision(db, paper)
+    if revision is None:
+        raise ProblemException("not_found")
+    return revision
+
+
 def _as_content(revision: DocumentRevision) -> DocumentContent:
-    return DocumentContent.model_validate(revision.content)
+    try:
+        content = DocumentContent.model_validate(revision.content)
+        # Core owns revision-global identifier validation. Running its scope pass here keeps
+        # every Viewer content traversal fail-closed instead of silently taking the first ID.
+        compute_translation_scope(content)
+    except ValueError as exc:
+        raise ProblemException("validation_error", detail="文書構造が不正です") from exc
+    return content
 
 
 def _document_etag(revision: DocumentRevision, section_id: str | None) -> str:
     payload = json.dumps(
-        revision.content,
+        {
+            "wire_version": _DOCUMENT_WIRE_VERSION,
+            "content": revision.content,
+        },
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
@@ -156,9 +201,6 @@ def _section_display(section: Section) -> str:
     return title
 
 
-_REFERENCE_HEADING_RE = re.compile(
-    r"\b(references|bibliography|works cited|literature cited)\b", re.IGNORECASE
-)
 _REF_MARKER_RE = re.compile(r"^\s*(?:\[(\d+)\]|(\d+)[.)])\s*")
 _REF_SPLIT_RE = re.compile(r"(?m)(?=^\s*(?:\[\d+\]|\d+[.)])\s+)")
 _INLINE_REF_SPLIT_RE = re.compile(r"\s+(?=(?:\[\d+\]|\d+[.)])\s+[A-Z])")
@@ -203,14 +245,6 @@ def _plain_block_text(block: Block) -> str:
     if block.latex:
         return block.latex
     return ""
-
-
-def _is_reference_section(section: Section) -> bool:
-    title = (section.heading.title or "").strip()
-    if section.id == "sec-refs" or _REFERENCE_HEADING_RE.search(title):
-        return True
-    blocks = [b for b in section.blocks if b.type != "heading"]
-    return bool(blocks) and all(b.type == "reference_entry" for b in blocks)
 
 
 def _strip_reference_marker(raw: str) -> str:
@@ -290,14 +324,11 @@ def _reference_records(content: DocumentContent) -> list[dict[str, Any]]:
         return records
 
     records = []
-    for section in content.sections:
-        stack = [section]
-        while stack:
-            sec = stack.pop(0)
-            stack[0:0] = list(sec.sections)
-            if not _is_reference_section(sec):
-                continue
-            for blk in sec.blocks:
+
+    def collect(section: Section, under_reference: bool) -> None:
+        current_reference = under_reference or is_reference_section(section)
+        if current_reference:
+            for blk in section.blocks:
                 if blk.type == "heading":
                     continue
                 for raw in _split_reference_text(_plain_block_text(blk)):
@@ -309,6 +340,11 @@ def _reference_records(content: DocumentContent) -> list[dict[str, Any]]:
                             "raw": raw,
                         }
                     )
+        for child in section.sections:
+            collect(child, current_reference)
+
+    for section in content.sections:
+        collect(section, False)
     return records
 
 
@@ -450,8 +486,12 @@ def _decorate_inlines(
         if data.get("t") == "citation" and not data.get("v"):
             data["v"] = citation_labels.get(ref) or _display_from_cite_key(ref)
         elif data.get("t") == "ref" and not data.get("v"):
-            data["v"] = ref_labels.get(ref) or ref_labels.get(f"#{ref}") or _fallback_ref_display(
-                ref, data.get("kind") if isinstance(data.get("kind"), str) else None
+            data["v"] = (
+                ref_labels.get(ref)
+                or ref_labels.get(f"#{ref}")
+                or _fallback_ref_display(
+                    ref, data.get("kind") if isinstance(data.get("kind"), str) else None
+                )
             )
         children = data.get("children")
         if isinstance(children, list):
@@ -476,6 +516,10 @@ def _block_wire(
         data["items"] = [
             _decorate_inlines(list(item), citation_labels, ref_labels) for item in block.items
         ]
+    if block.type == "table":
+        source_grid = parse_table_grid(block.raw)
+        if source_grid.supported:
+            data["source_grid"] = source_grid.model_dump(mode="json")
     if block.type in ("figure", "table", "equation") and block.asset_key:
         data["asset_url"] = asset_url(block.asset_key)
     return data
@@ -592,37 +636,96 @@ async def _effective_set(
     db: AsyncSession, revision_id: str, style: str, user_id: str
 ) -> TranslationSet | None:
     """(revision, style) の表示対象セット。personal フォークがあれば優先、無ければ shared。"""
-    rows = (
+    return await find_effective_set(db, revision_id, style, user_id)
+
+
+def _invalid_waiting_selection() -> ProblemException:
+    return ProblemException("conflict", detail="セクション選択待ちの状態が壊れています。")
+
+
+async def _waiting_section_selection_set(
+    db: AsyncSession,
+    *,
+    item: LibraryItem,
+    paper: Paper,
+    revision: DocumentRevision,
+    user: User,
+    content: DocumentContent,
+    pages: int | None,
+) -> TranslationSet | None:
+    """Resolve only the owner's exact, durable waiting-input selection checkpoint."""
+
+    job = (
         (
             await db.execute(
-                select(TranslationSet).where(
-                    TranslationSet.revision_id == revision_id,
-                    TranslationSet.style == style,
-                    or_(
-                        TranslationSet.scope == "shared",
-                        TranslationSet.user_id == user_id,
-                    ),
+                select(Job)
+                .where(
+                    Job.kind == "ingest",
+                    Job.status == "waiting_input",
+                    Job.user_id == user.id,
+                    Job.paper_id == item.paper_id,
+                    Job.library_item_id == item.id,
                 )
+                .order_by(Job.created_at.desc(), Job.id.desc())
+                .limit(1)
             )
         )
         .scalars()
-        .all()
+        .first()
     )
-    personal = next((s for s in rows if s.scope == "personal"), None)
-    if personal is not None:
-        return personal
-    return next((s for s in rows if s.scope == "shared"), None)
+    if job is None:
+        return None
+    if job.stage != "selecting_sections":
+        raise _invalid_waiting_selection()
+
+    payload = job.payload if isinstance(job.payload, dict) else None
+    checkpoints = payload.get("_checkpoint") if payload is not None else None
+    checkpoint = checkpoints.get("section_selection") if isinstance(checkpoints, dict) else None
+    if not isinstance(checkpoint, dict) or set(checkpoint) != {
+        "status",
+        "set_id",
+        "revision_id",
+    }:
+        raise _invalid_waiting_selection()
+    set_id = normalize_uuid(checkpoint.get("set_id"))
+    revision_id = normalize_uuid(checkpoint.get("revision_id"))
+    if checkpoint.get("status") != "pending" or set_id is None or revision_id != str(revision.id):
+        raise _invalid_waiting_selection()
+
+    tset = await db.get(TranslationSet, set_id)
+    if (
+        tset is None
+        or tset.scope != "personal"
+        or str(tset.user_id or "") != str(user.id)
+        or str(tset.revision_id) != str(revision.id)
+        or tset.status != "pending"
+        or (paper.visibility == "public" and tset.style != "natural")
+        or not isinstance(tset.plan, dict)
+    ):
+        raise _invalid_waiting_selection()
+    try:
+        plan = TranslationPlan.model_validate(tset.plan)
+    except ValidationError as exc:
+        raise _invalid_waiting_selection() from exc
+    if (
+        plan.pages != pages
+        or resolve_translation_plan(content, plan, pages=pages) != plan
+        or not translation_plan_awaits_section_selection(content, plan)
+    ):
+        raise _invalid_waiting_selection()
+    return tset
 
 
-async def _displayable_block_ids(
-    db: AsyncSession, revision_id: str, style: str, user_id: str, in_scope: set[str]
-) -> set[str]:
-    units = await resolve_display_units(db, revision_id, style, user_id)
-    return {
-        bid
+async def _effective_units(
+    db: AsyncSession, tset: TranslationSet
+) -> tuple[dict[str, TranslationUnit], dict[str, TranslationUnit]]:
+    units = await resolve_translation_set_units(db, tset)
+    displayable = {
+        bid: unit
         for bid, unit in units.items()
-        if bid in in_scope and not (set(unit.quality_flags or []) & BLOCKING_FLAGS)
+        if not (set(unit.quality_flags or []) & BLOCKING_FLAGS)
     }
+    return units, displayable
 
 
 async def _annotation_maps(
@@ -653,26 +756,57 @@ async def _annotation_maps(
 
 def _build_toc(
     content: DocumentContent,
-    scope: Any,
-    displayable: set[str],
+    primary_scope: ScopeResult,
+    full_scope: ScopeResult,
+    execution_scope: ScopeResult,
+    displayable: dict[str, TranslationUnit],
     ann_counts: dict[str, int],
     bookmarked: set[str],
 ) -> list[TocNode]:
-    section_scope = {s["section_id"]: s["block_ids"] for s in scope.sections}
-    appendix = set(scope.appendix_section_ids)
+    primary_by_section = {
+        str(section["section_id"]): list(section["block_ids"]) for section in primary_scope.sections
+    }
+    eligible_by_section = {
+        str(section["section_id"]): list(section["block_ids"]) for section in full_scope.sections
+    }
+    displayable_ids = set(displayable)
+    requested_ids = (
+        set(primary_scope.in_scope_block_ids)
+        | set(execution_scope.in_scope_block_ids)
+        | displayable_ids
+    )
+
+    def normalized_title(value: str | None) -> str:
+        return " ".join(unicodedata.normalize("NFKC", value or "").split()).casefold()
 
     def build(section: Section) -> TocNode:
-        scope_blocks = section_scope.get(section.id, [])
-        translated = bool(scope_blocks) and all(b in displayable for b in scope_blocks)
+        primary_blocks = primary_by_section.get(section.id, [])
+        eligible_blocks = eligible_by_section.get(section.id, [])
+        translated = bool(eligible_blocks) and all(
+            block_id in displayable_ids for block_id in eligible_blocks
+        )
         number = (section.heading.number or "").strip() or None
+        heading = (
+            section.blocks[0] if section.blocks and section.blocks[0].type == "heading" else None
+        )
+        heading_matches = (
+            heading is not None
+            and bool(normalized_title(heading.title))
+            and normalized_title(heading.title) == normalized_title(section.heading.title)
+        )
+        heading_unit = (
+            displayable.get(heading.id) if heading_matches and heading is not None else None
+        )
+        title_ja = (heading_unit.text_ja or "").strip() if heading_unit is not None else ""
         return TocNode(
             section_id=section.id,
             number=number,
-            title_ja=None,  # セクション見出しは翻訳ユニットを持たない(見出しは構造メタ)
+            title_ja=title_ja or None,
             title_en=section.heading.title,
             translated=translated,
-            in_progress_denominator=bool(scope_blocks),
-            on_demand=section.id in appendix,
+            in_progress_denominator=bool(primary_blocks),
+            on_demand=bool(eligible_blocks)
+            and any(block_id not in requested_ids for block_id in eligible_blocks),
             annotation_count=ann_counts.get(section.id, 0),
             bookmarked=section.id in bookmarked,
             children=[build(sub) for sub in section.sections],
@@ -705,35 +839,96 @@ async def get_viewer(item_id: str, user: CurrentUser, db: DbDep) -> ViewerInit:
     paper = await db.get(Paper, item.paper_id)
     if paper is None:
         raise ProblemException("not_found")
-    revision_id = paper.latest_revision_id
-    revision = await db.get(DocumentRevision, revision_id) if revision_id else None
-    if revision is None:
-        raise ProblemException("not_found")
+    revision = await _resolve_paper_latest_revision(db, paper)
     content = _as_content(revision)
 
-    scope = compute_translation_scope(content)
-    in_scope = set(scope.in_scope_block_ids)
+    raw_pages = (revision.stats or {}).get("pages")
+    pages = raw_pages if isinstance(raw_pages, int) and not isinstance(raw_pages, bool) else None
     style = await _resolve_style(db, user)
-    tset = await _effective_set(db, str(revision.id), style, str(user.id))
+    tset = await _waiting_section_selection_set(
+        db,
+        item=item,
+        paper=paper,
+        revision=revision,
+        user=user,
+        content=content,
+        pages=pages,
+    )
+    if tset is None:
+        tset = await _effective_set(db, str(revision.id), style, str(user.id))
+    else:
+        style = tset.style
+    full_scope = compute_translation_scope(content)
+    if tset is not None:
+        primary_scope = translation_scope_from_plan(content, tset.plan, pages=pages)
+        effective_plan = await resolve_effective_translation_plan(
+            db,
+            tset,
+            content,
+            pages=pages,
+        )
+        execution_scope = translation_execution_scope_from_plan(
+            content,
+            effective_plan,
+            pages=pages,
+        )
+    else:
+        primary_scope = full_scope
+        execution_scope = full_scope
+    primary_ids = set(primary_scope.in_scope_block_ids)
 
     translation: ViewerTranslation | None = None
-    displayable: set[str] = set()
+    displayable: dict[str, TranslationUnit] = {}
     if tset is not None:
-        displayable = await _displayable_block_ids(
-            db, str(revision.id), style, str(user.id), in_scope
+        stored_plan = resolve_translation_plan(content, tset.plan, pages=pages)
+        selection_required = translation_plan_awaits_section_selection(content, stored_plan)
+        section_selection = (
+            SectionSelectionState(
+                required=selection_required,
+                selectable_section_ids=selectable_translation_section_ids(content, stored_plan),
+                selected_section_ids=list(stored_plan.target_section_ids),
+            )
+            if (
+                stored_plan.suggest_section_selection_over_30_pages
+                and stored_plan.pages is not None
+                and stored_plan.pages > 30
+            )
+            else None
         )
+        effective_units, displayable = await _effective_units(db, tset)
+        covered_primary_ids = set(effective_units) & primary_ids
+        primary_units = [
+            unit for block_id, unit in effective_units.items() if block_id in primary_ids
+        ]
+        if selection_required:
+            status = "pending"
+        elif not primary_ids or covered_primary_ids >= primary_ids:
+            status = "complete"
+        elif covered_primary_ids:
+            status = "partial"
+        else:
+            status = "pending"
         translation = ViewerTranslation(
             style=style,
             set_id=str(tset.id),
-            status=tset.status,
+            status=status,
             # §13.1: 分子 = スコープ内の表示可能ユニット数、分母 = スコープ対象ブロック数。
-            progress_pct=compute_progress(
-                [{"quality_flags": []}] * len(displayable), len(in_scope)
+            progress_pct=(
+                0 if selection_required else compute_progress(primary_units, len(primary_ids))
             ),
+            section_selection=section_selection,
         )
 
     ann_counts, bookmarked = await _annotation_maps(db, str(item.id), content)
-    toc = _build_toc(content, scope, displayable, ann_counts, bookmarked)
+    toc = _build_toc(
+        content,
+        primary_scope,
+        full_scope,
+        execution_scope,
+        displayable,
+        ann_counts,
+        bookmarked,
+    )
 
     stats = revision.stats or {}
     figure_count = sum(1 for _s, b in content.iter_blocks() if b.type == "figure")
@@ -811,7 +1006,9 @@ async def list_revisions(paper_id: str, user: CurrentUser, db: DbDep) -> Revisio
         .scalars()
         .all()
     )
-    current = str(paper.latest_revision_id) if paper.latest_revision_id else None
+    current = None
+    if paper.latest_revision_id is not None:
+        current = str((await _resolve_paper_latest_revision(db, paper)).id)
     return RevisionListResponse(
         items=[
             RevisionListItem(
@@ -933,12 +1130,17 @@ async def list_figures(revision_id: str, user: CurrentUser, db: DbDep) -> Figure
             continue
         unit = units.get(blk.id)
         caption_ja: str | None = None
-        if (
-            unit is not None
-            and unit.text_ja
-            and not (set(unit.quality_flags or []) & BLOCKING_FLAGS)
-        ):
-            caption_ja = unit.text_ja
+        if unit is not None and not (set(unit.quality_flags or []) & BLOCKING_FLAGS):
+            if blk.type == "table" and isinstance(unit.content_ja, dict):
+                typed = validate_table_translation_content(
+                    unit.content_ja,
+                    parse_table_grid(blk.raw),
+                )
+                if typed is not None and typed.caption is not None:
+                    caption_ja = content_to_text_ja(typed.caption) or None
+            elif unit.text_ja:
+                # Figure units and legacy Inline[] table captions retain their old projection.
+                caption_ja = unit.text_ja
         number = (blk.number or "").strip()
         display = (
             (f"図{number}" if blk.type == "figure" else f"表{number}")

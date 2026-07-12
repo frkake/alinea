@@ -245,6 +245,29 @@ async def test_generate_article_enqueues_job_with_preset_defaults(
     assert job.payload["include_math"] is True  # implementer 既定(plans/07 §4.1)
 
 
+async def test_generate_article_rejects_foreign_latest_revision(
+    article_ctx: SimpleNamespace,
+) -> None:
+    """壊れた latest_revision_id から別の私有論文を記事化しない。"""
+    foreign_paper = await factories.make_paper(
+        article_ctx.db,
+        owner=article_ctx.user,
+        visibility="private",
+        title="Do not leak this private paper",
+    )
+    foreign_revision = await factories.make_revision(article_ctx.db, paper=foreign_paper)
+    article_ctx.paper.latest_revision_id = foreign_revision.id
+    await article_ctx.db.commit()
+
+    resp = await article_ctx.client.post(
+        f"/api/library-items/{article_ctx.item_id}/article",
+        json={"preset": "beginner"},
+    )
+
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["code"] == "not_found"
+
+
 async def test_generate_article_conflicts_when_article_exists(
     article_ctx: SimpleNamespace,
 ) -> None:

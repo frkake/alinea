@@ -111,7 +111,7 @@ def messy_output(draw: DrawFn, tokens: list[str]) -> str:
 
 
 # 独立実装 oracle(正規表現。plans/12 §7.2 HP-04)
-_ORACLE_RE = re.compile(r"⟦/?(?:MATH|CIT|REF|FN|URL|CODE|EM):[A-Za-z0-9_.#:-]+⟧")
+_ORACLE_RE = re.compile(r"⟦/?(?:MATH|CIT|REF|FN|URL|CODE|EM):[A-Za-z0-9_.#:/-]+⟧")
 
 
 def _expected_multiset(tokens: list[dict[str, Any]]) -> Counter[str]:
@@ -223,7 +223,40 @@ def test_duplicate_ref_gets_hash_suffix() -> None:
         ]
     )
     assert [te.token for te in enc.tokens] == ["⟦REF:fig-2⟧", "⟦REF:fig-2#2⟧"]
-    assert verify_tokens(enc, enc.text).ok
+
+
+def test_unsafe_reference_ids_use_opaque_tokens_and_round_trip() -> None:
+    inlines = [
+        {"t": "text", "v": "See "},
+        {"t": "ref", "kind": "section", "ref": "continuous model"},
+        {"t": "text", "v": " and "},
+        {"t": "citation", "ref": "著者 2026"},
+        {"t": "text", "v": "."},
+    ]
+
+    encoded = protect(inlines)
+
+    assert [entry.token for entry in encoded.tokens] == ["⟦REF:r-1⟧", "⟦CIT:c-1⟧"]
+    assert verify_tokens(encoded, encoded.text).ok is True
+    assert restore(encoded, encoded.text) == inlines
+
+
+def test_adjacent_atomic_tokens_are_separated_without_leaking_synthetic_space() -> None:
+    inlines = [
+        {"t": "text", "v": "Robots "},
+        {"t": "citation", "ref": "paper-a"},
+        {"t": "citation", "ref": "doi:10.1000/example"},
+        {"t": "text", "v": "."},
+    ]
+
+    encoded = protect(inlines)
+
+    assert encoded.text == "Robots ⟦CIT:paper-a⟧ ⟦CIT:doi:10.1000/example⟧."
+    assert encoded.tokens[1].separator_before is True
+    restored = restore(encoded, encoded.text)
+    assert [item for item in restored if item["t"] != "text"] == inlines[1:3]
+    assert "".join(item["v"] for item in restored if item["t"] == "text") == "Robots ."
+    assert verify_tokens(encoded, encoded.text).ok
 
 
 def test_latex_colon_ref_roundtrips() -> None:
@@ -400,7 +433,12 @@ def test_hp02_order_permutation_accepted(
     assert result.ok, result
     restored = restore(protected, output)
     # text 部分が応答テキスト(トークン除去後)と一致
-    assert "".join(i["v"] for i in restored if i["t"] == "text") == TOKEN_RE.sub("", output)
+    expected_text = (
+        "".join(i["v"] for i in inlines if i["t"] == "text")
+        if output == protected.text
+        else TOKEN_RE.sub("", output)
+    )
+    assert "".join(i["v"] for i in restored if i["t"] == "text") == expected_text
     # 非 text インライン集合(id 付き)が元と一致(順序は問わない)
     original_nontext = [i for i in inlines if i["t"] != "text"]
     restored_nontext = [i for i in restored if i["t"] != "text"]

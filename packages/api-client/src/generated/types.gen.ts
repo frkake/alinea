@@ -3581,6 +3581,52 @@ export type SearchResponse = {
 };
 
 /**
+ * SectionSelectionRequest
+ */
+export type SectionSelectionRequest = {
+    /**
+     * Section Ids
+     */
+    section_ids: Array<string>;
+};
+
+/**
+ * SectionSelectionResponse
+ */
+export type SectionSelectionResponse = {
+    /**
+     * Set Id
+     */
+    set_id: string;
+    /**
+     * Job Id
+     */
+    job_id: string;
+    /**
+     * Section Ids
+     */
+    section_ids: Array<string>;
+};
+
+/**
+ * SectionSelectionState
+ */
+export type SectionSelectionState = {
+    /**
+     * Required
+     */
+    required: boolean;
+    /**
+     * Selectable Section Ids
+     */
+    selectable_section_ids: Array<string>;
+    /**
+     * Selected Section Ids
+     */
+    selected_section_ids: Array<string>;
+};
+
+/**
  * SectionTranslateRequest
  */
 export type SectionTranslateRequest = {
@@ -4097,6 +4143,7 @@ export type ViewerTranslation = {
      * Progress Pct
      */
     progress_pct: number;
+    section_selection?: SectionSelectionState | null;
 };
 
 /**
@@ -5306,6 +5353,36 @@ export type ViewerListReferencesResponses = {
 };
 
 export type ViewerListReferencesResponse = ViewerListReferencesResponses[keyof ViewerListReferencesResponses];
+
+export type TranslationsSelectSectionsData = {
+    body: SectionSelectionRequest;
+    path: {
+        /**
+         * Set Id
+         */
+        set_id: string;
+    };
+    query?: never;
+    url: '/api/translation-sets/{set_id}/section-selection';
+};
+
+export type TranslationsSelectSectionsErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type TranslationsSelectSectionsError = TranslationsSelectSectionsErrors[keyof TranslationsSelectSectionsErrors];
+
+export type TranslationsSelectSectionsResponses = {
+    /**
+     * Successful Response
+     */
+    202: SectionSelectionResponse;
+};
+
+export type TranslationsSelectSectionsResponse = TranslationsSelectSectionsResponses[keyof TranslationsSelectSectionsResponses];
 
 export type TranslationsListSetsData = {
     body?: never;

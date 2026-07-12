@@ -173,7 +173,9 @@ function CardHeader({ item, processing }: { item: LibraryItemSummary; processing
           justifyContent: "center",
           fontSize: 9,
           background: processing ? "var(--pr-bg-app-alt)" : "var(--pr-bg-thumb)",
-          border: processing ? "1px dashed var(--pr-border-dashed)" : "1px solid var(--pr-border-thumb)",
+          border: processing
+            ? "1px dashed var(--pr-border-dashed)"
+            : "1px solid var(--pr-border-thumb)",
           color: "var(--pr-text-muted)",
         }}
       >
@@ -205,6 +207,7 @@ const STAGE_ORDER = [
   "structuring",
   "translating_abstract",
   "readable",
+  "selecting_sections",
   "translating_body",
   "complete",
 ] as const;
@@ -244,7 +247,9 @@ function ProcessingBody({
   const bibDone = stageAtLeast(pipeline.stage, "structuring");
   const abstractDone = stageAtLeast(pipeline.stage, "readable");
   let thirdLine: string;
-  if (pipeline.status === "waiting_quota") {
+  if (pipeline.status === "waiting_input") {
+    thirdLine = "セクション選択待ち";
+  } else if (pipeline.status === "waiting_quota") {
     thirdLine = "クォータ待機中";
   } else if (pipeline.stage === "translating_body") {
     thirdLine = `本文翻訳中 ${pipeline.progress_pct}%`;
@@ -434,8 +439,8 @@ function ExpandedBody({ item }: { item: LibraryItemSummary }) {
             overflow: "hidden",
           }}
         >
-          <AiMark /> <strong style={{ color: "var(--pr-acc)" }}>3行要約</strong> — ①{" "}
-          {lines[0]} ② {lines[1]} ③ {lines[2]}
+          <AiMark /> <strong style={{ color: "var(--pr-acc)" }}>3行要約</strong> — ① {lines[0]} ②{" "}
+          {lines[1]} ③ {lines[2]}
         </div>
       ) : null}
       {item.tags.length > 0 || suggested ? (
@@ -490,7 +495,5 @@ function SuggestedTagText({ tag, withPrefix }: { tag: string; withPrefix: boolea
       </span>
     );
   }
-  return (
-    <span style={{ color: "var(--pr-acc)", fontWeight: 600 }}>{tag} +</span>
-  );
+  return <span style={{ color: "var(--pr-acc)", fontWeight: 600 }}>{tag} +</span>;
 }

@@ -3,20 +3,10 @@ import katex from "katex";
 const BASE_MACROS: Record<string, string> = {
   "\\bm": "\\boldsymbol{#1}",
   "\\mathbbm": "\\mathbb{#1}",
-  "\\student": "\\operatorname{student}",
-  "\\studentold": "\\operatorname{student}_{\\operatorname{old}}",
-  "\\teacher": "\\operatorname{teacher}",
-  "\\verifier": "\\operatorname{verifier}",
-  "\\ps": "p_s",
-  "\\nll": "\\operatorname{NLL}",
-  "\\Yreach": "\\mathcal{Y}_{\\operatorname{reach}}",
-  "\\Dscaf": "\\mathcal{D}_{\\operatorname{scaf}}",
 };
 
-const BLOCK_ENV_RE =
-  /\\begin\{(?:aligned|alignedat|array|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|cases|split|gathered|smallmatrix)\}/;
-const UNESCAPED_AMP_RE = /(^|[^\\])&/;
 const UNDEFINED_COMMAND_RE = /Undefined control sequence: (\\[A-Za-z]+|\\.)/;
+const ENVIRONMENT_BOUNDARY_RE = /^\\(begin|end)\{([A-Za-z]+\*?)\}/;
 
 function stripRenderOnlyCommands(latex: string): string {
   return latex
@@ -25,8 +15,40 @@ function stripRenderOnlyCommands(latex: string): string {
     .trim();
 }
 
+function hasTopLevelAlignmentTab(latex: string): boolean {
+  const environments: string[] = [];
+  let braceDepth = 0;
+  let index = 0;
+  while (index < latex.length) {
+    const char = latex[index];
+    if (char === "\\") {
+      const boundary = latex.slice(index).match(ENVIRONMENT_BOUNDARY_RE);
+      if (boundary) {
+        const [, kind, name] = boundary;
+        if (kind === "begin") environments.push(name ?? "");
+        else if (environments.at(-1) === name) environments.pop();
+        index += boundary[0].length;
+        continue;
+      }
+      if (latex[index + 1] === "\\") {
+        index += 2;
+        continue;
+      }
+      index += 1;
+      while (index < latex.length && /[A-Za-z@]/.test(latex[index] ?? "")) index += 1;
+      if (index < latex.length && !/[A-Za-z@]/.test(latex[index - 1] ?? "")) index += 1;
+      continue;
+    }
+    if (char === "{") braceDepth += 1;
+    else if (char === "}") braceDepth = Math.max(0, braceDepth - 1);
+    else if (char === "&" && braceDepth === 0 && environments.length === 0) return true;
+    index += 1;
+  }
+  return false;
+}
+
 function shouldWrapAligned(latex: string, display: boolean): boolean {
-  return display && UNESCAPED_AMP_RE.test(latex) && !BLOCK_ENV_RE.test(latex);
+  return display && hasTopLevelAlignmentTab(latex);
 }
 
 function prepareLatex(latex: string, display: boolean): string {
@@ -42,17 +64,10 @@ function replaceUndefinedCommand(latex: string, command: string): string {
   return latex.replace(pattern, `\\operatorname{${name}}`);
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function renderFallback(latex: string, display: boolean): string {
+function renderFallback(display: boolean): string {
   const tag = display ? "div" : "span";
-  return `<${tag} class="alinea-math-fallback">${escapeHtml(latex)}</${tag}>`;
+  const label = "数式を表示できません";
+  return `<${tag} class="alinea-math-fallback" role="img" aria-label="${label}">［数式］</${tag}>`;
 }
 
 /**
@@ -89,7 +104,7 @@ export function renderMath(latex: string, options?: { display?: boolean }): stri
       break;
     }
   }
-  return renderFallback(latex, display);
+  return renderFallback(display);
 }
 
 /** ブロック数式(独立行・中央寄せ)。 */

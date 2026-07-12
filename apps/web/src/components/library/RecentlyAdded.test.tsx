@@ -57,7 +57,11 @@ describe("RecentlyAdded variants", () => {
         weekCount={1}
         items={[
           makeItem({
-            summary_3line: ["整流フローをT2I基盤モデルへ拡張", "ノイズ配分を再重み付け", "高解像度でDiTを上回る品質"],
+            summary_3line: [
+              "整流フローをT2I基盤モデルへ拡張",
+              "ノイズ配分を再重み付け",
+              "高解像度でDiTを上回る品質",
+            ],
             tags: ["flow"],
             suggested_tags: ["cs.CV"],
           }),
@@ -147,6 +151,34 @@ describe("RecentlyAdded variants", () => {
       />,
     );
     expect(screen.getByText("クォータ待機中")).toBeInTheDocument();
+  });
+
+  test("waiting_input shows セクション選択待ち and keeps the viewer action", async () => {
+    const user = userEvent.setup();
+    const onOpen = vi.fn();
+    renderWithClient(
+      <RecentlyAdded
+        weekCount={1}
+        items={[
+          makeItem({
+            pipeline: {
+              job_id: "job_1",
+              stage: "selecting_sections",
+              status: "waiting_input",
+              progress_pct: 45,
+              readable_upto: null,
+            },
+          }),
+        ]}
+        onOpen={onOpen}
+        now={NOW}
+      />,
+    );
+
+    expect(screen.getByText("セクション選択待ち")).toBeInTheDocument();
+    expect(screen.getByText("✓ アブスト訳・要約")).toBeInTheDocument();
+    await user.click(screen.getByText("読み始める"));
+    expect(onOpen).toHaveBeenCalledWith("li_1");
   });
 
   test("failed card shows retry affordance", () => {
@@ -247,7 +279,10 @@ describe("RecentlyAdded cancel-ingest wiring", () => {
 
     await user.click(screen.getByText("取り込みをキャンセル"));
     await waitFor(() =>
-      expect(libraryItemsDelete).toHaveBeenCalledWith({ path: { item_id: "li_1" }, throwOnError: true }),
+      expect(libraryItemsDelete).toHaveBeenCalledWith({
+        path: { item_id: "li_1" },
+        throwOnError: true,
+      }),
     );
   });
 });

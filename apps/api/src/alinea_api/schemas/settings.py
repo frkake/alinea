@@ -62,9 +62,9 @@ class DisplaySettings(_Strict):
 
 class TranslationSettings(_Strict):
     default_style: Literal["natural", "literal"] = "natural"
-    auto_translate_appendix: bool = False
-    translate_table_cells: bool = False
-    suggest_section_selection_over_30_pages: bool = True
+    auto_translate_appendix: bool = True
+    translate_table_cells: bool = True
+    suggest_section_selection_over_30_pages: bool = False
 
 
 class ReadingSettings(_Strict):

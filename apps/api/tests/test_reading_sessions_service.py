@@ -13,7 +13,9 @@ from typing import Any
 
 from alinea_api.services.reading_sessions import ReadingHeartbeatBody, record_heartbeat
 from alinea_api.services.user_service import purge_user, upsert_user_by_email
-from alinea_core.db.models import Notification, ReadingSession, User
+from alinea_core.db.models import Notification, ReadingSession, TranslationSet, User
+from alinea_core.document.blocks import DocumentContent
+from alinea_core.translation.pipeline import TranslationSettings, build_translation_plan
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -303,6 +305,153 @@ async def test_record_heartbeat_reached_end_suggest_and_auto_modes(
         await db_session.refresh(item)
         assert item.status == "done"
         assert item.finished_at is not None
+    finally:
+        await purge_user(db_session, str(user.id))
+        await db_session.commit()
+
+
+async def test_reached_end_uses_effective_translation_plan_targets(
+    db_session: AsyncSession, redis_client: Any, factories: Any, unique_email: str
+) -> None:
+    user = await upsert_user_by_email(db_session, unique_email, provider="email")
+    paper = await factories.make_paper(db_session, owner=user, visibility="private")
+    content = DocumentContent.model_validate(
+        {
+            "quality_level": "A",
+            "sections": [
+                {
+                    "id": "main",
+                    "heading": {"number": "1", "title": "Main"},
+                    "blocks": [
+                        {
+                            "id": "main-last",
+                            "type": "paragraph",
+                            "inlines": [{"t": "text", "v": "Main text."}],
+                        }
+                    ],
+                },
+                {
+                    "id": "appendix",
+                    "heading": {"number": "A", "title": "Details"},
+                    "blocks": [
+                        {
+                            "id": "appendix-last",
+                            "type": "paragraph",
+                            "inlines": [{"t": "text", "v": "Appendix text."}],
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+    revision = await factories.make_revision(
+        db_session,
+        paper=paper,
+        content=content.model_dump(mode="json"),
+    )
+    plan = build_translation_plan(
+        content,
+        TranslationSettings(auto_translate_appendix=False),
+        pages=10,
+    )
+    db_session.add(
+        TranslationSet(
+            revision_id=str(revision.id),
+            style="natural",
+            scope="personal",
+            user_id=str(user.id),
+            plan=plan.model_dump(mode="json"),
+            status="complete",
+        )
+    )
+    item = await factories.make_library_item(
+        db_session,
+        user=user,
+        paper=paper,
+        status="reading",
+        reading_position={"revision_id": str(revision.id), "block_id": "main-last"},
+    )
+    await db_session.commit()
+
+    started = dt.datetime.now(dt.UTC)
+    try:
+        await record_heartbeat(
+            db_session,
+            redis_client,
+            user=user,
+            item=item,
+            body=_body(started_at=started, active_seconds=1),
+        )
+        notifications = (
+            (
+                await db_session.execute(
+                    select(Notification).where(
+                        Notification.user_id == user.id,
+                        Notification.kind == "status_suggestion",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(notifications) == 1
+        assert notifications[0].payload["reason"] == "reached_end"
+    finally:
+        await purge_user(db_session, str(user.id))
+        await db_session.commit()
+
+
+async def test_reached_end_rejects_reading_revision_from_another_paper(
+    db_session: AsyncSession, redis_client: Any, factories: Any, unique_email: str
+) -> None:
+    user = await upsert_user_by_email(db_session, unique_email, provider="email")
+    await _set_reading_settings(db_session, user, {"status_transition": "auto"})
+    paper = await factories.make_paper(db_session, owner=user, visibility="private")
+    foreign_paper = await factories.make_paper(db_session, owner=user, visibility="private")
+    foreign_revision = await factories.make_revision(
+        db_session,
+        paper=foreign_paper,
+        content={
+            "quality_level": "A",
+            "sections": [
+                {
+                    "id": "foreign-section",
+                    "heading": {"number": "1", "title": "Foreign"},
+                    "blocks": [
+                        {
+                            "id": "foreign-last",
+                            "type": "paragraph",
+                            "inlines": [{"t": "text", "v": "Foreign last block."}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    item = await factories.make_library_item(
+        db_session,
+        user=user,
+        paper=paper,
+        status="reading",
+        reading_position={
+            "revision_id": str(foreign_revision.id),
+            "block_id": "foreign-last",
+        },
+    )
+    await db_session.commit()
+
+    started = dt.datetime.now(dt.UTC)
+    try:
+        await record_heartbeat(
+            db_session,
+            redis_client,
+            user=user,
+            item=item,
+            body=_body(started_at=started, active_seconds=1),
+        )
+        await db_session.refresh(item)
+        assert item.status == "reading"
+        assert item.finished_at is None
     finally:
         await purge_user(db_session, str(user.id))
         await db_session.commit()

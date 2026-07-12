@@ -4,7 +4,7 @@
 - 同一ユーザー・同一 SHA-256 は 409 duplicate
 - 50MB 超は 413 payload_too_large
 - 非 PDF(先頭 5 バイトが `%PDF-` でない)は 415 unsupported_media_type
-- テキストレイヤ無し PDF はジョブ側で failed(parsing, "テキストが抽出できません")(docs/02 §3)
+- テキストレイヤ無し PDF も worker の最終 OCR 候補へ投入される
 
 外部 S3・arq は ``app.dependency_overrides`` で決定的に差し替える(実通信なし)。
 """
@@ -326,32 +326,30 @@ async def test_pdf_ingest_non_pdf_returns_415(
 
 
 # ---------------------------------------------------------------------------
-# テキストレイヤ無し PDF はジョブ側で failed(parsing, ...)
+# テキストレイヤ無し PDF も OCR fallback 用ジョブへ投入
 # ---------------------------------------------------------------------------
-async def test_pdf_ingest_no_text_layer_marks_job_failed(
+async def test_pdf_ingest_no_text_layer_queues_worker_ocr_fallback(
     client: AsyncClient,
     db_session: AsyncSession,
     redis_client: Any,
     unique_email: str,
     created_papers: list[str],
+    wakeups: list[str],
     fake_storage: _FakeStorage,
 ) -> None:
     await _login(client, db_session, redis_client, unique_email)
     data = _make_no_text_layer_pdf()
 
     r = await client.post("/api/ingest/pdf", files=_files(data), data=_meta())
-    assert r.status_code == 202  # 受け口自体は成功(ジョブ側の失敗として記録)。
+    assert r.status_code == 202
     body = r.json()
     created_papers.append(body["paper_id"])
 
     job = await db_session.get(Job, body["job_id"])
     assert job is not None
-    assert job.status == "failed"
-    assert job.stage == "parsing"
-    error = json.loads(job.error or "{}")
-    assert error["code"] == "no_text_layer"
-    assert error["message"] == "テキストが抽出できません"
-    assert job.log and job.log[-1]["message"] == "テキストが抽出できません"
+    assert job.status == "queued"
+    assert job.error is None
+    assert body["job_id"] in wakeups
 
     paper = await db_session.get(Paper, body["paper_id"])
     assert paper is not None

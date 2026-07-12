@@ -337,7 +337,7 @@ Import `resolve_latex_asset`, `fetch_html_asset`, and `validate_image_payload` f
 Run: `uv run pytest apps/worker/tests/test_figure_assets.py apps/worker/tests/test_latex_priority_pipeline.py -q`  
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/worker/src/alinea_worker/figure_assets.py apps/worker/src/alinea_worker/pipeline.py apps/worker/tests/test_figure_assets.py
@@ -424,7 +424,7 @@ git commit -m "fix: require complete figures before ingest succeeds"
 - Modify: `apps/worker/src/alinea_worker/source_candidates.py`
 - Modify: `docs/deployment.md`
 
-- [ ] **Step 1: Write failing OCR fallback tests**
+- [x] **Step 1: Write failing OCR fallback tests**
 
 ```python
 def test_parse_pdf_uses_ocr_textpage_when_requested(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -449,25 +449,25 @@ async def test_candidate_pipeline_uses_ocr_only_after_empty_text_pdf(
     assert candidate.report.accepted
 ```
 
-- [ ] **Step 2: Run and confirm RED**
+- [x] **Step 2: Run and confirm RED**
 
 Run: `uv run pytest packages/py-core/tests/test_pdf_ocr.py -q`  
 Expected: FAIL because `parse_pdf` has no OCR mode.
 
-- [ ] **Step 3: Thread an OCR text page through the existing parser**
+- [x] **Step 3: Thread an OCR text page through the existing parser**
 
 Add `use_ocr: bool = False` and `ocr_language: str = "eng"` to `parse_pdf`. For each page, create `textpage = page.get_textpage_ocr(language=ocr_language, dpi=200, full=True)` only in OCR mode and pass that text page to every `page.get_text(...)` call used for block/layout extraction. Set `stats["ocr"]` and preserve the existing non-OCR path byte-for-byte.
 
-- [ ] **Step 4: Add OCR candidate ordering and deployment prerequisite**
+- [x] **Step 4: Add OCR candidate ordering and deployment prerequisite**
 
 The worker calls `parse_pdf(data)` first. It calls `parse_pdf(data, use_ocr=True)` only when the text candidate raises `no_text_layer` or fails completeness for insufficient visible text. Document the required `tesseract` binary and English language data in `docs/deployment.md`; startup readiness must report OCR unavailable without breaking non-OCR documents.
 
-- [ ] **Step 5: Run PDF and OCR tests**
+- [x] **Step 5: Run PDF and OCR tests**
 
 Run: `uv run pytest packages/py-core/tests/test_pdf_ocr.py packages/py-core/tests/test_pdf_parser.py apps/worker/tests/test_latex_priority_pipeline.py -q`  
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add packages/py-core/src/alinea_core/parsing/pdf_parser.py packages/py-core/tests/test_pdf_ocr.py apps/worker/src/alinea_worker/source_candidates.py docs/deployment.md

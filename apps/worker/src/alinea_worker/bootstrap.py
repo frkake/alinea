@@ -31,6 +31,7 @@ import structlog
 from alinea_core.arxiv.fetch import make_arxiv_client
 from alinea_core.db.models import LibraryItem
 from alinea_core.db.session import get_sessionmaker
+from alinea_core.parsing.pdf_parser import PdfOcrReadiness, check_pdf_ocr_readiness
 from alinea_core.settings import CoreSettings, get_settings
 from alinea_core.storage.s3 import S3Storage
 from alinea_llm.providers import build_image_provider, build_provider
@@ -346,6 +347,10 @@ async def on_startup(ctx: dict[str, Any]) -> None:
         async with maker() as session:
             router = await build_task_router(session)
             image_router = await build_image_router(session)
+    try:
+        pdf_ocr_readiness = check_pdf_ocr_readiness()
+    except Exception:
+        pdf_ocr_readiness = PdfOcrReadiness(False, "ocr_readiness_failed", "eng")
 
     ctx["settings"] = settings
     ctx["sessionmaker"] = maker
@@ -356,6 +361,7 @@ async def on_startup(ctx: dict[str, Any]) -> None:
     ctx["s3"] = S3Storage(settings)
     ctx["arxiv_http"] = make_arxiv_client(settings)
     ctx["publish"] = make_publish(maker, redis_client)
+    ctx["pdf_ocr_readiness"] = pdf_ocr_readiness.as_dict()
 
     await log.ainfo(
         "worker_startup",
@@ -363,8 +369,18 @@ async def on_startup(ctx: dict[str, Any]) -> None:
         router_tasks=getattr(router, "tasks", (DEFAULT_ROUTER_TASK,)) if router is not None else (),
         fake_llm=fake_llm,
         operator_providers=sorted(operator_keys_from_env()),
+        pdf_ocr=pdf_ocr_readiness.as_dict(),
         redis_url=settings.redis_url,
     )
+    if not pdf_ocr_readiness.available:
+        await log.awarning(
+            "worker_pdf_ocr_unavailable",
+            **pdf_ocr_readiness.as_dict(),
+            message=(
+                "PDF OCR is unavailable; text-layer PDFs continue to work, but scanned PDFs "
+                "cannot use the final OCR fallback"
+            ),
+        )
     if router is None and not fake_llm:
         await log.awarning(
             "worker_router_unconfigured",

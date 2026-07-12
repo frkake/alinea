@@ -17,7 +17,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest_asyncio
-from alinea_api.chat.context_builder import build_chat_request, render_document_context
+from alinea_api.chat.context_builder import (
+    build_chat_request,
+    estimate_tokens,
+    render_document_context,
+)
 from alinea_api.chat.evidence import BlockRow, EvidenceValidator, derive_display, verify_evidence
 from alinea_api.chat.prompts import (
     PERSISTENT_QUICK_ACTIONS,
@@ -151,6 +155,10 @@ def test_render_document_context_excludes_reference_entries() -> None:
     )
     rendered = render_document_context(content, "rev-1")
     assert "blk-1-ref1-cccc" not in rendered  # reference_entry は文脈に含めない(§2.2.2)
+
+
+def test_context_token_estimate_treats_model_special_token_text_as_plain_input() -> None:
+    assert estimate_tokens("prefix <|endoftext|> suffix") > 0
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +307,12 @@ async def chat_ctx(
     app.dependency_overrides[get_settings_dep] = lambda: test_settings
     app.dependency_overrides[get_chat_provider_factory] = lambda: _fake_factory
     try:
-        yield SimpleNamespace(user_id=str(user.id), item_id=str(item.id), revision_id=str(rev.id))
+        yield SimpleNamespace(
+            user_id=str(user.id),
+            item_id=str(item.id),
+            paper_id=str(paper.id),
+            revision_id=str(rev.id),
+        )
     finally:
         app.dependency_overrides.pop(get_settings_dep, None)
         app.dependency_overrides.pop(get_chat_provider_factory, None)
@@ -364,6 +377,64 @@ async def test_regenerate_appends_new_answer(
     assert len(msgs2) == before + 1  # 新 assistant を追記(user は同一質問なので増えない)
     assert any(m["id"] == asst_id for m in msgs2)  # 旧回答は残る
     assert len([m for m in msgs2 if m["role"] == "assistant"]) == 2
+
+
+async def test_send_message_rejects_foreign_latest_revision(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    chat_ctx: SimpleNamespace,
+) -> None:
+    """別の私有論文の本文をチャットプロンプトへ混入させない。"""
+    foreign_paper = Paper(
+        title="Foreign private paper",
+        authors=[],
+        visibility="private",
+        owner_user_id=chat_ctx.user_id,
+    )
+    db_session.add(foreign_paper)
+    await db_session.flush()
+    foreign_content = DocumentContent(
+        quality_level="A",
+        sections=[
+            Section(
+                id="sec-secret",
+                heading=SectionHeading(number="1", title="Secret"),
+                blocks=[
+                    Block(
+                        id="blk-secret",
+                        type="paragraph",
+                        inlines=[Inline(t="text", v="CROSS_PAPER_PRIVATE_SECRET")],
+                    )
+                ],
+            )
+        ],
+    )
+    foreign_revision = DocumentRevision(
+        paper_id=foreign_paper.id,
+        parser_version="test-1",
+        quality_level="A",
+        source_format="latex",
+        content=foreign_content.model_dump(),
+    )
+    db_session.add(foreign_revision)
+    await db_session.flush()
+    foreign_paper.latest_revision_id = foreign_revision.id
+    paper = await db_session.get(Paper, chat_ctx.paper_id)
+    assert paper is not None
+    paper.latest_revision_id = foreign_revision.id
+    await db_session.commit()
+
+    threads = (await client.get(f"/api/library-items/{chat_ctx.item_id}/chat/threads")).json()[
+        "items"
+    ]
+    response = await client.post(
+        f"/api/chat/threads/{threads[0]['id']}/messages",
+        json={"content": "要約してください"},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "conflict"
+    assert "CROSS_PAPER_PRIVATE_SECRET" not in response.text
 
 
 # PY-CHAT-02: 選択アンカー + quick_action 付き送信の SSE、空内容の 400。

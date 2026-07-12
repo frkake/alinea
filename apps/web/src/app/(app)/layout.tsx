@@ -27,10 +27,18 @@ export default function AppLayout({ children }: { children: ReactNode }): ReactN
         fontFamily: "var(--pr-font-ui)",
       }}
     >
-      <AppHeader onMenuClick={isMobile ? () => setNavOpen(true) : undefined} />
+      <AppHeader
+        showSearch={!isMobile}
+        onMenuClick={isMobile ? () => setNavOpen(true) : undefined}
+      />
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
         {isMobile ? (
-          <Drawer open={navOpen} onClose={() => setNavOpen(false)} width={280} ariaLabel="ナビゲーション">
+          <Drawer
+            open={navOpen}
+            onClose={() => setNavOpen(false)}
+            width={280}
+            ariaLabel="ナビゲーション"
+          >
             <AppNav onNavigate={() => setNavOpen(false)} />
           </Drawer>
         ) : (

@@ -21,7 +21,7 @@ from alinea_core.document.blocks import Block, DocumentContent, Section, Section
 from alinea_core.document.inlines import Inline
 from alinea_core.parsing.block_ids import assign_block_ids
 
-PARSER_VERSION = "html-1.0.0"
+PARSER_VERSION = "html-1.3.0"
 
 _WS = re.compile(r"\s+")
 
@@ -43,11 +43,7 @@ _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 # 見出しタグ番号から除く前置ラベル語(付録は番号 "A" に正規化。plans/05 §4.2)。
 _LABEL_WORD = re.compile(r"^(?:appendix|appendices|section|chapter|part)\s+", re.IGNORECASE)
 _PATH_UNSAFE = re.compile(r"[^0-9A-Za-z-]")
-_SCRIPT_TAG = re.compile(r"<script\b[^>]*>.*?</script>", re.IGNORECASE | re.DOTALL)
-_EVENT_HANDLER_ATTR = re.compile(r"\s+on[a-zA-Z]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)")
-_JS_URL_ATTR = re.compile(
-    r"\s+(?:href|src|xlink:href)\s*=\s*(['\"])\s*javascript:[\s\S]*?\1", re.IGNORECASE
-)
+_ACTIVE_INLINE_TAGS = frozenset({"embed", "foreignobject", "iframe", "object", "script"})
 
 # reference_entry 構造化(plans/05 §4.2.1)。
 _ARXIV_RE = re.compile(
@@ -120,16 +116,103 @@ def _classes(node: LexborNode) -> frozenset[str]:
 
 
 def _safe_inline_figure_html(html: str | None) -> str | None:
-    """arXiv HTML 内の複合図を本文表示用に最小限サニタイズして保持する。"""
+    """Return one structurally inert SVG; reject composite/active author HTML."""
     if not html:
         return None
-    lowered = html.lower()
-    if "<svg" not in lowered and "<img" not in lowered:
+    fragment = LexborHTMLParser(html)
+    svgs = fragment.css("svg")
+    if len(svgs) != 1 or fragment.css_first("img") is not None:
         return None
-    cleaned = _SCRIPT_TAG.sub("", html)
-    cleaned = _EVENT_HANDLER_ATTR.sub("", cleaned)
-    cleaned = _JS_URL_ATTR.sub("", cleaned)
-    return cleaned
+    root = fragment.root
+    if root is None:
+        return None
+    for element in root.traverse(include_text=False):
+        tag = str(element.tag or "").casefold()
+        if tag in _ACTIVE_INLINE_TAGS:
+            return None
+        for raw_name, raw_value in element.attributes.items():
+            name = str(raw_name).rsplit(":", 1)[-1].casefold()
+            value = str(raw_value or "").strip()
+            if name.startswith("on") or name == "srcdoc":
+                return None
+            if name in {"href", "src"} and not re.fullmatch(r"#[A-Za-z0-9_.:-]+", value):
+                return None
+    return svgs[0].html
+
+
+def _is_safe_fallback_image(image: LexborNode, figure: LexborNode) -> bool:
+    """Accept a raster visual only outside captions and active/SVG content."""
+
+    ancestor = image.parent
+    while ancestor is not None:
+        if ancestor == figure:
+            return True
+        tag = str(ancestor.tag or "").casefold()
+        if tag in {"figcaption", "svg"} or tag in _ACTIVE_INLINE_TAGS:
+            return False
+        if "ltx_caption" in _classes(ancestor):
+            return False
+        ancestor = ancestor.parent
+    return False
+
+
+def _is_visual_inside_caption(visual: LexborNode, figure: LexborNode) -> bool:
+    ancestor = visual.parent
+    while ancestor is not None and ancestor != figure:
+        if str(ancestor.tag or "").casefold() == "figcaption":
+            return True
+        if "ltx_caption" in _classes(ancestor):
+            return True
+        ancestor = ancestor.parent
+    return False
+
+
+def _has_svg_ancestor(visual: LexborNode, figure: LexborNode) -> bool:
+    ancestor = visual.parent
+    while ancestor is not None and ancestor != figure:
+        if str(ancestor.tag or "").casefold() == "svg":
+            return True
+        ancestor = ancestor.parent
+    return False
+
+
+def _fallback_wrapper(visual: LexborNode, figure: LexborNode) -> LexborNode | None:
+    """Return an explicitly visual/fallback wrapper, never the figure root.
+
+    A generic layout container (for example ``ltx_flex_figure``) may contain
+    multiple independent panels, so mere common ancestry is not enough to
+    treat an SVG and raster as alternative encodings of one panel.
+    """
+
+    ancestor = visual.parent
+    while ancestor is not None and ancestor != figure:
+        tag = str(ancestor.tag or "").casefold()
+        classes = {value.casefold() for value in _classes(ancestor)}
+        if tag == "picture" or any(
+            marker in value
+            for value in classes
+            for marker in ("fallback", "alternate", "alternative", "picture", "visual", "graphics")
+        ):
+            return ancestor
+        ancestor = ancestor.parent
+    return None
+
+
+def _is_explicit_raster_fallback(image: LexborNode) -> bool:
+    attributes = {
+        str(key).casefold(): str(value or "").casefold()
+        for key, value in image.attributes.items()
+    }
+    classes = {value.casefold() for value in _classes(image)}
+    return (
+        "hidden" in attributes
+        or "inert" in attributes
+        or attributes.get("aria-hidden") == "true"
+        or attributes.get("role") in {"none", "presentation"}
+        or "data-fallback" in attributes
+        or "data-alternate" in attributes
+        or any("fallback" in value or "alternate" in value for value in classes)
+    )
 
 
 def _element_children(node: LexborNode) -> list[LexborNode]:
@@ -149,7 +232,7 @@ def _compact_citation_text(text: str | None) -> str:
     value = re.sub(r"([([])\s+", r"\1", value)
 
     author_year = re.match(
-        r"^([A-Z][A-Za-z'’.-]+(?:\s+et\s+al\.?)?)\s*[, ]*\(?"
+        r"^([A-Z][A-Za-z'\u2019.-]+(?:\s+et\s+al\.?)?)\s*[, ]*\(?"
         r"((?:19|20)\d{2})(?:\s*(?:\{[^})]{1,8}\}|[a-z]))?\)?",
         value,
     )
@@ -159,7 +242,7 @@ def _compact_citation_text(text: str | None) -> str:
 
     looks_expanded = len(value) > 72 or value.count(",") >= 2
     if looks_expanded:
-        raw_reference = re.match(r"^([A-Z][A-Za-z'’.-]+)\b.*?\b((?:19|20)\d{2})\b", value)
+        raw_reference = re.match(r"^([A-Z][A-Za-z'\u2019.-]+)\b.*?\b((?:19|20)\d{2})\b", value)
         if raw_reference:
             return f"{raw_reference.group(1)} et al. ({raw_reference.group(2)})"
     return value
@@ -444,30 +527,84 @@ class _ArxivHtmlParser:
             inlines.extend(self._inline_element(ch))
         return _merge_text(inlines), number
 
-    def _figure(self, node: LexborNode) -> Block:
-        imgs = list(node.css("img"))
-        img = node.css_first("img.ltx_graphics") or node.css_first("img")
-        src = (img.attributes.get("src") if img is not None else None) or None
-        visual = None
-        if len(imgs) > 1:
-            visual = node.css_first(".ltx_flex_figure") or node.css_first("svg")
-            if visual is None:
-                visual = node.css_first("table.ltx_tabular") or node.css_first("table")
-        elif src is None:
-            visual = node.css_first(".ltx_flex_figure") or node.css_first("svg")
-        raw = _safe_inline_figure_html(visual.html if visual is not None else None)
-        if raw is not None:
-            src = None
+    def _figure(self, node: LexborNode) -> list[Block]:
         caption, number = self._caption(node)
-        return Block(
-            id="",
-            type="figure",
-            asset_key=src,
-            raw=raw,
-            caption=caption,
-            number=number,
-            label=node.attributes.get("id") or None,
+        label = node.attributes.get("id") or None
+        visuals: list[tuple[str, LexborNode]] = []
+        for element in node.traverse(include_text=False):
+            tag = str(element.tag or "").casefold()
+            if tag == "svg":
+                if not _is_visual_inside_caption(element, node) and not _has_svg_ancestor(
+                    element, node
+                ):
+                    visuals.append(("svg", element))
+            elif tag == "img" and _is_safe_fallback_image(element, node):
+                visuals.append(("img", element))
+
+        wrapper_members: dict[int, list[tuple[str, LexborNode]]] = {}
+        for kind, visual in visuals:
+            wrapper = _fallback_wrapper(visual, node)
+            if wrapper is not None:
+                wrapper_members.setdefault(wrapper.mem_id, []).append((kind, visual))
+
+        slots: list[tuple[LexborNode | None, LexborNode | None]] = []
+        for kind, visual in visuals:
+            if kind == "svg":
+                slots.append((visual, None))
+                continue
+
+            paired = False
+            wrapper = _fallback_wrapper(visual, node)
+            if wrapper is not None:
+                members = wrapper_members.get(wrapper.mem_id, [])
+                structurally_paired = (
+                    len(members) == 2
+                    and {member_kind for member_kind, _member in members} == {"svg", "img"}
+                )
+            else:
+                structurally_paired = False
+            if slots and slots[-1][0] is not None and slots[-1][1] is None:
+                svg = slots[-1][0]
+                svg_wrapper = _fallback_wrapper(svg, node)
+                same_wrapper = (
+                    structurally_paired
+                    and svg_wrapper is not None
+                    and wrapper is not None
+                    and svg_wrapper.mem_id == wrapper.mem_id
+                )
+                if same_wrapper or _is_explicit_raster_fallback(visual):
+                    slots[-1] = (svg, visual)
+                    paired = True
+            if not paired:
+                slots.append((None, visual))
+
+        has_active_content = any(
+            str(element.tag or "").casefold() in _ACTIVE_INLINE_TAGS
+            for element in node.traverse(include_text=False)
         )
+        if not slots:
+            slots.append((None, None))
+        blocks: list[Block] = []
+        for index, (slot_svg, slot_image) in enumerate(slots):
+            raw = _safe_inline_figure_html(
+                slot_svg.html if slot_svg is not None else None
+            )
+            if has_active_content:
+                raw = None
+            blocks.append(
+                Block(
+                    id="",
+                    type="figure",
+                    asset_key=(slot_image.attributes.get("src") or None)
+                    if slot_image is not None
+                    else None,
+                    raw=raw,
+                    caption=caption if index == 0 else [],
+                    number=number if index == 0 else None,
+                    label=label if index == 0 else None,
+                )
+            )
+        return blocks
 
     def _table(self, node: LexborNode) -> Block:
         tabular = node.css_first("table.ltx_tabular") or node.css_first("table")
@@ -547,7 +684,7 @@ class _ArxivHtmlParser:
                 return [self._table(node)]
             if "ltx_float_algorithm" in cls or "ltx_algorithm" in cls:
                 return [self._algorithm(node)]
-            return [self._figure(node)]
+            return self._figure(node)
         if "ltx_algorithm" in cls:
             return [self._algorithm(node)]
         if "ltx_listing" in cls or "ltx_verbatim" in cls or tag == "pre":

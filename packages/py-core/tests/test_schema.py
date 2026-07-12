@@ -86,6 +86,87 @@ async def test_py_db_02_primary_key_types(db_session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_translation_set_plan_column_is_nullable_jsonb(db_session: AsyncSession) -> None:
+    row = (
+        await db_session.execute(
+            text(
+                """
+                SELECT data_type, is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'translation_sets'
+                  AND column_name = 'plan'
+                """
+            )
+        )
+    ).one_or_none()
+    assert row == ("jsonb", "YES")
+
+
+@pytest.mark.asyncio
+async def test_jobs_accept_waiting_input_and_keep_it_in_active_ingest_uniqueness(
+    db_session: AsyncSession,
+) -> None:
+    first_user = await _mk_user(db_session)
+    second_user = await _mk_user(db_session)
+    pid = (
+        await db_session.execute(text("INSERT INTO papers (title) VALUES ('Long') RETURNING id"))
+    ).scalar_one()
+    await db_session.execute(
+        text(
+            "INSERT INTO jobs (kind, paper_id, user_id, status, stage) "
+            "VALUES ('ingest', :paper_id, :user_id, 'waiting_input', 'selecting_sections')"
+        ),
+        {"paper_id": pid, "user_id": first_user},
+    )
+    await db_session.flush()
+
+    # 別ユーザーは同じ公開 Paper を独立して取り込める。
+    await db_session.execute(
+        text(
+            "INSERT INTO jobs (kind, paper_id, user_id, status) "
+            "VALUES ('ingest', :paper_id, :user_id, 'queued')"
+        ),
+        {"paper_id": pid, "user_id": second_user},
+    )
+    await db_session.flush()
+
+    # 同一ユーザーには active ingest を同時に2件作らない。
+    with pytest.raises(IntegrityError):
+        await db_session.execute(
+            text(
+                "INSERT INTO jobs (kind, paper_id, user_id, status) "
+                "VALUES ('ingest', :paper_id, :user_id, 'queued')"
+            ),
+            {"paper_id": pid, "user_id": first_user},
+        )
+        await db_session.flush()
+    await db_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_active_ingest_index_predicate_includes_waiting_input(
+    db_session: AsyncSession,
+) -> None:
+    indexdef, nulls_not_distinct = (
+        await db_session.execute(
+            text(
+                "SELECT indexes.indexdef, idx.indnullsnotdistinct "
+                "FROM pg_indexes AS indexes "
+                "JOIN pg_class AS cls ON cls.relname = indexes.indexname "
+                "JOIN pg_index AS idx ON idx.indexrelid = cls.oid "
+                "WHERE indexes.schemaname = 'public' "
+                "AND indexes.indexname = 'uq_jobs_ingest_active'"
+            )
+        )
+    ).one()
+    assert "waiting_input" in indexdef
+    assert "(paper_id, user_id)" in indexdef
+    assert "user_id IS NOT NULL" in indexdef
+    assert nulls_not_distinct is False
+
+
+@pytest.mark.asyncio
 async def test_py_db_03_user_delete_cascades(db_session: AsyncSession) -> None:
     uid = await _mk_user(db_session)
     # library_item 経由の個人資産がカスケードで消えること(paper は public 共有で残す)

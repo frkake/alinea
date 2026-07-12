@@ -69,11 +69,17 @@ async def run_job(ctx: dict[str, Any], job_id: str) -> None:
                 raise RuntimeError("no LLM provider configured (ctx['router'] is None)")
             await handler(ctx, store, job)
         except asyncio.CancelledError:
+            await session.rollback()
+            failed_job = await store.get(job_id)
+            if failed_job is None:
+                await log.ainfo("job_gone_after_cancel", job_id=job_id)
+                raise
+            failed_stage = str(failed_job.stage)
             try:
                 retrying = await store.fail_with_retry(
                     job_id,
                     {
-                        "stage": job.stage,
+                        "stage": failed_stage,
                         "message": "job cancelled or timed out; queued for retry",
                     },
                 )
@@ -82,18 +88,27 @@ async def run_job(ctx: dict[str, Any], job_id: str) -> None:
             else:
                 if retrying:
                     await _schedule_retry(ctx, store, job_id)
-                await _notify_job_updated(ctx, job)
+                current_job = await store.get(job_id)
+                if current_job is not None:
+                    await _notify_job_updated(ctx, current_job)
                 await log.ainfo(
                     "job_cancelled_for_retry",
                     job_id=job_id,
-                    stage=job.stage,
+                    stage=failed_stage,
                     retrying=retrying,
                 )
             raise
         except Exception as exc:
+            error_message = str(exc)
+            await session.rollback()
+            failed_job = await store.get(job_id)
+            if failed_job is None:
+                await log.ainfo("job_gone_after_cancel", job_id=job_id)
+                return
+            failed_stage = str(failed_job.stage)
             try:
                 retrying = await store.fail_with_retry(
-                    job_id, {"stage": job.stage, "message": str(exc)}
+                    job_id, {"stage": failed_stage, "message": error_message}
                 )
             except LookupError:
                 # ユーザーが取り込みをキャンセル(=ライブラリ項目削除。§cancel-ingest)した後に
@@ -103,6 +118,10 @@ async def run_job(ctx: dict[str, Any], job_id: str) -> None:
                 return
             if retrying:
                 await _schedule_retry(ctx, store, job_id)
+            current_job = await store.get(job_id)
+            if current_job is None:
+                return
+            job = current_job
             await log.aerror("job_failed", job_id=job_id, retrying=retrying)
         # SSE 起床通知(plans/03 §21.2)。translate.py/pipeline.py は自前で `ctx['publish']` に
         # 詳細な進捗を発行するが、article/figure/vocab/resource_meta/export 等は

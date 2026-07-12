@@ -21,8 +21,10 @@ import pytest
 import pytest_asyncio
 import redis.asyncio as redis
 from alinea_core.db.models import LibraryItem, Paper, User
+from alinea_core.parsing.pdf_parser import PdfOcrReadiness
 from alinea_llm.router import LLMRouter
 from alinea_llm.testing.fake_provider import FakeLLMProvider
+from alinea_worker import bootstrap as worker_bootstrap
 from alinea_worker.bootstrap import (
     TaskAwareLLMRouter,
     build_fake_router,
@@ -326,6 +328,58 @@ async def test_on_startup_configures_ctx_with_fake_llm(
         await on_shutdown(ctx)
 
 
+async def test_on_startup_reports_ocr_unavailable_without_failing_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ALINEA_FAKE_LLM", "1")
+    monkeypatch.setattr(
+        worker_bootstrap,
+        "check_pdf_ocr_readiness",
+        lambda: PdfOcrReadiness(False, "ocr_language_unavailable", "eng"),
+        raising=False,
+    )
+    ctx: dict[str, Any] = {}
+
+    await on_startup(ctx)
+    try:
+        assert ctx["pdf_ocr_readiness"] == {
+            "available": False,
+            "code": "ocr_language_unavailable",
+            "language": "eng",
+        }
+        assert isinstance(ctx["router"], LLMRouter)
+    finally:
+        await on_shutdown(ctx)
+
+
+async def test_on_startup_contains_unexpected_optional_ocr_probe_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ALINEA_FAKE_LLM", "1")
+
+    def fail_probe() -> PdfOcrReadiness:
+        raise RuntimeError("synthetic OCR probe failure")
+
+    monkeypatch.setattr(
+        worker_bootstrap,
+        "check_pdf_ocr_readiness",
+        fail_probe,
+        raising=False,
+    )
+    ctx: dict[str, Any] = {}
+
+    await on_startup(ctx)
+    try:
+        assert ctx["pdf_ocr_readiness"] == {
+            "available": False,
+            "code": "ocr_readiness_failed",
+            "language": "eng",
+        }
+        assert isinstance(ctx["router"], LLMRouter)
+    finally:
+        await on_shutdown(ctx)
+
+
 # =========================================================================== #
 # run_job — router 未構成なら翻訳ジョブは P3 準拠で可視的に失敗する
 # =========================================================================== #
@@ -421,3 +475,34 @@ async def test_run_job_counts_cancelled_job_as_retryable_failure(
         assert job.next_retry_at is not None
         errors = [e.get("error", {}) for e in job.log if e.get("level") == "error"]
         assert any("cancelled or timed out" in e.get("message", "") for e in errors)
+
+
+async def test_run_job_rolls_back_failed_handler_transaction_before_marking_failure(
+    monkeypatch: pytest.MonkeyPatch, maker: async_sessionmaker[AsyncSession]
+) -> None:
+    """DB flush 失敗後も PendingRollbackError を起こさず終端状態を保存する。"""
+    from alinea_core.db.models import Job
+    from alinea_core.jobs.store import JobStore
+    from alinea_worker import main as worker_main
+
+    async def _write_nul(_ctx: dict[str, Any], store: JobStore, job: Job) -> None:
+        job.error = "invalid\x00text"
+        await store.session.flush()
+
+    monkeypatch.setattr(worker_main, "get_sessionmaker", lambda: maker)
+    monkeypatch.setitem(worker_main.HANDLERS, "resource_meta", _write_nul)
+
+    async with maker() as session:
+        store = JobStore(session)
+        job_id = await store.enqueue(kind="resource_meta", payload={}, max_attempts=1)
+
+    await worker_main.run_job({}, job_id)
+
+    async with maker() as session:
+        store = JobStore(session)
+        job = await store.get(job_id)
+        assert job is not None
+        assert job.status == "failed"
+        assert job.attempt == 1
+        assert job.finished_at is not None
+        assert any(entry.get("level") == "error" for entry in job.log)

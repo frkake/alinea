@@ -42,12 +42,14 @@ export function useReadingPosition(params: {
   useEffect(() => {
     const onPageHide = () => {
       const { blockId, revisionId: rev, mode: m } = latest.current;
-      if (!blockId || typeof navigator.sendBeacon !== "function") return;
-      const body = new Blob(
-        [JSON.stringify({ revision_id: rev, block_id: blockId, mode: m })],
-        { type: "application/json" },
-      );
-      navigator.sendBeacon(`/api/library-items/${itemId}/position`, body);
+      if (!blockId) return;
+      void fetch(`/api/library-items/${itemId}/position`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        keepalive: true,
+        body: JSON.stringify({ revision_id: rev, block_id: blockId, mode: m }),
+      }).catch(() => undefined);
     };
     window.addEventListener("pagehide", onPageHide);
     return () => {

@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-from collections.abc import Awaitable, Callable
+import json
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 import structlog
 from alinea_core.db.models import (
     DocumentRevision,
+    Job,
     LibraryItem,
     Paper,
     TranslationSet,
@@ -24,20 +27,38 @@ from alinea_core.db.models import (
 from alinea_core.document.blocks import Block, DocumentContent, Section
 from alinea_core.document.plaintext import block_to_plain
 from alinea_core.jobs.store import JobStore
+from alinea_core.translation import (
+    CanonicalTableGrid,
+    TableTranslationContent,
+    content_to_text_ja,
+    parse_table_grid,
+    translation_unit_satisfies_block,
+    validate_table_translation_content,
+)
 from alinea_core.translation import glossary as glossary_core
 from alinea_core.translation.glossary import glossary_hash
 from alinea_core.translation.pipeline import (
     BLOCKING_FLAGS,
-    TRANSLATABLE_BLOCK_TYPES,
+    TranslationPlan,
+    TranslationSettings,
+    build_translation_plan,
     compute_progress,
     compute_translation_scope,
+    merge_translation_plans,
     resolve_display_units,
+    resolve_effective_translation_plan,
+    resolve_translation_plan,
+    resolve_translation_set_units,
     run_quality_checks,
+    select_translation_plan_sections,
+    translation_execution_scope_from_plan,
+    translation_plan_awaits_section_selection,
+    translation_scope_from_plan,
 )
 from alinea_core.translation.placeholder import encode_block
 from fastapi import APIRouter, Depends, Response, status
-from pydantic import BaseModel
-from sqlalchemy import or_, select, text
+from pydantic import BaseModel, ValidationError
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,6 +77,8 @@ from alinea_api.schemas.viewer import (
     RetranslateResponse,
     RetryFailedTranslationsRequest,
     RetryFailedTranslationsResponse,
+    SectionSelectionRequest,
+    SectionSelectionResponse,
     SectionTranslateRequest,
     SectionTranslateResponse,
     TranslationSetItem,
@@ -72,6 +95,17 @@ router = APIRouter(tags=["translations"])
 _ON_DEMAND_PRIORITY = 100  # plans/06 §3.1: オンデマンド系は作成時 priority=100(alinea:interactive)
 _INTERACTIVE_QUEUE = "alinea:interactive"
 _BULK_QUEUE = "alinea:bulk"
+_EXACT_WORK_CANDIDATE_LIMIT = 32
+_LEGACY_WORK_CANDIDATE_LIMIT = 32
+_MAX_WORK_GENERATION = 2_147_483_647
+_ACTIVE_WORK_STATUSES = ("queued", "running", "waiting_quota")
+
+_WORK_REASON_BY_KIND = {
+    "literal": "literal",
+    "full": "on_demand",
+    "table": "table",
+    "retry": "retry_failed",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +155,15 @@ def _queue_for_priority(priority: int) -> str:
 
 
 def _as_content(revision: DocumentRevision) -> DocumentContent:
-    return DocumentContent.model_validate(revision.content)
+    try:
+        content = DocumentContent.model_validate(revision.content)
+        compute_translation_scope(content)
+    except (TypeError, ValueError) as exc:
+        raise ProblemException(
+            "validation_error",
+            detail="論文の構造化データが不正なため翻訳操作を実行できません。",
+        ) from exc
+    return content
 
 
 def _find_section(content: DocumentContent, section_id: str) -> Section | None:
@@ -141,11 +183,377 @@ def _find_section(content: DocumentContent, section_id: str) -> Section | None:
     return None
 
 
+def _revision_pages(revision: DocumentRevision) -> int | None:
+    raw_pages = (revision.stats or {}).get("pages")
+    return raw_pages if isinstance(raw_pages, int) and not isinstance(raw_pages, bool) else None
+
+
+def _with_auxiliary_targets(
+    content: DocumentContent,
+    plan: TranslationPlan,
+    requested_block_ids: list[str],
+) -> TranslationPlan:
+    """primary を変えず、追加 execution work を文書順の auxiliary へ単調追加する。"""
+    auxiliary = (set(plan.auxiliary_block_ids) | set(requested_block_ids)) - set(
+        plan.target_block_ids
+    )
+    canonical = [
+        block_id
+        for block_id in compute_translation_scope(content).in_scope_block_ids
+        if block_id in auxiliary
+    ]
+    return plan.model_copy(update={"auxiliary_block_ids": canonical})
+
+
+def _retranslate_blocks_hash(block_ids: list[str]) -> str:
+    """Keep the released retranslate idempotency-key encoding stable."""
+    payload = ",".join(sorted(block_ids))
+    return hashlib.blake2b(payload.encode("utf-8"), digest_size=8).hexdigest()
+
+
+def _work_request_key(
+    set_id: str,
+    section_id: str,
+    work_kind: str,
+    block_ids: list[str],
+) -> str:
+    identity = {
+        "set_id": set_id,
+        "section_id": section_id,
+        "work_kind": work_kind,
+        "block_ids": block_ids,
+    }
+    payload = json.dumps(
+        identity,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.blake2b(payload.encode("utf-8"), digest_size=16).hexdigest()
+    return f"xlate:work:v1:{digest}"
+
+
+def _legacy_work_kind(payload: Mapping[str, Any]) -> str | None:
+    reason = payload.get("reason")
+    if reason == "literal":
+        return "literal"
+    if reason == "table" and payload.get("table_block_id"):
+        return "table"
+    if reason == "on_demand" and payload.get("table_block_id") is None:
+        return "full"
+    if reason == "retry_failed":
+        return "retry"
+    return None
+
+
+def _legacy_table_marker_matches(
+    payload: Mapping[str, Any],
+    work_kind: str,
+    block_ids: list[str],
+) -> bool:
+    marker = payload.get("table_block_id")
+    if work_kind == "table":
+        return len(block_ids) == 1 and marker == block_ids[0]
+    return marker is None
+
+
+def _matches_work_request(
+    job: Job,
+    *,
+    request_key: str,
+    set_id: str,
+    section_id: str,
+    work_kind: str,
+    block_ids: list[str],
+) -> bool:
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    stored_request_key = payload.get("request_key")
+    if isinstance(stored_request_key, str):
+        return stored_request_key == request_key
+    stored_ids = payload.get("block_ids")
+    return bool(
+        str(payload.get("set_id") or "") == set_id
+        and str(payload.get("section_id") or "") == section_id
+        and _legacy_work_kind(payload) == work_kind
+        and isinstance(stored_ids, list)
+        and stored_ids == block_ids
+        and _legacy_table_marker_matches(payload, work_kind, block_ids)
+    )
+
+
+def _job_generation(job: Job) -> int:
+    value = (job.payload or {}).get("generation")
+    return value if type(value) is int and 0 <= value <= _MAX_WORK_GENERATION else 0
+
+
+async def _all_blocks_displayable(
+    db: AsyncSession,
+    tset: TranslationSet,
+    content: DocumentContent,
+    block_ids: list[str],
+    *,
+    require_table_cells: bool,
+) -> bool:
+    units = await resolve_translation_set_units(db, tset)
+    blocks = {block.id: block for _section, block in content.iter_blocks()}
+    for block_id in block_ids:
+        unit = units.get(block_id)
+        block = blocks.get(block_id)
+        if unit is None or block is None:
+            return False
+        if not translation_unit_satisfies_block(
+            unit,
+            block,
+            require_table_cells=require_table_cells,
+        ):
+            return False
+    return True
+
+
+@dataclass(frozen=True, slots=True)
+class _ScheduledWork:
+    job_id: str
+    should_wake: bool
+    effective_priority: int
+    queue_name: str
+
+
+async def _exact_jobs_with_status(
+    db: AsyncSession,
+    request_key: str,
+    statuses: tuple[str, ...],
+) -> list[Job]:
+    return list(
+        (
+            await db.execute(
+                select(Job)
+                .where(
+                    text("jobs.kind = 'translation'"),
+                    text("(jobs.payload ->> 'request_key') = :request_key"),
+                    Job.status.in_(statuses),
+                )
+                .order_by(Job.created_at.desc(), Job.id.desc())
+                .limit(_EXACT_WORK_CANDIDATE_LIMIT)
+                .with_for_update(),
+                {"request_key": request_key},
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def _max_exact_generation(db: AsyncSession, request_key: str) -> int | None:
+    value = await db.scalar(
+        text(
+            """
+            SELECT max(
+                CASE
+                    WHEN jsonb_typeof(payload -> 'generation') = 'number'
+                     AND (payload ->> 'generation') ~ '^(0|[1-9][0-9]{0,9})$'
+                    THEN CASE
+                        WHEN (payload ->> 'generation')::bigint <= :max_generation
+                        THEN (payload ->> 'generation')::bigint
+                        ELSE 0
+                    END
+                    ELSE 0
+                END
+            )
+            FROM jobs
+            WHERE kind = 'translation'
+              AND (payload ->> 'request_key') = :request_key
+            """
+        ),
+        {
+            "request_key": request_key,
+            "max_generation": _MAX_WORK_GENERATION,
+        },
+    )
+    return int(value) if value is not None else None
+
+
+async def _legacy_work_candidates(
+    db: AsyncSession,
+    *,
+    set_id: str,
+    section_id: str,
+    work_kind: str,
+    block_ids: list[str],
+) -> list[Job]:
+    block_ids_json = json.dumps(block_ids, ensure_ascii=False, separators=(",", ":"))
+    marker_clause = (
+        text("(jobs.payload ->> 'table_block_id') = :table_block_id")
+        if work_kind == "table"
+        else text("(jobs.payload ->> 'table_block_id') IS NULL")
+    )
+    params: dict[str, Any] = {
+        "set_id": set_id,
+        "section_id": section_id,
+        "reason": _WORK_REASON_BY_KIND[work_kind],
+        "block_ids": block_ids_json,
+    }
+    if work_kind == "table":
+        params["table_block_id"] = block_ids[0]
+    return list(
+        (
+            await db.execute(
+                select(Job)
+                .where(
+                    text("jobs.kind = 'translation'"),
+                    text("(jobs.payload ->> 'request_key') IS NULL"),
+                    text("(jobs.payload ->> 'set_id') = :set_id"),
+                    text("(jobs.payload ->> 'section_id') = :section_id"),
+                    text("(jobs.payload ->> 'reason') = :reason"),
+                    text(
+                        "md5((jobs.payload -> 'block_ids')::text) = "
+                        "md5(CAST(:block_ids AS jsonb)::text)"
+                    ),
+                    text("(jobs.payload -> 'block_ids') = CAST(:block_ids AS jsonb)"),
+                    marker_clause,
+                )
+                .order_by(Job.created_at.desc(), Job.id.desc())
+                .limit(_LEGACY_WORK_CANDIDATE_LIMIT)
+                .with_for_update(),
+                params,
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def _schedule_translation_work(
+    db: AsyncSession,
+    store: JobStore,
+    *,
+    tset: TranslationSet,
+    content: DocumentContent,
+    section_id: str,
+    work_kind: str,
+    block_ids: list[str],
+    require_table_cells: bool,
+    priority: int,
+    user_id: str,
+    paper_id: str,
+    library_item_id: str | None,
+    payload: dict[str, Any],
+) -> _ScheduledWork:
+    """同一 work を再利用し、terminal incomplete のみ次世代を flush する。"""
+    set_id = str(tset.id)
+    request_key = _work_request_key(set_id, section_id, work_kind, block_ids)
+
+    def reused_work(job: Job) -> _ScheduledWork:
+        # pickup 待ちの queued だけを単調に優先化して再通知する。running は既に実行中、
+        # waiting_quota はクォータ解除側が再開するため重複 wakeup を送らない。
+        if job.status == "queued":
+            job.priority = max(job.priority, priority)
+        effective_priority = int(job.priority)
+        return _ScheduledWork(
+            job_id=str(job.id),
+            should_wake=job.status == "queued",
+            effective_priority=effective_priority,
+            queue_name=_queue_for_priority(effective_priority),
+        )
+
+    active = await _exact_jobs_with_status(db, request_key, _ACTIVE_WORK_STATUSES)
+    if active:
+        reused = max(active, key=lambda job: (_job_generation(job), job.created_at, str(job.id)))
+        return reused_work(reused)
+
+    succeeded = await _exact_jobs_with_status(db, request_key, ("succeeded",))
+    if succeeded and await _all_blocks_displayable(
+        db,
+        tset,
+        content,
+        block_ids,
+        require_table_cells=require_table_cells,
+    ):
+        reused = max(
+            succeeded,
+            key=lambda job: (_job_generation(job), job.created_at, str(job.id)),
+        )
+        return reused_work(reused)
+
+    max_generation = await _max_exact_generation(db, request_key)
+    if max_generation is None:
+        legacy = await _legacy_work_candidates(
+            db,
+            set_id=set_id,
+            section_id=section_id,
+            work_kind=work_kind,
+            block_ids=block_ids,
+        )
+        matching = [
+            job
+            for job in legacy
+            if _matches_work_request(
+                job,
+                request_key=request_key,
+                set_id=set_id,
+                section_id=section_id,
+                work_kind=work_kind,
+                block_ids=block_ids,
+            )
+        ]
+        active = [job for job in matching if job.status in _ACTIVE_WORK_STATUSES]
+        if active:
+            reused = max(
+                active,
+                key=lambda job: (_job_generation(job), job.created_at, str(job.id)),
+            )
+            return reused_work(reused)
+        succeeded = [job for job in matching if job.status == "succeeded"]
+        if succeeded and await _all_blocks_displayable(
+            db,
+            tset,
+            content,
+            block_ids,
+            require_table_cells=require_table_cells,
+        ):
+            reused = max(
+                succeeded,
+                key=lambda job: (_job_generation(job), job.created_at, str(job.id)),
+            )
+            return reused_work(reused)
+        max_generation = max((_job_generation(job) for job in matching), default=-1)
+
+    if max_generation >= _MAX_WORK_GENERATION:
+        raise ProblemException(
+            "conflict",
+            detail="翻訳作業の再試行世代が上限に達しています。",
+        )
+    generation = max_generation + 1
+    job_id = await store.enqueue_uncommitted(
+        kind="translation",
+        priority=priority,
+        user_id=user_id,
+        paper_id=paper_id,
+        library_item_id=library_item_id,
+        idempotency_key=f"{request_key}:g{generation}",
+        payload={
+            **payload,
+            "request_key": request_key,
+            "generation": generation,
+        },
+    )
+    return _ScheduledWork(
+        job_id=job_id,
+        should_wake=True,
+        effective_priority=priority,
+        queue_name=_queue_for_priority(priority),
+    )
+
+
 async def _set_with_access(
     db: AsyncSession, set_id: str, user: User
 ) -> tuple[TranslationSet, DocumentRevision, Paper]:
     tset = await db.get(TranslationSet, set_id)
     if tset is None:
+        raise ProblemException("not_found")
+    if tset.scope == "personal":
+        if tset.user_id is None or str(tset.user_id) != str(user.id):
+            raise ProblemException("not_found")
+    elif tset.scope != "shared":
         raise ProblemException("not_found")
     revision, paper = await resolve_accessible_revision(db, str(tset.revision_id), user)
     return tset, revision, paper
@@ -180,6 +588,187 @@ async def _effective_set_id(
     return personal or next((s for s in rows if s.scope == "shared"), None)
 
 
+def _strict_stored_plan(
+    content: DocumentContent,
+    tset: TranslationSet,
+    *,
+    pages: int | None,
+) -> TranslationPlan:
+    if not isinstance(tset.plan, dict):
+        raise ProblemException("conflict", detail="翻訳対象の選択状態が壊れています。")
+    try:
+        candidate = TranslationPlan.model_validate(tset.plan)
+    except ValidationError as exc:
+        raise ProblemException(
+            "conflict",
+            detail="翻訳対象の選択状態が壊れています。",
+        ) from exc
+    if resolve_translation_plan(content, candidate, pages=pages) != candidate:
+        raise ProblemException("conflict", detail="翻訳対象の選択状態が壊れています。")
+    return candidate
+
+
+def _selection_checkpoint(job: Job) -> dict[str, Any] | None:
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    checkpoints = payload.get("_checkpoint")
+    if not isinstance(checkpoints, dict):
+        return None
+    selection = checkpoints.get("section_selection")
+    return dict(selection) if isinstance(selection, dict) else None
+
+
+def _replace_selection_checkpoint(job: Job, checkpoint: dict[str, Any]) -> None:
+    payload = dict(job.payload) if isinstance(job.payload, dict) else {}
+    checkpoints = payload.get("_checkpoint")
+    updated = dict(checkpoints) if isinstance(checkpoints, dict) else {}
+    updated["section_selection"] = checkpoint
+    job.payload = {**payload, "_checkpoint": updated}
+
+
+async def _selection_ingest_job(
+    db: AsyncSession,
+    *,
+    user: User,
+    paper: Paper,
+    revision: DocumentRevision,
+    tset: TranslationSet,
+) -> tuple[Job, dict[str, Any]]:
+    library_item_id = await _user_library_item_id(db, user, str(paper.id))
+    if library_item_id is None:
+        raise ProblemException("not_found")
+    rows = (
+        (
+            await db.execute(
+                select(Job)
+                .where(
+                    Job.kind == "ingest",
+                    Job.user_id == user.id,
+                    Job.paper_id == paper.id,
+                    Job.library_item_id == library_item_id,
+                )
+                .order_by(Job.created_at.desc(), Job.id.desc())
+                .with_for_update()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for job in rows:
+        checkpoint = _selection_checkpoint(job)
+        if (
+            checkpoint is not None
+            and checkpoint.get("set_id") == str(tset.id)
+            and checkpoint.get("revision_id") == str(revision.id)
+        ):
+            return job, checkpoint
+    raise ProblemException("conflict", detail="セクション選択待ちの取り込みがありません。")
+
+
+@router.put(
+    "/api/translation-sets/{set_id}/section-selection",
+    response_model=SectionSelectionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="translations_select_sections",
+)
+async def select_translation_sections(
+    set_id: str,
+    body: SectionSelectionRequest,
+    user: CurrentUser,
+    db: DbDep,
+    wakeup: TranslationsJobWakeupDep,
+) -> SectionSelectionResponse:
+    tset, revision, paper = await _set_with_access(db, set_id, user)
+    if tset.scope != "personal" or str(tset.user_id) != str(user.id):
+        raise ProblemException(
+            "conflict",
+            detail="共有翻訳セットの対象範囲は個別に変更できません。",
+        )
+    await db.refresh(tset, with_for_update=True)
+    content = _as_content(revision)
+    pages = _revision_pages(revision)
+    stored_plan = _strict_stored_plan(content, tset, pages=pages)
+    job, checkpoint = await _selection_ingest_job(
+        db,
+        user=user,
+        paper=paper,
+        revision=revision,
+        tset=tset,
+    )
+
+    checkpoint_status = checkpoint.get("status")
+    if checkpoint_status == "accepted":
+        raw_accepted = checkpoint.get("plan")
+        try:
+            accepted = TranslationPlan.model_validate(raw_accepted)
+        except ValidationError as exc:
+            raise ProblemException(
+                "conflict",
+                detail="受理済みのセクション選択が壊れています。",
+            ) from exc
+        pending = accepted.model_copy(
+            update={
+                "target_section_ids": [],
+                "target_block_ids": [],
+                "auxiliary_block_ids": [],
+            }
+        )
+        try:
+            requested = select_translation_plan_sections(content, pending, body.section_ids)
+        except ValueError as exc:
+            raise ProblemException("validation_error", detail=str(exc)) from exc
+        stored_primary = stored_plan.model_copy(update={"auxiliary_block_ids": []})
+        if requested != accepted or stored_primary != accepted:
+            raise ProblemException(
+                "conflict",
+                detail="セクション選択はすでに確定しています。",
+            )
+        should_wake = job.status == "queued"
+        selected = accepted
+    elif checkpoint_status == "pending":
+        if job.status != "waiting_input" or not translation_plan_awaits_section_selection(
+            content, stored_plan
+        ):
+            raise ProblemException("conflict", detail="セクション選択は受け付けられません。")
+        try:
+            selected = select_translation_plan_sections(content, stored_plan, body.section_ids)
+        except ValueError as exc:
+            raise ProblemException("validation_error", detail=str(exc)) from exc
+        tset.plan = selected.model_dump(mode="json")
+        tset.status = "pending"
+        _replace_selection_checkpoint(
+            job,
+            {
+                "status": "accepted",
+                "set_id": str(tset.id),
+                "revision_id": str(revision.id),
+                "plan": selected.model_dump(mode="json"),
+            },
+        )
+        job.status = "queued"
+        job.error = None
+        job.finished_at = None
+        job.next_retry_at = None
+        should_wake = True
+    else:
+        raise ProblemException("conflict", detail="セクション選択状態が不正です。")
+
+    await db.commit()
+    if should_wake:
+        try:
+            await wakeup(str(job.id), _BULK_QUEUE)
+        except Exception as exc:  # DB is authoritative; queued work remains recoverable.
+            await log.awarning(
+                "section_selection_wakeup_failed",
+                job_id=str(job.id),
+                error=str(exc),
+            )
+    return SectionSelectionResponse(
+        set_id=str(tset.id),
+        job_id=str(job.id),
+        section_ids=list(selected.target_section_ids),
+    )
+
+
 # --- §7.1 翻訳セット一覧 ------------------------------------------------------------
 
 
@@ -193,7 +782,8 @@ async def list_translation_sets(
 ) -> TranslationsListResponse:
     revision, _paper = await resolve_accessible_revision(db, revision_id, user)
     content = _as_content(revision)
-    in_scope = set(compute_translation_scope(content).in_scope_block_ids)
+    raw_pages = (revision.stats or {}).get("pages")
+    pages = raw_pages if isinstance(raw_pages, int) and not isinstance(raw_pages, bool) else None
 
     sets = (
         (
@@ -213,20 +803,21 @@ async def list_translation_sets(
 
     items: list[TranslationSetItem] = []
     for tset in sets:
-        rows = (
-            await db.execute(
-                select(TranslationUnit.block_id, TranslationUnit.quality_flags).where(
-                    TranslationUnit.set_id == tset.id
-                )
-            )
-        ).all()
-        scoped = [{"quality_flags": flags} for (bid, flags) in rows if bid in in_scope]
+        in_scope = set(
+            translation_scope_from_plan(content, tset.plan, pages=pages).in_scope_block_ids
+        )
+        units = await resolve_translation_set_units(db, tset)
+        scoped = [
+            {"quality_flags": unit.quality_flags}
+            for block_id, unit in units.items()
+            if block_id in in_scope
+        ]
         items.append(
             TranslationSetItem(
                 set_id=str(tset.id),
                 style=tset.style,
                 scope=tset.scope,
-                status=tset.status,
+                status="complete" if not in_scope else tset.status,
                 progress_pct=compute_progress(scoped, len(in_scope)),
                 glossary_snapshot_id=glossary_hash(list(tset.glossary_snapshot or [])),
             )
@@ -305,14 +896,19 @@ class LiteralTranslationResponse(BaseModel):
 
 
 async def _create_literal_set(
-    db: AsyncSession, revision: DocumentRevision, paper: Paper, user: User
+    db: AsyncSession,
+    revision: DocumentRevision,
+    paper: Paper,
+    user: User,
+    plan: TranslationPlan,
 ) -> TranslationSet:
-    """style='literal' の TranslationSet を確保する(plans/06 §10.2 手順2・§9.2 の scope 決定)。
+    """style='literal' の TranslationSet を未commitで確保する。
 
     public 論文は shared(全ユーザー共通)、private は personal。用語スナップショットは
     §8.1 の 3 層マージ(shared 構築時は global のみ)。一意インデックス
     (``uq_translation_sets_shared`` / ``uq_translation_sets_personal``)への競合は
-    既存行を再取得して返す(worker 側 ``_ensure_translation_set`` と同方針)。
+    SAVEPOINT 内の INSERT だけを戻して既存行を再取得する。外側の呼び出し元が plan と
+    jobs をまとめて commit / rollback する。
     """
     revision_id = str(revision.id)
     library_item_id = await _user_library_item_id(db, user, str(paper.id))
@@ -327,12 +923,13 @@ async def _create_literal_set(
         user_id=None if shared else str(user.id),
         glossary_snapshot=snapshot,
         status="pending",
+        plan=plan.model_dump(mode="json"),
     )
-    db.add(tset)
     try:
-        await db.commit()
+        async with db.begin_nested():
+            db.add(tset)
+            await db.flush()
     except IntegrityError:
-        await db.rollback()
         existing = await _effective_set_id(db, revision_id, "literal", str(user.id))
         if existing is None:
             raise
@@ -355,53 +952,99 @@ async def start_literal_translation(
     wakeup: TranslationsJobWakeupDep,
 ) -> LiteralTranslationResponse:
     revision, paper = await resolve_accessible_revision(db, revision_id, user)
+    content = _as_content(revision)
+    raw_pages = (revision.stats or {}).get("pages")
+    pages = raw_pages if isinstance(raw_pages, int) and not isinstance(raw_pages, bool) else None
+    requested_plan = build_translation_plan(
+        content,
+        TranslationSettings.from_user_settings(user.settings),
+        pages=pages,
+    )
 
     tset = await _effective_set_id(db, revision_id, "literal", str(user.id))
-    if tset is not None and tset.status == "complete":
+    if tset is None:
+        tset = await _create_literal_set(db, revision, paper, user, requested_plan)
+
+    # public の shared set は異なるユーザーから同時に再利用される。既存対象を失わないよう
+    # 行ロック下で単調に統合し、対象が増えた complete set だけを再開する。
+    await db.refresh(tset, with_for_update=True)
+    stored_plan = resolve_translation_plan(content, tset.plan, pages=pages)
+    merged_plan = merge_translation_plans(
+        content,
+        tset.plan,
+        requested_plan,
+        pages=pages,
+    )
+    expanded = set(merged_plan.target_block_ids) > set(stored_plan.target_block_ids)
+    tset.plan = merged_plan.model_dump(mode="json")
+    scope = translation_scope_from_plan(content, merged_plan, pages=pages)
+    if not scope.in_scope_block_ids:
+        tset.status = "complete"
+    elif tset.status == "complete":
+        primary_displayable = await _all_blocks_displayable(
+            db,
+            tset,
+            content,
+            list(scope.in_scope_block_ids),
+            require_table_cells=merged_plan.translate_table_cells,
+        )
+        if expanded or not primary_displayable:
+            tset.status = "partial"
+
+    if tset.status == "complete":
         # 2 回目以降の切替は即時(plans/06 §10.2 手順1)。
+        await db.commit()
         response.status_code = status.HTTP_200_OK
         return LiteralTranslationResponse(set_id=str(tset.id), job_id=None)
-    if tset is None:
-        tset = await _create_literal_set(db, revision, paper, user)
 
-    content = _as_content(revision)
-    scope = compute_translation_scope(content)
-    library_item_id = await _user_library_item_id(db, user, str(paper.id))
-
-    store = JobStore(db)
-    job_ids: dict[str, str] = {}
-    priorities: dict[str, int] = {}
-    for sec in scope.sections:
-        section_id = str(sec["section_id"])
-        block_ids = list(sec["block_ids"])
-        # 表示中セクション優先(alinea:interactive 相当)。
-        # 残りはセクション順(alinea:bulk 相当。§10.2 手順3)。
-        priority = _ON_DEMAND_PRIORITY if section_id == body.priority_section_id else 0
-        job_ids[section_id] = await store.enqueue(
-            kind="translation",
-            priority=priority,
-            user_id=str(user.id),
-            paper_id=str(paper.id),
-            library_item_id=library_item_id,
-            idempotency_key=f"xlate:{tset.id}:{section_id}",
-            payload={
-                "set_id": str(tset.id),
-                "section_id": section_id,
-                "block_ids": block_ids,
-                "reason": "literal",
-                "table_block_id": None,
-            },
-        )
-        priorities[section_id] = priority
+    scheduled_by_section: dict[str, _ScheduledWork] = {}
+    try:
+        library_item_id = await _user_library_item_id(db, user, str(paper.id))
+        store = JobStore(db)
+        for sec in scope.sections:
+            section_id = str(sec["section_id"])
+            block_ids = list(sec["block_ids"])
+            # 表示中セクション優先(alinea:interactive 相当)。
+            # 残りはセクション順(alinea:bulk 相当。§10.2 手順3)。
+            priority = _ON_DEMAND_PRIORITY if section_id == body.priority_section_id else 0
+            scheduled_by_section[section_id] = await _schedule_translation_work(
+                db,
+                store,
+                tset=tset,
+                content=content,
+                section_id=section_id,
+                work_kind="literal",
+                block_ids=block_ids,
+                require_table_cells=merged_plan.translate_table_cells,
+                priority=priority,
+                user_id=str(user.id),
+                paper_id=str(paper.id),
+                library_item_id=library_item_id,
+                payload={
+                    "set_id": str(tset.id),
+                    "section_id": section_id,
+                    "block_ids": block_ids,
+                    "reason": "literal",
+                    "table_block_id": None,
+                },
+            )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
 
     # 起床通知(§4.5 と同じ理由: enqueue だけでは worker に見えない。deviations 参照)。
-    for section_id, jid in job_ids.items():
-        await wakeup(jid, _queue_for_priority(priorities[section_id]))
+    for scheduled in scheduled_by_section.values():
+        if scheduled.should_wake:
+            await wakeup(scheduled.job_id, scheduled.queue_name)
 
-    representative = (
-        job_ids.get(body.priority_section_id) if body.priority_section_id else None
-    ) or next(iter(job_ids.values()), None)
-    return LiteralTranslationResponse(set_id=str(tset.id), job_id=representative)
+    representative_work = (
+        scheduled_by_section.get(body.priority_section_id) if body.priority_section_id else None
+    ) or next(iter(scheduled_by_section.values()), None)
+    return LiteralTranslationResponse(
+        set_id=str(tset.id),
+        job_id=representative_work.job_id if representative_work is not None else None,
+    )
 
 
 # --- §7.4 開いたセクションを優先翻訳 -----------------------------------------------
@@ -465,42 +1108,106 @@ async def section_translate(
     if section is None:
         raise ProblemException("not_found")
 
+    await db.refresh(tset, with_for_update=True)
+    full_scope = compute_translation_scope(content)
+    section_scope = next(
+        (entry for entry in full_scope.sections if entry["section_id"] == section_id),
+        None,
+    )
+    eligible_ids = list(section_scope["block_ids"]) if section_scope is not None else []
+
     if body.block_id is not None:
         reason = "table"
-        block_ids = [body.block_id]
+        requested_block = next(
+            (block for block in section.blocks if block.id == body.block_id), None
+        )
+        if (
+            requested_block is None
+            or requested_block.type != "table"
+            or requested_block.id not in eligible_ids
+        ):
+            raise ProblemException(
+                "validation_error",
+                detail="block_id は指定セクション直下の翻訳可能な table である必要があります。",
+            )
+        block_ids = [requested_block.id]
         table_block_id: str | None = body.block_id
+        source_grid = parse_table_grid(requested_block.raw)
+        if not source_grid.supported or not any(
+            cell.translatable for row in source_grid.rows for cell in row
+        ):
+            raise ProblemException(
+                "validation_error",
+                detail="この表には翻訳可能なセルがありません。",
+            )
     else:
         reason = "on_demand"
-        # 付録スコープ外なので type 条件のみで対象を再計算する(§10.3)。
-        block_ids = [b.id for b in section.blocks if b.type in TRANSLATABLE_BLOCK_TYPES]
+        block_ids = eligible_ids
         table_block_id = None
+        if not block_ids:
+            raise ProblemException(
+                "validation_error",
+                detail="指定セクションには翻訳可能なブロックがありません。",
+            )
+
+    pages = _revision_pages(revision)
+    stored_plan = resolve_translation_plan(content, tset.plan, pages=pages)
+    effective_plan = await resolve_effective_translation_plan(
+        db,
+        tset,
+        content,
+        pages=pages,
+    )
+    effective_ids = set(
+        translation_execution_scope_from_plan(
+            content,
+            effective_plan,
+            pages=pages,
+        ).in_scope_block_ids
+    )
+    missing_ids = [block_id for block_id in block_ids if block_id not in effective_ids]
+    if missing_ids and not translation_plan_awaits_section_selection(content, stored_plan):
+        tset.plan = _with_auxiliary_targets(
+            content,
+            stored_plan,
+            missing_ids,
+        ).model_dump(mode="json")
 
     store = JobStore(db)
-    job_id = await store.enqueue(
-        kind="translation",
-        priority=_ON_DEMAND_PRIORITY,
-        user_id=str(user.id),
-        paper_id=str(paper.id),
-        library_item_id=await _user_library_item_id(db, user, str(paper.id)),
-        idempotency_key=f"xlate:{set_id}:{section_id}",
-        payload={
-            "set_id": str(tset.id),
-            "section_id": section_id,
-            "block_ids": block_ids,
-            "reason": reason,
-            "table_block_id": table_block_id,
-        },
-    )
-    await wakeup(job_id, _queue_for_priority(_ON_DEMAND_PRIORITY))
-    return SectionTranslateResponse(job_id=job_id)
+    try:
+        scheduled = await _schedule_translation_work(
+            db,
+            store,
+            tset=tset,
+            content=content,
+            section_id=section_id,
+            work_kind="table" if table_block_id is not None else "full",
+            block_ids=block_ids,
+            require_table_cells=(
+                table_block_id is not None or effective_plan.translate_table_cells
+            ),
+            priority=_ON_DEMAND_PRIORITY,
+            user_id=str(user.id),
+            paper_id=str(paper.id),
+            library_item_id=await _user_library_item_id(db, user, str(paper.id)),
+            payload={
+                "set_id": str(tset.id),
+                "section_id": section_id,
+                "block_ids": block_ids,
+                "reason": reason,
+                "table_block_id": table_block_id,
+            },
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    if scheduled.should_wake:
+        await wakeup(scheduled.job_id, scheduled.queue_name)
+    return SectionTranslateResponse(job_id=scheduled.job_id)
 
 
 # --- §7.6 再翻訳(指示なし。指示つきは M1 で拡張) --------------------------------
-
-
-def _blocks_hash(block_ids: list[str]) -> str:
-    payload = ",".join(sorted(block_ids))
-    return hashlib.blake2b(payload.encode("utf-8"), digest_size=8).hexdigest()
 
 
 @router.post(
@@ -518,60 +1225,106 @@ async def retry_failed_translations(
 ) -> RetryFailedTranslationsResponse:
     tset, revision, paper = await _set_with_access(db, set_id, user)
     content = _as_content(revision)
+    await db.refresh(tset, with_for_update=True)
+    pages = _revision_pages(revision)
+    full_scope = compute_translation_scope(content)
+    block_section_ids = {
+        str(block_id): str(section["section_id"])
+        for section in full_scope.sections
+        for block_id in section["block_ids"]
+    }
 
-    section_filter: set[str] | None = None
+    section_filter: str | None = None
     if body.section_id is not None:
         section = _find_section(content, body.section_id)
         if section is None:
             raise ProblemException("not_found")
-        section_filter = {b.id for b in section.blocks}
+        section_filter = body.section_id
 
-    rows = (
-        await db.execute(select(TranslationUnit).where(TranslationUnit.set_id == tset.id))
-    ).scalars().all()
+    stored_plan = resolve_translation_plan(content, tset.plan, pages=pages)
+    effective_plan = await resolve_effective_translation_plan(
+        db,
+        tset,
+        content,
+        pages=pages,
+    )
+    effective_ids = set(
+        translation_execution_scope_from_plan(
+            content,
+            effective_plan,
+            pages=pages,
+        ).in_scope_block_ids
+    )
+    units = await resolve_translation_set_units(db, tset)
     failed_block_ids = {
-        unit.block_id
-        for unit in rows
-        if unit.state == "machine"
+        block_id
+        for block_id, unit in units.items()
+        if block_id in block_section_ids
+        and unit.state == "machine"
         and set(unit.quality_flags or []) & BLOCKING_FLAGS
-        and (section_filter is None or unit.block_id in section_filter)
+        and (section_filter is None or block_section_ids[block_id] == section_filter)
     }
     if not failed_block_ids:
         return RetryFailedTranslationsResponse(job_ids=[], block_count=0)
 
-    blocks_by_section: dict[str, list[str]] = {}
-    for sec in content.sections:
-        stack = [sec]
-        while stack:
-            cur = stack.pop(0)
-            stack[0:0] = list(cur.sections)
-            for block in cur.blocks:
-                if block.id in failed_block_ids:
-                    blocks_by_section.setdefault(cur.id, []).append(block.id)
+    missing_ids = [
+        block_id
+        for block_id in full_scope.in_scope_block_ids
+        if block_id in failed_block_ids and block_id not in effective_ids
+    ]
+    if missing_ids:
+        tset.plan = _with_auxiliary_targets(
+            content,
+            stored_plan,
+            missing_ids,
+        ).model_dump(mode="json")
+
+    blocks_by_section = [
+        (
+            str(section["section_id"]),
+            [block_id for block_id in section["block_ids"] if block_id in failed_block_ids],
+        )
+        for section in full_scope.sections
+        if any(block_id in failed_block_ids for block_id in section["block_ids"])
+    ]
 
     store = JobStore(db)
-    job_ids: list[str] = []
     library_item_id = await _user_library_item_id(db, user, str(paper.id))
-    for section_id, block_ids in blocks_by_section.items():
-        job_id = await store.enqueue(
-            kind="translation",
-            priority=_ON_DEMAND_PRIORITY,
-            user_id=str(user.id),
-            paper_id=str(paper.id),
-            library_item_id=library_item_id,
-            idempotency_key=f"retry_failed:{tset.id}:{section_id}:{_blocks_hash(block_ids)}",
-            payload={
-                "set_id": str(tset.id),
-                "section_id": section_id,
-                "block_ids": block_ids,
-                "reason": "retry_failed",
-                "table_block_id": None,
-            },
-        )
-        job_ids.append(job_id)
+    scheduled_work: list[_ScheduledWork] = []
+    try:
+        for section_id, block_ids in blocks_by_section:
+            scheduled_work.append(
+                await _schedule_translation_work(
+                    db,
+                    store,
+                    tset=tset,
+                    content=content,
+                    section_id=section_id,
+                    work_kind="retry",
+                    block_ids=block_ids,
+                    require_table_cells=False,
+                    priority=_ON_DEMAND_PRIORITY,
+                    user_id=str(user.id),
+                    paper_id=str(paper.id),
+                    library_item_id=library_item_id,
+                    payload={
+                        "set_id": str(tset.id),
+                        "section_id": section_id,
+                        "block_ids": block_ids,
+                        "reason": "retry_failed",
+                        "table_block_id": None,
+                    },
+                )
+            )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
 
-    for job_id in job_ids:
-        await wakeup(job_id, _queue_for_priority(_ON_DEMAND_PRIORITY))
+    for scheduled in scheduled_work:
+        if scheduled.should_wake:
+            await wakeup(scheduled.job_id, scheduled.queue_name)
+    job_ids = [scheduled.job_id for scheduled in scheduled_work]
     return RetryFailedTranslationsResponse(job_ids=job_ids, block_count=len(failed_block_ids))
 
 
@@ -618,7 +1371,9 @@ async def retranslate(
         user_id=str(user.id),
         paper_id=str(paper.id),
         library_item_id=await _user_library_item_id(db, user, str(paper.id)),
-        idempotency_key=f"rexlate:{tset.id}:{_blocks_hash([unit.block_id])}:{instruction_hash}",
+        idempotency_key=(
+            f"rexlate:{tset.id}:{_retranslate_blocks_hash([unit.block_id])}:{instruction_hash}"
+        ),
         payload={
             "set_id": str(tset.id),
             "block_ids": [unit.block_id],
@@ -643,6 +1398,19 @@ class UnitEditResponse(BaseModel):
     state: str
     text_ja: str
     set_id: str
+
+
+def _table_text_projection(content: TableTranslationContent) -> str:
+    """Derive the only persisted/searchable projection accepted for a typed table."""
+
+    parts: list[str] = []
+    if content.caption is not None:
+        caption = content_to_text_ja(content.caption)
+        if caption:
+            parts.append(caption)
+    if content.cells is not None:
+        parts.extend(cell for row in content.cells for cell in row if cell)
+    return "\n".join(parts)
 
 
 async def _get_unit_or_404(db: AsyncSession, unit_id: str) -> TranslationUnit:
@@ -699,14 +1467,37 @@ async def edit_unit(
     unit_id: str, body: UnitEditRequest, user: CurrentUser, db: DbDep
 ) -> UnitEditResponse:
     unit = await _get_unit_or_404(db, unit_id)
-    tset, _revision, _paper = await _set_with_access(db, str(unit.set_id), user)
+    tset, revision, _paper = await _set_with_access(db, str(unit.set_id), user)
     target_set, target_unit = await _ensure_personal_unit(db, tset, unit, user)
 
-    # 手動編集はプレースホルダ構造を失う(単一の text インラインとして保存。plans/06 §11.3)。
-    # content_ja の実体は Inline[] | TableTranslationJson(plans/02 §3.2・plans/06 §10.4)で
-    # モデルの dict[str, Any] 注釈は簡略化されている。
-    target_unit.text_ja = body.text_ja
-    target_unit.content_ja = [{"t": "text", "v": body.text_ja}]  # type: ignore[assignment]
+    persisted_content: list[dict[str, Any]] | dict[str, Any] = [{"t": "text", "v": body.text_ja}]
+    persisted_text = body.text_ja
+    block = _find_block(_as_content(revision), unit.block_id)
+    if block is not None and block.type == "table" and isinstance(target_unit.content_ja, dict):
+        grid = parse_table_grid(block.raw)
+        current = validate_table_translation_content(target_unit.content_ja, grid)
+        if current is not None:
+            candidate = validate_table_translation_content(
+                {
+                    "kind": "table",
+                    "version": 1,
+                    "caption": [{"t": "text", "v": body.text_ja}],
+                    "cells": current.cells,
+                },
+                grid,
+            )
+            if candidate is None:
+                raise ProblemException(
+                    "validation_error",
+                    detail="表キャプションを安全な形式で保存できません。",
+                )
+            persisted_content = candidate.model_dump(mode="json")
+            persisted_text = _table_text_projection(candidate)
+
+    # Legacy/invalid table values deliberately retain the historical Inline[] edit contract;
+    # the Core table-augmentation path upgrades that caption when cells are requested later.
+    target_unit.text_ja = persisted_text
+    target_unit.content_ja = persisted_content
     target_unit.state = "edited"
     target_unit.quality_flags = []
     await db.commit()
@@ -748,6 +1539,53 @@ def _recompute_quality_flags(
     return run_quality_checks(encoded, source_plain, text_ja, snapshot)
 
 
+def _without_protected_math(value: str, fragments: list[str]) -> str:
+    """Remove each validated math atom once before prose-only quality checks."""
+
+    result = value
+    for fragment in fragments:
+        result = result.replace(fragment, "", 1)
+    return result
+
+
+def _recompute_table_quality_flags(
+    block: Block,
+    content: TableTranslationContent,
+    grid: CanonicalTableGrid,
+    snapshot: list[Any],
+) -> list[str]:
+    """Re-run quality checks per caption/cell instead of against the aggregate projection."""
+
+    flags: list[str] = []
+    if content.caption is not None:
+        encoded_caption = encode_block(block.model_dump(mode="json"))
+        flags.extend(
+            run_quality_checks(
+                encoded_caption,
+                block_to_plain(block),
+                content_to_text_ja(content.caption),
+                snapshot,
+            )
+        )
+    if content.cells is not None:
+        for source_row, translated_row in zip(grid.rows, content.cells, strict=True):
+            for source_cell, translated in zip(source_row, translated_row, strict=True):
+                if translated is None:
+                    continue
+                source_plain = _without_protected_math(source_cell.source, source_cell.math)
+                translated_plain = _without_protected_math(translated, source_cell.math)
+                encoded_cell = encode_block([{"t": "text", "v": source_plain}])
+                flags.extend(
+                    run_quality_checks(
+                        encoded_cell,
+                        source_plain,
+                        translated_plain,
+                        snapshot,
+                    )
+                )
+    return list(dict.fromkeys(flags))
+
+
 @router.post(
     "/api/translation-units/{unit_id}/proposal/accept",
     response_model=ProposalAcceptResponse,
@@ -761,17 +1599,42 @@ async def accept_proposal(unit_id: str, user: CurrentUser, db: DbDep) -> Proposa
     if not isinstance(proposal, dict) or not proposal:
         raise ProblemException("not_found", detail="採用可能な proposal がありません")
 
-    target_set, target_unit = await _ensure_personal_unit(db, tset, unit, user)
     text_ja = str(proposal.get("text_ja", ""))
     content_ja = proposal.get("content_ja")
+    typed_table: TableTranslationContent | None = None
+    table_grid: CanonicalTableGrid | None = None
+    block = _find_block(_as_content(revision), unit.block_id)
+    if block is not None and block.type == "table":
+        table_grid = parse_table_grid(block.raw)
+        typed_table = validate_table_translation_content(content_ja, table_grid)
+        if typed_table is None:
+            raise ProblemException(
+                "validation_error",
+                detail="表の再翻訳案が現在の表構造と一致しません。",
+            )
+        content_ja = typed_table.model_dump(mode="json")
+        text_ja = _table_text_projection(typed_table)
+
+    # A malformed table proposal is rejected before this point, so it cannot create a fork or
+    # replace an existing complete matrix.
+    target_set, target_unit = await _ensure_personal_unit(db, tset, unit, user)
     target_unit.text_ja = text_ja
     if content_ja is not None:
         target_unit.content_ja = content_ja
     target_unit.state = "machine"
     if proposal.get("model"):
         target_unit.model = str(proposal["model"])
-    target_unit.quality_flags = _recompute_quality_flags(
-        revision, unit.block_id, text_ja, list(target_set.glossary_snapshot or [])
+    target_unit.quality_flags = (
+        _recompute_table_quality_flags(
+            block,
+            typed_table,
+            table_grid,
+            list(target_set.glossary_snapshot or []),
+        )
+        if block is not None and typed_table is not None and table_grid is not None
+        else _recompute_quality_flags(
+            revision, unit.block_id, text_ja, list(target_set.glossary_snapshot or [])
+        )
     )
     target_unit.proposal = None
     await db.commit()
@@ -805,6 +1668,19 @@ async def save_position(
     item_id: str, body: PositionRequest, user: CurrentUser, db: DbDep
 ) -> PositionResponse:
     item = await resolve_owned_library_item(db, item_id, user)
+    revision, _paper = await resolve_accessible_revision(db, body.revision_id, user)
+    if str(revision.paper_id) != str(item.paper_id):
+        raise ProblemException("not_found")
+    section_id = next(
+        (
+            section.id
+            for section, block in _as_content(revision).iter_blocks()
+            if block.id == body.block_id
+        ),
+        None,
+    )
+    if section_id is None:
+        raise ProblemException("not_found")
     item.reading_position = {
         "revision_id": body.revision_id,
         "block_id": body.block_id,
@@ -814,27 +1690,30 @@ async def save_position(
     await db.commit()
 
     # 副作用(§10.1-a): 位置のセクションを解決し、当該リビジョンの queued 翻訳ジョブを繰り上げる。
-    await _prioritize_from_position(db, body.revision_id, body.block_id)
+    await _prioritize_from_position(db, str(revision.id), section_id, str(user.id))
     return PositionResponse(saved_at=saved_at.isoformat())
 
 
-async def _prioritize_from_position(db: AsyncSession, revision_id: str, block_id: str) -> None:
-    revision = await db.get(DocumentRevision, revision_id)
-    if revision is None:
-        return
-    content = _as_content(revision)
-    section_id: str | None = None
-    for sec, blk in content.iter_blocks():
-        if blk.id == block_id:
-            section_id = sec.id
-            break
-    if section_id is None:
-        return
+async def _prioritize_from_position(
+    db: AsyncSession,
+    revision_id: str,
+    section_id: str,
+    user_id: str,
+) -> None:
     set_ids = [
         str(sid)
         for sid in (
             await db.execute(
-                select(TranslationSet.id).where(TranslationSet.revision_id == revision_id)
+                select(TranslationSet.id).where(
+                    TranslationSet.revision_id == revision_id,
+                    or_(
+                        TranslationSet.scope == "shared",
+                        and_(
+                            TranslationSet.scope == "personal",
+                            TranslationSet.user_id == user_id,
+                        ),
+                    ),
+                )
             )
         )
         .scalars()

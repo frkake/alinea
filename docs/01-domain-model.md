@@ -76,7 +76,7 @@ erDiagram
 ### DocumentRevision(構造化ドキュメントのリビジョン)
 `(paper_id, source_version, parser_version)` ごとに 1 リビジョン。パーサ改良や arXiv 更新で新リビジョンが作られ、旧リビジョンは注釈移行が完了するまで残す。
 
-- `quality_level: A | B` — **2値**([02-ingest.md](02-ingest.md))。A=LaTeX ソースから完全構造化(2a の説明文「LaTeX ソースから完全構造化。数式・相互参照・図表・脚注を保持しています。」)、B=PDF 由来。バッジで常時明示(1e・2a・5a ほか)。旧 A〜D 4段階は廃止(C/D は B に統合。OCR は将来検討)
+- `quality_level: A | B` — **2値**([02-ingest.md](02-ingest.md))。A=LaTeX ソースから完全構造化(2a の説明文「LaTeX ソースから完全構造化。数式・相互参照・図表・脚注を保持しています。」)、B=PDF 由来(通常解析または OCR)。バッジで常時明示(1e・2a・5a ほか)。旧 A〜D 4段階は廃止し C/D は B に統合する
 - `sections[]`: 見出しツリー。各セクションが `blocks[]` を持つ
 - PDF 由来の場合、各ブロックに `page + bbox`(原紙面上の位置)を持ち、PDF モードの相互リンク「同期: p.5 ≒ §2.2」(2a)を支える
 

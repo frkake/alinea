@@ -33,6 +33,7 @@ from alinea_core.db.models import (
     Paper,
     User,
 )
+from alinea_core.db.revisions import get_latest_paper_revision
 from alinea_core.jobs.store import JobStore
 from alinea_core.storage.s3 import S3Storage
 from alinea_llm.errors import ProviderChainExhausted
@@ -325,11 +326,11 @@ async def _load_figure_article_context(
     if item is None:
         raise LookupError(f"library item not found: {article.library_item_id}")
     paper = await session.get(Paper, item.paper_id)
-    if paper is None or paper.latest_revision_id is None:
+    if paper is None:
         raise LookupError(f"paper/revision not found for library item: {item.id}")
-    revision = await session.get(DocumentRevision, paper.latest_revision_id)
+    revision = await get_latest_paper_revision(session, paper)
     if revision is None:
-        raise LookupError(f"revision not found: {paper.latest_revision_id}")
+        raise LookupError(f"paper/revision not found for library item: {item.id}")
     user = await session.get(User, item.user_id)
     if user is None:
         raise LookupError(f"user not found: {item.user_id}")

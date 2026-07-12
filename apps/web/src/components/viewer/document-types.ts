@@ -25,6 +25,26 @@ export interface Inline {
   href?: string | null;
 }
 
+export interface CanonicalTableCell {
+  id: string;
+  source: string;
+  header: boolean;
+  rowspan: number;
+  colspan: number;
+  translatable: boolean;
+  math: string[];
+  latex_body_start: number | null;
+  latex_body_end: number | null;
+  latex_wrappers: string[];
+}
+
+export interface CanonicalTableGrid {
+  supported: boolean;
+  source_format: string | null;
+  rows: CanonicalTableCell[][];
+  reason: string | null;
+}
+
 export type BlockType =
   | "paragraph"
   | "heading"
@@ -54,6 +74,8 @@ export interface DocBlock {
   language?: string | null;
   code?: string | null;
   caption?: Inline[];
+  /** API/Core が生成した物理セルの唯一の正規マッピング。未対応時は wire から省略される。 */
+  source_grid?: CanonicalTableGrid;
   items?: Inline[][];
   ordered?: boolean | null;
   /** PDF ページ位置(1 起点)。品質 B は常時、品質 A は同期成功時のみ(plans/05 §4.6・2a §5.4)。 */
