@@ -14,7 +14,8 @@ import re
 from collections.abc import AsyncIterator, Sequence
 from typing import Annotated, Any
 
-from alinea_core.db.models import ChatMessage, ChatThread, DocumentRevision, LibraryItem, Paper
+from alinea_core.db.models import ChatMessage, ChatThread, LibraryItem, Paper
+from alinea_core.db.revisions import get_latest_paper_revision
 from alinea_core.document.blocks import DocumentContent
 from alinea_core.document.plaintext import strip_markdown
 from alinea_llm.errors import ProviderChainExhausted
@@ -153,7 +154,7 @@ async def _load_paper_context(
     paper = await db.get(Paper, item.paper_id)
     if paper is None or paper.latest_revision_id is None:
         raise ProblemException("conflict", detail="この論文はまだ読解できる状態ではありません。")
-    rev = await db.get(DocumentRevision, paper.latest_revision_id)
+    rev = await get_latest_paper_revision(db, paper)
     if rev is None:
         raise ProblemException("conflict", detail="この論文はまだ読解できる状態ではありません。")
     content = DocumentContent.model_validate(rev.content)
@@ -165,15 +166,15 @@ async def _load_paper_context(
         "venue_year": venue_year,
         "arxiv_id": paper.arxiv_id or "",
     }
-    return content, str(paper.latest_revision_id), bib
+    return content, str(rev.id), bib
 
 
 async def _validator_for_item(db: DbDep, item: LibraryItem) -> EvidenceValidator:
     paper = await db.get(Paper, item.paper_id)
-    revision_id = paper.latest_revision_id if paper is not None else None
-    if revision_id is None:
+    revision = await get_latest_paper_revision(db, paper) if paper is not None else None
+    if revision is None:
         return EvidenceValidator("", [])
-    return await load_validator(db, str(revision_id))
+    return await load_validator(db, str(revision.id))
 
 
 def _normalize_anchor(anchor: dict[str, Any], revision_id: str) -> dict[str, Any]:

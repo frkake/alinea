@@ -52,7 +52,7 @@ def _week_start(now: dt.datetime) -> dt.datetime:
 
 async def _summaries(db: DbDep, rows: Sequence[_ItemRow]) -> list[LibraryItemSummary]:
     """``_reading_maps`` を一括ロードしつつ行ごとに ``_summary`` を組み立てる。"""
-    maps = await _reading_maps(db, [row[0] for row in rows])
+    maps = await _reading_maps(db, [(row[0], row[1]) for row in rows])
     out: list[LibraryItemSummary] = []
     for row in rows:
         item, paper = row[0], row[1]

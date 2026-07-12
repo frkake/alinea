@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import type { TocNode } from "@alinea/api-client";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
-import { TocRowGroup } from "@/components/viewer/TocTree";
+import { collectOnDemandSections, TocRowGroup } from "@/components/viewer/TocTree";
 import { usePdfViewStore } from "@/stores/pdf-view-store";
 import { PdfThumbnail } from "./PdfThumbnail";
 import { usePdfDocumentContext } from "./use-pdf-document";
@@ -58,8 +58,7 @@ export function PdfSidebar({
     if (el) el.scrollIntoView({ block: "nearest" });
   }, [currentPage]);
 
-  const regular = toc.filter((n) => !n.on_demand);
-  const onDemand = toc.filter((n) => n.on_demand);
+  const onDemand = collectOnDemandSections(toc);
 
   if (!open) {
     return (
@@ -135,12 +134,13 @@ export function PdfSidebar({
             overflowY: "auto",
           }}
         >
-          {regular.map((node) => (
+          {toc.map((node) => (
             <TocRowGroup
               key={node.section_id}
               node={node}
               activeSectionId={activeSectionId}
               onSectionClick={onSectionClick}
+              onTranslateSection={onTranslateAppendix}
             />
           ))}
           {onDemand.length > 0 ? (
@@ -161,38 +161,9 @@ export function PdfSidebar({
                 textAlign: "left",
               }}
             >
-              付録を一括翻訳
+              未翻訳セクションを一括翻訳
             </button>
           ) : null}
-          {onDemand.map((node) => (
-            <div
-              key={node.section_id}
-              role="button"
-              tabIndex={0}
-              onClick={() => {
-                onSectionClick(node.section_id);
-                onTranslateAppendix(node.section_id);
-              }}
-              style={{
-                margin: "8px 6px 0",
-                border: "1px dashed var(--pr-border-dashed)",
-                borderRadius: 6,
-                padding: "8px 9px",
-                display: "flex",
-                flexDirection: "column",
-                gap: 5,
-                cursor: "pointer",
-              }}
-            >
-              <span style={{ fontSize: 11.5, color: "var(--pr-text-sub)" }}>
-                {node.number ? `${node.number} ` : ""}
-                {node.title_ja ?? node.title_en} <span style={{ color: "var(--pr-text-muted)" }}>— 未翻訳</span>
-              </span>
-              <span style={{ fontSize: 10.5, color: "var(--pr-text-muted)", lineHeight: 1.5 }}>
-                開くと翻訳します(オンデマンド)
-              </span>
-            </div>
-          ))}
         </div>
       ) : (
         <div
@@ -237,13 +208,25 @@ export function PdfSidebar({
           minWidth: 0,
         }}
       >
-        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <span
+          style={{
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
           {pageCount ?? "…"} ページ · {pdf.fileSizeMb != null ? `${pdf.fileSizeMb} MB` : "…"}
         </span>
         <a
           href={pdfDownloadHref}
           download
-          style={{ color: "var(--pr-text-muted)", textDecoration: "none", flex: "none", whiteSpace: "nowrap" }}
+          style={{
+            color: "var(--pr-text-muted)",
+            textDecoration: "none",
+            flex: "none",
+            whiteSpace: "nowrap",
+          }}
         >
           ⤓ {pdfDownloadLabel}
         </a>

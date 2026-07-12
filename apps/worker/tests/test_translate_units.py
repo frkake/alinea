@@ -20,6 +20,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+import pytest
 from alinea_core.db.models import (
     DocumentRevision,
     LibraryItem,
@@ -32,6 +33,7 @@ from alinea_core.document.blocks import Block, DocumentContent, Section, Section
 from alinea_core.document.inlines import Inline
 from alinea_core.jobs.store import JobStore
 from alinea_core.search.rebuild import rebuild_block_search_index
+from alinea_core.translation import TranslationSettings, build_translation_plan
 from alinea_llm.router import LLMRouter
 from alinea_llm.types import LLMRequest, LLMResponse, StreamEvent
 from alinea_worker.tasks.translate import run_translation_job
@@ -133,6 +135,135 @@ async def _enqueue(
         paper_id=str(ctx_data["paper"].id),
         library_item_id=str(ctx_data["library_item"].id),
     )
+
+
+def _content_with_table() -> DocumentContent:
+    return DocumentContent(
+        quality_level="A",
+        sections=[
+            Section(
+                id="sec-table",
+                heading=SectionHeading(number="1", title="Results"),
+                blocks=[
+                    Block(
+                        id="blk-table",
+                        type="table",
+                        caption=[Inline(t="text", v="Benchmark results")],
+                        raw=(
+                            "<table><tr><th>Method label</th><th>$F_1$</th></tr>"
+                            "<tr><td>Accuracy $x^2$ after training</td>"
+                            "<td>91.2</td></tr></table>"
+                        ),
+                    )
+                ],
+            )
+        ],
+    )
+
+
+async def test_table_reason_worker_overrides_caption_only_plan_and_persists_one_typed_unit(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    script_provider: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = _content_with_table()
+    ctx_data = await _seed(db_session, content=content)
+    ctx_data["tset"].plan = build_translation_plan(
+        content,
+        TranslationSettings(translate_table_cells=False),
+        pages=1,
+    ).model_dump(mode="json")
+    ctx_data["tset"].status = "pending"
+    await db_session.commit()
+    job_id = await _enqueue(
+        db_session,
+        ctx_data=ctx_data,
+        payload={
+            "set_id": str(ctx_data["tset"].id),
+            "section_id": "sec-table",
+            "block_ids": ["blk-table"],
+            "reason": "table",
+        },
+    )
+
+    async def skip_pdf(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "alinea_worker.tasks.translate._build_latex_translation_pdf_after_complete",
+        skip_pdf,
+    )
+    store = JobStore(db_session)
+    job = await store.claim(job_id)
+    assert job is not None
+
+    await run_translation_job({"router": router}, store, job)
+
+    units = (
+        (
+            await db_session.execute(
+                select(TranslationUnit).where(TranslationUnit.set_id == ctx_data["tset"].id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(units) == 1
+    assert units[0].block_id == "blk-table"
+    assert isinstance(units[0].content_ja, dict)
+    assert units[0].content_ja["kind"] == "table"
+    assert units[0].content_ja["cells"] == [
+        ["これは訳文である。", None],
+        ["これは訳文である。$x^2$これは訳文である。", None],
+    ]
+    assert script_provider.calls == 1
+    completed = await store.get(job_id)
+    assert completed is not None
+    assert completed.status == "succeeded"
+    assert completed.result["translated"] == 1
+    assert completed.result["progress_pct"] == 100
+
+
+async def test_glossary_change_table_keeps_typed_cell_matrix(
+    db_session: AsyncSession,
+    router: LLMRouter,
+) -> None:
+    content = _content_with_table()
+    ctx_data = await _seed(db_session, content=content)
+    job_id = await _enqueue(
+        db_session,
+        ctx_data=ctx_data,
+        payload={
+            "set_id": str(ctx_data["tset"].id),
+            "block_ids": ["blk-table"],
+            "reason": "glossary_change",
+            "term_id": "term-table",
+        },
+    )
+    store = JobStore(db_session)
+    job = await store.claim(job_id)
+    assert job is not None
+
+    await run_translation_job({"router": router}, store, job)
+
+    unit = (
+        await db_session.execute(
+            select(TranslationUnit).where(
+                TranslationUnit.set_id == ctx_data["tset"].id,
+                TranslationUnit.block_id == "blk-table",
+            )
+        )
+    ).scalar_one()
+    assert isinstance(unit.content_ja, dict)
+    assert unit.content_ja["kind"] == "table"
+    assert unit.content_ja["cells"] == [
+        ["これは訳文である。", None],
+        ["これは訳文である。$x^2$これは訳文である。", None],
+    ]
+    completed = await store.get(job_id)
+    assert completed is not None
+    assert completed.status == "succeeded"
 
 
 # ===========================================================================

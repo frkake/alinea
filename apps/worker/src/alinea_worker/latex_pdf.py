@@ -16,7 +16,9 @@ import posixpath
 import re
 import subprocess
 import tempfile
+from collections import Counter
 from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -43,12 +45,28 @@ from alinea_core.parsing.latex_parser import (
 )
 from alinea_core.settings import CoreSettings
 from alinea_core.storage.s3 import S3Storage, StorageKeys
-from alinea_core.translation.pipeline import BLOCKING_FLAGS
+from alinea_core.translation.pipeline import (
+    BLOCKING_FLAGS,
+    TRANSLATABLE_BLOCK_TYPES,
+    resolve_translation_set_units,
+)
+from alinea_core.translation.table_cells import (
+    CanonicalTableGrid,
+    TableTranslationContent,
+    parse_table_grid,
+    validate_table_translation_content,
+)
 from botocore.exceptions import ClientError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-PDF_BUILD_VERSION = "latex-ja-pdf-2.3.0"
+from alinea_worker.structured_pdf import (
+    PdfRenderManifest,
+    StructuredLatexSource,
+    render_structured_japanese_source,
+)
+
+PDF_BUILD_VERSION = "japanese-pdf-3.0.12"
 DEFAULT_TEXLIVE_IMAGE = "alinea-texlive-ja:latest"
 _REPO_DOCKER_WRAPPER = Path(__file__).resolve().parents[4] / "scripts" / "dev-docker.sh"
 
@@ -57,6 +75,7 @@ _CAPTION_CMD_RE = re.compile(r"\\caption\*?(?:\s*\[[^\]]*\])?\s*\{")
 _ITEM_RE = re.compile(r"\\item\b\s*(?:\[[^\]]*\])?")
 _OVERFULL_RE = re.compile(r"Overfull \\[hv]box \((?P<pt>[0-9.]+)pt too")
 _JAPANESE_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
+_VISIBLE_TEX_CONTROL_RE = re.compile(r"\\[A-Za-z@]{2,}")
 _PDF_BOUNDS_TOLERANCE_PT = 2.0
 _LATEX_SOURCE_KINDS = ("arxiv_latex", "latex")
 
@@ -119,10 +138,18 @@ _LEADING_PARAGRAPH_PREFIX_RE = re.compile(
 _LABEL_RE = re.compile(r"\\label\{[^}]*\}")
 _FOOTNOTE_CMD_RE = re.compile(r"\\footnote(?:\s*\[[^\]]*\])?\s*\{")
 _COMMENT_MARKER_RE = re.compile(r"%__ALINEA_COMMENT_(\d+)__")
+_PARAGRAPH_SEPARATOR_RE = re.compile(
+    r"(\n(?:(?:[ \t]*\n)|(?:[ \t]*%__ALINEA_COMMENT_\d+__[ \t]*\n))+)"
+)
 _INLINE_MATH_RE = re.compile(
     r"(?P<dollar>(?<!\\)\$(?!\$)(?P<dollar_body>.*?)(?<!\\)\$)"
     r"|(?P<paren>\\\((?P<paren_body>.*?)\\\))"
     r"|(?P<bracket>\\\[(?P<bracket_body>.*?)\\\])",
+    re.DOTALL,
+)
+_TABLE_CELL_MATH_RE = re.compile(
+    r"(?<!\\)(?:\$\$(?:\\.|[^$])*?\$\$|\$(?:\\.|[^$])*?\$)"
+    r"|\\\((?:\\.|[^\\])*?\\\)|\\\[(?:\\.|[^\\])*?\\\]",
     re.DOTALL,
 )
 _CITATION_CMD_RE = re.compile(
@@ -178,6 +205,8 @@ class LatexPdfBuildOutcome:
     translated_key: str | None = None
     warnings: list[str] = field(default_factory=list)
     skipped_reason: str | None = None
+    renderer: str | None = None
+    fallback_reason: str | None = None
 
 
 class _TranslationCursor:
@@ -215,7 +244,7 @@ class _TranslationCursor:
                 continue
             self.pos = idx + 1
             unit = self.units.get(block.id)
-            if unit is not None and _unit_is_displayable(unit):
+            if unit is not None and _unit_is_displayable_for_block(unit, block):
                 return block, unit
             return block, None
         self.warnings.append(f"対応するブロックが見つかりません: {','.join(types)}")
@@ -268,6 +297,17 @@ class _TranslationCursor:
 
 def _unit_is_displayable(unit: TranslationUnit) -> bool:
     return bool(unit.text_ja) and not (set(unit.quality_flags or []) & BLOCKING_FLAGS)
+
+
+def _unit_is_displayable_for_block(unit: TranslationUnit, block: Block) -> bool:
+    typed_table = (
+        block.type == "table"
+        and isinstance(unit.content_ja, dict)
+        and unit.content_ja.get("kind") == "table"
+    )
+    return bool(unit.text_ja or typed_table) and not (
+        set(unit.quality_flags or []) & BLOCKING_FLAGS
+    )
 
 
 def _is_layout_artifact_block(block: Block) -> bool:
@@ -501,6 +541,82 @@ def _inline_to_latex(
     return _latex_escape_text(str(inline.get("v") or ""))
 
 
+def _table_caption_to_latex(
+    caption: list[object] | None,
+    cursor: _TranslationCursor,
+    source_latex: str,
+) -> str | None:
+    if caption is None:
+        return None
+    source = _SourceInlineContext(source_latex)
+    rendered: list[str] = []
+    for inline in caption:
+        if isinstance(inline, dict):
+            data = inline
+        else:
+            dump = getattr(inline, "model_dump", None)
+            if not callable(dump):
+                return None
+            data = dump(mode="json", exclude_none=True)
+        if not isinstance(data, dict):
+            return None
+        rendered.append(_inline_to_latex(data, cursor, source))
+    return "".join(rendered)
+
+
+def _latex_escape_table_cell(text: str, protected_math: list[str]) -> str | None:
+    """Escape prose while retaining exactly the canonical protected math multiset."""
+
+    matches = list(_TABLE_CELL_MATH_RE.finditer(text))
+    if Counter(match.group(0) for match in matches) != Counter(protected_math):
+        return None
+    rendered: list[str] = []
+    cursor = 0
+    for match in matches:
+        rendered.append(_latex_escape_text(text[cursor : match.start()]))
+        rendered.append(match.group(0))
+        cursor = match.end()
+    rendered.append(_latex_escape_text(text[cursor:]))
+    return "".join(rendered)
+
+
+def _overlay_latex_table_cells(
+    raw: str,
+    grid: CanonicalTableGrid,
+    translated: TableTranslationContent,
+) -> str | None:
+    if translated.cells is None:
+        return raw
+    replacements: list[tuple[int, int, str]] = []
+    for source_row, translated_row in zip(grid.rows, translated.cells, strict=True):
+        for cell, value in zip(source_row, translated_row, strict=True):
+            if value is None:
+                continue
+            start = cell.latex_body_start
+            end = cell.latex_body_end
+            if (
+                not cell.translatable
+                or start is None
+                or end is None
+                or start < 0
+                or end < start
+                or end > len(raw)
+            ):
+                return None
+            replacement = _latex_escape_table_cell(value, cell.math)
+            if replacement is None:
+                return None
+            replacements.append((start, end, replacement))
+
+    ordered = sorted(replacements)
+    if any(left[1] > right[0] for left, right in pairwise(ordered)):
+        return None
+    rendered = raw
+    for start, end, replacement in reversed(ordered):
+        rendered = rendered[:start] + replacement + rendered[end:]
+    return rendered
+
+
 def _unit_to_latex(
     unit: TranslationUnit | None,
     cursor: _TranslationCursor | None = None,
@@ -662,12 +778,78 @@ def _replace_caption(inner: str, cursor: _TranslationCursor, block_type: str) ->
     return inner[: m.start()] + repl + inner[end:]
 
 
+def _table_mapping_warning(cursor: _TranslationCursor, block: Block | None, reason: str) -> None:
+    block_id = block.id if block is not None else "unknown"
+    cursor.warnings.append(f"表セルの対応が一致しないため原文を保持しました: {block_id} ({reason})")
+
+
+def _replace_table(inner: str, cursor: _TranslationCursor) -> str:
+    block, unit = cursor.take("table")
+    if block is None or unit is None:
+        return inner
+
+    # Legacy table units remain caption-only.
+    if not isinstance(unit.content_ja, dict):
+        match = _CAPTION_CMD_RE.search(inner)
+        replacement = _unit_to_latex(unit, cursor, source_latex=inner)
+        if match is None or replacement is None:
+            return inner
+        rendered_caption, end = _replace_braced_command_arg(inner, match, replacement)
+        cursor.mark(block)
+        return inner[: match.start()] + rendered_caption + inner[end:]
+
+    raw = block.raw or ""
+    grid = parse_table_grid(raw)
+    if grid.supported:
+        translated = validate_table_translation_content(unit.content_ja, grid)
+        if translated is None:
+            _table_mapping_warning(cursor, block, "invalid typed matrix")
+            cursor.mark(block)
+            return inner
+    else:
+        try:
+            translated = TableTranslationContent.model_validate(unit.content_ja)
+        except (TypeError, ValueError):
+            _table_mapping_warning(cursor, block, grid.reason or "unsupported source grid")
+            cursor.mark(block)
+            return inner
+        if translated.cells is not None:
+            _table_mapping_warning(cursor, block, grid.reason or "unsupported source grid")
+            cursor.mark(block)
+            return inner
+
+    rendered = inner
+    if grid.supported and translated.cells is not None:
+        rendered_raw = _overlay_latex_table_cells(raw, grid, translated)
+        raw_start = inner.find(raw) if raw else -1
+        if rendered_raw is None or raw_start < 0 or inner.find(raw, raw_start + 1) >= 0:
+            _table_mapping_warning(cursor, block, "source offsets")
+            cursor.mark(block)
+            return inner
+        rendered = inner[:raw_start] + rendered_raw + inner[raw_start + len(raw) :]
+
+    caption_match = _CAPTION_CMD_RE.search(rendered)
+    if caption_match is not None and translated.caption is not None:
+        try:
+            source_caption, _caption_end = _read_braced(rendered, caption_match.end() - 1)
+        except LatexParseError:
+            _table_mapping_warning(cursor, block, "caption")
+            cursor.mark(block)
+            return inner
+        caption = _table_caption_to_latex(list(translated.caption), cursor, source_caption)
+        if caption is None:
+            _table_mapping_warning(cursor, block, "caption")
+            cursor.mark(block)
+            return inner
+        rendered_caption, end = _replace_braced_command_arg(rendered, caption_match, caption)
+        rendered = rendered[: caption_match.start()] + rendered_caption + rendered[end:]
+
+    cursor.mark(block)
+    return rendered
+
+
 def _split_list_translation(text: str) -> list[str]:
-    items = [
-        part.strip()
-        for part in re.split(r"(?:\n\s*-\s*|\n+|\s+-\s+)", text)
-        if part.strip()
-    ]
+    items = [part.strip() for part in re.split(r"(?:\n\s*-\s*|\n+|\s+-\s+)", text) if part.strip()]
     return items or ([text.strip()] if text.strip() else [])
 
 
@@ -830,7 +1012,7 @@ def _replace_paragraphs(
     *,
     strip_leading_options: bool = False,
 ) -> str:
-    parts = re.split(r"(\n\s*\n+)", text)
+    parts = _PARAGRAPH_SEPARATOR_RE.split(text)
     out: list[str] = []
     for idx, chunk in enumerate(parts):
         if idx % 2 == 1:
@@ -882,7 +1064,7 @@ def _transform_env(
     if base in _FIGURE_ENVS:
         return _replace_caption(inner, cursor, "figure")
     if base in _TABLE_ENVS:
-        return _replace_caption(inner, cursor, "table")
+        return _replace_table(inner, cursor)
     if base in _LIST_ENVS:
         return _replace_list_items(inner, cursor)
     if base in _QUOTE_ENVS:
@@ -1120,7 +1302,9 @@ def _safe_write_path(root: Path, name: str) -> Path | None:
     return path
 
 
-def _write_rendered_source(root: Path, rendered: RenderedLatexSource) -> None:
+def _write_rendered_source(
+    root: Path, rendered: RenderedLatexSource | StructuredLatexSource
+) -> None:
     main = _safe_write_path(root, rendered.main_tex_name)
     if main is None:
         raise LatexPdfBuildError("invalid_latex", "unsafe main TeX path")
@@ -1294,7 +1478,7 @@ def _validate_render_coverage(
     expected = {
         block.id
         for _section, block in content.iter_blocks()
-        if (unit := units.get(block.id)) is not None and _unit_is_displayable(unit)
+        if (unit := units.get(block.id)) is not None and _unit_is_displayable_for_block(unit, block)
     }
     missing = sorted(expected - set(rendered.replaced_block_ids))
     if missing:
@@ -1313,6 +1497,18 @@ def _validate_render_coverage(
         )
 
 
+def _validate_render_manifest(manifest: PdfRenderManifest) -> None:
+    """構造化レンダラーが全翻訳対象を日本語で描画したことを保証する。"""
+    missing = sorted(manifest.expected_block_ids - manifest.translated_block_ids)
+    fallback = sorted(manifest.source_fallback_block_ids)
+    if missing or fallback:
+        raise LatexPdfBuildError(
+            "translated_pdf_incomplete",
+            "not every translatable block was rendered in Japanese",
+            detail={"missing": missing, "fallback": fallback},
+        )
+
+
 def _validate_translated_pdf(pdf_bytes: bytes) -> None:
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -1321,11 +1517,18 @@ def _validate_translated_pdf(pdf_bytes: bytes) -> None:
     try:
         if doc.page_count < 1:
             raise LatexPdfBuildError("invalid_pdf", "compiled PDF has no pages")
-        has_japanese = any(
-            _JAPANESE_RE.search(doc.load_page(i).get_text("text")) for i in range(doc.page_count)
+        visible_text = "\n".join(
+            doc.load_page(index).get_text("text") for index in range(doc.page_count)
         )
-        if not has_japanese:
+        if not _JAPANESE_RE.search(visible_text):
             raise LatexPdfBuildError("missing_japanese_text", "compiled PDF has no Japanese text")
+        visible_control = _VISIBLE_TEX_CONTROL_RE.search(visible_text)
+        if visible_control is not None:
+            raise LatexPdfBuildError(
+                "visible_latex",
+                "compiled PDF exposes a raw TeX control sequence",
+                detail={"command": visible_control.group(0)},
+            )
         bound_violations = _find_pdf_page_bound_violations(doc)
         if bound_violations:
             raise LatexPdfBuildError(
@@ -1360,7 +1563,7 @@ def _translation_units_digest(units: dict[str, TranslationUnit]) -> str:
 
 
 async def _compile_rendered_source(
-    rendered: RenderedLatexSource, *, image: str, timeout_s: int
+    rendered: RenderedLatexSource | StructuredLatexSource, *, image: str, timeout_s: int
 ) -> bytes:
     def _run() -> bytes:
         with tempfile.TemporaryDirectory(prefix="alinea-latex-") as tmp:
@@ -1466,27 +1669,122 @@ def _is_missing_s3_object(exc: ClientError) -> bool:
     return str(error.get("Code") or "") in {"NoSuchKey", "NoSuchBucket", "404", "NotFound"}
 
 
-async def build_latex_translation_pdfs_if_ready(
+def _source_render_manifest(
+    rendered: RenderedLatexSource,
+    content: DocumentContent,
+    units: dict[str, TranslationUnit],
+) -> PdfRenderManifest:
+    expected = {
+        block.id
+        for _section, block in content.iter_blocks()
+        if (unit := units.get(block.id)) is not None and _unit_is_displayable_for_block(unit, block)
+    }
+    translated = expected & set(rendered.replaced_block_ids)
+    return PdfRenderManifest(
+        expected_block_ids=frozenset(expected),
+        translated_block_ids=frozenset(translated),
+        source_fallback_block_ids=frozenset(expected - translated),
+    )
+
+
+def _manifest_digest(manifest: PdfRenderManifest) -> str:
+    payload = {
+        "expected": sorted(manifest.expected_block_ids),
+        "translated": sorted(manifest.translated_block_ids),
+        "fallback": sorted(manifest.source_fallback_block_ids),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _structured_replacements(
+    content: DocumentContent, manifest: PdfRenderManifest
+) -> dict[str, int]:
+    by_id = {block.id: block.type for _section, block in content.iter_blocks()}
+    return dict(Counter(by_id[block_id] for block_id in manifest.translated_block_ids))
+
+
+def _translation_scope_is_partial(
+    content: DocumentContent, units: dict[str, TranslationUnit]
+) -> bool:
+    translatable_ids = {
+        block.id
+        for _section, block in content.iter_blocks()
+        if block.type in TRANSLATABLE_BLOCK_TYPES
+    }
+    return not translatable_ids.issubset(units)
+
+
+async def _load_structured_binary_assets(
+    storage: S3Storage,
+    content: DocumentContent,
+    units: dict[str, TranslationUnit],
+) -> tuple[dict[str, bytes], list[str]]:
+    assets: dict[str, bytes] = {}
+    warnings: list[str] = []
+    keys = {
+        block.asset_key
+        for _section, block in content.iter_blocks()
+        if block.type == "figure"
+        and block.asset_key
+        and (unit := units.get(block.id)) is not None
+        and _unit_is_displayable_for_block(unit, block)
+    }
+    for key in sorted(keys):
+        try:
+            assets[key] = await storage.get(storage.assets_bucket, key)
+        except ClientError as exc:
+            code = str(exc.response.get("Error", {}).get("Code") or "storage_error")
+            warnings.append(f"図アセットを日本語PDFへ埋め込めませんでした: {key} ({code})")
+    return assets, warnings
+
+
+async def _render_structured_pdf(
+    storage: S3Storage,
+    settings: CoreSettings,
+    *,
+    content: DocumentContent,
+    units: dict[str, TranslationUnit],
+    abstract_ja: str | None,
+) -> tuple[StructuredLatexSource, bytes, list[str]]:
+    binary_assets, asset_warnings = await _load_structured_binary_assets(storage, content, units)
+    rendered = render_structured_japanese_source(
+        content,
+        units,
+        abstract_ja=abstract_ja,
+        binary_assets=binary_assets,
+    )
+    _validate_render_manifest(rendered.manifest)
+    image = settings.alinea_texlive_image or DEFAULT_TEXLIVE_IMAGE
+    translated_pdf = await _compile_rendered_source(
+        rendered,
+        image=image,
+        timeout_s=settings.alinea_latex_build_timeout_s,
+    )
+    _validate_translated_pdf(translated_pdf)
+    return rendered, translated_pdf, asset_warnings
+
+
+async def build_translation_pdfs_if_ready(
     session: AsyncSession,
     storage: S3Storage,
     settings: CoreSettings,
     *,
     set_id: str,
 ) -> LatexPdfBuildOutcome:
-    """Build and persist translated PDFs when the translation set is complete."""
+    """Build and persist a validated Japanese PDF for every supported source format."""
 
     tset = await session.get(TranslationSet, set_id)
     if tset is None:
         return LatexPdfBuildOutcome(False, skipped_reason="translation_set_missing")
     if tset.status != "complete":
         return LatexPdfBuildOutcome(False, skipped_reason="translation_set_not_complete")
-    if tset.scope != "shared":
-        return LatexPdfBuildOutcome(False, skipped_reason="not_shared")
+    if tset.scope not in {"shared", "personal"}:
+        return LatexPdfBuildOutcome(False, skipped_reason="unsupported_scope")
     revision = await session.get(DocumentRevision, str(tset.revision_id))
     if revision is None:
         return LatexPdfBuildOutcome(False, skipped_reason="revision_missing")
-    if revision.source_format != "latex":
-        return LatexPdfBuildOutcome(False, skipped_reason="not_latex")
     paper = await session.get(Paper, str(revision.paper_id))
     if paper is None:
         return LatexPdfBuildOutcome(False, skipped_reason="paper_missing")
@@ -1494,7 +1792,13 @@ async def build_latex_translation_pdfs_if_ready(
     paper_id = str(paper.id)
     source_version = revision.source_version
     style = tset.style
-    translated_key = StorageKeys.translated_pdf(paper_id, source_version, style)
+    translated_key = StorageKeys.translated_pdf(
+        paper_id,
+        source_version,
+        style,
+        translation_set_id=(set_id if tset.scope == "personal" else None),
+    )
+    stats_record_key = style if tset.scope == "shared" else f"{style}:{set_id}"
 
     existing_translated = await _find_asset(
         session,
@@ -1503,14 +1807,11 @@ async def build_latex_translation_pdfs_if_ready(
         kind="translated_pdf",
         storage_key=translated_key,
     )
-    units = {
-        unit.block_id: unit
-        for unit in (
-            await session.execute(select(TranslationUnit).where(TranslationUnit.set_id == set_id))
-        ).scalars()
-    }
+    units = await resolve_translation_set_units(session, tset)
     translation_digest = _translation_units_digest(units)
-    existing_record = ((revision.stats or {}).get("translated_pdf") or {}).get(style) or {}
+    existing_record = ((revision.stats or {}).get("translated_pdf") or {}).get(
+        stats_record_key
+    ) or {}
     if (
         existing_translated is not None
         and existing_record.get("build_version") == PDF_BUILD_VERSION
@@ -1522,34 +1823,85 @@ async def build_latex_translation_pdfs_if_ready(
             False,
             translated_key=existing_translated.storage_key,
             skipped_reason="already_built",
+            renderer=str(existing_record.get("renderer") or "source"),
+            fallback_reason=existing_record.get("fallback_reason"),
         )
 
-    latex_asset = await _find_latex_asset(session, paper_id=paper_id, source_version=source_version)
-    if latex_asset is None:
-        return LatexPdfBuildOutcome(False, skipped_reason="latex_asset_missing")
-    try:
-        latex_bytes = await storage.get(storage.sources_bucket, latex_asset.storage_key)
-    except ClientError as exc:
-        if _is_missing_s3_object(exc):
-            return LatexPdfBuildOutcome(False, skipped_reason="latex_asset_object_missing")
-        raise
-    archive = extract_latex_archive(latex_bytes)
     content = DocumentContent.model_validate(revision.content)
-    _validate_source_revision_match(archive, content)
-    rendered = render_translated_latex_source(
-        archive,
-        content,
-        units,
-        abstract_ja=paper.abstract_ja,
-    )
-    _validate_render_coverage(rendered, content, units)
-    image = settings.alinea_texlive_image or DEFAULT_TEXLIVE_IMAGE
-    translated_pdf = await _compile_rendered_source(
-        rendered,
-        image=image,
-        timeout_s=settings.alinea_latex_build_timeout_s,
-    )
-    _validate_translated_pdf(translated_pdf)
+    renderer = "structured"
+    fallback_reason: str | None = "not_latex"
+    warnings: list[str] = []
+    manifest: PdfRenderManifest
+    replacements: dict[str, int]
+    translated_pdf: bytes
+
+    if revision.source_format == "latex" and not _translation_scope_is_partial(content, units):
+        fallback_reason = None
+        try:
+            latex_asset = await _find_latex_asset(
+                session, paper_id=paper_id, source_version=source_version
+            )
+            if latex_asset is None:
+                raise LatexPdfBuildError("latex_asset_missing", "LaTeX source asset is missing")
+            try:
+                latex_bytes = await storage.get(storage.sources_bucket, latex_asset.storage_key)
+            except ClientError as exc:
+                if _is_missing_s3_object(exc):
+                    raise LatexPdfBuildError(
+                        "latex_asset_object_missing", "LaTeX source object is missing"
+                    ) from exc
+                raise
+            archive = extract_latex_archive(latex_bytes)
+            source_rendered = render_translated_latex_source(
+                archive,
+                content,
+                units,
+                abstract_ja=paper.abstract_ja,
+            )
+            _validate_source_revision_match(archive, content)
+            _validate_render_coverage(source_rendered, content, units)
+            image = settings.alinea_texlive_image or DEFAULT_TEXLIVE_IMAGE
+            translated_pdf = await _compile_rendered_source(
+                source_rendered,
+                image=image,
+                timeout_s=settings.alinea_latex_build_timeout_s,
+            )
+            _validate_translated_pdf(translated_pdf)
+        except LatexPdfBuildError as exc:
+            if exc.kind not in {
+                "compile_failed",
+                "invalid_latex",
+                "invalid_pdf",
+                "latex_asset_missing",
+                "latex_asset_object_missing",
+                "missing_japanese_text",
+                "page_bounds",
+                "source_revision_mismatch",
+                "translation_mapping_incomplete",
+                "visible_latex",
+            }:
+                raise
+            fallback_reason = exc.kind
+        else:
+            renderer = "source"
+            warnings = list(source_rendered.warnings)
+            manifest = _source_render_manifest(source_rendered, content, units)
+            replacements = dict(source_rendered.replacements)
+    elif revision.source_format == "latex":
+        fallback_reason = "partial_translation_scope"
+
+    if renderer == "structured":
+        structured_rendered, translated_pdf, asset_warnings = await _render_structured_pdf(
+            storage,
+            settings,
+            content=content,
+            units=units,
+            abstract_ja=paper.abstract_ja,
+        )
+        warnings = [*structured_rendered.warnings, *asset_warnings]
+        manifest = structured_rendered.manifest
+        replacements = _structured_replacements(content, manifest)
+
     await storage.put(
         storage.sources_bucket,
         translated_key,
@@ -1559,6 +1911,8 @@ async def build_latex_translation_pdfs_if_ready(
             "build": PDF_BUILD_VERSION,
             "translation_set_id": set_id,
             "translation_digest": translation_digest,
+            "renderer": renderer,
+            "manifest_digest": _manifest_digest(manifest),
         },
     )
     await _record_pdf_asset(
@@ -1573,17 +1927,25 @@ async def build_latex_translation_pdfs_if_ready(
 
     stats = dict(revision.stats or {})
     pdf_stats = dict(stats.get("translated_pdf") or {})
-    pdf_stats[style] = {
+    pdf_stats[stats_record_key] = {
         "build_version": PDF_BUILD_VERSION,
         "translation_set_id": set_id,
         "translation_digest": translation_digest,
         "storage_key": translated_key,
-        "replacements": rendered.replacements,
+        "renderer": renderer,
+        "fallback_reason": fallback_reason,
+        "manifest_digest": _manifest_digest(manifest),
+        "manifest": {
+            "expected": len(manifest.expected_block_ids),
+            "translated": len(manifest.translated_block_ids),
+            "source_fallback": len(manifest.source_fallback_block_ids),
+        },
+        "replacements": replacements,
         "built_at": dt.datetime.now(dt.UTC).isoformat(),
     }
     stats["translated_pdf"] = pdf_stats
     failures = dict(stats.get("translated_pdf_failures") or {})
-    failures.pop(style, None)
+    failures.pop(stats_record_key, None)
     if failures:
         stats["translated_pdf_failures"] = failures
     else:
@@ -1593,5 +1955,18 @@ async def build_latex_translation_pdfs_if_ready(
     return LatexPdfBuildOutcome(
         True,
         translated_key=translated_key,
-        warnings=rendered.warnings,
+        warnings=warnings,
+        renderer=renderer,
+        fallback_reason=fallback_reason,
     )
+
+
+async def build_latex_translation_pdfs_if_ready(
+    session: AsyncSession,
+    storage: S3Storage,
+    settings: CoreSettings,
+    *,
+    set_id: str,
+) -> LatexPdfBuildOutcome:
+    """Compatibility alias for callers deployed before the generic builder rename."""
+    return await build_translation_pdfs_if_ready(session, storage, settings, set_id=set_id)

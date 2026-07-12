@@ -15,8 +15,9 @@
   ``FN`` ← ``footnote_ref`` / ``URL`` ← ``url`` / ``CODE`` ← ``code_inline``(原子)
 - ``EM`` ← ``emphasis``(対トークン ``⟦EM:e-1⟧`` … ``⟦/EM:e-1⟧``。内部テキストは翻訳対象)
 
-``citation`` / ``ref`` の id は参照先 ``ref`` 値そのもの、その他は出現順の連番。同一 id が
-同一ブロック内で再出現するときは ``#2`` を付す(``⟦REF:fig-2#2⟧``)。
+``citation`` / ``ref`` の安全な id は参照先 ``ref`` 値そのもの、文法外の id とその他は
+出現順の連番。同一 id が同一ブロック内で再出現するときは ``#2`` を付す
+(``⟦REF:fig-2#2⟧``)。
 """
 
 from __future__ import annotations
@@ -29,8 +30,11 @@ import xxhash
 from pydantic import BaseModel
 
 # ⟦KIND:id⟧(開始/終了の両形式を捕捉)。LaTeX の label で一般的な
-# ``fig:overview`` / ``eq:loss`` をそのまま REF id として保護できるよう ``:`` も許可する。
-TOKEN_RE = re.compile(r"⟦(/?)(MATH|CIT|REF|FN|URL|CODE|EM):([A-Za-z0-9_.#:-]+)⟧")
+# ``fig:overview`` / ``eq:loss`` / DOI の ``doi:10.1000/example`` をそのまま参照 id として
+# 保護できるよう ``:`` と ``/`` も許可する。
+TOKEN_RE = re.compile(r"⟦(/?)(MATH|CIT|REF|FN|URL|CODE|EM):([A-Za-z0-9_.#:/-]+)⟧")
+_TOKEN_ID_RE = re.compile(r"[A-Za-z0-9_.#:/-]+")
+_MAX_LITERAL_TOKEN_ID_CHARS = 256
 # トークンを取り除いた後に残る裸の括弧(改変・破損の検出用)
 BRACKET_RE = re.compile(r"[⟦⟧]")
 
@@ -44,7 +48,15 @@ _ATOMIC_KIND: dict[str, str] = {
     "code_inline": "CODE",
 }
 # 連番 id の接頭辞(citation / ref は ref 値を使うため対象外)
-_SEQ_PREFIX: dict[str, str] = {"MATH": "m", "FN": "fn", "URL": "u", "CODE": "k", "EM": "e"}
+_SEQ_PREFIX: dict[str, str] = {
+    "MATH": "m",
+    "CIT": "c",
+    "REF": "r",
+    "FN": "fn",
+    "URL": "u",
+    "CODE": "k",
+    "EM": "e",
+}
 
 
 class TokenEntry(BaseModel):
@@ -54,6 +66,7 @@ class TokenEntry(BaseModel):
     kind: str  # MATH / CIT / REF / FN / URL / CODE / EM
     inline: dict[str, Any]  # 元 Inline(復元用。EM は {"t": "emphasis"} の外殻のみ)
     paired: bool = False  # EM のみ True
+    separator_before: bool = False  # 直前も原子トークンなら LLM 用空白を復元時に除く
 
 
 class EncodedBlock(BaseModel):
@@ -132,22 +145,39 @@ def encode_block(block: dict[str, Any] | list[dict[str, Any]]) -> EncodedBlock:
     used: Counter[str] = Counter()
     tokens: list[TokenEntry] = []
     parts: list[str] = []
+    last_was_atomic = False
 
     def _emit(kind: str, ident: str, inline: dict[str, Any], *, paired: bool = False) -> str:
+        nonlocal last_was_atomic
         key = f"{kind}:{ident}"
         used[key] += 1
         if used[key] > 1:  # 同一参照の再出現
             ident = f"{ident}#{used[key]}"
         tok = f"⟦{kind}:{ident}⟧"
-        tokens.append(TokenEntry(token=tok, kind=kind, inline=inline, paired=paired))
-        return tok
+        separator_before = last_was_atomic
+        tokens.append(
+            TokenEntry(
+                token=tok,
+                kind=kind,
+                inline=inline,
+                paired=paired,
+                separator_before=separator_before,
+            )
+        )
+        last_was_atomic = not paired
+        return (" " if separator_before else "") + tok
 
     def _walk(inlines: list[dict[str, Any]]) -> None:
+        nonlocal last_was_atomic
         for inl in inlines:
             t = inl.get("t")
             if t == "text":
-                parts.append(inl.get("v") or "")
+                value = inl.get("v") or ""
+                parts.append(value)
+                if value:
+                    last_was_atomic = False
             elif t == "emphasis":
+                last_was_atomic = False
                 counters["EM"] += 1
                 ident = f"e-{counters['EM']}"
                 parts.append(_emit("EM", ident, {"t": "emphasis"}, paired=True))
@@ -157,10 +187,19 @@ def encode_block(block: dict[str, Any] | list[dict[str, Any]]) -> EncodedBlock:
                 else:  # 実装 IR は emphasis.v に平文(docs/01 §4.2)
                     parts.append(inl.get("v") or "")
                 parts.append(f"⟦/EM:{ident}⟧")
+                last_was_atomic = False
             elif t in _ATOMIC_KIND:
                 kind = _ATOMIC_KIND[t]
                 if t in ("citation", "ref"):
-                    ident = str(inl.get("ref") or "")
+                    literal_ident = str(inl.get("ref") or "")
+                    if (
+                        len(literal_ident) <= _MAX_LITERAL_TOKEN_ID_CHARS
+                        and _TOKEN_ID_RE.fullmatch(literal_ident) is not None
+                    ):
+                        ident = literal_ident
+                    else:
+                        counters[kind] += 1
+                        ident = f"{_SEQ_PREFIX[kind]}-{counters[kind]}"
                 else:
                     counters[kind] += 1
                     ident = f"{_SEQ_PREFIX[kind]}-{counters[kind]}"
@@ -230,8 +269,18 @@ def decode_translation(encoded: EncodedBlock, output_ja: str) -> list[dict[str, 
     root: list[dict[str, Any]] = []
     stack: list[list[dict[str, Any]]] = [root]
     pos = 0
+    identity_output = output_ja == encoded.text
     for m in TOKEN_RE.finditer(output_ja):
-        stack[-1].append({"t": "text", "v": output_ja[pos : m.start()]})
+        segment = output_ja[pos : m.start()]
+        entry = lookup.get(m.group(0))
+        if (
+            identity_output
+            and entry is not None
+            and entry.separator_before
+            and segment.endswith(" ")
+        ):
+            segment = segment[:-1]
+        stack[-1].append({"t": "text", "v": segment})
         pos = m.end()
         tok = m.group(0)
         if tok in end_to_start:  # EM 終了 → 区間を emphasis にまとめる

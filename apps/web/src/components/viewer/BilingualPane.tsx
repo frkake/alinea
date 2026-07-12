@@ -13,6 +13,7 @@ import {
 import type { HighlightColor } from "@/components/ui/HighlightMark";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import { useViewerChatStore } from "@/stores/viewer-chat-store";
+import { useTableTranslation } from "@/hooks/use-table-translation";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
 import { FigureTableBlock } from "@/components/viewer/FigureTableBlock";
 import {
@@ -328,6 +329,10 @@ export function BilingualPane({
         onAnnotationClick={onAnnotationClick}
         hlBlockId={hlBlockId}
         pendingHighlightQuery={pendingHighlightQuery}
+        itemId={itemId}
+        revisionId={revisionId}
+        style={style}
+        translationSetId={translationSetId}
       />
     ));
   }
@@ -387,6 +392,10 @@ interface SectionColumnsProps {
   /** `hl` を一発マークする対象ブロック(plans/11 §7)。 */
   hlBlockId: string | null;
   pendingHighlightQuery: string | null;
+  itemId: string;
+  revisionId: string;
+  style: TranslationStyle;
+  translationSetId: string | null;
 }
 
 function SectionColumns({
@@ -402,6 +411,10 @@ function SectionColumns({
   onAnnotationClick,
   hlBlockId,
   pendingHighlightQuery,
+  itemId,
+  revisionId,
+  style,
+  translationSetId,
 }: SectionColumnsProps) {
   const meta = tocMap.get(section.id);
   const number = meta?.number ?? section.heading?.number ?? null;
@@ -464,6 +477,11 @@ function SectionColumns({
                 <OtherBlock
                   block={block}
                   unit={unitMap.get(block.id) ?? null}
+                  itemId={itemId}
+                  revisionId={revisionId}
+                  style={style}
+                  translationSetId={translationSetId}
+                  sectionId={section.id}
                   onCitationClick={onCitationClick}
                   onRefClick={onRefClick}
                 />
@@ -486,6 +504,10 @@ function SectionColumns({
           onAnnotationClick={onAnnotationClick}
           hlBlockId={hlBlockId}
           pendingHighlightQuery={pendingHighlightQuery}
+          itemId={itemId}
+          revisionId={revisionId}
+          style={style}
+          translationSetId={translationSetId}
         />
       ))}
     </section>
@@ -541,6 +563,10 @@ export function BilingualParagraph({
           fontSize: "var(--pr-content-font-size-px, 13.8px)",
           lineHeight: 1.72,
           color: "var(--pr-text-en)",
+          minWidth: 0,
+          maxWidth: "100%",
+          overflowWrap: "anywhere",
+          wordBreak: "break-word",
         }}
       >
         <InlineRenderer
@@ -559,6 +585,10 @@ export function BilingualParagraph({
           fontSize: "var(--pr-content-font-size-px, 14.8px)",
           lineHeight: 1.72,
           color: "var(--pr-text-body)",
+          minWidth: 0,
+          maxWidth: "100%",
+          overflowWrap: "anywhere",
+          wordBreak: "break-word",
         }}
       >
         {hasTranslation ? (
@@ -645,11 +675,21 @@ function BilingualEquation({
 function OtherBlock({
   block,
   unit,
+  itemId,
+  revisionId,
+  style,
+  translationSetId,
+  sectionId,
   onCitationClick,
   onRefClick,
 }: {
   block: DocBlock;
   unit: TranslationUnitItem | null;
+  itemId: string;
+  revisionId: string;
+  style: TranslationStyle;
+  translationSetId: string | null;
+  sectionId: string;
   onCitationClick?: (refId: string) => void;
   onRefClick?: (ref: string, kind?: string | null) => void;
 }) {
@@ -660,9 +700,14 @@ function OtherBlock({
   }
   if (block.type === "figure" || block.type === "table") {
     return (
-      <FigureTableBlock
+      <TranslatableFigureTableBlock
         block={block}
         unit={unit}
+        itemId={itemId}
+        revisionId={revisionId}
+        style={style}
+        translationSetId={translationSetId}
+        sectionId={sectionId}
         onCitationClick={onCitationClick}
         onRefClick={onRefClick}
       />
@@ -693,6 +738,10 @@ function OtherBlock({
         lineHeight: 1.72,
         color: "var(--pr-text-body)",
         margin: 0,
+        minWidth: 0,
+        maxWidth: "100%",
+        overflowWrap: "anywhere",
+        wordBreak: "break-word",
       }}
     >
       {text != null ? (
@@ -709,6 +758,46 @@ function OtherBlock({
         />
       )}
     </p>
+  );
+}
+
+function TranslatableFigureTableBlock({
+  block,
+  unit,
+  itemId,
+  revisionId,
+  style,
+  translationSetId,
+  sectionId,
+  onCitationClick,
+  onRefClick,
+}: {
+  block: DocBlock;
+  unit: TranslationUnitItem | null;
+  itemId: string;
+  revisionId: string;
+  style: TranslationStyle;
+  translationSetId: string | null;
+  sectionId: string;
+  onCitationClick?: (refId: string) => void;
+  onRefClick?: (ref: string, kind?: string | null) => void;
+}) {
+  const tableTranslation = useTableTranslation({
+    itemId,
+    revisionId,
+    style,
+    translationSetId,
+    sectionId,
+    blockId: block.id,
+  });
+  return (
+    <FigureTableBlock
+      block={block}
+      unit={unit}
+      tableTranslation={block.type === "table" ? tableTranslation : null}
+      onCitationClick={onCitationClick}
+      onRefClick={onRefClick}
+    />
   );
 }
 

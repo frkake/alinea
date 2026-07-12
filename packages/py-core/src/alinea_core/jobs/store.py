@@ -4,6 +4,7 @@
 - `enqueue`: 冪等性キーで重複作成を防ぐ(同一キー再投入は既存 job を返す)。
 - `claim`: `status='queued'` の行のみを排他的に `running` へ遷移(二重起床・二重 enqueue 対策)。
 - `checkpoint`: 完了 stage の出力参照を記録し `stage` を進める。リトライ時に途中再開する。
+- `mark_waiting_input`: 永続 checkpoint を保ったままユーザー入力待ちへ遷移する。
 - `fail_with_retry`: 指数バックオフ 30s→2min→8min(自動 3 回)。以後 `failed`。
 - `record_partial_failure`: 部分失敗を記録し、ジョブ全体は失敗させない(docs/09 §2)。
 
@@ -23,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from alinea_core.db.models import Job
+from alinea_core.text_safety import sanitize_json_text
 
 # 優先度(DDL は INT。ix_jobs_pick は priority DESC でピックする)。
 _PRIORITY_MAP = {"interactive": 10, "bulk": 0}
@@ -58,6 +60,50 @@ class JobStore:
             if existing is not None:
                 return existing
 
+        try:
+            job_id = await self.enqueue_uncommitted(
+                kind=kind,
+                payload=payload,
+                idempotency_key=idempotency_key,
+                priority=priority,
+                user_id=user_id,
+                paper_id=paper_id,
+                library_item_id=library_item_id,
+                article_id=article_id,
+                stage=stage,
+                max_attempts=max_attempts,
+            )
+            await self.session.commit()
+        except IntegrityError:
+            # 競合で一意制約(idempotency_key / active ingest)に当たった → 既存を返す。
+            await self.session.rollback()
+            if idempotency_key is not None:
+                existing = await self._find_by_idempotency_key(idempotency_key)
+                if existing is not None:
+                    return existing
+            raise
+        return job_id
+
+    async def enqueue_uncommitted(
+        self,
+        *,
+        kind: str,
+        payload: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        priority: str | int = "bulk",
+        user_id: str | None = None,
+        paper_id: str | None = None,
+        library_item_id: str | None = None,
+        article_id: str | None = None,
+        stage: str = "queued",
+        max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
+    ) -> str:
+        """ジョブを flush まで作成し、commit/rollback は呼び出し元へ委ねる。"""
+        if idempotency_key is not None:
+            existing = await self._find_by_idempotency_key(idempotency_key)
+            if existing is not None:
+                return existing
+
         priority_value = (
             _PRIORITY_MAP.get(priority, 0) if isinstance(priority, str) else int(priority)
         )
@@ -76,16 +122,7 @@ class JobStore:
             max_attempts=max_attempts,
         )
         self.session.add(job)
-        try:
-            await self.session.commit()
-        except IntegrityError:
-            # 競合で一意制約(idempotency_key / active ingest)に当たった → 既存を返す。
-            await self.session.rollback()
-            if idempotency_key is not None:
-                existing = await self._find_by_idempotency_key(idempotency_key)
-                if existing is not None:
-                    return existing
-            raise
+        await self.session.flush()
         return str(job.id)
 
     async def _find_by_idempotency_key(self, idempotency_key: str) -> str | None:
@@ -155,18 +192,33 @@ class JobStore:
         job.status = "waiting_quota"
         await self.session.commit()
 
+    async def mark_waiting_input(self, job_id: str, *, stage: str | None = None) -> None:
+        """Pause a claimed job until durable user input is submitted."""
+        job = await self._require(job_id)
+        job.status = "waiting_input"
+        if stage is not None:
+            job.stage = stage
+        job.next_retry_at = None
+        await self.session.commit()
+
     async def succeed(self, job_id: str, result: dict[str, Any] | None = None) -> None:
         job = await self._require(job_id)
         job.status = "succeeded"
         job.progress = 100
         job.result = result or {}
+        job.error = None
+        job.next_retry_at = None
         job.finished_at = dt.datetime.now(dt.UTC)
         await self.session.commit()
 
     async def record_partial_failure(self, job_id: str, stage: str, error: dict[str, Any]) -> None:
         """部分失敗(例: 図抽出失敗)を log に残すが status は変えない(部分成功は正の状態)。"""
         job = await self._require(job_id)
-        entry = {"stage": stage, "level": "partial_failure", "error": error}
+        entry = {
+            "stage": stage,
+            "level": "partial_failure",
+            "error": sanitize_json_text(error),
+        }
         job.log = [*job.log, entry]
         await self.session.commit()
 
@@ -176,8 +228,9 @@ class JobStore:
         自動リトライを尽くしたら failed にして False を返す。
         """
         job = await self._require(job_id)
-        job.error = json.dumps(error, ensure_ascii=False)
-        job.log = [*job.log, {"level": "error", "error": error}]
+        safe_error = sanitize_json_text(error)
+        job.error = json.dumps(safe_error, ensure_ascii=False)
+        job.log = [*job.log, {"level": "error", "error": safe_error}]
         if job.attempt >= job.max_attempts:
             job.status = "failed"
             job.finished_at = dt.datetime.now(dt.UTC)

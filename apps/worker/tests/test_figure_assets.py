@@ -1,4 +1,8 @@
-"""Generic and hostile-input tests for paper figure materialization."""
+# mypy: disable-error-code="arg-type,assignment,attr-defined,misc,union-attr,var-annotated"
+"""Generic and hostile-input tests for paper figure materialization.
+
+The adversarial tests intentionally inject structural fakes into private ``IngestRun`` seams.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +23,7 @@ import pytest
 from alinea_core.document.blocks import Block, DocumentContent, Section
 from alinea_core.ingest import DocumentCompleteness
 from alinea_core.parsing.html_parser import parse_arxiv_html
+from alinea_core.parsing.pdf_parser import PARSER_VERSION as PDF_PARSER_VERSION
 from alinea_core.parsing.pdf_parser import ParsedPdfDocument
 from alinea_core.storage.s3 import S3ObjectTooLargeError, StorageKeys
 from alinea_worker import figure_assets
@@ -2210,9 +2215,7 @@ async def test_ambiguous_commit_reconciliation_failure_preserves_assets_for_orph
 
     storage = _RecordingStorage()
     paper = SimpleNamespace(thumbnail_key="thumbnails/paper/revision-new/card.webp")
-    commit_state = worker_pipeline._RevisionCommitState(
-        "revision-new", attempted=True
-    )
+    commit_state = worker_pipeline._RevisionCommitState("revision-new", attempted=True)
     recording_log = RecordingLog()
     monkeypatch.setattr(worker_pipeline, "log", recording_log)
     original = RuntimeError("commit outcome unknown")
@@ -2265,9 +2268,7 @@ async def test_ambiguous_commit_negative_reconciliation_preserves_assets_for_orp
     storage = _RecordingStorage()
     new_thumbnail = "thumbnails/paper/revision-new/card.webp"
     paper = SimpleNamespace(thumbnail_key=new_thumbnail)
-    commit_state = worker_pipeline._RevisionCommitState(
-        "revision-new", attempted=True
-    )
+    commit_state = worker_pipeline._RevisionCommitState("revision-new", attempted=True)
     recording_log = RecordingLog()
     monkeypatch.setattr(worker_pipeline, "log", recording_log)
     original = RuntimeError("commit outcome unknown")
@@ -2386,7 +2387,7 @@ def _figure_run(
 ) -> tuple[IngestRun, _RecordingStorage]:
     run = object.__new__(IngestRun)
     storage = _RecordingStorage()
-    run.parsed = SimpleNamespace(figures=[fig])
+    run.parsed = SimpleNamespace(figures=[fig], blocks=[fig])
     run.paper_id = "paper-id"
     run.source_format = source_format
     run.latex_binary_files = binary_files
@@ -2407,6 +2408,27 @@ def _pdf_figure_run(
     run.parsed_pdf = SimpleNamespace(blocks=blocks, figure_images=figure_images)
     run.deps = SimpleNamespace(s3=storage)
     return run, storage, blocks
+
+
+async def test_latex_image_backed_table_is_persisted_as_a_table_asset() -> None:
+    png = _raster_bytes("PNG")
+    table = Block(id="table-1", type="table", asset_key="runtime-table.png")
+    run, storage = _figure_run(table, {"images/runtime-table.png": png})
+    uploaded_keys: list[str] = []
+
+    saved, warnings, failures = await run._save_figures(
+        "revision-id",
+        uploaded_keys=uploaded_keys,
+        deadline=worker_pipeline.MaterializationDeadline.start(timeout_s=30.0),
+    )
+
+    expected_key = StorageKeys.figure("paper-id", "revision-id", table.id, "png")
+    assert warnings == []
+    assert failures == []
+    assert saved == {table.id: png}
+    assert table.asset_key == expected_key
+    assert uploaded_keys == [expected_key]
+    assert storage.puts == [("assets", expected_key, png, "image/png")]
 
 
 async def test_pdf_candidate_rejects_orphan_extracted_asset_before_persistence() -> None:
@@ -2496,7 +2518,7 @@ async def test_existing_revision_repairs_oversized_asset_with_bounded_reads() ->
         id=revision_id,
         paper_id=paper_id,
         source_version="v1",
-        parser_version="pdf-1.2.0",
+        parser_version=PDF_PARSER_VERSION,
         quality_level="B",
         source_format="pdf",
         content=revision_content,
@@ -2739,7 +2761,7 @@ async def test_validated_latex_cache_timeout_is_fatal_and_cleans_staged_asset() 
         Block(id="fig-second", type="figure", asset_key="second.png"),
     ]
     run, storage = _figure_run(figures[0], {})
-    run.parsed = SimpleNamespace(figures=figures)
+    run.parsed = SimpleNamespace(figures=figures, blocks=figures)
     run._candidate_materialization_validated = True
     run._candidate_figure_failures = []
     run._candidate_materialized_figures = {
@@ -2866,6 +2888,7 @@ async def test_document_deadline_stops_later_figure_materialization(
     ]
     run, _storage = _figure_run(figures[0], {f"plot-{index}.png": png for index in range(3)})
     run.parsed.figures = figures
+    run.parsed.blocks = figures
 
     output, _warnings, failures = await run._save_figures("revision-id", deadline=deadline)
 
@@ -3272,6 +3295,7 @@ async def test_pipeline_limits_figure_count_per_document(
     }
     run, storage = _figure_run(figures[0], binary_files)
     run.parsed.figures = figures
+    run.parsed.blocks = figures
     monkeypatch.setattr(worker_pipeline, "MAX_FIGURES_PER_DOCUMENT", 2)
 
     output, _warnings, failures = await run._save_figures("revision-id")
@@ -3300,6 +3324,7 @@ async def test_pipeline_limits_aggregate_retained_and_uploaded_figure_bytes(
         {"plot-0.png": png, "plot-1.png": png},
     )
     run.parsed.figures = figures
+    run.parsed.blocks = figures
     monkeypatch.setattr(
         worker_pipeline,
         "MAX_TOTAL_FIGURE_MATERIALIZED_BYTES",
@@ -3333,6 +3358,7 @@ async def test_pipeline_stops_converting_after_aggregate_cap_is_reached(
         {"plot-0.svg": source, "plot-1.svg": source},
     )
     run.parsed.figures = figures
+    run.parsed.blocks = figures
     calls: list[str] = []
 
     async def materialize(

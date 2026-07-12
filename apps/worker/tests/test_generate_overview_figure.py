@@ -36,6 +36,7 @@ from alinea_llm.structured import attach_parsed
 from alinea_llm.types import LLMRequest, LLMResponse
 from alinea_worker.tasks.generate_overview_figure import (
     OverviewFigureGenerationError,
+    _load_figure_article_context,
     create_overview_figure_v1,
     generate_overview_dsl_with_retry,
     run_overview_figure_job,
@@ -216,6 +217,30 @@ def _job(seed: dict[str, Any]) -> Any:
         library_item_id=seed["library_item"].id,
         payload={},
     )
+
+
+async def test_figure_context_rejects_latest_revision_from_another_paper(
+    db_session: AsyncSession,
+) -> None:
+    seed = await _seed(db_session)
+    foreign_paper = Paper(id=_uid(), title="Foreign paper", visibility="public")
+    db_session.add(foreign_paper)
+    await db_session.flush()
+    foreign_revision = DocumentRevision(
+        id=_uid(),
+        paper_id=str(foreign_paper.id),
+        parser_version="foreign-test",
+        quality_level="A",
+        source_format="latex",
+        content=_content().model_dump(mode="json"),
+    )
+    db_session.add(foreign_revision)
+    await db_session.flush()
+    seed["paper"].latest_revision_id = foreign_revision.id
+    await db_session.commit()
+
+    with pytest.raises(LookupError, match="paper/revision not found"):
+        await _load_figure_article_context(db_session, str(seed["article"].id))
 
 
 # --------------------------------------------------------------------------- #

@@ -39,9 +39,9 @@ function fullSettings(overrides: Partial<SettingsData> = {}): SettingsData {
     },
     translation: {
       default_style: "natural",
-      auto_translate_appendix: false,
-      translate_table_cells: false,
-      suggest_section_selection_over_30_pages: true,
+      auto_translate_appendix: true,
+      translate_table_cells: true,
+      suggest_section_selection_over_30_pages: false,
     },
     reading: { track_reading_time: true, status_transition: "suggest" },
     chat: { include_annotations_and_notes: true },
@@ -109,16 +109,31 @@ describe("SettingsClient (4f)", () => {
     renderSettings("translation");
     await screen.findByText("翻訳モデル");
 
-    await user.click(
-      screen.getByRole("switch", { name: "付録(Appendix)を自動翻訳しない" }),
-    );
+    await user.click(screen.getByRole("switch", { name: "付録(Appendix)を自動翻訳しない" }));
     await waitFor(() =>
       expect(settingsUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
-          body: { translation: { auto_translate_appendix: true } },
+          body: { translation: { auto_translate_appendix: false } },
         }),
       ),
     );
+  });
+
+  test("full translation defaults render all opt-out toggles as off", async () => {
+    renderSettings("translation");
+    await screen.findByText("翻訳モデル");
+
+    expect(screen.getByRole("switch", { name: "付録(Appendix)を自動翻訳しない" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+    expect(screen.getByRole("switch", { name: "表のセル内テキストを翻訳しない" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+    expect(
+      screen.getByRole("switch", { name: "30 ページ超の論文はセクション選択を提案" }),
+    ).toHaveAttribute("aria-checked", "false");
   });
 
   test("suggest_section toggle (non-negated) sends the raw boolean", async () => {
@@ -132,7 +147,7 @@ describe("SettingsClient (4f)", () => {
     await waitFor(() =>
       expect(settingsUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
-          body: { translation: { suggest_section_selection_over_30_pages: false } },
+          body: { translation: { suggest_section_selection_over_30_pages: true } },
         }),
       ),
     );

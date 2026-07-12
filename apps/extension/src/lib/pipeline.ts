@@ -55,6 +55,12 @@ export function pipelineRows(
         { label: DONE_STRUCT, tone: "done" },
         { label: "翻訳待機中", tone: "muted" },
       ];
+    case "selecting_sections":
+      return [
+        { label: DONE, tone: "done" },
+        { label: DONE_STRUCT, tone: "done" },
+        { label: "セクション選択待ち", tone: "muted" },
+      ];
     case "failed":
       return [
         {
@@ -94,6 +100,8 @@ export function footerRightText(
       return "構造化中";
     case "waiting_quota":
       return "待機中";
+    case "selecting_sections":
+      return "セクション選択待ち";
     case "translating_abstract":
     case "readable":
     case "translating_body":

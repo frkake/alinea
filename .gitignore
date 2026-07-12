@@ -37,6 +37,9 @@ playwright-report/
 test-results/
 apps/web/e2e/.auth/
 
+# local end-to-end audit output
+/artifacts/
+
 # misc
 .DS_Store
 *.log

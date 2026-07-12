@@ -1,6 +1,6 @@
 "use client";
 
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { TocNode } from "@alinea/api-client";
 import { BookmarkIcon, MagnifierIcon } from "@/components/icons";
 import { CountBadge } from "@/components/ui/CountBadge";
@@ -91,8 +91,7 @@ function TocPane({
   onSectionClick,
   onTranslateAppendix,
 }: TocTreeProps) {
-  const onDemand = toc.filter((n) => n.on_demand);
-  const regular = toc.filter((n) => !n.on_demand);
+  const onDemand = collectOnDemandSections(toc);
 
   return (
     <nav
@@ -148,12 +147,13 @@ function TocPane({
           overflowY: "auto",
         }}
       >
-        {regular.map((node) => (
+        {toc.map((node) => (
           <TocRowGroup
             key={node.section_id}
             node={node}
             activeSectionId={activeSectionId}
             onSectionClick={onSectionClick}
+            onTranslateSection={onTranslateAppendix}
           />
         ))}
 
@@ -175,40 +175,9 @@ function TocPane({
               textAlign: "left",
             }}
           >
-            付録を一括翻訳
+            未翻訳セクションを一括翻訳
           </button>
         ) : null}
-
-        {onDemand.map((node) => (
-          <div
-            key={node.section_id}
-            role="button"
-            tabIndex={0}
-            onClick={() => {
-              onSectionClick(node.section_id);
-              onTranslateAppendix(node.section_id);
-            }}
-            style={{
-              margin: "8px 6px 0",
-              border: "1px dashed var(--pr-border-dashed)",
-              borderRadius: 6,
-              padding: "8px 9px",
-              display: "flex",
-              flexDirection: "column",
-              gap: 5,
-              cursor: "pointer",
-            }}
-          >
-            <span style={{ fontSize: 11.5, color: "var(--pr-text-sub)" }}>
-              {node.number ? `${node.number} ` : ""}
-              {node.title_ja ?? node.title_en}{" "}
-              <span style={{ color: "var(--pr-text-muted)" }}>— 未翻訳</span>
-            </span>
-            <span style={{ fontSize: 10.5, color: "var(--pr-text-muted)", lineHeight: 1.5 }}>
-              開くと翻訳します(オンデマンド)
-            </span>
-          </div>
-        ))}
       </div>
 
       <div
@@ -224,7 +193,14 @@ function TocPane({
         }}
       >
         {trackReadingTime ? (
-          <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <span
+            style={{
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
             今日の読書 {todayReadingMinutes}分
           </span>
         ) : (
@@ -244,25 +220,26 @@ export function TocRowGroup({
   node,
   activeSectionId,
   onSectionClick,
+  onTranslateSection,
 }: {
   node: TocNode;
   activeSectionId: string | null;
   onSectionClick: (sectionId: string) => void;
+  onTranslateSection?: (sectionId: string) => void;
 }) {
-  return (
-    <>
-      <TocRow node={node} depth={0} activeSectionId={activeSectionId} onSectionClick={onSectionClick} />
-      {(node.children ?? []).map((child) => (
-        <TocRow
-          key={child.section_id}
-          node={child}
-          depth={1}
-          activeSectionId={activeSectionId}
-          onSectionClick={onSectionClick}
-        />
-      ))}
-    </>
+  const renderNode = (entry: TocNode, depth: number): ReactNode => (
+    <div key={entry.section_id}>
+      <TocRow
+        node={entry}
+        depth={depth}
+        activeSectionId={activeSectionId}
+        onSectionClick={onSectionClick}
+        onTranslateSection={onTranslateSection}
+      />
+      {(entry.children ?? []).map((child) => renderNode(child, depth + 1))}
+    </div>
   );
+  return <>{renderNode(node, 0)}</>;
 }
 
 function TocRow({
@@ -270,26 +247,32 @@ function TocRow({
   depth,
   activeSectionId,
   onSectionClick,
+  onTranslateSection,
 }: {
   node: TocNode;
   depth: number;
   activeSectionId: string | null;
   onSectionClick: (sectionId: string) => void;
+  onTranslateSection?: (sectionId: string) => void;
 }) {
   const active = node.section_id === activeSectionId;
   const outOfDenominator = !node.in_progress_denominator;
   const style: CSSProperties = {
     display: "flex",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 6,
-    padding: depth > 0 ? "4px 8px 4px 22px" : "4px 8px",
+    padding: `4px 8px 4px ${8 + depth * 14}px`,
     borderRadius: 5,
     border: "none",
     cursor: "pointer",
     textAlign: "left",
     width: "100%",
     background: active ? "var(--pr-acc-s)" : "transparent",
-    color: active ? "var(--pr-acc)" : outOfDenominator ? "var(--pr-text-icon)" : "var(--pr-text-nav)",
+    color: active
+      ? "var(--pr-acc)"
+      : outOfDenominator
+        ? "var(--pr-text-icon)"
+        : "var(--pr-text-nav)",
     fontWeight: active ? 600 : 400,
     boxShadow: active ? "inset 2px 0 var(--pr-acc)" : undefined,
     fontFamily: "var(--pr-font-ui)",
@@ -300,11 +283,39 @@ function TocRow({
       type="button"
       style={style}
       aria-current={active ? "true" : undefined}
-      onClick={() => onSectionClick(node.section_id)}
+      onClick={() => {
+        onSectionClick(node.section_id);
+        if (node.on_demand) onTranslateSection?.(node.section_id);
+      }}
     >
-      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {node.number ? `${node.number} ` : ""}
-        {node.title_ja ?? node.title_en}
+      <span style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
+        <span
+          style={{
+            display: "block",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {node.number ? `${node.number} ` : ""}
+          {node.title_ja ?? node.title_en}
+          {node.on_demand ? <span style={{ color: "var(--pr-text-muted)" }}> — 未翻訳</span> : null}
+        </span>
+        {node.on_demand ? (
+          <span
+            style={{
+              display: "block",
+              marginTop: 2,
+              fontSize: 10.5,
+              color: "var(--pr-text-muted)",
+              lineHeight: 1.4,
+              whiteSpace: "normal",
+              overflowWrap: "anywhere",
+            }}
+          >
+            開くと翻訳します(オンデマンド)
+          </span>
+        ) : null}
       </span>
       {!outOfDenominator && node.annotation_count > 0 ? (
         <CountBadge count={node.annotation_count} variant="annotation" />
@@ -319,4 +330,11 @@ function TocRow({
       ) : null}
     </button>
   );
+}
+
+export function collectOnDemandSections(nodes: TocNode[]): TocNode[] {
+  return nodes.flatMap((node) => [
+    ...(node.on_demand ? [node] : []),
+    ...collectOnDemandSections(node.children ?? []),
+  ]);
 }

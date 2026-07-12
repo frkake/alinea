@@ -412,10 +412,7 @@ def test_plausible_single_file_tex_preserves_text_encodings_and_whitespace_contr
 ) -> None:
     marker = "日本語" if encoding == "utf-8" else "café"
     source = (
-        "\\documentclass{article}\r\n"
-        "\\begin{document}\t"
-        f"{marker}\f"
-        "\\end{document}\n"
+        f"\\documentclass{{article}}\r\n\\begin{{document}}\t{marker}\f\\end{{document}}\n"
     ).encode(encoding)
 
     extracted = extract_latex_archive(_compress_tar(source, compression))
@@ -427,11 +424,7 @@ def test_plausible_single_file_tex_preserves_text_encodings_and_whitespace_contr
 def test_single_file_tex_may_contain_incidental_ustar_text_at_tar_magic_offset(
     compression: str,
 ) -> None:
-    source = (
-        b"x" * 257
-        + b"ustar \n"
-        + b"\\documentclass{article}\\begin{document}x\\end{document}"
-    )
+    source = b"x" * 257 + b"ustar \n" + b"\\documentclass{article}\\begin{document}x\\end{document}"
 
     extracted = extract_latex_archive(_compress_tar(source, compression))
 
@@ -445,9 +438,7 @@ def test_single_file_fallback_rejects_binary_control_bytes(
     binary_control: int,
 ) -> None:
     source = (
-        b"\\documentclass{article}\\begin{document}x"
-        + bytes([binary_control])
-        + b"\\end{document}"
+        b"\\documentclass{article}\\begin{document}x" + bytes([binary_control]) + b"\\end{document}"
     )
 
     with pytest.raises(LatexParseError) as caught:
@@ -634,9 +625,7 @@ def test_pax_sparse_metadata_is_rejected_before_stdlib_conversion(
     value: bytes,
 ) -> None:
     source = b"\\documentclass{article}\\begin{document}x\\end{document}"
-    raw = _manual_tar_archive(
-        [_pax_extension(key, value), _manual_tar_entry("main.tex", source)]
-    )
+    raw = _manual_tar_archive([_pax_extension(key, value), _manual_tar_entry("main.tex", source)])
 
     with pytest.raises(LatexParseError) as caught:
         extract_latex_archive(raw)
@@ -744,9 +733,7 @@ def test_unknown_tar_type_size_has_exact_early_boundary(
 def test_huge_base256_unknown_size_is_rejected_before_stream_seek(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    raw = _manual_tar_archive(
-        [_negative_size_tar_header("metadata.bin", 1 << 40, typeflag=b"Z")]
-    )
+    raw = _manual_tar_archive([_negative_size_tar_header("metadata.bin", 1 << 40, typeflag=b"Z")])
     seek_calls: list[int] = []
 
     def forbidden_seek(_stream: object, position: int) -> int:
@@ -784,9 +771,7 @@ def test_tar_metadata_caps_apply_before_real_member_yield(
     entries: list[bytes]
 
     if case == "pax_header_bytes":
-        monkeypatch.setattr(
-            latex_parser, "MAX_LATEX_PAX_HEADER_BYTES", len(one) - 1, raising=False
-        )
+        monkeypatch.setattr(latex_parser, "MAX_LATEX_PAX_HEADER_BYTES", len(one) - 1, raising=False)
         entries = [
             _manual_tar_entry("pax", one, typeflag=tarfile.XHDTYPE),
             _manual_tar_entry("main.tex", source),
@@ -801,47 +786,36 @@ def test_tar_metadata_caps_apply_before_real_member_yield(
             _manual_tar_entry("main.tex", source),
         ]
     elif case == "pax_header_records":
-        monkeypatch.setattr(
-            latex_parser, "MAX_LATEX_PAX_RECORDS_PER_HEADER", 1, raising=False
-        )
+        monkeypatch.setattr(latex_parser, "MAX_LATEX_PAX_RECORDS_PER_HEADER", 1, raising=False)
         entries = [
             _manual_tar_entry("pax", one + two, typeflag=tarfile.XHDTYPE),
             _manual_tar_entry("main.tex", source),
         ]
     elif case == "pax_total_records":
-        monkeypatch.setattr(
-            latex_parser, "MAX_LATEX_PAX_TOTAL_RECORDS", 1, raising=False
-        )
+        monkeypatch.setattr(latex_parser, "MAX_LATEX_PAX_TOTAL_RECORDS", 1, raising=False)
         entries = [
             _manual_tar_entry("pax-1", one, typeflag=tarfile.XHDTYPE),
             _manual_tar_entry("pax-2", two, typeflag=tarfile.XHDTYPE),
             _manual_tar_entry("main.tex", source),
         ]
     elif case == "extension_headers":
-        monkeypatch.setattr(
-            latex_parser, "MAX_LATEX_ARCHIVE_EXTENSION_HEADERS", 1, raising=False
-        )
+        monkeypatch.setattr(latex_parser, "MAX_LATEX_ARCHIVE_EXTENSION_HEADERS", 1, raising=False)
         entries = [
             _manual_tar_entry("pax-1", one, typeflag=tarfile.XHDTYPE),
             _manual_tar_entry("pax-2", two, typeflag=tarfile.XHDTYPE),
             _manual_tar_entry("main.tex", source),
         ]
     elif case == "raw_headers":
-        monkeypatch.setattr(
-            latex_parser, "MAX_LATEX_ARCHIVE_HEADERS", 2, raising=False
-        )
+        monkeypatch.setattr(latex_parser, "MAX_LATEX_ARCHIVE_HEADERS", 2, raising=False)
         entries = [
             _manual_tar_entry("a.tex", b"a"),
             _manual_tar_entry("b.tex", b"b"),
             _manual_tar_entry("main.tex", source),
         ]
     else:
-        monkeypatch.setattr(
-            latex_parser, "MAX_LATEX_ARCHIVE_EXTENSION_DEPTH", 2, raising=False
-        )
+        monkeypatch.setattr(latex_parser, "MAX_LATEX_ARCHIVE_EXTENSION_DEPTH", 2, raising=False)
         entries = [
-            _manual_tar_entry(f"pax-{index}", one, typeflag=tarfile.XHDTYPE)
-            for index in range(3)
+            _manual_tar_entry(f"pax-{index}", one, typeflag=tarfile.XHDTYPE) for index in range(3)
         ]
         entries.append(_manual_tar_entry("main.tex", source))
 
@@ -924,9 +898,7 @@ def test_gnu_long_name_and_link_extensions_preserve_following_members() -> None:
                 long_link.encode() + b"\0",
                 typeflag=tarfile.GNUTYPE_LONGLINK,
             ),
-            _manual_tar_entry(
-                "asset-link", b"", typeflag=tarfile.SYMTYPE, linkname="placeholder"
-            ),
+            _manual_tar_entry("asset-link", b"", typeflag=tarfile.SYMTYPE, linkname="placeholder"),
             _manual_tar_entry("after.tex", b"after"),
         ]
     )
@@ -1008,9 +980,7 @@ def test_xz_decoder_rejects_oversized_dictionary_with_explicit_memlimit(
     monkeypatch.setattr(
         latex_parser.lzma,
         "LZMAFile",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("unbounded LZMAFile used")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unbounded LZMAFile used")),
     )
 
     with pytest.raises(LatexParseError) as caught:
@@ -1025,11 +995,7 @@ def test_concatenated_xz_streams_form_one_tar_stream(padding_bytes: int) -> None
     source = b"\\documentclass{article}\\begin{document}x\\end{document}"
     raw = _raw_tar_archive([("main.tex", source)])
     split = 777
-    archive = (
-        lzma.compress(raw[:split])
-        + b"\0" * padding_bytes
-        + lzma.compress(raw[split:])
-    )
+    archive = lzma.compress(raw[:split]) + b"\0" * padding_bytes + lzma.compress(raw[split:])
 
     extracted = extract_latex_archive(archive)
 
@@ -1068,11 +1034,7 @@ def test_oversized_dictionary_in_concatenated_xz_stream_is_invalid(
 ) -> None:
     source = b"\\documentclass{article}\\begin{document}x\\end{document}"
     raw = _raw_tar_archive([("main.tex", source)])
-    archive = (
-        lzma.compress(raw)
-        + b"\0" * padding_bytes
-        + _xz_with_lzma2_dictionary(b"x", 40)
-    )
+    archive = lzma.compress(raw) + b"\0" * padding_bytes + _xz_with_lzma2_dictionary(b"x", 40)
     real_decompressor = lzma.LZMADecompressor
 
     def guarded_decompressor(*args: object, **kwargs: object) -> lzma.LZMADecompressor:
@@ -1083,9 +1045,7 @@ def test_oversized_dictionary_in_concatenated_xz_stream_is_invalid(
     monkeypatch.setattr(
         latex_parser.lzma,
         "LZMAFile",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("unbounded LZMAFile used")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unbounded LZMAFile used")),
     )
 
     with pytest.raises(LatexParseError) as caught:
@@ -1114,11 +1074,7 @@ def test_xz_stream_padding_must_be_a_multiple_of_four(
     raw = _raw_tar_archive([("main.tex", source)])
     if following == "next-stream":
         split = 777
-        archive = (
-            lzma.compress(raw[:split])
-            + b"\0" * padding_bytes
-            + lzma.compress(raw[split:])
-        )
+        archive = lzma.compress(raw[:split]) + b"\0" * padding_bytes + lzma.compress(raw[split:])
     else:
         suffix = b"" if following == "eof" else b"trailing-data"
         archive = lzma.compress(raw) + b"\0" * padding_bytes + suffix
@@ -1149,9 +1105,7 @@ def test_xz_padding_and_magic_may_cross_compressed_input_chunk_boundary() -> Non
     second = lzma.compress(raw[split:])
     chunk_bytes = 64 * 1024
     magic_prefix_bytes = next(
-        size
-        for size in range(1, 6)
-        if (chunk_bytes - len(first) - size) % 4 == 0
+        size for size in range(1, 6) if (chunk_bytes - len(first) - size) % 4 == 0
     )
     padding_bytes = chunk_bytes - len(first) - magic_prefix_bytes
     assert padding_bytes > 0 and padding_bytes % 4 == 0
@@ -1212,10 +1166,7 @@ def test_concatenated_xz_stream_count_has_exact_boundary(
         stream_limit,
         raising=False,
     )
-    archive = (
-        lzma.compress(b"") * (stream_limit - 1 + extra_streams)
-        + lzma.compress(raw)
-    )
+    archive = lzma.compress(b"") * (stream_limit - 1 + extra_streams) + lzma.compress(raw)
 
     if raises_limit:
         with pytest.raises(LatexParseError) as caught:
@@ -1243,9 +1194,8 @@ def test_gzip_and_bzip2_stream_counts_have_exact_boundary(
         stream_limit,
         raising=False,
     )
-    archive = (
-        _compress_tar(b"", compression) * (stream_limit - 1 + extra_streams)
-        + _compress_tar(raw, compression)
+    archive = _compress_tar(b"", compression) * (stream_limit - 1 + extra_streams) + _compress_tar(
+        raw, compression
     )
 
     if raises_limit:
@@ -1271,9 +1221,7 @@ def test_single_tex_gzip_fallback_uses_same_stream_count_limit(
         stream_limit,
         raising=False,
     )
-    archive = gzip.compress(b"") * (stream_limit - 1 + extra_streams) + gzip.compress(
-        source
-    )
+    archive = gzip.compress(b"") * (stream_limit - 1 + extra_streams) + gzip.compress(source)
 
     if raises_limit:
         with pytest.raises(LatexParseError) as caught:
@@ -1291,9 +1239,7 @@ def test_concatenated_gzip_and_bzip2_streams_form_one_tar_stream(
     source = b"\\documentclass{article}\\begin{document}x\\end{document}"
     raw = _raw_tar_archive([("main.tex", source)])
     split = 777
-    archive = _compress_tar(raw[:split], compression) + _compress_tar(
-        raw[split:], compression
-    )
+    archive = _compress_tar(raw[:split], compression) + _compress_tar(raw[split:], compression)
 
     extracted = extract_latex_archive(archive)
 
@@ -1400,7 +1346,7 @@ def test_raw_tar_may_start_with_incidental_bzip2_magic(
 
 def test_parser_version_and_quality() -> None:
     doc = _doc()
-    assert doc.parser_version == PARSER_VERSION == "latex-1.3.0"
+    assert doc.parser_version == PARSER_VERSION == "latex-1.3.5"
     assert doc.quality_level == "A"
     assert doc.source_format == "latex"
 
@@ -1741,6 +1687,64 @@ def test_align_environment_splits_into_multiple_equation_blocks() -> None:
     assert "X_0" in (eqs[1].latex or "")
 
 
+def test_align_row_splitter_preserves_nested_matrix_rows() -> None:
+    source = r"""
+\documentclass{article}
+\begin{document}
+\section{Matrices}
+\begin{align}
+V &= \begin{pmatrix}
+  0 & I \\
+  0 & 0
+\end{pmatrix}, \\
+W &= 1.
+\end{align}
+\end{document}
+"""
+
+    parsed = parse_latex_source("main.tex", {"main.tex": source}).to_document_content()
+    equations = [
+        block.latex or "" for _section, block in parsed.iter_blocks() if block.type == "equation"
+    ]
+
+    assert len(equations) == 2
+    assert r"\begin{pmatrix}" in equations[0]
+    assert r"0 & I \\ 0 & 0" in " ".join(equations[0].split())
+    assert r"\end{pmatrix}" in equations[0]
+    assert equations[1] == "W &= 1."
+
+
+def test_top_level_double_dollar_array_is_one_display_equation() -> None:
+    source = r"""
+\documentclass{article}
+\begin{document}
+\section{Arrays}
+Before the array.
+$$
+\begin{array}{cc}
+1 & 2 \\
+3 & 4
+\end{array}.
+$$
+After the array with $x$ inline.
+\end{document}
+"""
+
+    content = parse_latex_source("main.tex", {"main.tex": source}).to_document_content()
+    blocks = [block for _section, block in content.iter_blocks()]
+    equations = [block for block in blocks if block.type == "equation"]
+    paragraphs = [block for block in blocks if block.type == "paragraph"]
+
+    assert len(equations) == 1
+    assert r"\begin{array}{cc}" in (equations[0].latex or "")
+    assert r"1 & 2 \\ 3 & 4" in " ".join((equations[0].latex or "").split())
+    assert [block_to_plain(block) for block in paragraphs] == [
+        "Before the array.",
+        "After the array with x inline.",
+    ]
+    assert all("$$" not in block_to_plain(block) for block in blocks)
+
+
 def test_inline_math_dollar_delimiter_preserved() -> None:
     doc = _doc()
     sec1 = next(s for s in doc.sections if s.id == "sec-1")
@@ -1884,6 +1888,58 @@ def test_image_backed_table_retains_table_semantics_and_emits_each_asset_once() 
     assert [block.asset_key for block in figures] == ["table-a.pdf", "table-b.png"]
 
 
+def test_whole_image_backed_table_attaches_asset_to_table_block() -> None:
+    source = r"""
+\documentclass{article}
+\begin{document}
+\section{Image table}
+\begin{table}
+  \caption{Runtime comparison.}
+  \label{tab:runtime}
+  \centering
+  \includegraphics[width=\columnwidth]{runtime-table.pdf}
+\end{table}
+\end{document}
+"""
+
+    document = parse_latex_source("main.tex", {"main.tex": source})
+    tables = [block for block in document.blocks if block.type == "table"]
+    figures = [block for block in document.blocks if block.type == "figure"]
+
+    assert len(tables) == 1
+    assert tables[0].label == "tab:runtime"
+    assert tables[0].asset_key == "runtime-table.pdf"
+    assert tables[0].raw is None
+    assert "Runtime comparison" in block_to_plain(tables[0])
+    assert figures == []
+
+
+def test_whole_image_backed_table_keeps_additional_panels_as_tables() -> None:
+    source = r"""
+\documentclass{article}
+\begin{document}
+\section{Image table}
+\begin{table}
+  \caption{Multi-page results.}
+  \label{tab:multi-page}
+  \includegraphics{results-page-1.pdf}
+  \includegraphics{results-page-2.pdf}
+\end{table}
+\end{document}
+"""
+
+    document = parse_latex_source("main.tex", {"main.tex": source})
+    tables = [block for block in document.blocks if block.type == "table"]
+
+    assert [block.asset_key for block in tables] == [
+        "results-page-1.pdf",
+        "results-page-2.pdf",
+    ]
+    assert tables[0].label == "tab:multi-page"
+    assert tables[1].label is None
+    assert [block for block in document.blocks if block.type == "figure"] == []
+
+
 def test_abstract_text_is_excluded_but_evaluated_graphics_are_retained() -> None:
     source = r"""
 \documentclass{article}
@@ -2021,12 +2077,9 @@ def test_nested_graphics_macros_are_evaluated_and_code_is_not_evaluated() -> Non
 def test_deeply_nested_graphics_macro_fails_instead_of_silently_losing_figure() -> None:
     names = ["macro" + "a" * length for length in range(1, 36)]
     definitions = [
-        rf"\newcommand{{\{name}}}{{\{names[index + 1]}}}"
-        for index, name in enumerate(names[:-1])
+        rf"\newcommand{{\{name}}}{{\{names[index + 1]}}}" for index, name in enumerate(names[:-1])
     ]
-    definitions.append(
-        rf"\newcommand{{\{names[-1]}}}{{\includegraphics{{deep-panel.png}}}}"
-    )
+    definitions.append(rf"\newcommand{{\{names[-1]}}}{{\includegraphics{{deep-panel.png}}}}")
     source = "\n".join(
         [
             r"\documentclass{article}",
@@ -2056,6 +2109,93 @@ def test_recursive_graphics_macro_fails_instead_of_silently_losing_figure() -> N
         parse_latex_source("main.tex", {"main.tex": source})
 
     assert caught.value.kind == "macro_expansion_limit"
+
+
+def test_nonstructural_self_reference_used_as_helper_argument_is_safely_bounded() -> None:
+    r"""Class size commands pass their own control sequence to ``\@setfontsize``.
+
+    This is not recursive execution and must not make an otherwise parseable paper fail.  A
+    recursive macro that reaches figures/sections remains covered by the preceding fail-closed
+    test.
+    """
+    files = {
+        "main.tex": r"""
+\documentclass{article}
+\usepackage{paperstyle}
+\begin{document}
+\footnotesize Visible body text.
+\end{document}
+""",
+        "paperstyle.sty": r"""
+\renewcommand{\footnotesize}{\@setfontsize\footnotesize\@ixpt\@xpt}
+""",
+    }
+
+    parsed = parse_latex_source("main.tex", files).to_document_content()
+
+    visible = "\n".join(block_to_plain(block) for _section, block in parsed.iter_blocks())
+    assert "Visible body text" in visible
+
+
+def test_class_redefined_size_switches_do_not_leak_into_equation_latex() -> None:
+    """Visual size switches must stay presentation-only after class-file evaluation."""
+    files = {
+        "main.tex": r"""
+\documentclass{article}
+\usepackage{paperstyle}
+\begin{document}
+\begin{align}
+\scriptsize
+  \notag & g_{[n-1]} = \\
+\normalsize
+  A &= \overline{\Gamma}_{[n-1]}.
+\end{align}
+\end{document}
+""",
+        "paperstyle.sty": r"""
+\renewcommand{\scriptsize}{\@setfontsize\scriptsize\@viipt\@viiipt}
+\renewcommand{\normalsize}{\@setfontsize\normalsize\@xpt\@xiipt}
+""",
+    }
+
+    parsed = parse_latex_source("main.tex", files).to_document_content()
+    latex = "\n".join(
+        block.latex or "" for _section, block in parsed.iter_blocks() if block.type == "equation"
+    )
+
+    assert "g_{[n-1]}" in latex
+    assert "\\overline{\\Gamma}_{[n-1]}" in latex
+    assert "@setfontsize" not in latex
+    assert "@viipt" not in latex
+    assert "@xpt" not in latex
+
+
+def test_same_macro_nested_in_its_argument_is_not_treated_as_definition_recursion() -> None:
+    r"""A macro argument may contain another finite invocation of the same wrapper."""
+
+    source = r"""
+\documentclass{article}
+\newif\ifhighlightchanges
+\highlightchangesfalse
+\newcommand{\revised}[1]{\ifhighlightchanges\textcolor{blue}{#1}\else#1\fi}
+\begin{document}
+\revised{Outer text. \revised{\section{Nested heading} Nested body text.}}
+\end{document}
+"""
+
+    parsed = parse_latex_source("main.tex", {"main.tex": source}).to_document_content()
+
+    visible = "\n".join(block_to_plain(block) for _section, block in parsed.iter_blocks())
+    assert "Nested heading" in visible
+    assert "Nested body text" in visible
+
+
+def test_incomplete_unknown_presentation_macro_fragment_is_discarded() -> None:
+    parser = latex_parser._LatexParser()
+
+    inlines = parser._parse_inline(r"\multirow[c]{6}{*}{\rotatebox[origin=c]{90}{")
+
+    assert inlines == []
 
 
 def test_graphics_macro_output_growth_limit_is_a_parse_error(
@@ -2504,9 +2644,7 @@ _LATEX_EVALUATION_LIMITS = {
 }
 
 
-def _patch_latex_evaluation_limits(
-    monkeypatch: pytest.MonkeyPatch, **overrides: int
-) -> None:
+def _patch_latex_evaluation_limits(monkeypatch: pytest.MonkeyPatch, **overrides: int) -> None:
     limits = _LATEX_EVALUATION_LIMITS | overrides
     for name, value in limits.items():
         monkeypatch.setattr(latex_parser, name, value, raising=False)
@@ -2576,9 +2714,7 @@ def test_branching_repeated_input_charges_each_actual_source_visit(
         ]
 
 
-@pytest.mark.parametrize(
-    ("emit_limit", "raises_limit"), [(210_000, False), (150_000, True)]
-)
+@pytest.mark.parametrize(("emit_limit", "raises_limit"), [(210_000, False), (150_000, True)])
 def test_nested_returned_output_is_charged_at_each_emitting_frame(
     monkeypatch: pytest.MonkeyPatch,
     emit_limit: int,
@@ -2646,9 +2782,7 @@ def test_emit_false_class_and_package_sources_charge_evaluated_bytes(
         _MAX_LATEX_EVALUATED_CHARS=10_000,
         _MAX_LATEX_EVALUATED_BYTES=2_500,
     )
-    source = "\n".join(
-        [loader, r"\begin{document}", "Visible body.", r"\end{document}"]
-    )
+    source = "\n".join([loader, r"\begin{document}", "Visible body.", r"\end{document}"])
     files = {"main.tex": source, dependency_name: "界" * 1_000}
 
     with pytest.raises(LatexParseError) as caught:
@@ -2951,9 +3085,7 @@ def test_post_evaluation_blocks_share_ir_object_budget(
     body: str,
 ) -> None:
     _patch_latex_evaluation_limits(monkeypatch, _MAX_LATEX_IR_OBJECTS=5)
-    source = "\n".join(
-        [r"\documentclass{article}", r"\begin{document}", body, r"\end{document}"]
-    )
+    source = "\n".join([r"\documentclass{article}", r"\begin{document}", body, r"\end{document}"])
 
     with pytest.raises(LatexParseError) as caught:
         parse_latex_source("main.tex", {"main.tex": source})
@@ -2975,9 +3107,7 @@ def test_post_evaluation_recursion_uses_parser_depth_budget(
     body: str,
 ) -> None:
     _patch_latex_evaluation_limits(monkeypatch, _MAX_LATEX_PARSER_DEPTH=8)
-    source = "\n".join(
-        [r"\documentclass{article}", r"\begin{document}", body, r"\end{document}"]
-    )
+    source = "\n".join([r"\documentclass{article}", r"\begin{document}", body, r"\end{document}"])
 
     with pytest.raises(LatexParseError) as caught:
         parse_latex_source("main.tex", {"main.tex": source})
@@ -3443,12 +3573,9 @@ def test_loadclass_family_recursively_loads_base_class_at_declaration_position(
     files = {
         "main.tex": source,
         "derivedclass.cls": (
-            r"\newcommand{\classasset}{\includegraphics{before-base-class.png}}"
-            + class_loader
+            r"\newcommand{\classasset}{\includegraphics{before-base-class.png}}" + class_loader
         ),
-        "baseclass.cls": (
-            r"\renewcommand{\classasset}{\includegraphics{base-class-asset.png}}"
-        ),
+        "baseclass.cls": (r"\renewcommand{\classasset}{\includegraphics{base-class-asset.png}}"),
     }
 
     document = parse_latex_source("main.tex", files)
@@ -3694,9 +3821,7 @@ def test_unsupported_bibliography_token_argument_cannot_create_ghost_references(
 """
 
     with pytest.raises(LatexParseError) as caught:
-        parse_latex_source(
-            "main.tex", {"main.tex": source, "refs.bib": bibliography}
-        )
+        parse_latex_source("main.tex", {"main.tex": source, "refs.bib": bibliography})
 
     assert caught.value.kind == "unsupported_structural_macro"
     assert "refs" not in str(caught.value)
@@ -3905,9 +4030,7 @@ def test_unsupported_definition_group_cap_applies_before_collecting_groups(
     group_count: int,
     raises_limit: bool,
 ) -> None:
-    monkeypatch.setattr(
-        latex_parser, "_MAX_UNSUPPORTED_MACRO_GROUPS", 3, raising=False
-    )
+    monkeypatch.setattr(latex_parser, "_MAX_UNSUPPORTED_MACRO_GROUPS", 3, raising=False)
     definition = r"\NewDocumentCommand{\route}" + "[]" * (group_count - 1) + "{}"
     source = "\n".join(
         [
@@ -3936,9 +4059,7 @@ def test_malformed_unsupported_definition_envelope_uses_same_group_cap(
     group_count: int,
     expected_kind: str,
 ) -> None:
-    monkeypatch.setattr(
-        latex_parser, "_MAX_UNSUPPORTED_MACRO_GROUPS", 3, raising=False
-    )
+    monkeypatch.setattr(latex_parser, "_MAX_UNSUPPORTED_MACRO_GROUPS", 3, raising=False)
     definition = r"\NewDocumentCommand{}" + "[]" * (group_count - 1) + "{}"
     source = "\n".join(
         [
@@ -4008,9 +4129,7 @@ def test_unsupported_definition_group_content_charges_evaluation_budget(
 def test_unsupported_invocation_group_cap_uses_shared_macro_group_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        latex_parser, "_MAX_UNSUPPORTED_MACRO_GROUPS", 3, raising=False
-    )
+    monkeypatch.setattr(latex_parser, "_MAX_UNSUPPORTED_MACRO_GROUPS", 3, raising=False)
     source = r"""
 \documentclass{article}
 \def\route#1,#2{}
@@ -4068,6 +4187,82 @@ def test_unsupported_structural_macro_invocation_fails_closed(
     assert filename not in str(caught.value)
 
 
+def test_ifx_can_compare_against_def_without_creating_a_fake_ifx_macro() -> None:
+    source = r"""
+\documentclass{article}
+\makeatletter
+\let\@biblabel\def
+\ifx\@biblabel\def
+  \ifx\@citess\cite
+    \def\@biblabel#1{\@citess{#1}\kern-\labelsep\,}
+  \else
+    \def\@biblabel#1{[#1]}
+  \fi
+\fi
+\ifx\@citess\cite
+  \DeclareRobustCommand{\cite}[1]{\@citess{#1}}
+\fi
+\makeatother
+\begin{document}
+\section{Introduction}
+Visible body text.
+\end{document}
+"""
+
+    parsed = parse_latex_source("main.tex", {"main.tex": source})
+
+    content = parsed.to_document_content()
+    assert any(
+        block.type == "paragraph" and "Visible body text" in block_to_plain(block)
+        for _section, block in content.iter_blocks()
+    )
+
+
+def test_let_operands_are_not_invoked_as_recursive_macros() -> None:
+    source = r"""
+\documentclass{article}
+\makeatletter
+\def\@walk#1{\ifx\delimiter#1\else\expandafter\@walk\fi}
+\let\@walk\relax
+\makeatother
+\begin{document}
+Visible body text.
+\end{document}
+"""
+
+    parsed = parse_latex_source("main.tex", {"main.tex": source})
+
+    assert any(
+        block.type == "paragraph" and "Visible body text" in block_to_plain(block)
+        for block in parsed.blocks
+    )
+
+
+def test_structural_citation_redefinition_preserves_citation_ir() -> None:
+    package = r"""
+\def\@formattedcite#1{\mbox{$^{\hbox{#1}}$}}
+\DeclareRobustCommand{\cite}[1]{%
+  \@ifnextchar[{\@formattedcite{#1}}{\@formattedcite{#1}}}
+"""
+    source = r"""
+\documentclass{article}
+\usepackage{customcite}
+\begin{document}
+Visible body text \cite{reference-key}.
+\end{document}
+"""
+
+    parsed = parse_latex_source(
+        "main.tex",
+        {"main.tex": source, "customcite.sty": package},
+    )
+
+    citations = [
+        inline for block in parsed.blocks for inline in block.inlines if inline.t == "citation"
+    ]
+    assert [citation.ref for citation in citations] == ["reference-key"]
+
+
 def test_unsupported_structural_macro_loaded_from_package_fails_only_when_called() -> None:
     package = r"\newrobustcmd{\packageasset}[1]{\includegraphics{#1}}"
     called_source = r"""
@@ -4093,9 +4288,7 @@ def test_unsupported_structural_macro_loaded_from_package_fails_only_when_called
 
     assert caught.value.kind == "unsupported_structural_macro"
     assert [block for block in uncalled.blocks if block.type == "figure"] == []
-    assert "package-panel.png" not in " ".join(
-        block_to_plain(block) for block in uncalled.blocks
-    )
+    assert "package-panel.png" not in " ".join(block_to_plain(block) for block in uncalled.blocks)
 
 
 def test_unsupported_structural_macro_nested_dependency_fails_closed() -> None:
@@ -4340,9 +4533,7 @@ Before \verb|\begin{figure}\includegraphics{inline-fake.png}\end{figure}| after.
         if inline.t == "code_inline"
     ]
 
-    assert [(heading.number, heading.title) for heading in headings] == [
-        ("1", "Real section")
-    ]
+    assert [(heading.number, heading.title) for heading in headings] == [("1", "Real section")]
     assert [figure.asset_key for figure in figures] == ["real-panel.png"]
     assert code_values == [
         r"\begin{figure}\includegraphics{inline-fake.png}\end{figure}",
@@ -4474,6 +4665,29 @@ def test_theorem_title_and_label() -> None:
     assert thm.label == "thm:main"
 
 
+def test_theorem_preserves_double_dollar_display_math_as_one_inline() -> None:
+    source = r"""
+\documentclass{article}
+\begin{document}
+\begin{proposition}[Key inequality]
+Let $c_i$ be constants. For every $n \geq 0$,
+$$ c_n \geq \exp\left(-\sum_{i=0}^{n-1} c_i\right). $$
+\end{proposition}
+\end{document}
+"""
+
+    document = parse_latex_source("main.tex", {"main.tex": source})
+    theorem = next(block for block in document.blocks if block.type == "theorem")
+    maths = [inline.v for inline in theorem.inlines if inline.t == "math_inline"]
+
+    assert maths == [
+        "c_i",
+        r"n \geq 0",
+        r"c_n \geq \exp\left(-\sum_{i=0}^{n-1} c_i\right).",
+    ]
+    assert all(value for value in maths)
+
+
 def test_code_and_algorithm_content() -> None:
     doc = _doc()
     code = next(b for b in doc.blocks if b.type == "code")
@@ -4511,6 +4725,28 @@ def test_footnote_ref_and_collected_block() -> None:
     assert fn_block.label == "footnote1"
     text = " ".join(il.v for il in fn_block.inlines if il.t == "text")
     assert "causal dynamics" in text
+
+
+def test_blank_line_inside_footnote_argument_is_not_a_paragraph_boundary() -> None:
+    parsed = parse_latex_source(
+        "main.tex",
+        {
+            "main.tex": r"""
+\documentclass{article}
+\begin{document}
+Visible body\footnote{First footnote paragraph.
+
+Second footnote paragraph.} after the note.
+\end{document}
+"""
+        },
+    ).to_document_content()
+
+    paragraph = next(block for _section, block in parsed.iter_blocks() if block.type == "paragraph")
+    assert any(inline.t == "footnote_ref" for inline in paragraph.inlines)
+    footnote = next(block for _section, block in parsed.iter_blocks() if block.type == "footnote")
+    assert "First footnote paragraph" in block_to_plain(footnote)
+    assert "Second footnote paragraph" in block_to_plain(footnote)
 
 
 def test_reference_structuring_from_thebibliography() -> None:

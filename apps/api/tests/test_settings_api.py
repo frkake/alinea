@@ -78,6 +78,9 @@ async def test_get_returns_full_defaults(auth: AsyncClient) -> None:
     assert s["display"]["line_height"] == 2.15
     assert s["display"]["content_width_px"] == 720
     assert s["translation"]["default_style"] == "natural"
+    assert s["translation"]["auto_translate_appendix"] is True
+    assert s["translation"]["translate_table_cells"] is True
+    assert s["translation"]["suggest_section_selection_over_30_pages"] is False
     assert s["reading"]["status_transition"] == "suggest"
     assert s["llm_routing"]["translation"] == {
         "provider": "deepseek",
@@ -99,6 +102,26 @@ async def test_patch_deep_merge_preserves_siblings(auth: AsyncClient) -> None:
     # 永続化: 次の GET でも反映。
     g = await auth.get("/api/settings")
     assert g.json()["display"]["theme"] == "dark"
+
+
+async def test_patch_preserves_explicit_translation_opt_outs(auth: AsyncClient) -> None:
+    r = await auth.patch(
+        "/api/settings",
+        json={
+            "translation": {
+                "auto_translate_appendix": False,
+                "translate_table_cells": False,
+                "suggest_section_selection_over_30_pages": True,
+            }
+        },
+    )
+
+    assert r.status_code == 200
+    translation = r.json()["translation"]
+    assert translation["auto_translate_appendix"] is False
+    assert translation["translate_table_cells"] is False
+    assert translation["suggest_section_selection_over_30_pages"] is True
+    assert (await auth.get("/api/settings")).json()["translation"] == translation
 
 
 async def test_patch_nested_llm_routing_merge(auth: AsyncClient) -> None:

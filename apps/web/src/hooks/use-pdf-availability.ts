@@ -2,7 +2,10 @@
 
 import { useQuery } from "@tanstack/react-query";
 import type { PdfDocumentMode } from "@/stores/pdf-view-store";
-import type { PdfTranslationStyle } from "@/components/viewer/pdf/use-pdf-document";
+import type {
+  PdfAssetIdentity,
+  PdfTranslationStyle,
+} from "@/components/viewer/pdf/use-pdf-document";
 
 type PdfFetchVariant = Exclude<PdfDocumentMode, "bilingual">;
 
@@ -17,15 +20,26 @@ export function usePdfAvailability(
   paperId: string | null,
   variant: PdfFetchVariant = "source",
   style: PdfTranslationStyle = "natural",
+  identity?: PdfAssetIdentity,
 ): boolean | null {
   const generatedVariant = variant !== "source";
   const query = useQuery({
-    queryKey: ["pdf-available", paperId ?? "", variant, style],
+    queryKey: [
+      "pdf-available",
+      paperId ?? "",
+      variant,
+      style,
+      identity?.revisionId ?? "",
+      variant === "translated" ? (identity?.translationSetId ?? "") : "source",
+    ],
     queryFn: async () => {
       if (!paperId) return true;
       try {
         const params = variant === "source" ? "" : `?variant=${variant}&style=${style}`;
-        const res = await fetch(`/api/papers/${paperId}/pdf${params}`, { credentials: "include" });
+        const res = await fetch(`/api/papers/${paperId}/pdf${params}`, {
+          credentials: "include",
+          cache: "no-store",
+        });
         try {
           await res.body?.cancel();
         } catch {

@@ -32,7 +32,16 @@ from alinea_core.document.blocks import DocumentContent, Section
 from alinea_core.document.plaintext import block_to_plain, inline_to_plain
 from alinea_core.licenses import LicensePolicy, classify_license
 from alinea_core.search.rebuild import BlockIndexRow, compute_index_rows
-from alinea_core.translation.pipeline import BLOCKING_FLAGS, resolve_display_units
+from alinea_core.translation.pipeline import (
+    BLOCKING_FLAGS,
+    content_to_text_ja,
+    resolve_display_units,
+)
+from alinea_core.translation.table_cells import (
+    TableTranslationContent,
+    parse_table_grid,
+    validate_table_translation_content,
+)
 
 # 各素材のトークン予算(plans/07 §4.2)。
 BODY_BUDGET = 50_000
@@ -55,13 +64,13 @@ def _encoder() -> tiktoken.Encoding:
 
 
 def estimate_tokens(text: str) -> int:
-    return len(_encoder().encode(text))
+    return len(_encoder().encode(text, disallowed_special=()))
 
 
 def _truncate_tail_to_budget(text: str, budget: int) -> str:
     """予算を超える場合は末尾(後方セクション相当)を切り詰める(§2.2.3 圧縮モード未実装の代替)。"""
     enc = _encoder()
-    ids = enc.encode(text)
+    ids = enc.encode(text, disallowed_special=())
     if len(ids) <= budget:
         return text
     return enc.decode(ids[:budget]) + "\n…(以降は文字数上限のため省略しました)"
@@ -265,28 +274,68 @@ def _figures(
             else ("図" if blk.type == "figure" else "表")
         )
         unit = units.get(blk.id)
+        typed_table_unit = bool(
+            blk.type == "table"
+            and unit is not None
+            and isinstance(unit.content_ja, dict)
+            and unit.content_ja.get("kind") == "table"
+        )
+        display_unit = (
+            unit
+            if (
+                unit is not None
+                and (unit.text_ja or typed_table_unit)
+                and not (set(unit.quality_flags or []) & BLOCKING_FLAGS)
+            )
+            else None
+        )
         caption_ja: str | None = None
-        if (
-            unit is not None
-            and unit.text_ja
-            and not (set(unit.quality_flags or []) & BLOCKING_FLAGS)
-        ):
-            caption_ja = str(unit.text_ja)
         table_rows: list[list[str]] | None = None
-        if blk.type == "table" and blk.raw:
-            parsed_rows: list[list[str]] = []
-            for row in HTMLParser(blk.raw).css("tr"):
-                cells = [
-                    re.sub(
-                        r"\\[A-Za-z]+",
-                        "",
-                        " ".join(cell.text(separator=" ", strip=True).split()),
-                    ).strip()
-                    for cell in row.css("th, td")
-                ]
-                if cells:
-                    parsed_rows.append(cells)
-            table_rows = parsed_rows or None
+        typed_table: TableTranslationContent | None = None
+        if blk.type == "table":
+            grid = parse_table_grid(blk.raw or "")
+            if grid.supported:
+                table_rows = [[cell.source for cell in row] for row in grid.rows] or None
+                if display_unit is not None and isinstance(display_unit.content_ja, dict):
+                    typed_table = validate_table_translation_content(display_unit.content_ja, grid)
+                    if typed_table is not None and typed_table.cells is not None:
+                        table_rows = [
+                            [
+                                translated if translated is not None else cell.source
+                                for cell, translated in zip(source_row, translated_row, strict=True)
+                            ]
+                            for source_row, translated_row in zip(
+                                grid.rows, typed_table.cells, strict=True
+                            )
+                        ]
+            else:
+                parsed_rows: list[list[str]] = []
+                for row in HTMLParser(blk.raw or "").css("tr"):
+                    cells = [
+                        re.sub(
+                            r"\\[A-Za-z]+",
+                            "",
+                            " ".join(cell.text(separator=" ", strip=True).split()),
+                        ).strip()
+                        for cell in row.css("th, td")
+                    ]
+                    if cells:
+                        parsed_rows.append(cells)
+                table_rows = parsed_rows or None
+                if display_unit is not None and isinstance(display_unit.content_ja, dict):
+                    try:
+                        candidate = TableTranslationContent.model_validate(display_unit.content_ja)
+                    except (TypeError, ValueError):
+                        typed_table = None
+                    else:
+                        typed_table = candidate if candidate.cells is None else None
+
+        if display_unit is not None:
+            if blk.type == "table" and isinstance(display_unit.content_ja, dict):
+                if typed_table is not None and typed_table.caption is not None:
+                    caption_ja = content_to_text_ja(typed_table.caption) or None
+            else:
+                caption_ja = str(display_unit.text_ja)
         out.append(
             FigureInfo(
                 block_id=blk.id,

@@ -281,7 +281,11 @@ def test_parse_pdf_releases_each_ocr_textpage_before_starting_the_next_page(
 
     monkeypatch.setattr(fitz.Page, "get_textpage_ocr", fake_ocr)
     monkeypatch.setattr(fitz.Page, "get_text", fake_get_text)
-    monkeypatch.setattr(pdf_parser_module, "_detect_figure_regions", lambda *_args: [])
+    monkeypatch.setattr(
+        pdf_parser_module,
+        "_detect_figure_regions",
+        lambda *_args, **_kwargs: [],
+    )
     monkeypatch.setattr(pdf_parser_module, "_detect_table_candidates", lambda *_args: [])
 
     parsed = parse_pdf(_load("pdf_quality_b_sample.pdf"), use_ocr=True)

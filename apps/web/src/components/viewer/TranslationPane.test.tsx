@@ -14,6 +14,7 @@ import { EquationBlock } from "@/components/viewer/EquationBlock";
 import { SelectionMenu } from "@/components/viewer/SelectionMenu";
 import { TranslationPane } from "@/components/viewer/TranslationPane";
 import { useViewerStore } from "@/stores/viewer-store";
+import { useTableTranslation } from "@/hooks/use-table-translation";
 
 vi.mock("@alinea/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@alinea/api-client")>();
@@ -33,6 +34,8 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }),
 }));
 
+vi.mock("@/hooks/use-table-translation", () => ({ useTableTranslation: vi.fn() }));
+
 // jsdom は IntersectionObserver を実装しない(先頭可視ブロック追従用)。
 class FakeIntersectionObserver {
   observe() {}
@@ -44,11 +47,7 @@ vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
 // VT-VIEW-02: 訳文モード — ✦3行要約カード・KaTeX ブロック数式
 describe("SummaryCard (VT-VIEW-02)", () => {
   test("renders 3 summary lines, AI badge, and 詳細要約 link", () => {
-    const lines = [
-      "整流フローを提案。",
-      "reflow で経路を直線化。",
-      "少ステップで高品質生成。",
-    ];
+    const lines = ["整流フローを提案。", "reflow で経路を直線化。", "少ステップで高品質生成。"];
     render(<SummaryCard lines={lines} onDetailedSummary={vi.fn()} />);
     expect(screen.getByText("論文概要")).toBeInTheDocument();
     expect(screen.getByText("AI生成")).toBeInTheDocument();
@@ -147,10 +146,24 @@ describe("TranslationPane M1 wiring (1b §5.5 / §5.6)", () => {
     vi.mocked(annotationsList).mockResolvedValue({
       data: {
         items: [],
-        counts: { all: 0, important: 0, question: 0, idea: 0, term: 0, with_comment: 0, unplaced: 0 },
+        counts: {
+          all: 0,
+          important: 0,
+          question: 0,
+          idea: 0,
+          term: 0,
+          with_comment: 0,
+          unplaced: 0,
+        },
       },
     } as never);
     vi.mocked(annotationsCreate).mockResolvedValue({ data: undefined } as never);
+    vi.mocked(useTableTranslation).mockReturnValue({
+      status: "idle",
+      error: null,
+      start: vi.fn(),
+      retry: vi.fn(),
+    });
   });
 
   test("clicking a color dot in the M1 selection menu creates a highlight anchored at the selection offsets", async () => {
@@ -287,7 +300,15 @@ describe("TranslationPane M1 wiring (1b §5.5 / §5.6)", () => {
             updated_at: "2026-07-06T21:12:00",
           },
         ],
-        counts: { all: 1, important: 1, question: 0, idea: 0, term: 0, with_comment: 0, unplaced: 0 },
+        counts: {
+          all: 1,
+          important: 1,
+          question: 0,
+          idea: 0,
+          term: 0,
+          with_comment: 0,
+          unplaced: 0,
+        },
       },
     } as never);
 
@@ -311,5 +332,150 @@ describe("TranslationPane M1 wiring (1b §5.5 / §5.6)", () => {
 
     expect(useViewerStore.getState().activeTab).toBe("annotations");
     expect(useViewerStore.getState().pendingAnnotationId).toBe("ann_1");
+  });
+
+  test("shows the canonical table translation action in translation mode", async () => {
+    const start = vi.fn();
+    vi.mocked(useTableTranslation).mockReturnValue({
+      status: "idle",
+      error: null,
+      start,
+      retry: vi.fn(),
+    });
+    vi.mocked(viewerGetDocument).mockResolvedValue({
+      data: {
+        revision_id: "rev_1",
+        quality_level: "A",
+        sections: [
+          {
+            id: "sec-table",
+            heading: { number: "2", title: "Results" },
+            blocks: [
+              {
+                id: "table-1",
+                type: "table",
+                raw: "<table><tr><td>Source result</td></tr></table>",
+                source_grid: {
+                  supported: true,
+                  source_format: "html",
+                  reason: null,
+                  rows: [
+                    [
+                      {
+                        id: "r0c0",
+                        source: "Source result",
+                        header: false,
+                        rowspan: 1,
+                        colspan: 1,
+                        translatable: true,
+                        math: [],
+                        latex_body_start: null,
+                        latex_body_end: null,
+                        latex_wrappers: [],
+                      },
+                    ],
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    } as never);
+    vi.mocked(translationsListUnits).mockResolvedValue({
+      data: { set_id: "set_1", items: [] },
+    } as never);
+
+    renderWithClient(
+      <TranslationPane
+        itemId="li_1"
+        revisionId="rev_1"
+        style="natural"
+        translationSetId="set_1"
+        translationStatus="complete"
+        toc={[]}
+        summaryLines={null}
+        lastPosition={null}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "この表を翻訳" }));
+    expect(screen.getByTestId("translation-scroll-region")).toHaveStyle({
+      minWidth: 0,
+      width: "100%",
+      overflowX: "hidden",
+    });
+    expect(screen.getByTestId("translation-content-column")).toHaveStyle({
+      minWidth: 0,
+      boxSizing: "border-box",
+    });
+    expect(start).toHaveBeenCalledOnce();
+    expect(useTableTranslation).toHaveBeenCalledWith({
+      itemId: "li_1",
+      revisionId: "rev_1",
+      style: "natural",
+      translationSetId: "set_1",
+      sectionId: "sec-table",
+      blockId: "table-1",
+    });
+  });
+
+  test("allows long translated algorithm tokens to wrap on narrow screens", async () => {
+    vi.mocked(viewerGetDocument).mockResolvedValue({
+      data: {
+        revision_id: "rev_1",
+        quality_level: "A",
+        sections: [
+          {
+            id: "sec-algorithm",
+            heading: { number: "3", title: "Algorithm" },
+            blocks: [
+              {
+                id: "algorithm-1",
+                type: "algorithm",
+                inlines: [{ t: "text", v: "candidateRepresentationWithoutBreaks" }],
+              },
+            ],
+          },
+        ],
+      },
+    } as never);
+    vi.mocked(translationsListUnits).mockResolvedValue({
+      data: {
+        set_id: "set_1",
+        items: [
+          {
+            unit_id: "unit-algorithm",
+            block_id: "algorithm-1",
+            text_ja: "候補candidateRepresentationWithoutBreaks",
+            content_ja: null,
+            state: "machine",
+            quality_flags: [],
+            proposal: null,
+          },
+        ],
+      },
+    } as never);
+
+    renderWithClient(
+      <TranslationPane
+        itemId="li_1"
+        revisionId="rev_1"
+        style="natural"
+        translationSetId="set_1"
+        translationStatus="complete"
+        toc={[]}
+        summaryLines={null}
+        lastPosition={null}
+      />,
+    );
+
+    const block = await screen.findByText("候補candidateRepresentationWithoutBreaks");
+    expect(block).toHaveStyle({
+      minWidth: 0,
+      maxWidth: "100%",
+      overflowWrap: "anywhere",
+      wordBreak: "break-word",
+    });
   });
 });

@@ -468,6 +468,36 @@ def test_normalize_article_raises_when_discussion_missing_entirely() -> None:
         normalize_article(raw, _make_sources())
 
 
+def test_normalize_article_removes_unsafe_control_characters_recursively() -> None:
+    """LLM 出力の NUL 等を PostgreSQL/ブラウザへ流さず、改行とタブは保持する。"""
+    raw = {
+        "title": "制\x00御\x07文字の題名",
+        "blocks": [
+            {
+                "type": "paragraph",
+                "markdown": "一行目\x00\x0b\n二行目\t末尾",
+            },
+            {
+                "type": "discussion",
+                "discussion": {
+                    "items": [
+                        {"text": "疑\x00問\x1f点1", "origin": "ai"},
+                        {"text": "疑問点2\ud800", "origin": "ai"},
+                    ]
+                },
+            },
+        ],
+    }
+
+    normalized = normalize_article(raw, _make_sources())
+
+    assert normalized.title == "制御文字の題名"
+    paragraph = next(block for block in normalized.blocks if block.type == "paragraph")
+    assert paragraph.content["md"] == "一行目\n二行目\t末尾"
+    discussion = next(block for block in normalized.blocks if block.type == "discussion")
+    assert [item["md"] for item in discussion.content["items"]] == ["疑問点1", "疑問点2"]
+
+
 # ---------------------------------------------------------------------------
 # explainer_figure: slot 重複・上限超過はドロップ(MAX_EXPLAINER_FIGURES=2。§4.3)
 # ---------------------------------------------------------------------------
@@ -519,3 +549,9 @@ def test_normalize_rewritten_block_succeeds_for_valid_paragraph() -> None:
     raw = {"type": "paragraph", "markdown": "書き直した本文です。"}
     normalized = normalize_rewritten_block(raw, _make_sources(), expected_type="paragraph")
     assert normalized.content["md"] == "書き直した本文です。"
+
+
+def test_normalize_rewritten_block_removes_unsafe_control_characters() -> None:
+    raw = {"type": "paragraph", "markdown": "書き\x00直し\x07後\nの本文"}
+    normalized = normalize_rewritten_block(raw, _make_sources(), expected_type="paragraph")
+    assert normalized.content["md"] == "書き直し後\nの本文"

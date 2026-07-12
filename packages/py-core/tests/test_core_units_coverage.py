@@ -8,16 +8,26 @@ from __future__ import annotations
 import uuid
 
 from alinea_core.db.ids import new_ulid, new_uuid
-from alinea_core.db.models import DocumentRevision, Job, Paper, TranslationSet
+from alinea_core.db.models import (
+    DocumentRevision,
+    Job,
+    Paper,
+    TranslationSet,
+    TranslationUnit,
+    User,
+)
 from alinea_core.document.blocks import DocumentContent
 from alinea_core.ingest.progress import (
     body_progress,
     count_active_body_jobs,
+    finalize_ingest_if_body_complete,
     first_translatable_section,
     readable_upto,
     stage_index,
 )
 from alinea_core.translation.pipeline import (
+    TranslationSettings,
+    build_translation_plan,
     compute_progress,
     compute_translation_scope,
     resolve_translation,
@@ -133,7 +143,11 @@ async def test_count_active_body_jobs(db_session: AsyncSession) -> None:
             Job(
                 kind="translation",
                 status="queued",
-                payload={"set_id": set_id, "reason": "initial"},
+                payload={
+                    "set_id": set_id,
+                    "reason": "initial",
+                    "ingest_job_id": "old-ingest",
+                },
             ),
             Job(
                 kind="translation",
@@ -150,3 +164,276 @@ async def test_count_active_body_jobs(db_session: AsyncSession) -> None:
     )
     await db_session.flush()
     assert await count_active_body_jobs(db_session, set_id) == 1
+    assert (
+        await count_active_body_jobs(
+            db_session,
+            set_id,
+            ingest_job_id="old-ingest",
+        )
+        == 1
+    )
+    assert (
+        await count_active_body_jobs(
+            db_session,
+            set_id,
+            ingest_job_id="new-ingest",
+        )
+        == 0
+    )
+
+
+async def test_finalize_uses_stored_targets_and_does_not_complete_missing_full_scope(
+    db_session: AsyncSession,
+) -> None:
+    content = DocumentContent.model_validate(
+        {
+            "quality_level": "A",
+            "sections": [
+                {
+                    "id": "main",
+                    "heading": {"number": "1", "title": "Main"},
+                    "blocks": [
+                        {
+                            "id": "main-block",
+                            "type": "paragraph",
+                            "inlines": [{"t": "text", "v": "Main text."}],
+                        }
+                    ],
+                },
+                {
+                    "id": "appendix",
+                    "heading": {"number": "A", "title": "Details"},
+                    "blocks": [
+                        {
+                            "id": "appendix-block",
+                            "type": "paragraph",
+                            "inlines": [{"t": "text", "v": "Appendix text."}],
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+    paper = Paper(title="Plan coverage", visibility="public", license="cc-by-4.0")
+    db_session.add(paper)
+    await db_session.flush()
+    revision = DocumentRevision(
+        paper_id=str(paper.id),
+        source_version="v1",
+        parser_version="test",
+        quality_level="A",
+        source_format="arxiv_html",
+        content=content.model_dump(mode="json"),
+        stats={"pages": 20},
+    )
+    db_session.add(revision)
+    await db_session.flush()
+    full_plan = build_translation_plan(content, TranslationSettings(), pages=20)
+    translation_set = TranslationSet(
+        revision_id=str(revision.id),
+        style="natural",
+        scope="shared",
+        plan=full_plan.model_dump(mode="json"),
+        status="partial",
+    )
+    ingest_job = Job(
+        kind="ingest",
+        status="running",
+        stage="translating_body",
+        progress=55,
+        payload={},
+    )
+    db_session.add_all([translation_set, ingest_job])
+    await db_session.flush()
+    db_session.add(
+        TranslationUnit(
+            set_id=str(translation_set.id),
+            block_id="main-block",
+            source_hash="main",
+            content_ja=[{"t": "text", "v": "本文"}],
+            text_ja="本文",
+            quality_flags=[],
+        )
+    )
+    await db_session.commit()
+
+    completed = await finalize_ingest_if_body_complete(
+        db_session,
+        set_id=str(translation_set.id),
+        ingest_job_id=str(ingest_job.id),
+        content=content,
+        style="natural",
+        source_version="v1",
+        appendix_untranslated=False,
+    )
+
+    assert completed is False
+    await db_session.refresh(translation_set)
+    await db_session.refresh(ingest_job)
+    assert translation_set.status == "partial"
+    assert ingest_job.status == "running"
+
+    subset_plan = build_translation_plan(
+        content,
+        TranslationSettings(auto_translate_appendix=False),
+        pages=20,
+    )
+    translation_set.plan = subset_plan.model_dump(mode="json")
+    await db_session.commit()
+    completed_subset = await finalize_ingest_if_body_complete(
+        db_session,
+        set_id=str(translation_set.id),
+        ingest_job_id=str(ingest_job.id),
+        content=content,
+        style="natural",
+        source_version="v1",
+        appendix_untranslated=True,
+    )
+    assert completed_subset is True
+
+
+async def test_finalize_personal_set_uses_exact_base_overlay(
+    db_session: AsyncSession,
+) -> None:
+    content = DocumentContent.model_validate(
+        {
+            "quality_level": "A",
+            "sections": [
+                {
+                    "id": "main",
+                    "heading": {"number": "1", "title": "Main"},
+                    "blocks": [
+                        {
+                            "id": "main-block",
+                            "type": "paragraph",
+                            "inlines": [{"t": "text", "v": "Main text."}],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    user = User(email=f"overlay-finalize-{uuid.uuid4().hex}@example.com")
+    paper = Paper(title="Overlay finalization", visibility="public", license="cc-by-4.0")
+    db_session.add_all([user, paper])
+    await db_session.flush()
+    revision = DocumentRevision(
+        paper_id=str(paper.id),
+        source_version="v1",
+        parser_version="test",
+        quality_level="A",
+        source_format="arxiv_html",
+        content=content.model_dump(mode="json"),
+        stats={"pages": 1},
+    )
+    db_session.add(revision)
+    await db_session.flush()
+    plan = build_translation_plan(content, TranslationSettings(), pages=1).model_dump(mode="json")
+    shared = TranslationSet(
+        revision_id=str(revision.id),
+        style="natural",
+        scope="shared",
+        plan=plan,
+        status="complete",
+    )
+    db_session.add(shared)
+    await db_session.flush()
+    personal = TranslationSet(
+        revision_id=str(revision.id),
+        style="natural",
+        scope="personal",
+        user_id=str(user.id),
+        base_set_id=str(shared.id),
+        plan=plan,
+        status="partial",
+    )
+    ingest_job = Job(
+        kind="ingest",
+        status="running",
+        stage="translating_body",
+        progress=55,
+        payload={},
+    )
+    db_session.add_all([personal, ingest_job])
+    await db_session.flush()
+    db_session.add(
+        TranslationUnit(
+            set_id=str(shared.id),
+            block_id="main-block",
+            source_hash="main",
+            content_ja=[{"t": "text", "v": "本文"}],
+            text_ja="本文",
+            quality_flags=[],
+        )
+    )
+    await db_session.commit()
+
+    completed = await finalize_ingest_if_body_complete(
+        db_session,
+        set_id=str(personal.id),
+        ingest_job_id=str(ingest_job.id),
+        content=content,
+        style="natural",
+        source_version="v1",
+        appendix_untranslated=False,
+    )
+
+    assert completed is True
+    await db_session.refresh(personal)
+    await db_session.refresh(ingest_job)
+    assert personal.status == "complete"
+    assert ingest_job.status == "succeeded"
+
+
+async def test_finalize_empty_target_completes_without_translation_units(
+    db_session: AsyncSession,
+) -> None:
+    content = DocumentContent.model_validate({"quality_level": "A", "sections": []})
+    paper = Paper(title="Empty target", visibility="public", license="cc-by-4.0")
+    db_session.add(paper)
+    await db_session.flush()
+    revision = DocumentRevision(
+        paper_id=str(paper.id),
+        source_version="v1",
+        parser_version="test",
+        quality_level="A",
+        source_format="arxiv_html",
+        content=content.model_dump(mode="json"),
+        stats={"pages": 1},
+    )
+    db_session.add(revision)
+    await db_session.flush()
+    plan = build_translation_plan(content, TranslationSettings(), pages=1)
+    translation_set = TranslationSet(
+        revision_id=str(revision.id),
+        style="natural",
+        scope="shared",
+        plan=plan.model_dump(mode="json"),
+        status="pending",
+    )
+    ingest_job = Job(
+        kind="ingest",
+        status="running",
+        stage="translating_body",
+        progress=55,
+        payload={},
+    )
+    db_session.add_all([translation_set, ingest_job])
+    await db_session.commit()
+
+    completed = await finalize_ingest_if_body_complete(
+        db_session,
+        set_id=str(translation_set.id),
+        ingest_job_id=str(ingest_job.id),
+        content=content,
+        style="natural",
+        source_version="v1",
+        appendix_untranslated=False,
+    )
+
+    assert completed is True
+    await db_session.refresh(translation_set)
+    await db_session.refresh(ingest_job)
+    assert translation_set.status == "complete"
+    assert ingest_job.status == "succeeded"
+    assert ingest_job.progress == 100

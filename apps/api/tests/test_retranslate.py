@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 import pytest_asyncio
 from alinea_api.services.session_service import COOKIE_NAME, create_session
 from alinea_api.services.user_service import purge_user
@@ -38,6 +39,16 @@ from factories import (
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+_TABLE_RAW = (
+    "<table><tr><th>Method</th></tr><tr><td>Stable result at 99.1 percent</td></tr></table>"
+)
+_TABLE_CONTENT = {
+    "kind": "table",
+    "version": 1,
+    "caption": [{"t": "text", "v": "ベンチマークの要約"}],
+    "cells": [["手法"], ["99.1で安定した結果"]],
+}
 
 
 def _p(block_id: str, text: str) -> Block:
@@ -77,6 +88,19 @@ async def _make_revision(
     paper.latest_revision_id = revision.id
     await rebuild_block_search_index(db, str(revision.id), content)
     return revision
+
+
+def _add_table_block(revision: DocumentRevision) -> None:
+    content = DocumentContent.model_validate(revision.content)
+    content.sections[0].blocks.append(
+        Block(
+            id="blk-table",
+            type="table",
+            caption=[Inline(t="text", v="Benchmark summary.")],
+            raw=_TABLE_RAW,
+        )
+    )
+    revision.content = content.model_dump(mode="json")
 
 
 @pytest_asyncio.fixture
@@ -224,6 +248,40 @@ async def test_manual_edit_forks_personal_set_idempotently(
     assert len(personal_sets) == 1
 
 
+async def test_manual_table_caption_edit_preserves_strict_typed_cells(
+    client: AsyncClient, db_session: AsyncSession, ctx: SimpleNamespace
+) -> None:
+    _add_table_block(ctx.revision)
+    unit = await make_translation_unit(
+        db_session,
+        translation_set=ctx.shared,
+        block_id="blk-table",
+        text_ja="ベンチマークの要約\n手法\n99.1で安定した結果",
+        content_ja=_TABLE_CONTENT,
+    )
+    await db_session.commit()
+
+    response = await client.put(
+        f"/api/translation-units/{unit.id}",
+        json={"text_ja": "手動キャプション"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == "edited"
+    assert body["text_ja"] == "手動キャプション\n手法\n99.1で安定した結果"
+    edited = await db_session.get(TranslationUnit, int(body["unit_id"]))
+    assert edited is not None
+    assert edited.content_ja == {
+        **_TABLE_CONTENT,
+        "caption": [{"t": "text", "v": "手動キャプション"}],
+    }
+    assert edited.text_ja == body["text_ja"]
+
+    await db_session.refresh(unit)
+    assert unit.content_ja == _TABLE_CONTENT
+
+
 # ---------------------------------------------------------------------------
 # §7.8: proposal の採用・破棄
 # ---------------------------------------------------------------------------
@@ -268,6 +326,75 @@ async def test_proposal_accept_forks_and_clears_proposal(
     assert items["blk-b"]["text_ja"] == "改善後の訳文"
     assert items["blk-b"]["state"] == "machine"
     assert items["blk-b"]["proposal"] is None
+
+
+async def test_table_proposal_accept_validates_and_reprojects_each_component(
+    client: AsyncClient, db_session: AsyncSession, ctx: SimpleNamespace
+) -> None:
+    _add_table_block(ctx.revision)
+    unit = await make_translation_unit(
+        db_session,
+        translation_set=ctx.shared,
+        block_id="blk-table",
+        text_ja="旧訳",
+    )
+    unit.proposal = {
+        # A table proposal's stored projection is derived from typed content, never trusted.
+        "text_ja": "信用してはいけない投影",
+        "content_ja": _TABLE_CONTENT,
+        "generated_at": "2026-01-01T00:00:00+00:00",
+        "model": "table-model",
+    }
+    await db_session.commit()
+
+    response = await client.post(f"/api/translation-units/{unit.id}/proposal/accept")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    expected_projection = "ベンチマークの要約\n手法\n99.1で安定した結果"
+    assert body["text_ja"] == expected_projection
+    accepted = await db_session.get(TranslationUnit, int(body["unit_id"]))
+    assert accepted is not None
+    assert accepted.content_ja == _TABLE_CONTENT
+    assert accepted.text_ja == expected_projection
+    assert accepted.quality_flags == []
+
+
+async def test_malformed_table_proposal_cannot_replace_complete_matrix_or_create_fork(
+    client: AsyncClient, db_session: AsyncSession, ctx: SimpleNamespace
+) -> None:
+    _add_table_block(ctx.revision)
+    unit = await make_translation_unit(
+        db_session,
+        translation_set=ctx.shared,
+        block_id="blk-table",
+        text_ja="ベンチマークの要約\n手法\n99.1で安定した結果",
+        content_ja=_TABLE_CONTENT,
+    )
+    malformed = {**_TABLE_CONTENT, "cells": [["手法"]]}
+    unit.proposal = {
+        "text_ja": "壊れた提案",
+        "content_ja": malformed,
+        "generated_at": "2026-01-01T00:00:00+00:00",
+        "model": "table-model",
+    }
+    await db_session.commit()
+
+    response = await client.post(f"/api/translation-units/{unit.id}/proposal/accept")
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "validation_error"
+    await db_session.refresh(unit)
+    assert unit.content_ja == _TABLE_CONTENT
+    assert unit.text_ja == "ベンチマークの要約\n手法\n99.1で安定した結果"
+    assert unit.proposal is not None
+    personal = await db_session.scalar(
+        select(TranslationSet).where(
+            TranslationSet.revision_id == ctx.revision.id,
+            TranslationSet.scope == "personal",
+        )
+    )
+    assert personal is None
 
 
 async def test_proposal_accept_without_proposal_is_not_found(
@@ -317,3 +444,157 @@ async def test_proposal_discard_clears_without_forking(
         .all()
     )
     assert len(matching_units) == 1  # 破棄はフォークしない
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "edit",
+        "retranslate",
+        "proposal_accept",
+        "proposal_discard",
+        "section",
+        "table",
+        "retry",
+        "prioritize",
+    ],
+)
+async def test_other_user_cannot_access_or_mutate_personal_translation_set(
+    case: str,
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    ctx: SimpleNamespace,
+) -> None:
+    ctx.paper.visibility = "public"
+    personal = await make_translation_set(
+        db_session,
+        revision=ctx.revision,
+        style="natural",
+        scope="personal",
+        user=ctx.user,
+        status="partial",
+        base_set=ctx.shared,
+    )
+    unit = await make_translation_unit(
+        db_session,
+        translation_set=personal,
+        block_id="blk-a",
+        text_ja="所有者の訳",
+        quality_flags=["placeholder_mismatch"],
+    )
+    unit.proposal = {
+        "text_ja": "所有者の提案",
+        "generated_at": "2026-01-01T00:00:00+00:00",
+        "model": "m",
+    }
+    attacker = await make_user(
+        db_session,
+        email=f"tr9-attacker-{uuid.uuid4().hex}@example.com",
+    )
+    await db_session.commit()
+    attacker_id = str(attacker.id)
+    token = await create_session(redis_client, attacker_id)
+    client.cookies.set(COOKIE_NAME, token)
+
+    requests: dict[str, tuple[str, str, dict[str, Any] | None]] = {
+        "edit": ("PUT", f"/api/translation-units/{unit.id}", {"text_ja": "攻撃者の訳"}),
+        "retranslate": ("POST", f"/api/translation-units/{unit.id}/retranslate", {}),
+        "proposal_accept": (
+            "POST",
+            f"/api/translation-units/{unit.id}/proposal/accept",
+            None,
+        ),
+        "proposal_discard": (
+            "DELETE",
+            f"/api/translation-units/{unit.id}/proposal",
+            None,
+        ),
+        "section": (
+            "POST",
+            f"/api/translation-sets/{personal.id}/sections/sec-1/translate",
+            {},
+        ),
+        "table": (
+            "POST",
+            f"/api/translation-sets/{personal.id}/sections/sec-1/translate",
+            {"block_id": "blk-a"},
+        ),
+        "retry": ("POST", f"/api/translation-sets/{personal.id}/retry-failed", {}),
+        "prioritize": (
+            "POST",
+            f"/api/translation-sets/{personal.id}/prioritize",
+            {"section_id": "sec-1"},
+        ),
+    }
+    method, path, payload = requests[case]
+    try:
+        response = await client.request(method, path, json=payload)
+
+        assert response.status_code == 404, response.text
+        await db_session.refresh(unit)
+        assert unit.text_ja == "所有者の訳"
+        assert unit.state == "machine"
+        assert unit.proposal is not None
+        jobs = (await db_session.execute(select(Job))).scalars().all()
+        assert all((job.payload or {}).get("set_id") != str(personal.id) for job in jobs)
+    finally:
+        await db_session.commit()
+        await purge_user(db_session, attacker_id)
+        await db_session.commit()
+
+
+async def test_list_units_does_not_inherit_cross_revision_base_secret(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    ctx: SimpleNamespace,
+) -> None:
+    secret_user = await make_user(
+        db_session,
+        email=f"tr9-secret-{uuid.uuid4().hex}@example.com",
+    )
+    secret_paper = await make_paper(db_session, owner=secret_user, visibility="private")
+    secret_revision = await _make_revision(
+        db_session,
+        paper=secret_paper,
+        content=_make_document(),
+    )
+    secret_shared = await make_translation_set(
+        db_session,
+        revision=secret_revision,
+        style="natural",
+        scope="shared",
+        status="complete",
+    )
+    await make_translation_unit(
+        db_session,
+        translation_set=secret_shared,
+        block_id="blk-a",
+        text_ja="SECRET-OTHER-REVISION",
+    )
+    personal = await make_translation_set(
+        db_session,
+        revision=ctx.revision,
+        style="natural",
+        scope="personal",
+        user=ctx.user,
+        base_set=secret_shared,
+        status="partial",
+    )
+    await db_session.commit()
+    try:
+        response = await client.get(
+            f"/api/revisions/{ctx.revision.id}/translations/natural/units",
+            params={"section_id": "sec-1"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["set_id"] == str(personal.id)
+        assert all(item["text_ja"] != "SECRET-OTHER-REVISION" for item in response.json()["items"])
+    finally:
+        await db_session.delete(personal)
+        await db_session.commit()
+        await db_session.delete(secret_paper)
+        await db_session.commit()
+        await db_session.delete(secret_user)
+        await db_session.commit()

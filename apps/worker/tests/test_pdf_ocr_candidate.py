@@ -1,4 +1,8 @@
-"""Killable isolation contract for the final PDF OCR candidate."""
+# mypy: disable-error-code="attr-defined"
+"""Killable isolation contract for the final PDF OCR candidate.
+
+This module intentionally monkeypatches private subprocess seams on ``source_candidates``.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from alinea_core.parsing.pdf_parser import PdfParseError, parse_pdf
+from alinea_core.parsing.pdf_parser import ParsedPdfDocument, PdfParseError, parse_pdf
 from alinea_core.settings import CoreSettings
 from alinea_worker import source_candidates as source_candidate_module
 from alinea_worker.source_candidates import (
@@ -268,6 +272,7 @@ async def test_pdf_ocr_isolated_success_preserves_parsed_figures_and_identity() 
         worker=_successful_ocr_worker,
     )
 
+    assert isinstance(candidate.parsed, ParsedPdfDocument)
     assert candidate.parsed.stats["ocr"] is True
     assert candidate.parsed.figure_images
     assert candidate.diagnostics == [
@@ -575,9 +580,7 @@ def test_pdf_ocr_metadata_rejects_non_scalar_control_and_bidi_text(
     "mutate",
     [
         pytest.param(
-            lambda block: block["inlines"][0].update(
-                {"t": "url", "href": "javascript:alert(1)"}
-            ),
+            lambda block: block["inlines"][0].update({"t": "url", "href": "javascript:alert(1)"}),
             id="javascript-url-inline",
         ),
         pytest.param(
@@ -950,7 +953,7 @@ class _UnstartedConnection:
 
 
 class _UnstartedProcess:
-    pid: None = None
+    pid: int | None = None
 
     def __init__(self, *, start_error: bool) -> None:
         self.start_error = start_error
@@ -1536,8 +1539,7 @@ def test_pdf_process_start_hang_is_process_wide_bounded_until_cleanup_finishes(
         context.cleanup_release.set()
         assert context.processes[0].closed_event.wait(timeout=1.0)
         assert all(
-            connection.closed_event.wait(timeout=1.0)
-            for connection in context.connections[0]
+            connection.closed_event.wait(timeout=1.0) for connection in context.connections[0]
         )
         assert context.processes[0].close_calls == 1
         assert [connection.close_calls for connection in context.connections[0]] == [1, 1]
@@ -1817,6 +1819,7 @@ def test_normal_pdf_candidate_parses_only_inside_resource_limited_child(
     candidate = parse_pdf_candidate(data, pdf_text="")
 
     assert candidate.report.accepted
+    assert isinstance(candidate.parsed, ParsedPdfDocument)
     assert candidate.parsed.stats["ocr"] is False
     assert candidate.parsed.stats["extracted_chars"] > 0
 

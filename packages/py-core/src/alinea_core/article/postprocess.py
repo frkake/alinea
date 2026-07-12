@@ -26,6 +26,7 @@ from alinea_core.article.schema import (
 )
 from alinea_core.article.sources import ArticleSources, authors_all
 from alinea_core.db.models import Paper
+from alinea_core.text_safety import sanitize_json_text, sanitize_untrusted_text
 
 MAX_EXPLAINER_FIGURES = 2
 _QUOTE_MATCH_RATIO = 0.8
@@ -308,7 +309,11 @@ def _normalize_block(
     if content is None:
         return None
     evidence_anchors = _evidence_anchors(block.evidence, sources, revision_id)
-    return NormalizedBlock(type=block.type, content=content, evidence_anchors=evidence_anchors)
+    return NormalizedBlock(
+        type=block.type,
+        content=sanitize_json_text(content),
+        evidence_anchors=sanitize_json_text(evidence_anchors),
+    )
 
 
 def normalize_article(
@@ -361,7 +366,11 @@ def normalize_article(
     if not discussion_found:
         raise ArticleGenerationError("discussion block missing after normalization")
 
-    return NormalizedArticle(title=model.title[:60], blocks=blocks, log=log)
+    return NormalizedArticle(
+        title=sanitize_untrusted_text(model.title)[:60],
+        blocks=blocks,
+        log=sanitize_json_text(log),
+    )
 
 
 def normalize_rewritten_block(
@@ -402,7 +411,12 @@ def build_attribution_block(paper: Paper) -> NormalizedBlock:
         f'出典: {authors_all(paper.authors or [])}. "{paper.title}." {venue}'
         f"arXiv:{arxiv} ({year}) · ライセンス {label}"
     )
-    return NormalizedBlock(type="attribution", content={"text": text}, origin="ai", locked=True)
+    return NormalizedBlock(
+        type="attribution",
+        content={"text": sanitize_untrusted_text(text)},
+        origin="ai",
+        locked=True,
+    )
 
 
 def build_disclaimer(generated_at: dt.datetime) -> str:

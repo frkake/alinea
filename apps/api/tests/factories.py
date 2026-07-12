@@ -326,7 +326,7 @@ async def make_translation_unit(
     translation_set: TranslationSet | None = None,
     block_id: str = "blk-p1",
     text_ja: str = "訳: 本文",
-    content_ja: list[dict[str, Any]] | None = None,
+    content_ja: list[dict[str, Any]] | dict[str, Any] | None = None,
     source_hash: str | None = None,
     state: str = "machine",
     quality_flags: list[str] | None = None,

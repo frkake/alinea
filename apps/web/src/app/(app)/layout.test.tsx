@@ -4,14 +4,23 @@ import AppLayout from "./layout";
 import { mockMatchMedia } from "@/test-utils/mockMatchMedia";
 
 vi.mock("@/components/AppHeader", () => ({
-  AppHeader: ({ onMenuClick }: { onMenuClick?: () => void }) =>
-    onMenuClick ? (
-      <button type="button" aria-label="メニューを開く" onClick={onMenuClick}>
-        ☰
-      </button>
-    ) : (
-      <div>app-header</div>
-    ),
+  AppHeader: ({
+    onMenuClick,
+    showSearch = true,
+  }: {
+    onMenuClick?: () => void;
+    showSearch?: boolean;
+  }) => (
+    <div data-testid="app-header" data-show-search={String(showSearch)}>
+      {onMenuClick ? (
+        <button type="button" aria-label="メニューを開く" onClick={onMenuClick}>
+          ☰
+        </button>
+      ) : (
+        "app-header"
+      )}
+    </div>
+  ),
 }));
 vi.mock("@/components/AppNav", () => ({
   AppNav: ({ onNavigate }: { onNavigate?: () => void }) => (
@@ -41,6 +50,7 @@ describe("AppLayout mobile nav drawer (mobile.md §5.1)", () => {
     mockMatchMedia(true);
     render(<AppLayout>content</AppLayout>);
     expect(screen.queryByRole("navigation", { name: "サイドバー" })).toBeNull();
+    expect(screen.getByTestId("app-header")).toHaveAttribute("data-show-search", "false");
 
     fireEvent.click(screen.getByLabelText("メニューを開く"));
     expect(screen.getByRole("dialog", { name: "ナビゲーション" })).toBeInTheDocument();

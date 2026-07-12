@@ -10,6 +10,7 @@ export interface TocDrawerProps {
   toc: TocNode[];
   activeSectionId: string | null;
   onSectionClick: (sectionId: string) => void;
+  onTranslateSection?: (sectionId: string) => void;
 }
 
 /**
@@ -17,9 +18,14 @@ export interface TocDrawerProps {
  * 中身は TocPane の行コンポーネント(TocRow/TocRowGroup)を再利用する。
  * 行タップでその節へスクロールし、ドロワーを閉じる。
  */
-export function TocDrawer({ open, onClose, toc, activeSectionId, onSectionClick }: TocDrawerProps) {
-  const regular = toc.filter((n) => !n.on_demand);
-
+export function TocDrawer({
+  open,
+  onClose,
+  toc,
+  activeSectionId,
+  onSectionClick,
+  onTranslateSection,
+}: TocDrawerProps) {
   return (
     <Drawer open={open} onClose={onClose} width={280} ariaLabel="目次">
       <nav
@@ -43,7 +49,7 @@ export function TocDrawer({ open, onClose, toc, activeSectionId, onSectionClick 
         >
           目次
         </div>
-        {regular.map((node) => (
+        {toc.map((node) => (
           <TocRowGroup
             key={node.section_id}
             node={node}
@@ -52,6 +58,7 @@ export function TocDrawer({ open, onClose, toc, activeSectionId, onSectionClick 
               onSectionClick(sectionId);
               onClose();
             }}
+            onTranslateSection={onTranslateSection}
           />
         ))}
       </nav>

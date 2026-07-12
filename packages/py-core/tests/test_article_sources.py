@@ -10,7 +10,7 @@ import datetime as dt
 import uuid
 from dataclasses import dataclass
 
-from alinea_core.article.sources import collect_article_sources
+from alinea_core.article.sources import _figures, collect_article_sources, estimate_tokens
 from alinea_core.db.models import (
     Annotation,
     ChatMessage,
@@ -19,10 +19,12 @@ from alinea_core.db.models import (
     LibraryItem,
     Note,
     Paper,
+    TranslationUnit,
     User,
 )
 from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
 from alinea_core.document.inlines import Inline
+from alinea_core.licenses import classify_license
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -36,6 +38,10 @@ class _Seed:
 
 def _uid() -> str:
     return str(uuid.uuid4())
+
+
+def test_token_estimate_treats_model_special_token_text_as_plain_input() -> None:
+    assert estimate_tokens("prefix <|endoftext|> suffix") > 0
 
 
 def _content() -> DocumentContent:
@@ -55,6 +61,126 @@ def _content() -> DocumentContent:
             )
         ],
     )
+
+
+def _table_content(raw: str | None = None) -> DocumentContent:
+    return DocumentContent(
+        quality_level="A",
+        sections=[
+            Section(
+                id="sec-tables",
+                heading=SectionHeading(number="2", title="Evaluation"),
+                blocks=[
+                    Block(
+                        id="blk-table",
+                        type="table",
+                        caption=[Inline(t="text", v="Original caption")],
+                        raw=raw
+                        or (
+                            "<table><tr><th colspan='2'>Method family</th><th>Score</th></tr>"
+                            "<tr><td>Baseline</td><td>Fast mode</td><td>95%</td></tr></table>"
+                        ),
+                    )
+                ],
+            )
+        ],
+    )
+
+
+def _table_unit(cells: list[list[str | None]]) -> TranslationUnit:
+    return TranslationUnit(
+        set_id="00000000-0000-0000-0000-000000000000",
+        block_id="blk-table",
+        source_hash="table-source",
+        content_ja={
+            "kind": "table",
+            "version": 1,
+            "caption": [{"t": "text", "v": "日本語キャプション"}],
+            "cells": cells,
+        },
+        text_ja="日本語キャプション\n手法群\n得点\n基準法\n高速モード",
+        state="machine",
+        quality_flags=[],
+        model="test",
+    )
+
+
+def test_article_table_rows_overlay_typed_physical_cells() -> None:
+    unit = _table_unit([["手法群", "得点"], ["基準法", "高速モード", None]])
+    unit.text_ja = ""
+    figures = _figures(
+        _table_content(),
+        {"blk-table": unit},
+        policy=classify_license("cc-by-4.0"),
+    )
+
+    assert len(figures) == 1
+    assert figures[0].caption_ja == "日本語キャプション"
+    assert figures[0].table_rows == [
+        ["手法群", "得点"],
+        ["基準法", "高速モード", "95%"],
+    ]
+
+
+def test_article_table_caption_projects_nested_emphasis_children() -> None:
+    unit = _table_unit([["手法群", "得点"], ["基準法", "高速モード", None]])
+    unit.content_ja["caption"] = [
+        {
+            "t": "emphasis",
+            "children": [{"t": "text", "v": "日本語キャプション"}],
+        }
+    ]
+
+    figures = _figures(
+        _table_content(),
+        {"blk-table": unit},
+        policy=classify_license("cc-by-4.0"),
+    )
+
+    assert figures[0].caption_ja == "日本語キャプション"
+
+
+def test_article_table_shape_mismatch_falls_back_to_source_grid() -> None:
+    figures = _figures(
+        _table_content(),
+        {"blk-table": _table_unit([["不一致"]])},
+        policy=classify_license("cc-by-4.0"),
+    )
+
+    assert len(figures) == 1
+    assert figures[0].caption_ja is None
+    assert figures[0].table_rows == [
+        ["Method family", "Score"],
+        ["Baseline", "Fast mode", "95%"],
+    ]
+
+
+def test_article_latex_table_rows_use_the_canonical_grid() -> None:
+    raw = (
+        r"\begin{tabular}{ll}"
+        "Method name & Score " + r"\\" + "\n"
+        "Baseline method & 95 " + r"\\" + "\n"
+        r"\end{tabular}"
+    )
+    figures = _figures(
+        _table_content(raw),
+        {"blk-table": _table_unit([["手法名", "得点"], ["基準手法", None]])},
+        policy=classify_license("cc-by-4.0"),
+    )
+
+    assert figures[0].table_rows == [["手法名", "得点"], ["基準手法", "95"]]
+
+
+def test_article_unsupported_typed_cell_grid_keeps_source_caption_and_rows() -> None:
+    raw = "<table><tr><td colspan='0'>Method name</td></tr></table>"
+    figures = _figures(
+        _table_content(raw),
+        {"blk-table": _table_unit([["手法名"]])},
+        policy=classify_license("cc-by-4.0"),
+    )
+
+    assert figures[0].caption_ja is None
+    assert figures[0].table_rows == [["Method name"]]
 
 
 async def _seed(db: AsyncSession) -> _Seed:

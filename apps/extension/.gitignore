@@ -8,3 +8,6 @@ stats-*.json
 # Playwright
 /playwright-report/
 /test-results/
+
+# Local arXiv audit reports, screenshots, and generated PDFs
+/artifacts/

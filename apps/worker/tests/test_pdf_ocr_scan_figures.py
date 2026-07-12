@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import fitz
 import pytest
@@ -42,7 +42,7 @@ def _scan_with_visual() -> bytes:
     page.insert_image(page.rect, stream=png)
     data = document.tobytes()
     document.close()
-    return data
+    return cast(bytes, data)
 
 
 def _scan_with_table_grid() -> bytes:
@@ -73,7 +73,7 @@ def _scan_with_table_grid() -> bytes:
     page.insert_image(page.rect, stream=png)
     data = document.tobytes()
     document.close()
-    return data
+    return cast(bytes, data)
 
 
 def _ocr_line(text: str, bbox: tuple[float, float, float, float]) -> dict[str, Any]:

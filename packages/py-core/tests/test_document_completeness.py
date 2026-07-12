@@ -461,6 +461,24 @@ def test_accepts_structured_text_at_exactly_thirty_five_percent() -> None:
     assert report.structured_chars == 350
 
 
+def test_reference_entries_count_toward_recovered_text_coverage() -> None:
+    body = "b" * 100
+    report = assess_document_completeness(
+        _doc(
+            _text_block("p1", "paragraph", body),
+            _text_block("p2", "paragraph", body),
+            Block(id="ref-1", type="reference_entry", raw="r" * 200),
+        ),
+        pdf_text="x" * 1_000,
+        source_manifest={},
+    )
+
+    assert report.accepted
+    assert report.code is None
+    # Translation-facing diagnostics continue to describe translatable prose only.
+    assert report.structured_chars == len(f"{body}\n{body}")
+
+
 def test_explicit_source_char_count_replaces_untrusted_pdf_text_length() -> None:
     report = assess_document_completeness(
         _doc(

@@ -81,17 +81,22 @@ def assess_document_completeness(
 
     blocks = [block for _section, block in content.iter_blocks()]
     visible_blocks = []
+    recovered_plain: list[str] = []
     for block in blocks:
-        if block.type not in TRANSLATABLE_BLOCK_TYPES:
-            continue
         plain = block_to_plain(block)
-        if plain:
+        if not plain:
+            continue
+        # Completeness measures source recovery, not translation eligibility.
+        # References, equations, code, and algorithms intentionally remain outside
+        # the translation plan, but still preserve visible source text and must not
+        # make an otherwise complete document look truncated.
+        recovered_plain.append(plain)
+        if block.type in TRANSLATABLE_BLOCK_TYPES:
             visible_blocks.append((block, plain))
     visible = "\n".join(plain for _block, plain in visible_blocks)
+    recovered = "\n".join(recovered_plain)
     stripped_pdf_text = pdf_text.strip()
-    reported_source_chars = (
-        source_char_count if source_char_count is not None else len(pdf_text)
-    )
+    reported_source_chars = source_char_count if source_char_count is not None else len(pdf_text)
     coverage_source_chars = (
         source_char_count if source_char_count is not None else len(stripped_pdf_text)
     )
@@ -127,7 +132,7 @@ def assess_document_completeness(
         return report(False, "embedded_pdf_wrapper")
     if unresolved_figures > 0:
         return report(False, "figure_asset_unresolved")
-    if coverage_source_chars >= 1_000 and len(visible) * 100 < coverage_source_chars * 35:
+    if coverage_source_chars >= 1_000 and len(recovered) * 100 < coverage_source_chars * 35:
         return report(False, "document_incomplete")
 
     accepted = bool(visible) and (

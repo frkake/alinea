@@ -6,6 +6,12 @@ import { ViewerShell } from "@/components/viewer/ViewerShell";
 import { useFinishReadingStore } from "@/components/library/finishReadingStore";
 import { useViewerStore } from "@/stores/viewer-store";
 
+const sseHarness = vi.hoisted(() => ({
+  onEvent: undefined as
+    | ((event: { type: string; data: unknown; lastEventId: string }) => void)
+    | undefined,
+}));
+
 vi.mock("@alinea/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@alinea/api-client")>();
   return {
@@ -28,7 +34,14 @@ vi.mock("@/hooks/use-pdf-availability", () => ({ usePdfAvailability: () => true 
 vi.mock("@/hooks/use-reading-position", () => ({ useReadingPosition: () => undefined }));
 vi.mock("@/hooks/use-reading-session", () => ({ useReadingSession: () => undefined }));
 vi.mock("@/hooks/use-viewer-keymap", () => ({ useViewerKeymap: () => undefined }));
-vi.mock("@/lib/sse", () => ({ useSSE: () => ({ connected: false, fallbackActive: true, lastEventId: "" }) }));
+vi.mock("@/lib/sse", () => ({
+  useSSE: (options: {
+    onEvent?: (event: { type: string; data: unknown; lastEventId: string }) => void;
+  }) => {
+    sseHarness.onEvent = options.onEvent;
+    return { connected: false, fallbackActive: true, lastEventId: "" };
+  },
+}));
 vi.mock("@/components/chat/ChatPanel", () => ({ ChatPanel: () => null }));
 vi.mock("@/components/viewer/FiguresPanel", () => ({ FiguresPanel: () => null }));
 vi.mock("@/components/viewer/InfoPanel", () => ({ InfoPanel: () => null }));
@@ -105,17 +118,19 @@ function makeViewer(overrides: Partial<ViewerInit> = {}): ViewerInit {
 
 function renderWithClient(viewer: ViewerInit) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidateQueries = vi.spyOn(client, "invalidateQueries");
   // 実アプリでは ViewerPage 側の useQuery(["viewer", itemId]) がキャッシュへ入れる値。
   // ViewerShell.onStatusChange はこのキャッシュから prevStatus を読むため、単体テストでも
   // 同じキーへ事前投入しておく(qc.getQueryData が undefined のままだと判定できない)。
   client.setQueryData(["viewer", "li_1"], viewer);
-  return render(
+  const rendered = render(
     <QueryClientProvider client={client}>
       <ViewerShell itemId="li_1" viewer={viewer} mode="translation" onModeChange={vi.fn()}>
         <div>本文</div>
       </ViewerShell>
     </QueryClientProvider>,
   );
+  return { ...rendered, invalidateQueries };
 }
 
 // M1 統合ポリッシュ: ビューアからの読了フロー起動(ヘッダの StatusPill 変更経路)。
@@ -123,6 +138,7 @@ function renderWithClient(viewer: ViewerInit) {
 describe("ViewerShell status change → finish-reading flow (1g §2.3)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sseHarness.onEvent = undefined;
     useFinishReadingStore.setState({ item: null });
     useViewerStore.setState({
       panelOpen: false,
@@ -187,5 +203,51 @@ describe("ViewerShell status change → finish-reading flow (1g §2.3)", () => {
       await Promise.resolve();
     });
     expect(useFinishReadingStore.getState().item).toBeNull();
+  });
+
+  test("invalidates only translated PDF caches after the current item's job finishes", async () => {
+    const { invalidateQueries } = renderWithClient(
+      makeViewer({
+        translation: {
+          style: "natural",
+          set_id: "set-1",
+          status: "complete",
+          progress_pct: 100,
+          section_selection: null,
+        },
+      }),
+    );
+
+    act(() => {
+      sseHarness.onEvent?.({
+        type: "job.updated",
+        data: { job_id: "job-1", library_item_id: "li_1" },
+        lastEventId: "1-0",
+      });
+    });
+
+    await waitFor(() => {
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["pdf-data", "pap_1", "translated"],
+      });
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["pdf-available", "pap_1", "translated"],
+      });
+    });
+    expect(invalidateQueries).toHaveBeenCalledTimes(2);
+  });
+
+  test("ignores job completion events for a different library item", () => {
+    const { invalidateQueries } = renderWithClient(makeViewer());
+
+    act(() => {
+      sseHarness.onEvent?.({
+        type: "job.updated",
+        data: { job_id: "job-2", library_item_id: "li_other" },
+        lastEventId: "2-0",
+      });
+    });
+
+    expect(invalidateQueries).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,23 @@ import { describe, expect, test, vi } from "vitest";
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 
 describe("InlineRenderer citations", () => {
+  test("keeps long inline math inside a horizontally scrollable inline box", () => {
+    const { container } = render(
+      <p>
+        <InlineRenderer inlines={[{ t: "math_inline", v: String.raw`x_1+x_2+\cdots+x_{1000}` }]} />
+      </p>,
+    );
+
+    const math = container.querySelector<HTMLElement>(".alinea-inline-math-scroll");
+    expect(math).not.toBeNull();
+    expect(math).toHaveStyle({
+      display: "inline-block",
+      maxWidth: "100%",
+      overflowX: "auto",
+      overflowY: "hidden",
+    });
+  });
+
   test("compacts expanded author-year citation text", () => {
     render(
       <p>

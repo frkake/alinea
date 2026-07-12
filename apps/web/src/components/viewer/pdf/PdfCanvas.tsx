@@ -59,7 +59,7 @@ export interface PdfCanvasProps {
   onSelectBlock: (hit: SyncBlockHit | null) => void;
   onOpenInTranslation: (blockId: string) => void;
   onPageStep?: (delta: number) => void;
-  onWheelZoom?: (delta: number) => boolean | void;
+  onWheelZoom?: (delta: number) => boolean | undefined;
   onVisiblePageChange?: (page: number) => void;
   /** フィットモード時、実測ページ寸法(pt, scale=1)を親へ返す(ズーム%表示・再計算に使う)。 */
   onPageSizeResolved?: (sizePt: { width: number; height: number }) => void;

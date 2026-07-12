@@ -389,6 +389,35 @@ async def test_target_contexts_for_glossary_paper_scope_missing_cases_return_emp
     assert await target_contexts_for_glossary(db_session, no_revision_glossary) == []
 
 
+async def test_target_contexts_for_glossary_paper_scope_rejects_foreign_latest_revision(
+    db_session: AsyncSession,
+) -> None:
+    user = User(id=_id(), email=f"{_id()}@t.test")
+    paper = Paper(id=_id(), title="Owned paper", visibility="public")
+    foreign_paper = Paper(id=_id(), title="Foreign paper", visibility="public")
+    db_session.add_all([user, paper, foreign_paper])
+    await db_session.flush()
+    foreign_revision = DocumentRevision(
+        id=_id(),
+        paper_id=str(foreign_paper.id),
+        parser_version="foreign-test",
+        quality_level="A",
+        source_format="latex",
+        content={"quality_level": "A", "sections": []},
+    )
+    db_session.add(foreign_revision)
+    await db_session.flush()
+    paper.latest_revision_id = foreign_revision.id
+    item = LibraryItem(id=_id(), user_id=str(user.id), paper_id=str(paper.id))
+    db_session.add(item)
+    await db_session.flush()
+    glossary = Glossary(id=_id(), scope="paper", library_item_id=str(item.id))
+    db_session.add(glossary)
+    await db_session.commit()
+
+    assert await target_contexts_for_glossary(db_session, glossary) == []
+
+
 async def test_target_contexts_for_glossary_user_scope_requires_natural_shared_or_personal_set(
     db_session: AsyncSession,
 ) -> None:
@@ -443,6 +472,44 @@ async def test_target_contexts_for_glossary_user_scope_requires_natural_shared_o
     assert str(rev_without_set.id) not in revision_ids
 
 
+async def test_target_contexts_for_glossary_user_scope_rejects_foreign_latest_revision(
+    db_session: AsyncSession,
+) -> None:
+    user = User(id=_id(), email=f"{_id()}@t.test")
+    paper = Paper(id=_id(), title="Owned paper", visibility="public")
+    foreign_paper = Paper(id=_id(), title="Foreign paper", visibility="public")
+    db_session.add_all([user, paper, foreign_paper])
+    await db_session.flush()
+    foreign_revision = DocumentRevision(
+        id=_id(),
+        paper_id=str(foreign_paper.id),
+        parser_version="foreign-test",
+        quality_level="A",
+        source_format="latex",
+        content={"quality_level": "A", "sections": []},
+    )
+    db_session.add(foreign_revision)
+    await db_session.flush()
+    paper.latest_revision_id = foreign_revision.id
+    item = LibraryItem(id=_id(), user_id=str(user.id), paper_id=str(paper.id))
+    db_session.add_all(
+        [
+            item,
+            TranslationSet(
+                id=_id(),
+                revision_id=str(foreign_revision.id),
+                style="natural",
+                scope="shared",
+            ),
+        ]
+    )
+    glossary = Glossary(id=_id(), scope="user", user_id=str(user.id))
+    db_session.add(glossary)
+    await db_session.commit()
+
+    assert await target_contexts_for_glossary(db_session, glossary) == []
+
+
 # ---------------------------------------------------------------------------
 # resolve_or_create_personal_set(§9.2 差分保存フォーク)
 # ---------------------------------------------------------------------------
@@ -471,6 +538,15 @@ async def test_resolve_or_create_personal_set_forks_from_shared_then_reuses(
         style="natural",
         scope="shared",
         glossary_snapshot=[{"source_term": "flow", "target_term": "フロー"}],
+        plan={
+            "version": 1,
+            "include_appendix": False,
+            "translate_table_cells": True,
+            "suggest_section_selection_over_30_pages": False,
+            "target_section_ids": [],
+            "target_block_ids": [],
+            "pages": None,
+        },
         status="complete",
     )
     db_session.add(shared)
@@ -482,6 +558,7 @@ async def test_resolve_or_create_personal_set_forks_from_shared_then_reuses(
     assert forked.scope == "personal"
     assert forked.base_set_id == str(shared.id)
     assert forked.glossary_snapshot == [{"source_term": "flow", "target_term": "フロー"}]
+    assert forked.plan == shared.plan
     assert forked.status == "complete"
 
     again = await resolve_or_create_personal_set(

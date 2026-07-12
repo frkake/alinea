@@ -26,13 +26,13 @@ import structlog
 from alinea_core.db.models import (
     ChatMessage,
     ChatThread,
-    DocumentRevision,
     Job,
     LibraryItem,
     Paper,
     ResourceLink,
 )
 from alinea_core.db.models import Note as NoteModel
+from alinea_core.db.revisions import get_paper_revisions, reading_position_revision_id
 from alinea_core.jobs.store import JobStore
 from fastapi import APIRouter, Depends, Query, Response, status
 from pydantic import BaseModel
@@ -333,13 +333,6 @@ def render_csv(rows: list[_ExportCsvRow]) -> str:
     return "\ufeff" + buf.getvalue()
 
 
-def _quality_revision_id(item: LibraryItem, paper: Paper) -> str | None:
-    rp = item.reading_position
-    if isinstance(rp, dict) and rp.get("revision_id"):
-        return str(rp["revision_id"])
-    return str(paper.latest_revision_id) if paper.latest_revision_id else None
-
-
 @router.get("/api/export/csv", operation_id="export_csv")
 async def export_csv(user: CurrentUser, db: DbDep) -> Response:
     rows = (
@@ -351,19 +344,29 @@ async def export_csv(user: CurrentUser, db: DbDep) -> Response:
         )
     ).all()
 
-    rev_ids = {
-        rid for item, paper in rows if (rid := _quality_revision_id(item, paper)) is not None
-    }
-    quality_map: dict[str, str] = {}
-    if rev_ids:
-        qrows = (
-            await db.execute(
-                select(DocumentRevision.id, DocumentRevision.quality_level).where(
-                    DocumentRevision.id.in_(rev_ids)
-                )
-            )
-        ).all()
-        quality_map = {str(rid): q for rid, q in qrows}
+    requested_pairs: list[tuple[object, object]] = []
+    for item, paper in rows:
+        reading_revision_id = reading_position_revision_id(item.reading_position)
+        if reading_revision_id is not None:
+            requested_pairs.append((paper.id, reading_revision_id))
+        if paper.latest_revision_id is not None:
+            requested_pairs.append((paper.id, paper.latest_revision_id))
+    revisions = await get_paper_revisions(db, requested_pairs)
+
+    def quality_of(item: LibraryItem, paper: Paper) -> str:
+        reading_revision_id = reading_position_revision_id(item.reading_position)
+        reading_revision = (
+            revisions.get((str(paper.id), reading_revision_id))
+            if reading_revision_id is not None
+            else None
+        )
+        latest_revision = (
+            revisions.get((str(paper.id), str(paper.latest_revision_id)))
+            if paper.latest_revision_id is not None
+            else None
+        )
+        revision = reading_revision or latest_revision
+        return revision.quality_level if revision is not None else ""
 
     csv_rows = [
         _ExportCsvRow(
@@ -372,7 +375,7 @@ async def export_csv(user: CurrentUser, db: DbDep) -> Response:
             priority=item.priority,
             deadline=item.deadline.isoformat() if item.deadline else "",
             tags=list(item.tags or []),
-            quality=quality_map.get(_quality_revision_id(item, paper) or "", ""),
+            quality=quality_of(item, paper),
             added_at=item.added_at.isoformat(),
             finished_at=item.finished_at.isoformat() if item.finished_at else "",
             reading_hours=item.total_active_seconds / 3600,

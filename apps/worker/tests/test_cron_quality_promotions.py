@@ -18,9 +18,10 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+import pytest
 import pytest_asyncio
 from alinea_core.db.models import DocumentRevision, LibraryItem, Notification, Paper, User
-from alinea_worker.cron import check_quality_promotions
+from alinea_worker.cron import _candidate_papers, check_quality_promotions
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -71,6 +72,78 @@ async def _seed_quality_b_paper(db: AsyncSession) -> dict[str, str]:
         "revision_id": str(rev.id),
         "library_item_id": str(li.id),
     }
+
+
+async def test_candidate_papers_rejects_foreign_latest_revision(
+    db_session: AsyncSession,
+) -> None:
+    paper = Paper(
+        id=str(uuid.uuid4()),
+        arxiv_id=_arxiv_id(),
+        title="Corrupt latest pointer",
+        visibility="public",
+    )
+    foreign_paper = Paper(
+        id=str(uuid.uuid4()),
+        title="Foreign revision owner",
+        visibility="public",
+    )
+    db_session.add_all([paper, foreign_paper])
+    await db_session.flush()
+    foreign_revision = DocumentRevision(
+        id=str(uuid.uuid4()),
+        paper_id=str(foreign_paper.id),
+        parser_version="pdf-foreign",
+        quality_level="B",
+        source_format="pdf",
+        content={"quality_level": "B", "sections": []},
+    )
+    db_session.add(foreign_revision)
+    await db_session.flush()
+    paper.latest_revision_id = foreign_revision.id
+    await db_session.commit()
+
+    candidate_ids = {str(candidate.id) for candidate in await _candidate_papers(db_session)}
+
+    assert str(paper.id) not in candidate_ids
+
+
+async def test_quality_promotion_revalidates_latest_revision_after_probe(
+    db_session: AsyncSession,
+    maker: async_sessionmaker[AsyncSession],
+    worker_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed = await _seed_quality_b_paper(db_session)
+    quality_a = DocumentRevision(
+        id=str(uuid.uuid4()),
+        paper_id=seed["paper_id"],
+        parser_version="html-current",
+        quality_level="A",
+        source_format="arxiv_html",
+        content={"quality_level": "A", "sections": []},
+    )
+    db_session.add(quality_a)
+    await db_session.commit()
+
+    async def switch_to_quality_a(*_args: Any, **_kwargs: Any) -> bool:
+        async with maker() as concurrent:
+            paper = await concurrent.get(Paper, seed["paper_id"])
+            assert paper is not None
+            paper.latest_revision_id = quality_a.id
+            await concurrent.commit()
+        return True
+
+    monkeypatch.setattr("alinea_worker.cron._promotion_available", switch_to_quality_a)
+    await check_quality_promotions({**worker_ctx, "sessionmaker": maker})
+
+    async with maker() as session:
+        notifications = (
+            await session.execute(
+                select(Notification).where(Notification.user_id == seed["user_id"])
+            )
+        ).scalars()
+        assert list(notifications) == []
 
 
 async def test_check_quality_promotions_fires_notification_without_auto_apply(

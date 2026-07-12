@@ -260,6 +260,120 @@ async def test_create_rejects_nonexistent_block(env: tuple[AsyncClient, str, str
     assert r.json()["code"] == "validation_error"
 
 
+async def test_create_rejects_anchor_revision_from_another_paper(
+    env: tuple[AsyncClient, str, str, str], db_session: AsyncSession
+) -> None:
+    client, item_id, _rev_id, uid = env
+    secret_title = f"FOREIGN-{uuid.uuid4().hex}"
+    foreign_paper = Paper(
+        id=str(uuid.uuid4()),
+        title="Foreign paper",
+        visibility="private",
+        owner_user_id=uid,
+    )
+    db_session.add(foreign_paper)
+    await db_session.flush()
+    foreign_revision = DocumentRevision(
+        id=str(uuid.uuid4()),
+        paper_id=str(foreign_paper.id),
+        parser_version="foreign-test",
+        quality_level="A",
+        source_format="arxiv_html",
+        content={
+            "quality_level": "A",
+            "sections": [
+                {
+                    "id": "foreign-section",
+                    "heading": {"number": "", "title": secret_title},
+                    "blocks": [
+                        {
+                            "id": "foreign-block",
+                            "type": "paragraph",
+                            "inlines": [{"t": "text", "v": "Foreign body."}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    db_session.add(foreign_revision)
+    await db_session.commit()
+
+    response = await client.post(
+        f"/api/library-items/{item_id}/annotations",
+        json={
+            "kind": "highlight",
+            "color": "important",
+            "anchor": _anchor(str(foreign_revision.id), "foreign-block"),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
+    assert secret_title not in response.text
+
+
+async def test_list_hides_display_from_historical_foreign_revision_anchor(
+    env: tuple[AsyncClient, str, str, str], db_session: AsyncSession
+) -> None:
+    client, item_id, _rev_id, uid = env
+    secret_title = f"FOREIGN-HISTORICAL-{uuid.uuid4().hex}"
+    foreign_paper = Paper(
+        id=str(uuid.uuid4()),
+        title="Foreign historical paper",
+        visibility="private",
+        owner_user_id=uid,
+    )
+    db_session.add(foreign_paper)
+    await db_session.flush()
+    foreign_revision = DocumentRevision(
+        id=str(uuid.uuid4()),
+        paper_id=str(foreign_paper.id),
+        parser_version="foreign-history-test",
+        quality_level="A",
+        source_format="arxiv_html",
+        content={
+            "quality_level": "A",
+            "sections": [
+                {
+                    "id": "foreign-history-section",
+                    "heading": {"number": "", "title": secret_title},
+                    "blocks": [
+                        {
+                            "id": "foreign-history-block",
+                            "type": "paragraph",
+                            "inlines": [{"t": "text", "v": "Foreign historical body."}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    annotation = Annotation(
+        id=str(uuid.uuid4()),
+        library_item_id=item_id,
+        kind="highlight",
+        color="important",
+        anchor={
+            "revision_id": str(foreign_revision.id),
+            "block_id": "foreign-history-block",
+            "start": 0,
+            "end": 7,
+            "quote": "Foreign",
+            "side": "source",
+        },
+    )
+    db_session.add_all([foreign_revision, annotation])
+    await db_session.commit()
+
+    response = await client.get(f"/api/library-items/{item_id}/annotations")
+
+    assert response.status_code == 200, response.text
+    listed = next(item for item in response.json()["items"] if item["id"] == str(annotation.id))
+    assert listed["anchor"]["display"] == ""
+    assert secret_title not in response.text
+
+
 async def test_patch_color_and_comment(env: tuple[AsyncClient, str, str, str]) -> None:
     client, item_id, rev_id, _uid = env
     created = (

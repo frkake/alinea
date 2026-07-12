@@ -475,3 +475,34 @@ async def test_run_job_counts_cancelled_job_as_retryable_failure(
         assert job.next_retry_at is not None
         errors = [e.get("error", {}) for e in job.log if e.get("level") == "error"]
         assert any("cancelled or timed out" in e.get("message", "") for e in errors)
+
+
+async def test_run_job_rolls_back_failed_handler_transaction_before_marking_failure(
+    monkeypatch: pytest.MonkeyPatch, maker: async_sessionmaker[AsyncSession]
+) -> None:
+    """DB flush 失敗後も PendingRollbackError を起こさず終端状態を保存する。"""
+    from alinea_core.db.models import Job
+    from alinea_core.jobs.store import JobStore
+    from alinea_worker import main as worker_main
+
+    async def _write_nul(_ctx: dict[str, Any], store: JobStore, job: Job) -> None:
+        job.error = "invalid\x00text"
+        await store.session.flush()
+
+    monkeypatch.setattr(worker_main, "get_sessionmaker", lambda: maker)
+    monkeypatch.setitem(worker_main.HANDLERS, "resource_meta", _write_nul)
+
+    async with maker() as session:
+        store = JobStore(session)
+        job_id = await store.enqueue(kind="resource_meta", payload={}, max_attempts=1)
+
+    await worker_main.run_job({}, job_id)
+
+    async with maker() as session:
+        store = JobStore(session)
+        job = await store.get(job_id)
+        assert job is not None
+        assert job.status == "failed"
+        assert job.attempt == 1
+        assert job.finished_at is not None
+        assert any(entry.get("level") == "error" for entry in job.log)

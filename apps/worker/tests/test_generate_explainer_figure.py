@@ -14,6 +14,7 @@ import datetime as dt
 import uuid
 from typing import Any
 
+import pytest
 from alinea_core.article.sources import collect_article_sources
 from alinea_core.db.models import (
     Article,
@@ -34,6 +35,7 @@ from alinea_llm.testing.fake_provider import FakeImageProvider
 from alinea_worker.tasks.generate_explainer_figure import (
     EXPLAINER_STYLE_PREAMBLE,
     ExplainerBrief,
+    _load_figure_article_context,
     build_explainer_prompt,
     create_explainer_figures_v1,
     run_explainer_figure_job,
@@ -128,6 +130,30 @@ def _job(seed: dict[str, Any]) -> Job:
         library_item_id=seed["library_item"].id,
         payload={},
     )
+
+
+async def test_figure_context_rejects_latest_revision_from_another_paper(
+    db_session: AsyncSession,
+) -> None:
+    seed = await _seed(db_session)
+    foreign_paper = Paper(id=_uid(), title="Foreign paper", visibility="public")
+    db_session.add(foreign_paper)
+    await db_session.flush()
+    foreign_revision = DocumentRevision(
+        id=_uid(),
+        paper_id=str(foreign_paper.id),
+        parser_version="foreign-test",
+        quality_level="A",
+        source_format="latex",
+        content=_content().model_dump(mode="json"),
+    )
+    db_session.add(foreign_revision)
+    await db_session.flush()
+    seed["paper"].latest_revision_id = foreign_revision.id
+    await db_session.commit()
+
+    with pytest.raises(LookupError, match="paper/revision not found"):
+        await _load_figure_article_context(db_session, str(seed["article"].id))
 
 
 # --------------------------------------------------------------------------- #

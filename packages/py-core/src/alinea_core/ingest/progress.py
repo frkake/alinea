@@ -10,13 +10,19 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from alinea_core.db.models import Job, TranslationSet
+from alinea_core.db.models import Job, TranslationSet, TranslationUnit
 from alinea_core.document.blocks import DocumentContent, Section
 from alinea_core.ingest import joblog
-from alinea_core.translation.pipeline import compute_translation_scope
+from alinea_core.translation.pipeline import (
+    compute_translation_scope,
+    resolve_translation_plan,
+    resolve_translation_set_units,
+    translation_scope_from_plan,
+    translation_unit_has_required_table_cells,
+)
 
 # stage → 固定進捗(§2.2)。translating_body は動的(body_progress)。
 STAGE_ORDER: tuple[str, ...] = (
@@ -66,7 +72,7 @@ def _section_number_map(content: DocumentContent) -> dict[str, str]:
 
 
 def first_translatable_section(content: DocumentContent) -> str | None:
-    """参考文献・付録を除く本文セクションの先頭 1 つ(§2.1)。無ければ None。"""
+    """参考文献を除く翻訳対象セクションの先頭 1 つ(§2.1)。無ければ None。"""
     sections = compute_translation_scope(content).sections
     return sections[0]["section_id"] if sections else None
 
@@ -93,17 +99,24 @@ def readable_upto(content: DocumentContent, translated_block_ids: set[str]) -> s
 # --- 完了検知(§11.3) --------------------------------------------------------------
 
 
-async def count_active_body_jobs(session: AsyncSession, set_id: str) -> int:
-    """当該セットの初回全文翻訳ジョブのうち未完了(queued/running/waiting_quota)の件数。"""
+async def count_active_body_jobs(
+    session: AsyncSession,
+    set_id: str,
+    *,
+    ingest_job_id: str | None = None,
+) -> int:
+    """当該取り込みが起動した未完了の初回/修復翻訳ジョブ件数。"""
     result = await session.execute(
         text(
             "SELECT count(*) FROM jobs "
             "WHERE kind = 'translation' "
             "AND payload->>'set_id' = :set_id "
-            "AND payload->>'reason' = 'initial' "
+            "AND payload->>'reason' IN ('initial', 'retry_failed') "
+            "AND (CAST(:ingest_job_id AS text) IS NULL "
+            "OR payload->>'ingest_job_id' = :ingest_job_id) "
             "AND status IN ('queued', 'running', 'waiting_quota')"
         ),
-        {"set_id": set_id},
+        {"set_id": set_id, "ingest_job_id": ingest_job_id},
     )
     return int(result.scalar_one())
 
@@ -124,9 +137,44 @@ async def finalize_ingest_if_body_complete(
     確定できたら True(通知発火は M1-07 に委譲するためここでは行わない)。
     """
     await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:s))"), {"s": set_id})
-    remaining = await count_active_body_jobs(session, set_id)
+    remaining = await count_active_body_jobs(
+        session,
+        set_id,
+        ingest_job_id=ingest_job_id,
+    )
     tset = await session.get(TranslationSet, set_id)
     if remaining > 0:
+        if tset is not None:
+            tset.status = "partial"
+        await session.commit()
+        return False
+
+    plan = resolve_translation_plan(
+        content,
+        tset.plan if tset is not None else None,
+        pages=None,
+    )
+    target_scope = translation_scope_from_plan(content, plan)
+    target_ids = set(target_scope.in_scope_block_ids)
+    if tset is not None:
+        units = await resolve_translation_set_units(session, tset)
+    else:
+        rows = (
+            await session.execute(select(TranslationUnit).where(TranslationUnit.set_id == set_id))
+        ).scalars()
+        units = {row.block_id: row for row in rows}
+    blocks = {block.id: block for _section, block in content.iter_blocks()}
+    translated_ids = {
+        block_id
+        for block_id, unit in units.items()
+        if block_id in blocks
+        and translation_unit_has_required_table_cells(
+            unit,
+            blocks[block_id],
+            require_table_cells=plan.translate_table_cells,
+        )
+    }
+    if not target_ids <= translated_ids:
         if tset is not None:
             tset.status = "partial"
         await session.commit()

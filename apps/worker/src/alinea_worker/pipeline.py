@@ -57,6 +57,7 @@ from alinea_core.db.models import (
     UsageRecord,
     User,
 )
+from alinea_core.db.revisions import get_latest_paper_revision, get_paper_revision
 from alinea_core.document.blocks import Block, DocumentContent
 from alinea_core.document.plaintext import block_to_plain
 from alinea_core.ingest import assess_document_completeness, joblog, progress
@@ -83,17 +84,28 @@ from alinea_core.parsing.pdf_parser import (
 from alinea_core.search.rebuild import rebuild_block_search_index
 from alinea_core.settings import CoreSettings, get_settings
 from alinea_core.storage.s3 import S3ObjectTooLargeError, S3Storage, StorageKeys
+from alinea_core.text_safety import sanitize_untrusted_text
 from alinea_core.translation.glossary import build_snapshot
 from alinea_core.translation.pipeline import (
     TranslationContext,
+    TranslationPlan,
     TranslationSettings,
+    build_ingest_translation_plan,
     compute_translation_scope,
     find_shared_set,
+    merge_translation_plans,
+    resolve_translation_plan,
+    resolve_translation_set_units,
+    select_translation_plan_sections,
     translate_block,
     translate_section,
+    translation_plan_awaits_section_selection,
+    translation_scope_from_plan,
+    translation_unit_satisfies_block,
 )
+from alinea_core.translation.placeholder import encode_block
 from botocore.exceptions import ClientError
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -109,7 +121,7 @@ from alinea_worker.figure_assets import (
     isolated_thumbnail_payload,
     resolve_latex_source,
 )
-from alinea_worker.latex_pdf import LatexPdfBuildError, build_latex_translation_pdfs_if_ready
+from alinea_worker.latex_pdf import LatexPdfBuildError, build_translation_pdfs_if_ready
 from alinea_worker.source_candidates import (
     PDF_OCR_CANDIDATE_VERSION,
     CandidateUnavailable,
@@ -491,6 +503,8 @@ _RETRYABLE_CANDIDATE_CODES = frozenset(
     }
 )
 _RETRYABLE_OPERATIONAL_SUFFIXES = ("_crashed", "_lifecycle", "_timeout")
+_LATEX_FETCH_MAX_ATTEMPTS = 3
+_LATEX_FETCH_RETRYABLE_CODES = frozenset({"network_error", "rate_limited", "upstream_5xx"})
 _DETERMINISTIC_OCR_CANDIDATE_CODES = frozenset(
     {
         "ocr_engine_unavailable",
@@ -635,6 +649,24 @@ def _figure_asset_manifest(
             }
         )
     return manifest
+
+
+def _requires_materialized_display_asset(block: Block) -> bool:
+    """Return whether a non-PDF figure/table must resolve to a stored image.
+
+    Tables with a raw or canonical structured grid render directly in the
+    viewer.  Caption-only tables and image-backed tables require an asset just
+    like figures do; accepting them without one would silently drop the table
+    body.
+    """
+
+    if block.type == "figure":
+        return True
+    if block.type != "table":
+        return False
+    has_raw_grid = isinstance(block.raw, str) and bool(block.raw.strip())
+    has_structured_grid = isinstance(block.structured, dict) and bool(block.structured)
+    return not has_raw_grid and not has_structured_grid
 
 
 def _candidate_failure_record(source_candidate: SourceCandidate, **extra: Any) -> dict[str, Any]:
@@ -891,6 +923,9 @@ class IngestRun:
         self._candidate_parsed_content_sha256: str | None = None
         self.style: str = "natural"
         self._settings_obj: TranslationSettings | None = None
+        self._translation_plan: TranslationPlan | None = None
+        self._translation_set_needs_repair = False
+        self._translation_repair_block_ids: frozenset[str] = frozenset()
 
     @property
     def parser_version(self) -> str:
@@ -916,6 +951,16 @@ class IngestRun:
         if paper is None:
             raise FetchError("source_not_found", f"paper not found: {self.paper_id}")
         return paper
+
+    async def _validated_paper_revision_id(self, revision_id: object) -> str | None:
+        if self.paper_id is None:
+            return None
+        revision = await get_paper_revision(
+            self.session,
+            paper_id=self.paper_id,
+            revision_id=revision_id,
+        )
+        return str(revision.id) if revision is not None else None
 
     async def _get_job(self) -> Job:
         job = await self.session.get(Job, self.job_id)
@@ -990,12 +1035,13 @@ class IngestRun:
         ``adopt_on_complete=true`` のときのみ通る(notifications action=apply が立てるフラグ)。
         """
         assert self.paper_id is not None and self.revision_id is not None
-        if old_revision_id == self.revision_id:
+        validated_old_revision_id = await self._validated_paper_revision_id(old_revision_id)
+        if validated_old_revision_id is None or validated_old_revision_id == self.revision_id:
             return
         stats: ReanchorStats = await reanchor_paper(
             self.session,
             paper_id=self.paper_id,
-            old_revision_id=old_revision_id,
+            old_revision_id=validated_old_revision_id,
             new_revision_id=self.revision_id,
         )
         await self.session.commit()
@@ -1018,6 +1064,8 @@ class IngestRun:
         self._release_candidate_buffers()
         await self._stage_translating_abstract()
         await self._ensure_translation_set()
+        if await self._pause_for_section_selection():
+            return
         await self._stage_readable()
         await self._stage_translating_body()
 
@@ -1374,6 +1422,24 @@ class IngestRun:
         paper.latest_version = meta.latest_version
 
     async def _fetch_latex_candidate_bytes(self, http: httpx.AsyncClient) -> bytes:
+        for attempt in range(1, _LATEX_FETCH_MAX_ATTEMPTS + 1):
+            try:
+                return await self._fetch_latex_candidate_bytes_once(http)
+            except CandidateUnavailable as exc:
+                if (
+                    exc.code not in _LATEX_FETCH_RETRYABLE_CODES
+                    or attempt >= _LATEX_FETCH_MAX_ATTEMPTS
+                ):
+                    raise
+                log.info(
+                    "latex_candidate_fetch_retry",
+                    attempt=attempt,
+                    max_attempts=_LATEX_FETCH_MAX_ATTEMPTS,
+                    code=exc.code,
+                )
+        raise AssertionError("unreachable")
+
+    async def _fetch_latex_candidate_bytes_once(self, http: httpx.AsyncClient) -> bytes:
         assert self.ref is not None
         try:
             await self._throttle()
@@ -1616,16 +1682,9 @@ class IngestRun:
     ) -> tuple[list[Block], list[str], list[str]]:
         blocks = [block for _section, block in candidate.content.iter_blocks()]
         blocks_by_id = {block.id: block for block in blocks}
-        required_ids = {block.id for block in blocks if block.type == "figure"}
+        required_ids = {block.id for block in blocks if _requires_materialized_display_asset(block)}
         invalid_type_ids: list[str] = []
         if isinstance(candidate.parsed, ParsedPdfDocument):
-            required_ids.update(
-                block.id
-                for block in blocks
-                if block.type == "table"
-                and not (isinstance(block.raw, str) and block.raw.strip())
-                and not (isinstance(block.asset_key, str) and block.asset_key.strip())
-            )
             required_ids.update(candidate.parsed.figure_images)
             invalid_type_ids = sorted(
                 block_id
@@ -2526,11 +2585,15 @@ class IngestRun:
         candidate_blocks_by_id = {
             block.id: block for _section, block in candidate.content.iter_blocks()
         }
-        revision_figure_ids = {
-            block.id for block in blocks_by_id.values() if block.type == "figure"
+        revision_asset_ids = {
+            block.id
+            for block in blocks_by_id.values()
+            if _requires_materialized_display_asset(block)
         }
-        candidate_figure_ids = {
-            block.id for block in candidate_blocks_by_id.values() if block.type == "figure"
+        candidate_asset_ids = {
+            block.id
+            for block in candidate_blocks_by_id.values()
+            if _requires_materialized_display_asset(block)
         }
         if (
             any(
@@ -2540,7 +2603,7 @@ class IngestRun:
                 or block.asset_key != entry["key"]
                 for entry in expected
             )
-            or revision_figure_ids != candidate_figure_ids
+            or revision_asset_ids != candidate_asset_ids
         ):
             raise FetchError(
                 "parse_error",
@@ -2856,6 +2919,7 @@ class IngestRun:
         self, revision: DocumentRevision, *, adopt_from_revision_id: str | None
     ) -> None:
         self._validate_revision_candidate_provenance(revision)
+        adopt_from_revision_id = await self._validated_paper_revision_id(adopt_from_revision_id)
         self._restore_revision(revision)
         await self._ensure_revision_diagnostics(revision)
         paper = await self._get_paper()
@@ -3031,9 +3095,13 @@ class IngestRun:
         # 追従させる(§4.5)。構造化前に「現在の latest」を旧リビジョンとして確定しておく。
         if "adopt_from_revision_id" in parse_ck:
             checkpoint_adopt_from = parse_ck.get("adopt_from_revision_id")
-            old_revision_id = str(checkpoint_adopt_from) if checkpoint_adopt_from else None
+            old_revision_id = await self._validated_paper_revision_id(checkpoint_adopt_from)
         else:
-            old_revision_id = str((await self._get_paper()).latest_revision_id or "") or None
+            latest_revision = await get_latest_paper_revision(
+                self.session,
+                await self._get_paper(),
+            )
+            old_revision_id = str(latest_revision.id) if latest_revision is not None else None
         if self.is_pdf_upload:
             upload_candidate = checkpoint_candidate
             if upload_candidate is None:
@@ -3168,7 +3236,7 @@ class IngestRun:
                     "figure_asset_failures": figure_failures,
                     "figure_materialization_version": FIGURE_MATERIALIZATION_VERSION,
                     "figure_asset_manifest": _figure_asset_manifest(
-                        self.parsed.figures, figure_bytes
+                        self.parsed.blocks, figure_bytes
                     ),
                 }
                 content = self.parsed.to_document_content()
@@ -3224,9 +3292,12 @@ class IngestRun:
         materialized_bytes = 0
         if self.parsed is None or self.paper_id is None:
             return out, warnings, failures
+        display_assets = [
+            block for block in self.parsed.blocks if _requires_materialized_display_asset(block)
+        ]
         validated_cache = getattr(self, "_candidate_materialization_validated", False)
         if validated_cache:
-            expected_ids = {figure.id for figure in self.parsed.figures}
+            expected_ids = {block.id for block in display_assets}
             if self._candidate_figure_failures or set(self._candidate_materialized_figures) != (
                 expected_ids
             ):
@@ -3234,7 +3305,7 @@ class IngestRun:
                     "figure_asset_unresolved",
                     "selected candidate figure cache is incomplete",
                 )
-        for figure_index, fig in enumerate(self.parsed.figures):
+        for figure_index, fig in enumerate(display_assets):
             staged_key: str | None = None
             inline_raw = fig.raw
             if self.source_format == "arxiv_html":
@@ -3710,7 +3781,7 @@ class IngestRun:
                 job_id=self.job_id,
             )
             if unit.text_ja:
-                paper.abstract_ja = unit.text_ja
+                paper.abstract_ja = sanitize_untrusted_text(unit.text_ja)
 
         await self._generate_summary(paper)
         await self.session.commit()
@@ -3748,10 +3819,11 @@ class IngestRun:
             return
 
         data = resp.parsed or {}
-        lines = data.get("summary_lines")
-        llm_tags = [str(t) for t in (data.get("suggested_tags") or [])]
+        raw_lines = data.get("summary_lines")
+        lines = [sanitize_untrusted_text(str(item)) for item in (raw_lines or [])]
+        llm_tags = [sanitize_untrusted_text(str(tag)) for tag in (data.get("suggested_tags") or [])]
         if lines and _summary_numbers_ok(lines, material):
-            paper.summary_lines = [str(x) for x in lines]
+            paper.summary_lines = lines
         else:
             await self._log(
                 "translating_abstract",
@@ -3776,7 +3848,8 @@ class IngestRun:
             return
         cooccur = await self._cooccurring_tags(paper, library_item)
         merged: list[str] = []
-        for tag in [*paper.arxiv_categories, *cooccur, *llm_tags]:
+        for raw_tag in [*paper.arxiv_categories, *cooccur, *llm_tags]:
+            tag = sanitize_untrusted_text(raw_tag).strip()
             if tag and tag not in merged:
                 merged.append(tag)
             if len(merged) >= _MAX_SUGGESTED_TAGS:
@@ -3805,14 +3878,149 @@ class IngestRun:
 
     # -- translation set --------------------------------------------------
 
+    async def _requested_translation_plan(self) -> TranslationPlan:
+        assert self.revision_id is not None and self.content is not None
+        settings = await self._load_user_settings()
+        revision = await self.session.get(DocumentRevision, self.revision_id)
+        if revision is None:
+            raise LookupError(f"document revision not found: {self.revision_id}")
+        raw_pages = (revision.stats or {}).get("pages")
+        pages = (
+            raw_pages
+            if isinstance(raw_pages, int) and not isinstance(raw_pages, bool) and raw_pages >= 0
+            else None
+        )
+        return build_ingest_translation_plan(self.content, settings, pages=pages)
+
+    async def _reuse_translation_set(
+        self,
+        existing: TranslationSet,
+        requested: TranslationPlan,
+    ) -> None:
+        assert self.content is not None
+        await self.session.refresh(existing, with_for_update=True)
+        stored = resolve_translation_plan(
+            self.content,
+            existing.plan,
+            pages=requested.pages,
+        )
+        merged = merge_translation_plans(
+            self.content,
+            existing.plan,
+            requested,
+            pages=requested.pages,
+        )
+        dumped = merged.model_dump(mode="json")
+        if existing.plan != dumped:
+            existing.plan = dumped
+        targets_expanded = set(merged.target_block_ids) > set(stored.target_block_ids)
+        table_expanded = not stored.translate_table_cells and merged.translate_table_cells
+        units = await resolve_translation_set_units(self.session, existing)
+        blocks = {block.id: block for _section, block in self.content.iter_blocks()}
+        scope = translation_scope_from_plan(
+            self.content,
+            merged,
+            pages=merged.pages,
+        )
+        repair_block_ids: set[str] = set()
+        for block_id in scope.in_scope_block_ids:
+            block = blocks.get(block_id)
+            unit = units.get(block_id)
+            if block is None or unit is None:
+                repair_block_ids.add(block_id)
+                continue
+            source_matches = unit.state in {"edited", "protected"} or (
+                unit.source_hash == encode_block(block.model_dump()).source_hash
+            )
+            if not source_matches or not translation_unit_satisfies_block(
+                unit,
+                block,
+                require_table_cells=merged.translate_table_cells,
+            ):
+                repair_block_ids.add(block_id)
+        needs_repair = bool(repair_block_ids)
+        self._translation_set_needs_repair = needs_repair
+        self._translation_repair_block_ids = frozenset(repair_block_ids)
+        if existing.status == "complete" and (targets_expanded or table_expanded or needs_repair):
+            existing.status = "partial"
+        await self.session.commit()
+        self.set_id = str(existing.id)
+        self._translation_plan = merged
+
+    async def _load_translation_plan(self) -> TranslationPlan:
+        if self._translation_plan is not None:
+            return self._translation_plan
+        assert self.content is not None and self.set_id is not None
+        tset = await self.session.get(TranslationSet, self.set_id)
+        if tset is None:
+            raise LookupError(f"translation set not found: {self.set_id}")
+        self._translation_plan = resolve_translation_plan(
+            self.content,
+            tset.plan,
+            pages=None,
+        )
+        return self._translation_plan
+
     async def _ensure_translation_set(self) -> None:
-        assert self.revision_id is not None
+        assert self.revision_id is not None and self.content is not None
+        if await self._restore_section_selection_checkpoint():
+            return
         rev_id = self.revision_id
+        requested_plan = await self._requested_translation_plan()
         paper = await self._get_paper()
+        if translation_plan_awaits_section_selection(self.content, requested_plan):
+            shared_base = (
+                await find_shared_set(self.session, rev_id, self.style)
+                if paper.visibility == "public"
+                else None
+            )
+            existing_personal = (
+                (
+                    await self.session.execute(
+                        select(TranslationSet).where(
+                            TranslationSet.revision_id == rev_id,
+                            TranslationSet.style == self.style,
+                            TranslationSet.scope == "personal",
+                            TranslationSet.user_id == self.user_id,
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if existing_personal is None:
+                snapshot, _ = await build_snapshot(
+                    self.session,
+                    user_id=self.user_id,
+                    library_item_id=self.library_item_id,
+                    shared=False,
+                )
+                existing_personal = TranslationSet(
+                    revision_id=rev_id,
+                    style=self.style,
+                    scope="personal",
+                    user_id=self.user_id,
+                    base_set_id=str(shared_base.id) if shared_base is not None else None,
+                    glossary_snapshot=snapshot,
+                    plan=requested_plan.model_dump(mode="json"),
+                    status="pending",
+                )
+                self.session.add(existing_personal)
+            else:
+                await self.session.refresh(existing_personal, with_for_update=True)
+                existing_personal.base_set_id = (
+                    str(shared_base.id) if shared_base is not None else None
+                )
+                existing_personal.plan = requested_plan.model_dump(mode="json")
+                existing_personal.status = "pending"
+            await self.session.commit()
+            self.set_id = str(existing_personal.id)
+            self._translation_plan = requested_plan
+            return
         if paper.visibility == "public":
             existing = await find_shared_set(self.session, rev_id, self.style)
             if existing is not None:
-                self.set_id = str(existing.id)
+                await self._reuse_translation_set(existing, requested_plan)
                 return
             snapshot, _ = await build_snapshot(
                 self.session,
@@ -3825,6 +4033,7 @@ class IngestRun:
                 style=self.style,
                 scope="shared",
                 glossary_snapshot=snapshot,
+                plan=requested_plan.model_dump(mode="json"),
                 status="pending",
             )
             self.session.add(tset)
@@ -3833,9 +4042,12 @@ class IngestRun:
             except IntegrityError:
                 await self.session.rollback()
                 existing = await find_shared_set(self.session, rev_id, self.style)
-                self.set_id = str(existing.id) if existing is not None else None
+                if existing is None:
+                    raise
+                await self._reuse_translation_set(existing, requested_plan)
             else:
                 self.set_id = str(tset.id)
+                self._translation_plan = requested_plan
             return
 
         existing_personal = (
@@ -3853,7 +4065,7 @@ class IngestRun:
             .first()
         )
         if existing_personal is not None:
-            self.set_id = str(existing_personal.id)
+            await self._reuse_translation_set(existing_personal, requested_plan)
             return
         snapshot, _ = await build_snapshot(
             self.session, user_id=self.user_id, library_item_id=self.library_item_id, shared=False
@@ -3864,42 +4076,198 @@ class IngestRun:
             scope="personal",
             user_id=self.user_id,
             glossary_snapshot=snapshot,
+            plan=requested_plan.model_dump(mode="json"),
             status="pending",
         )
         self.session.add(tset)
         await self.session.commit()
         self.set_id = str(tset.id)
+        self._translation_plan = requested_plan
+
+    async def _restore_section_selection_checkpoint(self) -> bool:
+        assert self.revision_id is not None and self.content is not None
+        raw = self.ckpt.get("section_selection")
+        if raw is None:
+            return False
+        if not isinstance(raw, dict):
+            raise ValueError("section selection checkpoint is invalid")
+        if raw.get("status") == "pending":
+            if set(raw) != {"status", "set_id", "revision_id"}:
+                raise ValueError("pending section selection checkpoint is invalid")
+            pending_set_id = raw.get("set_id")
+            if (
+                not isinstance(pending_set_id, str)
+                or not pending_set_id
+                or raw.get("revision_id") != self.revision_id
+            ):
+                raise ValueError("pending section selection checkpoint identity is invalid")
+            pending_set = await self.session.get(TranslationSet, pending_set_id)
+            if (
+                pending_set is None
+                or pending_set.scope != "personal"
+                or str(pending_set.user_id or "") != str(self.user_id or "")
+                or str(pending_set.revision_id) != self.revision_id
+            ):
+                raise ValueError("pending section selection checkpoint set is invalid")
+            paper = await self._get_paper()
+            if paper.visibility == "public" and pending_set.style != "natural":
+                raise ValueError("pending section selection checkpoint set is invalid")
+            if pending_set.base_set_id is not None:
+                pending_base = await self.session.get(
+                    TranslationSet,
+                    str(pending_set.base_set_id),
+                )
+                if (
+                    pending_base is None
+                    or pending_base.scope != "shared"
+                    or str(pending_base.revision_id) != self.revision_id
+                    or pending_base.style != pending_set.style
+                ):
+                    raise ValueError("pending section selection base set is invalid")
+            try:
+                pending_plan = TranslationPlan.model_validate(pending_set.plan)
+            except ValidationError as exc:
+                raise ValueError("pending section selection checkpoint plan is invalid") from exc
+            revision = await self.session.get(DocumentRevision, self.revision_id)
+            actual_pages = (revision.stats or {}).get("pages") if revision is not None else None
+            if (
+                type(actual_pages) is not int
+                or pending_plan.pages != actual_pages
+                or not translation_plan_awaits_section_selection(self.content, pending_plan)
+            ):
+                raise ValueError("pending section selection checkpoint plan is invalid")
+            self.set_id = pending_set_id
+            self.style = pending_set.style
+            self._translation_plan = pending_plan
+            return True
+        if raw.get("status") != "accepted":
+            raise ValueError("section selection checkpoint status is invalid")
+        if set(raw) != {"status", "set_id", "revision_id", "plan"}:
+            raise ValueError("accepted section selection checkpoint is invalid")
+        set_id = raw.get("set_id")
+        revision_id = raw.get("revision_id")
+        if not isinstance(set_id, str) or not set_id or revision_id != self.revision_id:
+            raise ValueError("accepted section selection identity is invalid")
+        try:
+            selected = TranslationPlan.model_validate(raw.get("plan"))
+        except ValidationError as exc:
+            raise ValueError("accepted section selection plan is invalid") from exc
+
+        revision = await self.session.get(DocumentRevision, self.revision_id)
+        actual_pages = (revision.stats or {}).get("pages") if revision is not None else None
+        if type(actual_pages) is not int or selected.pages != actual_pages:
+            raise ValueError("accepted section selection page identity is invalid")
+        pending = TranslationPlan(
+            version=selected.version,
+            include_appendix=selected.include_appendix,
+            translate_table_cells=selected.translate_table_cells,
+            suggest_section_selection_over_30_pages=(
+                selected.suggest_section_selection_over_30_pages
+            ),
+            target_section_ids=[],
+            target_block_ids=[],
+            auxiliary_block_ids=[],
+            pages=selected.pages,
+        )
+        try:
+            expected = select_translation_plan_sections(
+                self.content,
+                pending,
+                selected.target_section_ids,
+            )
+        except ValueError as exc:
+            raise ValueError("accepted section selection plan is invalid") from exc
+        selected_json = selected.model_dump(mode="json")
+        if expected.model_dump(mode="json") != selected_json:
+            raise ValueError("accepted section selection plan is not canonical")
+
+        translation_set = await self.session.get(TranslationSet, set_id)
+        if (
+            translation_set is None
+            or translation_set.scope != "personal"
+            or str(translation_set.user_id or "") != str(self.user_id or "")
+            or str(translation_set.revision_id) != self.revision_id
+            or translation_set.plan != selected_json
+        ):
+            raise ValueError("accepted section selection set identity is invalid")
+        paper = await self._get_paper()
+        if paper.visibility == "public" and translation_set.style != "natural":
+            raise ValueError("accepted section selection set identity is invalid")
+        if translation_set.base_set_id is not None:
+            base = await self.session.get(TranslationSet, str(translation_set.base_set_id))
+            if (
+                base is None
+                or base.scope != "shared"
+                or str(base.revision_id) != self.revision_id
+                or base.style != translation_set.style
+            ):
+                raise ValueError("accepted section selection base set is invalid")
+        self.set_id = set_id
+        self.style = translation_set.style
+        self._translation_plan = selected
+        return True
+
+    async def _pause_for_section_selection(self) -> bool:
+        assert self.content is not None and self.revision_id is not None and self.set_id is not None
+        plan = await self._load_translation_plan()
+        if not translation_plan_awaits_section_selection(self.content, plan):
+            return False
+        await self.store.checkpoint(
+            self.job_id,
+            "section_selection",
+            {
+                "status": "pending",
+                "set_id": self.set_id,
+                "revision_id": self.revision_id,
+            },
+            progress=55,
+        )
+        await self.store.set_progress(self.job_id, 55, stage="selecting_sections")
+        await self.store.mark_waiting_input(self.job_id)
+        await self._publish_stage("selecting_sections", 55, status="waiting_input")
+        return True
 
     # -- readable ---------------------------------------------------------
 
     async def _stage_readable(self) -> None:
         assert self.content is not None and self.set_id is not None
-        first = progress.first_translatable_section(self.content)
+        plan = await self._load_translation_plan()
+        scope = translation_scope_from_plan(self.content, plan)
+        first = str(scope.sections[0]["section_id"]) if scope.sections else None
         await self.store.set_progress(self.job_id, 55, stage="readable")
         await self._publish_stage("readable", 55)
         if first is not None:
             # 第 1 本文セクションを ingest ジョブ内で直接翻訳(§2.1。冪等 UPSERT)。
-            await translate_section(
-                self.session,
-                self.set_id,
-                first,
-                self.deps.router,
-                reason="initial",
-                user_id=self.user_id,
-                library_item_id=self.library_item_id,
-                job_id=self.job_id,
-                job_store=None,
-                publish=self.deps.publish,
-            )
+            first_block_ids = list(scope.sections[0]["block_ids"])
+            if self._translation_set_needs_repair:
+                first_block_ids = [
+                    block_id
+                    for block_id in first_block_ids
+                    if block_id in self._translation_repair_block_ids
+                ]
+            if first_block_ids:
+                await translate_section(
+                    self.session,
+                    self.set_id,
+                    first,
+                    self.deps.router,
+                    block_ids=first_block_ids,
+                    reason=("retry_failed" if self._translation_set_needs_repair else "initial"),
+                    user_id=self.user_id,
+                    library_item_id=self.library_item_id,
+                    job_id=self.job_id,
+                    job_store=None,
+                    publish=self.deps.publish,
+                )
         await self.store.checkpoint(self.job_id, "readable", {"section_id": first}, progress=55)
 
     # -- translating_body -------------------------------------------------
 
     async def _stage_translating_body(self) -> None:
         assert self.content is not None and self.set_id is not None
-        settings = await self._load_user_settings()
-        scope = compute_translation_scope(self.content)
-        first = progress.first_translatable_section(self.content)
+        plan = await self._load_translation_plan()
+        scope = translation_scope_from_plan(self.content, plan)
+        first = str(scope.sections[0]["section_id"]) if scope.sections else None
         section_block_map = {s["section_id"]: s["block_ids"] for s in scope.sections}
         body_section_ids = [sid for sid in section_block_map if sid != first]
 
@@ -3918,9 +4286,7 @@ class IngestRun:
             )
             return
 
-        appendix_untranslated = bool(scope.appendix_section_ids) and not (
-            settings.auto_translate_appendix
-        )
+        appendix_untranslated = bool(scope.appendix_section_ids) and not (plan.include_appendix)
         enqueued = await self._enqueue_body_jobs(
             body_section_ids, section_block_map, appendix_untranslated=appendix_untranslated
         )
@@ -3933,12 +4299,12 @@ class IngestRun:
             # finalize_ingest_if_body_complete は残件数(queued/running/waiting_quota)を
             # 自前で数えるため、genuinely 新規かつ未完了のジョブがある通常経路では no-op になる
             # (remaining > 0 → status='partial' のみ設定して抜ける)ので常時呼んで安全。
-            await self._finalize(settings, scope.appendix_section_ids)
+            await self._finalize(plan, scope.appendix_section_ids)
             return
 
         # arq プール無し(テスト/単純デプロイ): 本文ジョブをその場で駆動して完了確定。
         await self._drain_body_jobs(enqueued)
-        await self._finalize(settings, scope.appendix_section_ids)
+        await self._finalize(plan, scope.appendix_section_ids)
 
     async def _enqueue_body_jobs(
         self,
@@ -3949,21 +4315,35 @@ class IngestRun:
     ) -> list[str]:
         assert self.set_id is not None
         enqueued: list[str] = []
+        reason = "retry_failed" if self._translation_set_needs_repair else "initial"
         for sid in body_section_ids:
+            block_ids = list(section_block_map.get(sid, []))
+            if self._translation_set_needs_repair:
+                block_ids = [
+                    block_id
+                    for block_id in block_ids
+                    if block_id in self._translation_repair_block_ids
+                ]
+                if not block_ids:
+                    continue
             job_id = await self.store.enqueue(
                 kind="translation",
                 payload={
                     "set_id": self.set_id,
                     "section_id": sid,
-                    "block_ids": section_block_map.get(sid),
-                    "reason": "initial",
+                    "block_ids": block_ids,
+                    "reason": reason,
                     # arq 経路の完了確定(§11.3)用文脈。最後の翻訳ジョブが
                     # finalize_ingest_if_body_complete を呼んで親を complete にする。
                     "ingest_job_id": self.job_id,
                     "source_version": self.source_version,
                     "appendix_untranslated": appendix_untranslated,
                 },
-                idempotency_key=f"tr:{self.set_id}:{sid}:initial",
+                idempotency_key=(
+                    f"tr:{self.set_id}:{sid}:retry_failed:{self.job_id}"
+                    if self._translation_set_needs_repair
+                    else f"tr:{self.set_id}:{sid}:initial"
+                ),
                 priority="bulk",
                 user_id=self.user_id,
                 paper_id=self.paper_id,
@@ -3987,7 +4367,7 @@ class IngestRun:
                 section_id,
                 self.deps.router,
                 block_ids=block_ids,
-                reason="initial",
+                reason=str(payload.get("reason", "initial")),
                 user_id=self.user_id,
                 library_item_id=self.library_item_id,
                 job_id=jid,
@@ -3996,9 +4376,9 @@ class IngestRun:
             )
             await self.store.succeed(jid, {"section_id": result.section_id})
 
-    async def _finalize(self, settings: TranslationSettings, appendix_ids: list[str]) -> None:
+    async def _finalize(self, plan: TranslationPlan, appendix_ids: list[str]) -> None:
         assert self.content is not None and self.set_id is not None
-        appendix_untranslated = bool(appendix_ids) and not settings.auto_translate_appendix
+        appendix_untranslated = bool(appendix_ids) and not plan.include_appendix
         completed = await progress.finalize_ingest_if_body_complete(
             self.session,
             set_id=self.set_id,
@@ -4019,7 +4399,7 @@ class IngestRun:
     async def _build_latex_translation_pdf(self) -> None:
         assert self.set_id is not None
         try:
-            outcome = await build_latex_translation_pdfs_if_ready(
+            outcome = await build_translation_pdfs_if_ready(
                 self.session,
                 self.deps.s3,
                 self.deps.settings,
@@ -4034,7 +4414,7 @@ class IngestRun:
             )
             return
         if not outcome.built:
-            if outcome.skipped_reason not in {"not_latex", "not_shared", "already_built"}:
+            if outcome.skipped_reason != "already_built":
                 await self._log(
                     "translating_body",
                     "warn",

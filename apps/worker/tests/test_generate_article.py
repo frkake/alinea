@@ -414,6 +414,79 @@ async def test_generate_creates_article_with_attribution_last(db_session: AsyncS
     assert heading_block.text_plain == heading_block.content["text"]
 
 
+async def test_generate_persists_llm_output_containing_nul_safely(
+    db_session: AsyncSession,
+) -> None:
+    """実障害回帰: 構造化出力内の NUL が article_blocks の flush を壊さない。"""
+    ctx_data = await _seed(db_session)
+    payload = _article_payload()
+    payload["title"] = "NUL\x00を含む記事"
+    paragraph = next(block for block in payload["blocks"] if block["type"] == "paragraph")
+    paragraph["markdown"] = "保存\x00可能な本文\x07です。"
+    discussion = next(block for block in payload["blocks"] if block["type"] == "discussion")
+    discussion["discussion"]["items"][0]["text"] = "疑問\x00点"
+    provider = ArticleScriptProvider(article_payload=payload)
+    job_id = await _enqueue_generate(db_session, ctx_data=ctx_data)
+    store = JobStore(db_session)
+    job = await store.claim(job_id)
+    assert job is not None
+
+    await run_article_job({"router": _router(provider)}, store, job)
+
+    job = await store.get(job_id)
+    assert job is not None and job.status == "succeeded", job.error if job else None
+    article = await db_session.get(Article, job.result["article_id"])
+    assert article is not None
+    assert article.title == "NULを含む記事"
+    blocks = await _current_blocks(db_session, str(article.id))
+    serialized = json.dumps(
+        [{"content": block.content, "text_plain": block.text_plain} for block in blocks],
+        ensure_ascii=False,
+    )
+    assert "\x00" not in serialized
+    assert "\x07" not in serialized
+
+
+async def test_generate_rejects_foreign_latest_revision_before_llm(
+    db_session: AsyncSession,
+) -> None:
+    """別の私有論文へ壊れた latest_revision_id を LLM 文脈に流さない。"""
+    ctx_data = await _seed(db_session)
+    foreign_paper = Paper(
+        id=_uid(),
+        title="Do not leak this private paper",
+        authors=[],
+        visibility="private",
+        owner_user_id=ctx_data["user"].id,
+    )
+    db_session.add(foreign_paper)
+    await db_session.flush()
+    foreign_revision = DocumentRevision(
+        id=_uid(),
+        paper_id=foreign_paper.id,
+        parser_version="test-1",
+        quality_level="A",
+        source_format="latex",
+        content=_content().model_dump(),
+    )
+    db_session.add(foreign_revision)
+    await db_session.flush()
+    foreign_paper.latest_revision_id = foreign_revision.id
+    ctx_data["paper"].latest_revision_id = foreign_revision.id
+    await db_session.commit()
+
+    provider = ArticleScriptProvider()
+    job_id = await _enqueue_generate(db_session, ctx_data=ctx_data)
+    store = JobStore(db_session)
+    job = await store.claim(job_id)
+    assert job is not None
+
+    with pytest.raises(LookupError, match="revision not found"):
+        await run_article_job({"router": _router(provider)}, store, job)
+
+    assert provider.calls == 0
+
+
 async def test_generate_respects_implementer_include_math_default(
     db_session: AsyncSession,
 ) -> None:

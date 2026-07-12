@@ -1,7 +1,7 @@
 """PDF パイプライン(品質 B。plans/05 §6)。
 
 PyMuPDF(fitz)を主、表セル抽出のみ pdfplumber を併用する(spec-decisions C7)。
-`parser_version='pdf-1.2.0'` / `source_format='pdf'` / `quality_level='B'`。
+`parser_version='pdf-1.2.4'` / `source_format='pdf'` / `quality_level='B'`。
 数値はすべて pt(1/72 インチ、PyMuPDF の既定単位のまま)。
 
 処理順は §6 の節番号のとおり: 6.1 抽出 → 6.2 ヘッダ/フッタ除去 → 6.3 段組み判定・
@@ -31,8 +31,9 @@ import fitz  # PyMuPDF
 from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
 from alinea_core.document.inlines import Inline
 from alinea_core.parsing.block_ids import assign_block_ids
+from alinea_core.text_safety import sanitize_untrusted_text
 
-PARSER_VERSION = "pdf-1.2.0"
+PARSER_VERSION = "pdf-1.2.4"
 MAX_PDF_PAGES = 2_000
 MAX_PDF_EXTRACTED_CHARS = 20_000_000
 MAX_PDF_LAYOUT_BLOCKS = 200_000
@@ -45,6 +46,9 @@ MAX_PDF_PAGE_AREA = 100_000_000.0
 MAX_PDF_FIGURE_IMAGES = 200
 MAX_PDF_SINGLE_FIGURE_BYTES = 32 * 1024 * 1024
 MAX_PDF_FIGURE_BYTES = 128 * 1024 * 1024
+MAX_PDF_VECTOR_DRAWINGS_PER_PAGE = 10_000
+MAX_PDF_GRAPHICS_STREAM_BYTES_PER_PAGE = 512 * 1024
+MAX_PDF_GRAPHICS_STREAM_REFS_PER_PAGE = 4_096
 
 _WS = re.compile(r"\s+")
 _OCR_LANGUAGE_RE = re.compile(r"[A-Za-z0-9_]+(?:\+[A-Za-z0-9_]+)*\Z")
@@ -216,12 +220,13 @@ class _Line:
 
 @dataclass
 class _Region:
-    """図候補領域(ラスター画像の連結成分。§6.6.1)。"""
+    """図候補領域(ラスター画像またはベクター描画の連結成分。§6.6.1)。"""
 
     page: int
     bbox: list[float]
     claimed: bool = False
     from_scan_background: bool = False
+    from_vector_graphics: bool = False
 
 
 @dataclass
@@ -463,7 +468,7 @@ def _extract_page_lines(
                 budget.charge(spans=len(spans))
             if not spans:
                 continue
-            text = "".join(str(s.get("text", "")) for s in spans)
+            text = sanitize_untrusted_text("".join(str(s.get("text", "")) for s in spans))
             if not text.strip():
                 continue
             x0 = min(float(s["bbox"][0]) for s in spans)
@@ -747,9 +752,46 @@ def _cluster_boxes(
     return current
 
 
-def _detect_figure_regions(page: fitz.Page, page_no: int) -> list[_Region]:
+def _page_has_complex_graphics_stream(page: fitz.Page) -> bool:
+    """Bound optional geometry walks using cheap compressed stream lengths."""
+
     try:
-        infos = page.get_image_info(xrefs=True)
+        refs = [int(xref) for xref in page.get_contents()]
+        refs.extend(int(item[0]) for item in page.get_xobjects())
+        unique_refs = set(refs)
+        if len(unique_refs) > MAX_PDF_GRAPHICS_STREAM_REFS_PER_PAGE:
+            return True
+        total = 0
+        for xref in unique_refs:
+            kind, raw_length = page.parent.xref_get_key(xref, "Length")
+            if kind != "int":
+                continue
+            length = int(raw_length)
+            if length < 0:
+                return True
+            total += length
+            if total > MAX_PDF_GRAPHICS_STREAM_BYTES_PER_PAGE:
+                return True
+    except Exception:
+        # Figure/table geometry is optional. Unknown stream metadata must not
+        # expose the parser to an unbounded third-party graphics walk.
+        return True
+    return False
+
+
+def _detect_figure_regions(
+    page: fitz.Page,
+    page_no: int,
+    *,
+    inspect_graphics: bool = True,
+) -> list[_Region]:
+    if not inspect_graphics:
+        return []
+    try:
+        # Only bounding boxes are consumed below. Resolving xrefs forces PyMuPDF
+        # to materialize and hash every image pixmap, which can exhaust memory on
+        # image-heavy papers without improving figure-region detection.
+        infos = page.get_image_info()
     except (RuntimeError, ValueError):
         infos = []
     boxes: list[tuple[float, float, float, float]] = [
@@ -763,11 +805,66 @@ def _detect_figure_regions(page: fitz.Page, page_no: int) -> list[_Region]:
         if "bbox" in info
     ]
     clustered = _cluster_boxes(boxes, gap=12.0)
-    return [
+    regions = [
         _Region(page=page_no, bbox=[round(v, 2) for v in b])
         for b in clustered
         if _area(b) >= 1600.0
     ]
+
+    # TikZ / PGF and many charting tools emit only PDF drawing commands, so
+    # ``get_image_info`` cannot see them.  Cluster their path bounds as
+    # caption-match candidates.  They are deliberately not eligible for the
+    # captionless-figure fallback: a vector table, rule, or page decoration is
+    # otherwise indistinguishable from an uncaptioned figure.
+    try:
+        drawings = page.get_drawings()
+    except (RuntimeError, TypeError, ValueError):
+        drawings = []
+    if len(drawings) > MAX_PDF_VECTOR_DRAWINGS_PER_PAGE:
+        return regions
+
+    vector_boxes: list[tuple[float, float, float, float]] = []
+    for drawing in drawings:
+        rect = drawing.get("rect")
+        if rect is None:
+            continue
+        try:
+            box = tuple(float(value) for value in rect)
+        except (TypeError, ValueError):
+            continue
+        if len(box) != 4 or not all(math.isfinite(value) for value in box):
+            continue
+        if box[0] > box[2] or box[1] > box[3]:
+            continue
+        vector_boxes.append((box[0], box[1], box[2], box[3]))
+
+    page_width = float(page.rect.width)
+    page_height = float(page.rect.height)
+    page_area = page_width * page_height
+    for box in _cluster_boxes(vector_boxes, gap=12.0):
+        width = box[2] - box[0]
+        height = box[3] - box[1]
+        area = _area(box)
+        if (
+            width < max(36.0, page_width * 0.12)
+            or height < 24.0
+            or area < 1600.0
+            or area > page_area * 0.58
+            or width > page_width * 0.96
+            or height > page_height * 0.80
+        ):
+            continue
+        rounded = [round(value, 2) for value in box]
+        if any(_bbox_iou(rounded, region.bbox) >= 0.80 for region in regions):
+            continue
+        regions.append(
+            _Region(
+                page=page_no,
+                bbox=rounded,
+                from_vector_graphics=True,
+            )
+        )
+    return regions
 
 
 def _clip_bbox_to_page(bbox: list[float], page_width: float, page_height: float) -> list[float]:
@@ -1532,10 +1629,73 @@ def _rows_to_html(rows: list[list[Any]]) -> str:
     return "".join(parts)
 
 
+class _PdfPlumberTableFallback:
+    """Lazily reuse one pdfplumber document and release every page layout cache."""
+
+    def __init__(self, pdf_bytes: bytes) -> None:
+        self._pdf_bytes = pdf_bytes
+        self._document: Any | None = None
+        self._unavailable = False
+
+    def _open(self) -> Any | None:
+        if self._unavailable:
+            return None
+        if self._document is not None:
+            return self._document
+        try:
+            import pdfplumber
+
+            self._document = pdfplumber.open(BytesIO(self._pdf_bytes))
+        except Exception:
+            self._unavailable = True
+            return None
+        return self._document
+
+    def find(self, page_no: int) -> list[_TableCandidate]:
+        document = self._open()
+        if document is None:
+            return []
+        page: Any | None = None
+        out: list[_TableCandidate] = []
+        try:
+            page = document.pages[page_no - 1]
+            for table in page.find_tables():
+                rows: list[list[Any]] | None
+                bbox: list[float] | None
+                try:
+                    rows = table.extract()
+                    bbox = [round(float(value), 2) for value in table.bbox]
+                except Exception:
+                    rows = None
+                    bbox = None
+                if rows and bbox is not None:
+                    out.append(_TableCandidate(page=page_no, bbox=bbox, rows=rows))
+        except Exception:
+            return []
+        finally:
+            close_page = getattr(page, "close", None)
+            if callable(close_page):
+                try:
+                    close_page()
+                except Exception:
+                    self._unavailable = True
+        return out
+
+    def close(self) -> None:
+        document, self._document = self._document, None
+        if document is None:
+            return
+        try:
+            document.close()
+        except Exception:
+            self._unavailable = True
+
+
 def _detect_table_candidates(
-    page: fitz.Page, page_no: int, pdf_bytes: bytes
+    page: fitz.Page, page_no: int, fallback: _PdfPlumberTableFallback
 ) -> list[_TableCandidate]:
     out: list[_TableCandidate] = []
+    finder: Any | None
     try:
         finder = page.find_tables()
         for t in finder.tables:
@@ -1547,24 +1707,11 @@ def _detect_table_candidates(
                 out.append(
                     _TableCandidate(page=page_no, bbox=[round(v, 2) for v in t.bbox], rows=rows)
                 )
-    except (RuntimeError, ValueError):
-        pass
+    except Exception:
+        finder = None
     if out:
         return out
-    try:
-        import pdfplumber
-
-        with pdfplumber.open(BytesIO(pdf_bytes)) as pl:
-            pp_page = pl.pages[page_no - 1]
-            for t in pp_page.find_tables():
-                rows = t.extract()
-                if rows:
-                    out.append(
-                        _TableCandidate(page=page_no, bbox=[round(v, 2) for v in t.bbox], rows=rows)
-                    )
-    except (ImportError, IndexError, ValueError, RuntimeError):
-        pass
-    return out
+    return fallback.find(page_no)
 
 
 def _line_inside_any(line: _Line, candidates: list[_TableCandidate]) -> bool:
@@ -1681,12 +1828,94 @@ def _collect_caption_run(
         prev = run[-1]
         gap = nxt.y0 - prev.y1
         indent = nxt.x0 - base_x
-        if nxt.page == prev.page and 0 <= gap <= 0.9 * line_h and indent <= 8.0:
+        same_visual_line = (
+            abs(nxt.y0 - prev.y0) <= 0.35 * line_h
+            and nxt.x0 >= prev.x1 - 2.0
+            and nxt.x0 - prev.x1 <= max(24.0, 3.0 * line_h)
+        )
+        continued_line = 0 <= gap <= 0.9 * line_h and indent <= 8.0
+        if nxt.page == prev.page and (same_visual_line or continued_line):
             run.append(nxt)
             j += 1
         else:
             break
     return run, j
+
+
+def _infer_text_figure_region(
+    caption_run: list[_Line],
+    ordered: list[_Line],
+    *,
+    page_no: int,
+    page_width: float,
+    line_height: float,
+) -> _Region | None:
+    """Infer a caption-adjacent diagram made entirely from positioned text glyphs."""
+
+    caption_bbox = _union_bbox(caption_run)
+    page_center = page_width / 2.0
+    caption_center = (caption_bbox[0] + caption_bbox[2]) / 2.0
+    crosses_center = caption_bbox[0] <= page_center <= caption_bbox[2]
+    if crosses_center or caption_bbox[2] - caption_bbox[0] >= page_width * 0.55:
+        column_x0, column_x1 = 0.0, page_width
+    elif caption_center < page_center:
+        column_x0, column_x1 = 0.0, page_center
+    else:
+        column_x0, column_x1 = page_center, page_width
+
+    caption_ids = {id(line) for line in caption_run}
+    maximum_distance = max(120.0, line_height * 18.0)
+    candidates = sorted(
+        (
+            line
+            for line in ordered
+            if id(line) not in caption_ids
+            and line.page == page_no
+            and column_x0 <= line.cx <= column_x1
+            and line.y1 <= caption_bbox[1] - 1.0
+            and caption_bbox[1] - line.y1 <= maximum_distance
+        ),
+        key=lambda line: (line.y1, line.x0),
+        reverse=True,
+    )
+    selected: list[_Line] = []
+    cursor_y = caption_bbox[1]
+    maximum_gap = max(24.0, line_height * 2.4)
+    for line in candidates:
+        gap = cursor_y - line.y1
+        if gap > maximum_gap:
+            if selected:
+                break
+            continue
+        selected.append(line)
+        cursor_y = min(cursor_y, line.y0)
+    if len(selected) < 2:
+        return None
+
+    widths = sorted(line.x1 - line.x0 for line in selected)
+    median_width = widths[len(widths) // 2]
+    column_width = column_x1 - column_x0
+    if median_width > column_width * 0.68:
+        return None
+    bbox = _union_bbox(selected)
+    padding = 4.0
+    inferred = [
+        max(column_x0, bbox[0] - padding),
+        max(0.0, bbox[1] - padding),
+        min(column_x1, bbox[2] + padding),
+        min(caption_bbox[1] - 1.0, bbox[3] + padding),
+    ]
+    if (
+        inferred[2] - inferred[0] < max(36.0, page_width * 0.08)
+        or inferred[3] - inferred[1] < 24.0
+        or _area((inferred[0], inferred[1], inferred[2], inferred[3])) < 1600.0
+    ):
+        return None
+    return _Region(
+        page=page_no,
+        bbox=[round(value, 2) for value in inferred],
+        from_vector_graphics=True,
+    )
 
 
 # ============================ 本体パーサ ============================
@@ -1702,6 +1931,7 @@ class _PdfParser:
         self.body_size = 10.0
         self.line_h = 12.0
         self.intro = Section(id="sec-s0", heading=SectionHeading())
+        self._section_ids = {self.intro.id}
         self.top_sections: list[Section] = []
         self.stack: list[tuple[int, Section]] = []
         self.current: Section = self.intro
@@ -1832,7 +2062,7 @@ class _PdfParser:
         self._ref_buffer = []
         self._in_references = False
 
-    def _make_path(self, number: str, title: str, siblings: list[Section]) -> str:
+    def _make_path(self, number: str, title: str, _siblings: list[Section]) -> str:
         fixed_paths = {
             "abstract": "abstract",
             "references": "refs",
@@ -1845,11 +2075,10 @@ class _PdfParser:
         elif number:
             base = re.sub(r"[^0-9A-Za-z-]", "", number.replace(".", "-"))
         else:
-            base = f"s{len(siblings) + 1}"
-        existing = {s.id for s in siblings}
+            base = f"s{len(self._section_ids)}"
         path = base
         n = 2
-        while f"sec-{path}" in existing:
+        while f"sec-{path}" in self._section_ids:
             path = f"{base}-{n}"
             n += 1
         return path
@@ -1877,6 +2106,7 @@ class _PdfParser:
             section=sec,
         )
         self._append_section(parent_list, sec)
+        self._section_ids.add(sec.id)
         self.stack.append((level, sec))
         self.current = sec
         self._in_references = title.strip().lower() in ("references", "bibliography")
@@ -1937,6 +2167,29 @@ class _PdfParser:
                 best, best_dist = c, dist
         return best
 
+    def _nearest_unclaimed_table_image(
+        self, regions: list[_Region], page_no: int, cap_bbox: list[float]
+    ) -> _Region | None:
+        """Match a raster/vector table body on either side of its caption."""
+
+        best: _Region | None = None
+        best_dist = 0.0
+        for region in regions:
+            if region.claimed or region.page != page_no:
+                continue
+            if cap_bbox[3] <= region.bbox[1]:
+                dist = region.bbox[1] - cap_bbox[3]
+            elif region.bbox[3] <= cap_bbox[1]:
+                dist = cap_bbox[1] - region.bbox[3]
+            else:
+                dist = 0.0
+            maximum_distance = 120.0 if region.from_scan_background else 90.0
+            if dist > maximum_distance or _h_overlap_ratio(cap_bbox, region.bbox) < 0.5:
+                continue
+            if best is None or dist < best_dist:
+                best, best_dist = region, dist
+        return best
+
     def _handle_caption(
         self,
         page: fitz.Page,
@@ -1945,6 +2198,7 @@ class _PdfParser:
         cap_m: re.Match[str],
         figure_regions: list[_Region],
         table_candidates: list[_TableCandidate],
+        ordered: list[_Line],
     ) -> None:
         kind = "figure" if cap_m.group(1) in ("Figure", "Fig.") else "table"
         number = cap_m.group(2)
@@ -1956,6 +2210,14 @@ class _PdfParser:
         if kind == "figure":
             self._figure_captions_total += 1
             region = self._nearest_unclaimed_figure(figure_regions, page_no, cap_bbox)
+            if region is None:
+                region = _infer_text_figure_region(
+                    run,
+                    ordered,
+                    page_no=page_no,
+                    page_width=float(page.rect.width),
+                    line_height=self.line_h,
+                )
             if region is not None:
                 region.claimed = True
                 block = Block(
@@ -2012,21 +2274,41 @@ class _PdfParser:
             self._append_block(block)
             self._table_caption_matches += 1
         else:
-            self.warnings.append(f"Table {number} の表領域が見つかりません(キャプションのみ)")
-            self._append_block(
-                Block(
+            image_region = self._nearest_unclaimed_table_image(
+                figure_regions,
+                page_no,
+                cap_bbox,
+            )
+            if image_region is not None:
+                image_region.claimed = True
+                block = Block(
                     id="",
                     type="table",
+                    asset_key=None,
                     caption=caption_inlines,
                     number=number,
                     page=page_no,
-                    bbox=cap_bbox,
+                    bbox=image_region.bbox,
                 )
-            )
+                self._append_pending_image(block, self._crop(page, image_region.bbox))
+                self._append_block(block)
+                self._table_caption_matches += 1
+            else:
+                self.warnings.append(f"Table {number} の表領域が見つかりません(キャプションのみ)")
+                self._append_block(
+                    Block(
+                        id="",
+                        type="table",
+                        caption=caption_inlines,
+                        number=number,
+                        page=page_no,
+                        bbox=cap_bbox,
+                    )
+                )
 
     def _attach_orphan_regions(self, page_no: int, figure_regions: list[_Region]) -> None:
         for r in figure_regions:
-            if r.claimed or r.page != page_no or r.from_scan_background:
+            if r.claimed or r.page != page_no or r.from_scan_background or r.from_vector_graphics:
                 continue
             block = Block(
                 id="",
@@ -2087,7 +2369,15 @@ class _PdfParser:
                 self._flush_paragraph()
                 self._flush_equation()
                 run, j = _collect_caption_run(ordered, i, self.line_h, self.body_size)
-                self._handle_caption(page, page_no, run, cap_m, figure_regions, table_candidates)
+                self._handle_caption(
+                    page,
+                    page_no,
+                    run,
+                    cap_m,
+                    figure_regions,
+                    table_candidates,
+                    ordered,
+                )
                 pending_continue = False
                 i = j
                 continue
@@ -2165,9 +2455,17 @@ class _PdfParser:
         self.body_size, self.line_h = _compute_body_metrics(pages_lines)
         _remove_headers_footers(pages_lines, [h for _, h in page_sizes])
 
+        complex_graphics_pages = [_page_has_complex_graphics_stream(doc[i]) for i in range(n_pages)]
         ocr_region_partitions: list[tuple[list[_Region], list[_ScanBackground]]] = []
         if self._use_ocr:
-            regions_by_page = [_detect_figure_regions(doc[i], i + 1) for i in range(n_pages)]
+            regions_by_page = [
+                _detect_figure_regions(
+                    doc[i],
+                    i + 1,
+                    inspect_graphics=not complex_graphics_pages[i],
+                )
+                for i in range(n_pages)
+            ]
             ocr_region_partitions = _partition_ocr_document_scan_regions(
                 regions_by_page,
                 page_sizes=page_sizes,
@@ -2175,37 +2473,50 @@ class _PdfParser:
             )
 
         column_counts: list[int] = []
-        for i in range(n_pages):
-            page = doc[i]
-            page_no = i + 1
-            width, _height = page_sizes[i]
-            ordered, columns = _reading_order(pages_lines[i], width, self.body_size)
-            column_counts.append(columns)
-            scan_table_candidates: list[_TableCandidate] = []
-            if self._use_ocr:
-                figure_regions, scan_backgrounds = ocr_region_partitions[i]
-                scan_figure_regions, scan_table_candidates = _derive_ocr_scan_display_regions(
-                    page,
-                    page_no,
-                    ordered,
-                    scan_backgrounds,
-                    page_width=width,
-                    page_height=page_sizes[i][1],
-                    line_height=self.line_h,
-                    body_size=self.body_size,
-                    columns=columns,
+        table_fallback = _PdfPlumberTableFallback(self._pdf_bytes)
+        try:
+            for i in range(n_pages):
+                page = doc[i]
+                page_no = i + 1
+                width, _height = page_sizes[i]
+                inspect_graphics = not complex_graphics_pages[i]
+                ordered, columns = _reading_order(pages_lines[i], width, self.body_size)
+                column_counts.append(columns)
+                scan_table_candidates: list[_TableCandidate] = []
+                if self._use_ocr:
+                    figure_regions, scan_backgrounds = ocr_region_partitions[i]
+                    scan_figure_regions, scan_table_candidates = _derive_ocr_scan_display_regions(
+                        page,
+                        page_no,
+                        ordered,
+                        scan_backgrounds,
+                        page_width=width,
+                        page_height=page_sizes[i][1],
+                        line_height=self.line_h,
+                        body_size=self.body_size,
+                        columns=columns,
+                    )
+                    figure_regions.extend(scan_figure_regions)
+                    ordered = _exclude_scan_display_labels(
+                        ordered,
+                        [region.bbox for region in scan_figure_regions]
+                        + [candidate.bbox for candidate in scan_table_candidates],
+                    )
+                else:
+                    figure_regions = _detect_figure_regions(
+                        page,
+                        page_no,
+                        inspect_graphics=inspect_graphics,
+                    )
+                table_candidates = (
+                    _detect_table_candidates(page, page_no, table_fallback)
+                    if inspect_graphics
+                    else []
                 )
-                figure_regions.extend(scan_figure_regions)
-                ordered = _exclude_scan_display_labels(
-                    ordered,
-                    [region.bbox for region in scan_figure_regions]
-                    + [candidate.bbox for candidate in scan_table_candidates],
-                )
-            else:
-                figure_regions = _detect_figure_regions(page, page_no)
-            table_candidates = _detect_table_candidates(page, page_no, self._pdf_bytes)
-            table_candidates.extend(scan_table_candidates)
-            self._process_page(page, page_no, ordered, width, figure_regions, table_candidates)
+                table_candidates.extend(scan_table_candidates)
+                self._process_page(page, page_no, ordered, width, figure_regions, table_candidates)
+        finally:
+            table_fallback.close()
 
         self._flush_paragraph()
         self._flush_equation()

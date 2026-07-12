@@ -17,6 +17,11 @@ import type { PdfViewportLike } from "./geometry";
 export type PdfFetchVariant = Exclude<PdfDocumentMode, "bilingual">;
 export type PdfTranslationStyle = "natural" | "literal";
 
+export interface PdfAssetIdentity {
+  revisionId: string;
+  translationSetId: string | null;
+}
+
 /** pdf.js `RenderTask` の最小インターフェース(キャンセル可能な描画)。 */
 export interface PdfRenderTask {
   promise: Promise<unknown>;
@@ -26,8 +31,14 @@ export interface PdfRenderTask {
 /** pdf.js `PDFPageProxy` の最小インターフェース(テストで差し替え可能にする)。 */
 export interface PdfPageLike {
   getViewport(params: { scale: number }): PdfViewportLike;
-  render(params: { canvasContext: CanvasRenderingContext2D; viewport: PdfViewportLike }): PdfRenderTask;
-  getTextContent?(params?: { includeMarkedContent?: boolean; disableNormalization?: boolean }): Promise<unknown>;
+  render(params: {
+    canvasContext: CanvasRenderingContext2D;
+    viewport: PdfViewportLike;
+  }): PdfRenderTask;
+  getTextContent?(params?: {
+    includeMarkedContent?: boolean;
+    disableNormalization?: boolean;
+  }): Promise<unknown>;
   getAnnotations?(params?: { intent?: string }): Promise<PdfAnnotationLike[]>;
 }
 
@@ -55,8 +66,20 @@ export interface UsePdfDocumentResult {
 }
 
 const qk = {
-  pdfData: (paperId: string, variant: PdfFetchVariant, style: PdfTranslationStyle) =>
-    ["pdf-data", paperId, variant, style] as const,
+  pdfData: (
+    paperId: string,
+    variant: PdfFetchVariant,
+    style: PdfTranslationStyle,
+    identity?: PdfAssetIdentity,
+  ) =>
+    [
+      "pdf-data",
+      paperId,
+      variant,
+      style,
+      identity?.revisionId ?? "",
+      variant === "translated" ? (identity?.translationSetId ?? "") : "source",
+    ] as const,
 };
 
 /**
@@ -68,12 +91,16 @@ export function usePdfDocument(
   enabled: boolean,
   variant: PdfFetchVariant = "source",
   style: PdfTranslationStyle = "natural",
+  identity?: PdfAssetIdentity,
 ): UsePdfDocumentResult {
   const pdfQuery = useQuery({
-    queryKey: qk.pdfData(paperId ?? "", variant, style),
+    queryKey: qk.pdfData(paperId ?? "", variant, style, identity),
     queryFn: async () => {
       const params = variant === "source" ? "" : `?variant=${variant}&style=${style}`;
-      const res = await fetch(`/api/papers/${paperId}/pdf${params}`, { credentials: "include" });
+      const res = await fetch(`/api/papers/${paperId}/pdf${params}`, {
+        credentials: "include",
+        cache: "no-store",
+      });
       if (!res.ok) {
         const err = new Error(`pdf fetch failed: ${res.status}`) as Error & { status?: number };
         err.status = res.status;
@@ -88,11 +115,13 @@ export function usePdfDocument(
   });
 
   const docRef = useRef<{ getPage(n: number): Promise<PdfPageLike>; destroy(): void } | null>(null);
-  const [state, setState] = useState<{ loading: boolean; error: boolean; numPages: number | null }>({
-    loading: true,
-    error: false,
-    numPages: null,
-  });
+  const [state, setState] = useState<{ loading: boolean; error: boolean; numPages: number | null }>(
+    {
+      loading: true,
+      error: false,
+      numPages: null,
+    },
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -101,7 +130,11 @@ export function usePdfDocument(
 
     const bytes = pdfQuery.data;
     if (!bytes) {
-      setState({ loading: pdfQuery.isLoading || pdfQuery.isFetching, error: pdfQuery.isError, numPages: null });
+      setState({
+        loading: pdfQuery.isLoading || pdfQuery.isFetching,
+        error: pdfQuery.isError,
+        numPages: null,
+      });
       return;
     }
 
@@ -117,7 +150,10 @@ export function usePdfDocument(
           void proxy.destroy();
           return;
         }
-        docRef.current = proxy as unknown as { getPage(n: number): Promise<PdfPageLike>; destroy(): void };
+        docRef.current = proxy as unknown as {
+          getPage(n: number): Promise<PdfPageLike>;
+          destroy(): void;
+        };
         setState({ loading: false, error: false, numPages: proxy.numPages });
       } catch {
         if (!cancelled) setState({ loading: false, error: true, numPages: null });
@@ -170,6 +206,7 @@ export interface PdfDocumentProviderProps {
   paperId: string;
   variant?: PdfFetchVariant;
   style?: PdfTranslationStyle;
+  identity?: PdfAssetIdentity;
   children: ReactNode;
 }
 
@@ -178,9 +215,10 @@ export function PdfDocumentProvider({
   paperId,
   variant = "source",
   style = "natural",
+  identity,
   children,
 }: PdfDocumentProviderProps) {
-  const value = usePdfDocument(paperId, true, variant, style);
+  const value = usePdfDocument(paperId, true, variant, style, identity);
   return <PdfDocumentContext.Provider value={value}>{children}</PdfDocumentContext.Provider>;
 }
 

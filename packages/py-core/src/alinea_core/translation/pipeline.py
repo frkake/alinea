@@ -16,17 +16,20 @@ LLM 実行は :mod:`alinea_llm`(``LLMRouter.complete(mode="structured")``)へ委
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
+import unicodedata
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from alinea_llm.errors import ErrorKind, ProviderChainExhausted
 from alinea_llm.router import LLMRouter
 from alinea_llm.types import ContentPart, JsonSchemaSpec, LLMRequest, Message
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,10 +41,12 @@ from alinea_core.db.models import (
     TranslationUnit,
 )
 from alinea_core.document.blocks import Block, DocumentContent, Section
+from alinea_core.text_safety import sanitize_json_text, sanitize_untrusted_text
 from alinea_core.translation.glossary import format_glossary_lines, glossary_hash
 from alinea_core.translation.placeholder import (
     TOKEN_RE,
     EncodedBlock,
+    compute_source_hash,
     decode_translation,
     encode_block,
     verify_tokens,
@@ -54,6 +59,14 @@ from alinea_core.translation.prompts import (
     build_user_message,
     field_profile,
 )
+from alinea_core.translation.table_cells import (
+    CanonicalTableCell,
+    CanonicalTableGrid,
+    TableTranslationContent,
+    parse_table_grid,
+    table_cells_complete,
+    validate_table_translation_content,
+)
 
 # --- 確定値(plans/06 §3.3・§6・§12) --------------------------------------------
 
@@ -63,6 +76,10 @@ MAX_OUTPUT_TOKENS = 4096
 MAX_RETRIES = 2  # 初回 + 再試行 2 回 = 計 3 回(docs/03 §4)
 CONTEXT_PREV_BLOCKS = 2
 CONTEXT_TRUNCATE_CHARS = 600
+MAX_TRANSLATION_PLAN_SECTION_IDS = 20_000
+MAX_TRANSLATION_PLAN_BLOCK_IDS = 200_000
+MAX_TRANSLATION_PLAN_ID_LENGTH = 1_024
+MAX_TRANSLATION_PLAN_PAGES = 2_000
 
 # 自動翻訳対象のブロック型(docs/03 §2・plans/06 §2.1)。
 TRANSLATABLE_BLOCK_TYPES: frozenset[str] = frozenset(
@@ -75,9 +92,23 @@ BLOCKING_FLAGS: frozenset[str] = frozenset(
 )
 
 _STRUCTURED_SCHEMA_NAME = "translation_batch_v1"
-_APPENDIX_TITLE_RE = re.compile(r"^\s*Appendi(x|ces)\b", re.IGNORECASE)
+_APPENDIX_HEADING_BOUNDARY = r"(?=$|[\s.,、:\u2013\u2014-])"
+_APPENDIX_TITLE_RE = re.compile(
+    rf"^\s*(?:"
+    rf"Appendices{_APPENDIX_HEADING_BOUNDARY}|"
+    rf"Appendix(?:(?:\s+[A-Za-z0-9]+)|[A-Z0-9])?{_APPENDIX_HEADING_BOUNDARY}|"
+    rf"(?:付録|附録)(?:\s*[A-Za-z0-9一二三四五六七八九十])?"
+    rf"{_APPENDIX_HEADING_BOUNDARY}"
+    rf")",
+    re.IGNORECASE,
+)
+_ROMAN_ROOT_RE = re.compile(
+    r"M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})",
+    re.IGNORECASE,
+)
 _REFERENCE_TITLE_RE = re.compile(
-    r"\b(references|bibliography|works cited|literature cited)\b", re.IGNORECASE
+    r"(?:references|bibliography|works cited|literature cited|references and notes|"
+    r"参考文献|引用文献)[.:。]?"
 )
 _NUM_RE = re.compile(r"\d+(?:[.,]\d+)*")
 # 全角数字・全角ピリオド/カンマ を半角へ(§12 の「全角→半角正規化」)。全角文字は意図的。
@@ -104,16 +135,23 @@ class ScopeResult(BaseModel):
 
 
 def _is_appendix_heading(number: str | None, title: str | None) -> bool:
-    num = (number or "").strip()
-    if num and num[0].isascii() and num[0].isalpha():  # 'A' / 'B.1'(§2.1-3)
+    num = unicodedata.normalize("NFKC", number or "").strip()
+    normalized_title = unicodedata.normalize("NFKC", title or "")
+    if _APPENDIX_TITLE_RE.match(normalized_title):
         return True
-    return bool(_APPENDIX_TITLE_RE.match(title or ""))
+    root = num.split(".", 1)[0].upper()
+    # タイトル根拠がない 1..3999 の Roman numeral は本文。その他 A/B.1 等は付録。
+    if root and _ROMAN_ROOT_RE.fullmatch(root):
+        return False
+    if re.fullmatch(r"[A-Z]", root):
+        return True
+    return False
 
 
-def _is_reference_section(section: Section) -> bool:
+def is_reference_section(section: Section) -> bool:
     """reference_entry のみを含むセクション(§2.1-2)。"""
-    title = (section.heading.title or "").strip()
-    if section.id == "sec-refs" or _REFERENCE_TITLE_RE.search(title):
+    title = " ".join(unicodedata.normalize("NFKC", section.heading.title or "").split()).casefold()
+    if _REFERENCE_TITLE_RE.fullmatch(title):
         return True
     blocks = [b for b in section.blocks if b.type != "heading"]
     return bool(blocks) and all(b.type == "reference_entry" for b in blocks)
@@ -125,30 +163,69 @@ def _as_content(content: DocumentContent | dict[str, Any]) -> DocumentContent:
     return DocumentContent.model_validate(content)
 
 
-def compute_translation_scope(content: DocumentContent | dict[str, Any]) -> ScopeResult:
+def _validate_unique_document_ids(content: DocumentContent) -> None:
+    """Fail closed when revision-global section/block identifiers are ambiguous."""
+    section_ids: set[str] = set()
+    block_ids: set[str] = set()
+
+    def walk(section: Section) -> None:
+        if len(section.id) > MAX_TRANSLATION_PLAN_ID_LENGTH:
+            raise ValueError(f"section id exceeds {MAX_TRANSLATION_PLAN_ID_LENGTH} characters")
+        if len(section_ids) >= MAX_TRANSLATION_PLAN_SECTION_IDS:
+            raise ValueError(
+                f"document exceeds {MAX_TRANSLATION_PLAN_SECTION_IDS} section identifiers"
+            )
+        if section.id in section_ids:
+            raise ValueError(f"duplicate section id: {section.id}")
+        section_ids.add(section.id)
+        for block in section.blocks:
+            if len(block.id) > MAX_TRANSLATION_PLAN_ID_LENGTH:
+                raise ValueError(f"block id exceeds {MAX_TRANSLATION_PLAN_ID_LENGTH} characters")
+            if len(block_ids) >= MAX_TRANSLATION_PLAN_BLOCK_IDS:
+                raise ValueError(
+                    f"document exceeds {MAX_TRANSLATION_PLAN_BLOCK_IDS} block identifiers"
+                )
+            if block.id in block_ids:
+                raise ValueError(f"duplicate block id: {block.id}")
+            block_ids.add(block.id)
+        for child in section.sections:
+            walk(child)
+
+    for section in content.sections:
+        walk(section)
+
+
+def compute_translation_scope(
+    content: DocumentContent | dict[str, Any],
+    *,
+    include_appendix: bool = True,
+) -> ScopeResult:
     """自動翻訳対象ブロックを決定する(plans/06 §2.1・docs/03 §2)。
 
-    対象条件: (1) ブロック型が翻訳対象、(2) 参考文献セクションでない、(3) 付録でない。
-    equation / code / algorithm / reference_entry は常に対象外。判定は決定的で
-    ``block_search_index`` 再生成時にも同値になる。
+    対象条件: (1) ブロック型が翻訳対象、(2) 参考文献セクションでない、
+    (3) 付録は既定で対象、明示 opt-out 時だけ除外。equation / code / algorithm /
+    reference_entry は常に対象外。判定は決定的で ``block_search_index`` 再生成時にも
+    同値になる。
     """
     doc = _as_content(content)
+    _validate_unique_document_ids(doc)
     in_scope: list[str] = []
     sections: list[dict[str, Any]] = []
     appendix_ids: list[str] = []
     reference_ids: list[str] = []
 
-    def walk(section: Section, under_appendix: bool) -> None:
+    def walk(section: Section, under_appendix: bool, under_reference: bool) -> None:
         is_appendix = under_appendix or _is_appendix_heading(
             section.heading.number, section.heading.title
         )
-        is_reference = _is_reference_section(section)
-        if is_appendix:
-            appendix_ids.append(section.id)
+        own_reference = is_reference_section(section)
+        is_reference = under_reference or own_reference
         if is_reference:
             reference_ids.append(section.id)
+        elif is_appendix:
+            appendix_ids.append(section.id)
         own: list[str] = []
-        if not is_appendix and not is_reference:
+        if not is_reference and (include_appendix or not is_appendix):
             for blk in section.blocks:
                 if blk.type in TRANSLATABLE_BLOCK_TYPES:
                     in_scope.append(blk.id)
@@ -156,10 +233,10 @@ def compute_translation_scope(content: DocumentContent | dict[str, Any]) -> Scop
         if own:
             sections.append({"section_id": section.id, "block_ids": own})
         for sub in section.sections:
-            walk(sub, is_appendix)
+            walk(sub, is_appendix, is_reference)
 
     for top in doc.sections:
-        walk(top, False)
+        walk(top, False, False)
     return ScopeResult(
         in_scope_block_ids=in_scope,
         sections=sections,
@@ -175,31 +252,390 @@ def compute_translation_scope(content: DocumentContent | dict[str, Any]) -> Scop
 class TranslationSettings:
     """``users.settings.translation.*``(plans/03 §17.1)。4f の 4 項目。
 
-    ``auto_translate_appendix`` は 4f トグル「付録を自動翻訳しない」の反転
-    (既定 ON = 付録を訳さない ⇔ ``auto_translate_appendix=False``)。
+    ``auto_translate_appendix`` は 4f トグル「付録を自動翻訳しない」の反転。
+    全文翻訳が既定なので未指定時は ``True``、明示 ``False`` のみ opt-out とする。
     """
 
     default_style: str = "natural"
-    auto_translate_appendix: bool = False
-    translate_table_cells: bool = False
-    suggest_section_selection_over_30_pages: bool = True
+    auto_translate_appendix: bool = True
+    translate_table_cells: bool = True
+    suggest_section_selection_over_30_pages: bool = False
 
     @classmethod
     def from_user_settings(cls, settings: Mapping[str, Any] | None) -> TranslationSettings:
         t = (settings or {}).get("translation", {}) if settings else {}
         return cls(
             default_style=str(t.get("default_style", "natural")),
-            auto_translate_appendix=bool(t.get("auto_translate_appendix", False)),
-            translate_table_cells=bool(t.get("translate_table_cells", False)),
+            auto_translate_appendix=bool(t.get("auto_translate_appendix", True)),
+            translate_table_cells=bool(t.get("translate_table_cells", True)),
             suggest_section_selection_over_30_pages=bool(
-                t.get("suggest_section_selection_over_30_pages", True)
+                t.get("suggest_section_selection_over_30_pages", False)
             ),
         )
 
 
+_TranslationPlanId = Annotated[
+    str,
+    Field(min_length=1, max_length=MAX_TRANSLATION_PLAN_ID_LENGTH),
+]
+
+
+class TranslationPlan(BaseModel):
+    """A persisted, revision-local translation target contract."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    version: Literal[1] = 1
+    include_appendix: bool
+    translate_table_cells: bool
+    suggest_section_selection_over_30_pages: bool
+    target_section_ids: list[_TranslationPlanId] = Field(
+        max_length=MAX_TRANSLATION_PLAN_SECTION_IDS
+    )
+    target_block_ids: list[_TranslationPlanId] = Field(max_length=MAX_TRANSLATION_PLAN_BLOCK_IDS)
+    auxiliary_block_ids: list[_TranslationPlanId] = Field(
+        default_factory=list,
+        max_length=MAX_TRANSLATION_PLAN_BLOCK_IDS,
+    )
+    pages: int | None = Field(ge=0, le=MAX_TRANSLATION_PLAN_PAGES)
+
+    @model_validator(mode="after")
+    def _validate_block_target_partition(self) -> TranslationPlan:
+        if len(self.target_block_ids) + len(self.auxiliary_block_ids) > (
+            MAX_TRANSLATION_PLAN_BLOCK_IDS
+        ):
+            raise ValueError(
+                f"combined translation targets exceed {MAX_TRANSLATION_PLAN_BLOCK_IDS}"
+            )
+        if set(self.target_block_ids) & set(self.auxiliary_block_ids):
+            raise ValueError("primary and auxiliary translation targets overlap")
+        return self
+
+
+def build_translation_plan(
+    content: DocumentContent | dict[str, Any],
+    settings: TranslationSettings,
+    *,
+    pages: int | None,
+) -> TranslationPlan:
+    """Build the exact target plan used for a new translation set."""
+    scope = compute_translation_scope(
+        content,
+        include_appendix=settings.auto_translate_appendix,
+    )
+    return TranslationPlan(
+        include_appendix=settings.auto_translate_appendix,
+        translate_table_cells=settings.translate_table_cells,
+        suggest_section_selection_over_30_pages=(settings.suggest_section_selection_over_30_pages),
+        target_section_ids=[str(section["section_id"]) for section in scope.sections],
+        target_block_ids=list(scope.in_scope_block_ids),
+        pages=pages,
+    )
+
+
+def build_ingest_translation_plan(
+    content: DocumentContent | dict[str, Any],
+    settings: TranslationSettings,
+    *,
+    pages: int | None,
+) -> TranslationPlan:
+    """Build an initial plan, deferring body work only for an opted-in long paper."""
+
+    safe_pages = pages if type(pages) is int and 0 <= pages <= MAX_TRANSLATION_PLAN_PAGES else None
+    plan = build_translation_plan(content, settings, pages=safe_pages)
+    if not (
+        settings.suggest_section_selection_over_30_pages
+        and safe_pages is not None
+        and safe_pages > 30
+        and plan.target_section_ids
+    ):
+        return plan
+    return TranslationPlan(
+        version=plan.version,
+        include_appendix=plan.include_appendix,
+        translate_table_cells=plan.translate_table_cells,
+        suggest_section_selection_over_30_pages=True,
+        target_section_ids=[],
+        target_block_ids=[],
+        auxiliary_block_ids=[],
+        pages=plan.pages,
+    )
+
+
+def selectable_translation_section_ids(
+    content: DocumentContent | dict[str, Any],
+    plan: TranslationPlan,
+) -> list[str]:
+    """Return exact selectable section IDs under the pending plan's appendix policy."""
+
+    scope = compute_translation_scope(content, include_appendix=plan.include_appendix)
+    return [str(section["section_id"]) for section in scope.sections]
+
+
+def translation_plan_awaits_section_selection(
+    content: DocumentContent | dict[str, Any],
+    plan: TranslationPlan,
+) -> bool:
+    """Whether a strict plan represents a real, still-unanswered long-paper proposal."""
+
+    return bool(
+        plan.suggest_section_selection_over_30_pages
+        and plan.pages is not None
+        and plan.pages > 30
+        and not plan.target_section_ids
+        and not plan.target_block_ids
+        and not plan.auxiliary_block_ids
+        and selectable_translation_section_ids(content, plan)
+    )
+
+
+def select_translation_plan_sections(
+    content: DocumentContent | dict[str, Any],
+    pending_plan: TranslationPlan,
+    section_ids: Sequence[str],
+) -> TranslationPlan:
+    """Resolve a pending proposal into a bounded, canonical, non-empty primary plan."""
+
+    if not translation_plan_awaits_section_selection(content, pending_plan):
+        raise ValueError("translation plan is not awaiting section selection")
+    if isinstance(section_ids, str | bytes) or not section_ids:
+        raise ValueError("section selection must contain at least one section")
+    if len(section_ids) > MAX_TRANSLATION_PLAN_SECTION_IDS:
+        raise ValueError("section selection has too many section ids")
+    requested: set[str] = set()
+    for section_id in section_ids:
+        if not isinstance(section_id, str) or not (
+            0 < len(section_id) <= MAX_TRANSLATION_PLAN_ID_LENGTH
+        ):
+            raise ValueError("section selection contains an invalid section id")
+        if section_id in requested:
+            raise ValueError("section selection contains duplicate section ids")
+        requested.add(section_id)
+
+    scope = compute_translation_scope(
+        content,
+        include_appendix=pending_plan.include_appendix,
+    )
+    selectable = {str(section["section_id"]) for section in scope.sections}
+    if not requested <= selectable:
+        raise ValueError("section selection contains a section that is not selectable")
+
+    target_section_ids: list[str] = []
+    target_block_ids: list[str] = []
+    for section in scope.sections:
+        section_id = str(section["section_id"])
+        if section_id not in requested:
+            continue
+        target_section_ids.append(section_id)
+        target_block_ids.extend(str(block_id) for block_id in section["block_ids"])
+    return TranslationPlan(
+        version=pending_plan.version,
+        include_appendix=pending_plan.include_appendix,
+        translate_table_cells=pending_plan.translate_table_cells,
+        suggest_section_selection_over_30_pages=(
+            pending_plan.suggest_section_selection_over_30_pages
+        ),
+        target_section_ids=target_section_ids,
+        target_block_ids=target_block_ids,
+        auxiliary_block_ids=[],
+        pages=pending_plan.pages,
+    )
+
+
+def _canonical_plan_targets(
+    scope: ScopeResult, target_block_ids: Iterable[str]
+) -> tuple[list[str], list[str]]:
+    requested = set(target_block_ids)
+    section_ids: list[str] = []
+    block_ids: list[str] = []
+    for section in scope.sections:
+        selected = [str(block_id) for block_id in section["block_ids"] if block_id in requested]
+        if selected:
+            section_ids.append(str(section["section_id"]))
+            block_ids.extend(selected)
+    return section_ids, block_ids
+
+
+def _raw_translation_plan_within_limits(payload: Any) -> bool:
+    """Cheaply reject untrusted JSON before Pydantic builds errors/copies large lists."""
+    if not isinstance(payload, Mapping) or len(payload) > 8:
+        return False
+    version = payload.get("version")
+    if type(version) is not int or version != 1:
+        return False
+    for field_name in (
+        "include_appendix",
+        "translate_table_cells",
+        "suggest_section_selection_over_30_pages",
+    ):
+        if type(payload.get(field_name)) is not bool:
+            return False
+    sections = payload.get("target_section_ids")
+    blocks = payload.get("target_block_ids")
+    auxiliary = payload.get("auxiliary_block_ids", [])
+    if not isinstance(sections, list) or len(sections) > MAX_TRANSLATION_PLAN_SECTION_IDS:
+        return False
+    if not isinstance(blocks, list) or len(blocks) > MAX_TRANSLATION_PLAN_BLOCK_IDS:
+        return False
+    if not isinstance(auxiliary, list) or len(auxiliary) > MAX_TRANSLATION_PLAN_BLOCK_IDS:
+        return False
+    if len(blocks) + len(auxiliary) > MAX_TRANSLATION_PLAN_BLOCK_IDS:
+        return False
+    for identifier in sections:
+        if not isinstance(identifier, str) or not (
+            0 < len(identifier) <= MAX_TRANSLATION_PLAN_ID_LENGTH
+        ):
+            return False
+    for identifier in blocks:
+        if not isinstance(identifier, str) or not (
+            0 < len(identifier) <= MAX_TRANSLATION_PLAN_ID_LENGTH
+        ):
+            return False
+    for identifier in auxiliary:
+        if not isinstance(identifier, str) or not (
+            0 < len(identifier) <= MAX_TRANSLATION_PLAN_ID_LENGTH
+        ):
+            return False
+    pages = payload.get("pages")
+    return pages is None or (type(pages) is int and 0 <= pages <= MAX_TRANSLATION_PLAN_PAGES)
+
+
+def resolve_translation_plan(
+    content: DocumentContent | dict[str, Any],
+    raw_plan: TranslationPlan | Mapping[str, Any] | None,
+    *,
+    pages: int | None,
+) -> TranslationPlan:
+    """Validate a stored plan, falling back to the safe default full scope."""
+    fallback = build_translation_plan(content, TranslationSettings(), pages=pages)
+    if raw_plan is None:
+        return fallback
+    if isinstance(raw_plan, TranslationPlan):
+        plan = raw_plan
+    else:
+        if not _raw_translation_plan_within_limits(raw_plan):
+            return fallback
+        try:
+            plan = TranslationPlan.model_validate(raw_plan)
+        except ValidationError:
+            return fallback
+
+    full_scope = compute_translation_scope(content)
+    if len(plan.target_section_ids) != len(set(plan.target_section_ids)):
+        return fallback
+    if len(plan.target_block_ids) != len(set(plan.target_block_ids)):
+        return fallback
+    if len(plan.auxiliary_block_ids) != len(set(plan.auxiliary_block_ids)):
+        return fallback
+    if set(plan.target_block_ids) & set(plan.auxiliary_block_ids):
+        return fallback
+    canonical_sections, canonical_blocks = _canonical_plan_targets(
+        full_scope, plan.target_block_ids
+    )
+    if canonical_sections != plan.target_section_ids or canonical_blocks != plan.target_block_ids:
+        return fallback
+    _auxiliary_sections, canonical_auxiliary = _canonical_plan_targets(
+        full_scope,
+        plan.auxiliary_block_ids,
+    )
+    if canonical_auxiliary != plan.auxiliary_block_ids:
+        return fallback
+    if not plan.include_appendix:
+        main_ids = set(
+            compute_translation_scope(content, include_appendix=False).in_scope_block_ids
+        )
+        if not set(plan.target_block_ids) <= main_ids:
+            return fallback
+    return plan
+
+
+def translation_scope_from_plan(
+    content: DocumentContent | dict[str, Any],
+    raw_plan: TranslationPlan | Mapping[str, Any] | None,
+    *,
+    pages: int | None = None,
+) -> ScopeResult:
+    """Return a canonical scope filtered to a validated persisted plan."""
+    plan = resolve_translation_plan(content, raw_plan, pages=pages)
+    full_scope = compute_translation_scope(content)
+    return _scope_from_block_ids(full_scope, plan.target_block_ids)
+
+
+def _scope_from_block_ids(full_scope: ScopeResult, requested_ids: Iterable[str]) -> ScopeResult:
+    section_ids, block_ids = _canonical_plan_targets(full_scope, requested_ids)
+    block_set = set(block_ids)
+    section_set = set(section_ids)
+    sections = [
+        {
+            "section_id": str(section["section_id"]),
+            "block_ids": [block_id for block_id in section["block_ids"] if block_id in block_set],
+        }
+        for section in full_scope.sections
+        if section["section_id"] in section_set
+    ]
+    return ScopeResult(
+        in_scope_block_ids=block_ids,
+        sections=sections,
+        appendix_section_ids=list(full_scope.appendix_section_ids),
+        reference_section_ids=list(full_scope.reference_section_ids),
+    )
+
+
+def translation_execution_scope_from_plan(
+    content: DocumentContent | dict[str, Any],
+    raw_plan: TranslationPlan | Mapping[str, Any] | None,
+    *,
+    pages: int | None = None,
+) -> ScopeResult:
+    """Return canonical primary plus auxiliary block-translation work."""
+    plan = resolve_translation_plan(content, raw_plan, pages=pages)
+    full_scope = compute_translation_scope(content)
+    return _scope_from_block_ids(
+        full_scope,
+        [*plan.target_block_ids, *plan.auxiliary_block_ids],
+    )
+
+
+def merge_translation_plans(
+    content: DocumentContent | dict[str, Any],
+    existing_raw_plan: TranslationPlan | Mapping[str, Any] | None,
+    requested_raw_plan: TranslationPlan | Mapping[str, Any],
+    *,
+    pages: int | None = None,
+) -> TranslationPlan:
+    """Monotonically union a reused set's targets in canonical document order."""
+    existing = resolve_translation_plan(content, existing_raw_plan, pages=pages)
+    requested = resolve_translation_plan(content, requested_raw_plan, pages=pages)
+    full_scope = compute_translation_scope(content)
+    target_ids = set(existing.target_block_ids) | set(requested.target_block_ids)
+    section_ids, block_ids = _canonical_plan_targets(full_scope, target_ids)
+    auxiliary_ids = (
+        set(existing.auxiliary_block_ids) | set(requested.auxiliary_block_ids)
+    ) - target_ids
+    _auxiliary_sections, auxiliary_block_ids = _canonical_plan_targets(
+        full_scope,
+        auxiliary_ids,
+    )
+    stored_pages = [
+        value for value in (existing.pages, requested.pages, pages) if value is not None
+    ]
+    return TranslationPlan(
+        include_appendix=existing.include_appendix or requested.include_appendix,
+        translate_table_cells=(existing.translate_table_cells or requested.translate_table_cells),
+        suggest_section_selection_over_30_pages=(
+            existing.suggest_section_selection_over_30_pages
+            and requested.suggest_section_selection_over_30_pages
+        ),
+        target_section_ids=section_ids,
+        target_block_ids=block_ids,
+        auxiliary_block_ids=auxiliary_block_ids,
+        pages=max(stored_pages) if stored_pages else None,
+    )
+
+
 @dataclass
 class InitialJobPlan:
-    """初回全文翻訳で積むジョブ計画(plans/06 §2.2・§13.1)。分母(スコープ)は不変。"""
+    """初回全文翻訳で積むジョブ計画(plans/06 §2.2・§13.1)。"""
 
     style: str
     section_ids: list[str]  # translate_section ジョブを積むセクション
@@ -216,12 +652,13 @@ def plan_initial_translation(
 ) -> InitialJobPlan:
     """設定 4 項目を初回翻訳のジョブ生成へ反映する(plans/06 §2.2)。
 
-    設定はジョブを積む範囲だけを変える。スコープ判定(§2.1)と進捗の分母は不変。
+    未指定時は付録を含む全文を対象にし、明示 opt-out 時だけ付録を除外する。
     """
-    scope = compute_translation_scope(content)
+    scope = compute_translation_scope(
+        content,
+        include_appendix=settings.auto_translate_appendix,
+    )
     section_ids = [s["section_id"] for s in scope.sections]
-    if settings.auto_translate_appendix:
-        section_ids = section_ids + list(scope.appendix_section_ids)
     propose = settings.suggest_section_selection_over_30_pages and pages > 30
     return InitialJobPlan(
         style=settings.default_style,
@@ -240,6 +677,134 @@ class BlockToTranslate(BaseModel):
 
     encoded: EncodedBlock
     block_type: str
+    # ``None`` means an ordinary block.  A list (including an empty list) means
+    # one table block expanded into verified caption/cell pseudo-targets.
+    table_targets: list[EncodedBlock] | None = None
+    table_grid: CanonicalTableGrid | None = None
+    table_cells_requested: bool = False
+    table_preserve_caption: bool = False
+    table_preserved_caption: list[dict[str, Any]] | None = None
+    table_result_state: str = "machine"
+    table_preserved_quality_flags: list[str] = Field(default_factory=list)
+
+
+def _encoded_with_id(encoded: EncodedBlock, block_id: str) -> EncodedBlock:
+    return encoded.model_copy(update={"block_id": block_id})
+
+
+def _table_cell_inlines(cell: CanonicalTableCell) -> list[dict[str, Any]]:
+    """Convert a canonical cell to placeholder-safe inlines, preserving math verbatim."""
+
+    inlines: list[dict[str, Any]] = []
+    cursor = 0
+    for fragment in cell.math:
+        position = cell.source.find(fragment, cursor)
+        if position < 0:
+            raise ValueError(f"canonical math fragment is absent from {cell.id}")
+        if position > cursor:
+            inlines.append({"t": "text", "v": cell.source[cursor:position]})
+        # Keep delimiters in ``v`` so the table projection can reproduce the exact
+        # source atom after placeholder verification.
+        inlines.append({"t": "math_inline", "v": fragment})
+        cursor = position + len(fragment)
+    if cursor < len(cell.source):
+        inlines.append({"t": "text", "v": cell.source[cursor:]})
+    return inlines or [{"t": "text", "v": ""}]
+
+
+def _bounded_utf8_digest(value: str, *, chunk_chars: int = 65_536) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    byte_count = 0
+    for offset in range(0, len(value), chunk_chars):
+        chunk = value[offset : offset + chunk_chars].encode("utf-8")
+        digest.update(chunk)
+        byte_count += len(chunk)
+    return digest.hexdigest(), byte_count
+
+
+def _prepare_table_item(block: Block, *, cells_requested: bool) -> BlockToTranslate:
+    grid = parse_table_grid(block.raw)
+    caption = [inline.model_dump(mode="json", exclude_none=True) for inline in block.caption]
+    targets: list[EncodedBlock] = []
+    caption_encoded = encode_block(caption)
+    if caption and caption_encoded.text.strip():
+        targets.append(_encoded_with_id(caption_encoded, f"{block.id}::caption"))
+    if cells_requested and grid.supported:
+        for row in grid.rows:
+            for cell in row:
+                if not cell.translatable:
+                    continue
+                cell_encoded = encode_block(_table_cell_inlines(cell))
+                targets.append(_encoded_with_id(cell_encoded, f"{block.id}::{cell.id}"))
+
+    unsupported_raw: dict[str, str | int] | None = None
+    if not grid.supported:
+        raw_digest, raw_bytes = _bounded_utf8_digest(block.raw or "")
+        unsupported_raw = {
+            "sha256": raw_digest,
+            "bytes": raw_bytes,
+        }
+    canonical_source = {
+        "kind": "table-source",
+        "version": 1,
+        "caption": caption,
+        "grid": grid.model_dump(mode="json"),
+        "cells_requested": cells_requested,
+        # Distinguish unsupported sources without embedding/duplicating an unbounded raw value.
+        "unsupported_raw": unsupported_raw,
+    }
+    serialized = json.dumps(
+        canonical_source,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    aggregate = EncodedBlock(
+        block_id=block.id,
+        text="\n".join(target.text for target in targets),
+        tokens=[],
+        source_hash=compute_source_hash(serialized, []),
+    )
+    return BlockToTranslate(
+        encoded=aggregate,
+        block_type="table",
+        table_targets=targets,
+        table_grid=grid,
+        table_cells_requested=cells_requested,
+    )
+
+
+def _preserve_manual_table_caption(
+    item: BlockToTranslate,
+    existing: Any,
+) -> BlockToTranslate:
+    raw_content = existing.content_ja
+    try:
+        if isinstance(raw_content, list):
+            typed = TableTranslationContent(
+                kind="table",
+                version=1,
+                caption=raw_content,
+                cells=None,
+            )
+        else:
+            typed = TableTranslationContent.model_validate(raw_content)
+    except ValidationError as exc:
+        raise ValueError("manual table caption has an invalid persisted contract") from exc
+    targets = [
+        target for target in (item.table_targets or []) if not target.block_id.endswith("::caption")
+    ]
+    return item.model_copy(
+        update={
+            "table_targets": targets,
+            "table_preserve_caption": True,
+            "table_preserved_caption": typed.caption,
+            "table_result_state": str(existing.state),
+            "table_preserved_quality_flags": [
+                flag for flag in (existing.quality_flags or []) if flag not in BLOCKING_FLAGS
+            ],
+        }
+    )
 
 
 def estimate_source_tokens(text: str) -> int:
@@ -418,12 +983,56 @@ class TranslatedUnit(BaseModel):
     quality_flags: list[str] = []
     model: str = ""
 
+    @model_validator(mode="after")
+    def _sanitize_untrusted_model_text(self) -> TranslatedUnit:
+        """Keep every translation persistence path safe for PostgreSQL and JSON."""
+
+        self.content_ja = sanitize_json_text(self.content_ja)
+        self.text_ja = sanitize_untrusted_text(self.text_ja)
+        self.model = sanitize_untrusted_text(self.model)
+        return self
+
     def db_state(self) -> str:
         return "machine" if self.state == "source_fallback" else self.state
 
     @property
     def is_displayable(self) -> bool:
         return not (set(self.quality_flags) & BLOCKING_FLAGS)
+
+
+def translation_unit_satisfies_block(
+    unit: Any,
+    block: Block,
+    *,
+    require_table_cells: bool,
+) -> bool:
+    """Apply the shared display/reuse completeness rule for one source block."""
+
+    if isinstance(unit, Mapping):
+        quality_flags = unit.get("quality_flags", [])
+    else:
+        quality_flags = getattr(unit, "quality_flags", [])
+    if set(quality_flags or []) & BLOCKING_FLAGS:
+        return False
+    return translation_unit_has_required_table_cells(
+        unit,
+        block,
+        require_table_cells=require_table_cells,
+    )
+
+
+def translation_unit_has_required_table_cells(
+    unit: Any,
+    block: Block,
+    *,
+    require_table_cells: bool,
+) -> bool:
+    """Check only structural table-cell coverage, independent of quality flags."""
+
+    if block.type != "table" or not require_table_cells:
+        return True
+    content_ja = unit.get("content_ja") if isinstance(unit, Mapping) else unit.content_ja
+    return table_cells_complete(content_ja, parse_table_grid(block.raw))
 
 
 def _fallback_unit(item: BlockToTranslate, flag: str, model: str) -> TranslatedUnit:
@@ -443,8 +1052,14 @@ def _build_unit(
     item: BlockToTranslate, ja: str, snapshot: list[dict[str, Any]], model: str
 ) -> TranslatedUnit:
     content = normalize_inlines(decode_translation(item.encoded, ja))
-    text_ja = content_to_text_ja(content)
-    flags = run_quality_checks(item.encoded, strip_tokens(item.encoded.text), text_ja, snapshot)
+    if item.block_type == "table_cell":
+        text_ja = _table_inline_projection(content)
+        source_content = normalize_inlines(decode_translation(item.encoded, item.encoded.text))
+        source_plain = _table_inline_projection(source_content)
+    else:
+        text_ja = content_to_text_ja(content)
+        source_plain = strip_tokens(item.encoded.text)
+    flags = run_quality_checks(item.encoded, source_plain, text_ja, snapshot)
     return TranslatedUnit(
         block_id=item.encoded.block_id,
         source_hash=item.encoded.source_hash,
@@ -453,6 +1068,146 @@ def _build_unit(
         state="machine",
         quality_flags=flags,
         model=model,
+    )
+
+
+def _table_inline_projection(inlines: list[dict[str, Any]]) -> str:
+    """Project verified cell inlines without losing protected display atoms."""
+
+    parts: list[str] = []
+    for inline in inlines:
+        tag = inline.get("t")
+        if tag == "text":
+            parts.append(str(inline.get("v", "")))
+        elif tag == "emphasis":
+            children = inline.get("children")
+            if isinstance(children, list):
+                parts.append(_table_inline_projection(children))
+            else:
+                parts.append(str(inline.get("v", "")))
+        elif tag == "math_inline":
+            value = str(inline.get("v", ""))
+            if value.startswith(("$", r"\(", r"\[")):
+                parts.append(value)
+            elif value:
+                parts.append(f"${value}$")
+        elif tag == "citation":
+            parts.append(f"[{inline.get('ref', '')}]")
+        elif tag == "ref":
+            parts.append(str(inline.get("v") or inline.get("ref") or ""))
+        elif tag == "url":
+            parts.append(str(inline.get("v") or inline.get("href") or ""))
+        elif tag == "code_inline":
+            parts.append(str(inline.get("v", "")))
+        elif tag == "footnote_ref":
+            reference = str(inline.get("ref") or "")
+            if reference:
+                parts.append(f"[{reference}]")
+    return "".join(parts).strip()
+
+
+def _table_fallback_from_units(
+    item: BlockToTranslate,
+    target_units: list[TranslatedUnit],
+) -> TranslatedUnit:
+    failure_flag = "placeholder_mismatch"
+    for flag in ("provider_refusal", "context_overflow", "placeholder_mismatch"):
+        if any(flag in unit.quality_flags for unit in target_units):
+            failure_flag = flag
+            break
+    model = next((unit.model for unit in target_units if unit.model), "")
+    if not item.table_preserve_caption:
+        return _fallback_unit(item, failure_flag, model)
+    content = TableTranslationContent(
+        kind="table",
+        version=1,
+        caption=item.table_preserved_caption,
+        cells=None,
+    ).model_dump(mode="json")
+    return TranslatedUnit(
+        block_id=item.encoded.block_id,
+        source_hash=item.encoded.source_hash,
+        content_ja=content,
+        text_ja=(
+            content_to_text_ja(item.table_preserved_caption)
+            if item.table_preserved_caption is not None
+            else ""
+        ),
+        state=item.table_result_state,
+        quality_flags=[*item.table_preserved_quality_flags, failure_flag],
+        model=model,
+    )
+
+
+def _aggregate_table_unit(
+    item: BlockToTranslate,
+    translated_by_id: Mapping[str, TranslatedUnit],
+) -> TranslatedUnit:
+    assert item.table_targets is not None
+    assert item.table_grid is not None
+    target_units = [
+        translated_by_id[target.block_id]
+        for target in item.table_targets
+        if target.block_id in translated_by_id
+    ]
+    if len(target_units) != len(item.table_targets) or any(
+        set(unit.quality_flags) & BLOCKING_FLAGS or unit.state == "source_fallback"
+        for unit in target_units
+    ):
+        return _table_fallback_from_units(item, target_units)
+
+    caption = item.table_preserved_caption if item.table_preserve_caption else None
+    caption_id = f"{item.encoded.block_id}::caption"
+    caption_unit = translated_by_id.get(caption_id)
+    if caption_unit is not None:
+        if not isinstance(caption_unit.content_ja, list):
+            return _table_fallback_from_units(item, target_units)
+        caption = caption_unit.content_ja
+
+    cells: list[list[str | None]] | None = None
+    if item.table_cells_requested and item.table_grid.supported:
+        cells = [[None for _cell in row] for row in item.table_grid.rows]
+        for row_index, row in enumerate(item.table_grid.rows):
+            for cell_index, cell in enumerate(row):
+                if not cell.translatable:
+                    continue
+                unit = translated_by_id.get(f"{item.encoded.block_id}::{cell.id}")
+                if unit is None or not isinstance(unit.content_ja, list):
+                    return _table_fallback_from_units(item, target_units)
+                cells[row_index][cell_index] = _table_inline_projection(unit.content_ja)
+
+    raw_content = TableTranslationContent(
+        kind="table",
+        version=1,
+        caption=caption,
+        cells=cells,
+    ).model_dump(mode="json")
+    content = validate_table_translation_content(raw_content, item.table_grid)
+    if content is None:
+        return _table_fallback_from_units(item, target_units)
+    text_parts: list[str] = []
+    if caption is not None:
+        caption_text = content_to_text_ja(caption)
+        if caption_text:
+            text_parts.append(caption_text)
+    if cells is not None:
+        text_parts.extend(cell for row in cells for cell in row if cell)
+    quality_flags = list(
+        dict.fromkeys(
+            [
+                *item.table_preserved_quality_flags,
+                *(flag for unit in target_units for flag in unit.quality_flags),
+            ]
+        )
+    )
+    return TranslatedUnit(
+        block_id=item.encoded.block_id,
+        source_hash=item.encoded.source_hash,
+        content_ja=content.model_dump(mode="json"),
+        text_ja="\n".join(text_parts),
+        state=item.table_result_state,
+        quality_flags=quality_flags,
+        model=next((unit.model for unit in target_units if unit.model), ""),
     )
 
 
@@ -580,10 +1335,26 @@ async def _call_llm(
         library_item_id=library_item_id,
         job_id=job_id,
     )
-    parsed: dict[str, str] = {}
     data = resp.parsed or {}
-    for entry in data.get("translations", []):
-        parsed[str(entry.get("id"))] = str(entry.get("ja", ""))
+    entries = data.get("translations", [])
+    expected_ids = [item.encoded.block_id for item in group]
+    if not isinstance(entries, list):
+        return {}, resp.model, resp.stop_reason
+    ids: list[str] = []
+    parsed: dict[str, str] = {}
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            return {}, resp.model, resp.stop_reason
+        target_id = entry.get("id")
+        translated = entry.get("ja")
+        if not isinstance(target_id, str) or not isinstance(translated, str):
+            return {}, resp.model, resp.stop_reason
+        ids.append(target_id)
+        parsed[target_id] = translated
+    # Structured output is a closed set.  Dict assignment alone would silently
+    # accept duplicate IDs and ignore unknown targets.
+    if len(ids) != len(set(ids)) or set(ids) != set(expected_ids) or len(ids) != len(expected_ids):
+        return {}, resp.model, resp.stop_reason
     return parsed, resp.model, resp.stop_reason
 
 
@@ -617,6 +1388,42 @@ async def _attempt_group(
             for it in group:  # CONTENT_FILTER 全滅 → provider_refusal 縮退(§4.6)
                 results[it.encoded.block_id] = _fallback_unit(it, "provider_refusal", "")
             return [], ""
+        if exc.errors and all(e.kind == ErrorKind.SCHEMA_VALIDATION for e in exc.errors):
+            # Native structured output can be truncated before the provider returns a
+            # usable JSON object.  In that case the provider reports schema validation
+            # rather than ``max_tokens``, so apply the same deterministic bisection used
+            # for an explicit output-token stop instead of retrying the whole section.
+            if len(group) > 1:
+                mid = len(group) // 2
+                left, left_model = await _attempt_group(
+                    router,
+                    group[:mid],
+                    ctx,
+                    attempt,
+                    feedbacks,
+                    results,
+                    overflow,
+                    user_id=user_id,
+                    library_item_id=library_item_id,
+                    job_id=job_id,
+                )
+                right, right_model = await _attempt_group(
+                    router,
+                    group[mid:],
+                    ctx,
+                    attempt,
+                    feedbacks,
+                    results,
+                    overflow,
+                    user_id=user_id,
+                    library_item_id=library_item_id,
+                    job_id=job_id,
+                )
+                return left + right, right_model or left_model
+            # A single invalid structured response is a block-level failure, not a
+            # section/job failure.  Feed it into the normal bounded retry loop and
+            # ultimately persist the existing explicit source fallback if necessary.
+            return list(group), ""
         raise
 
     if stop_reason == "max_tokens" and len(group) > 1:  # 二分割再送(§3.3)
@@ -665,7 +1472,7 @@ async def _attempt_group(
     return failing, model
 
 
-async def translate_batch(
+async def _translate_flat_batch(
     router: LLMRouter,
     items: list[BlockToTranslate],
     ctx: TranslationContext,
@@ -674,7 +1481,7 @@ async def translate_batch(
     library_item_id: str | None = None,
     job_id: str | None = None,
 ) -> list[TranslatedUnit]:
-    """1 バッチ(直列)を翻訳する。検証失敗は最大 2 回再構成再試行→原文フォールバック。"""
+    """Translate an already-expanded batch with placeholder retries."""
     results: dict[str, TranslatedUnit] = {}
     feedbacks: dict[str, Any] = {}
     overflow: set[str] = set()
@@ -706,6 +1513,52 @@ async def translate_batch(
         flag = "context_overflow" if it.encoded.block_id in overflow else "placeholder_mismatch"
         results[it.encoded.block_id] = _fallback_unit(it, flag, last_model)
     return [results[it.encoded.block_id] for it in items]
+
+
+async def translate_batch(
+    router: LLMRouter,
+    items: list[BlockToTranslate],
+    ctx: TranslationContext,
+    *,
+    user_id: str | None = None,
+    library_item_id: str | None = None,
+    job_id: str | None = None,
+) -> list[TranslatedUnit]:
+    """Translate one block batch, atomically aggregating table pseudo-targets.
+
+    A table may expand to many caption/cell targets, so the expanded stream is
+    bounded again with the normal batch limits.  Only after every pseudo-target
+    succeeds is one typed table unit returned.
+    """
+
+    expanded: list[BlockToTranslate] = []
+    for item in items:
+        if item.table_targets is None:
+            expanded.append(item)
+            continue
+        for target in item.table_targets:
+            target_type = "table_caption" if target.block_id.endswith("::caption") else "table_cell"
+            expanded.append(BlockToTranslate(encoded=target, block_type=target_type))
+
+    translated_by_id: dict[str, TranslatedUnit] = {}
+    for sub_batch in make_batches(expanded):
+        translated = await _translate_flat_batch(
+            router,
+            sub_batch,
+            ctx,
+            user_id=user_id,
+            library_item_id=library_item_id,
+            job_id=job_id,
+        )
+        translated_by_id.update((unit.block_id, unit) for unit in translated)
+
+    results: list[TranslatedUnit] = []
+    for item in items:
+        if item.table_targets is None:
+            results.append(translated_by_id[item.encoded.block_id])
+        else:
+            results.append(_aggregate_table_unit(item, translated_by_id))
+    return results
 
 
 async def _retry_blocking_units(
@@ -752,9 +1605,12 @@ async def translate_block(
 ) -> TranslatedUnit:
     """単一ブロックの翻訳(バッチ 1 件のショートカット)。"""
     block_dict = block.model_dump() if isinstance(block, Block) else block
-    encoded = encode_block(block_dict)
     btype = block_type or str(block_dict.get("type", "paragraph"))
-    item = BlockToTranslate(encoded=encoded, block_type=btype)
+    if btype == "table":
+        table_block = block if isinstance(block, Block) else Block.model_validate(block_dict)
+        item = _prepare_table_item(table_block, cells_requested=True)
+    else:
+        item = BlockToTranslate(encoded=encode_block(block_dict), block_type=btype)
     units = await translate_batch(
         router,
         [item],
@@ -816,27 +1672,125 @@ async def find_shared_set(
     return (await session.execute(stmt)).scalars().first()
 
 
+async def find_effective_set(
+    session: AsyncSession,
+    revision_id: str,
+    style: str,
+    user_id: str,
+) -> TranslationSet | None:
+    """Resolve a user's personal set first, then the shared set."""
+    rows = (
+        (
+            await session.execute(
+                select(TranslationSet).where(
+                    TranslationSet.revision_id == revision_id,
+                    TranslationSet.style == style,
+                    or_(
+                        TranslationSet.scope == "shared",
+                        TranslationSet.user_id == user_id,
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    personal = next((row for row in rows if row.scope == "personal"), None)
+    return personal or next((row for row in rows if row.scope == "shared"), None)
+
+
+def _is_valid_shared_base(tset: TranslationSet, base: TranslationSet | None) -> bool:
+    return bool(
+        tset.scope == "personal"
+        and base is not None
+        and base.scope == "shared"
+        and base.user_id is None
+        and base.base_set_id is None
+        and str(base.revision_id) == str(tset.revision_id)
+        and base.style == tset.style
+    )
+
+
+async def resolve_effective_translation_plan(
+    session: AsyncSession,
+    tset: TranslationSet,
+    content: DocumentContent | dict[str, Any],
+    *,
+    pages: int | None = None,
+) -> TranslationPlan:
+    """Keep a personal primary denominator while inheriting valid base execution work."""
+    personal = resolve_translation_plan(content, tset.plan, pages=pages)
+    if tset.scope != "personal" or tset.base_set_id is None:
+        return personal
+    # A long-paper selection is deliberately user-specific. Importing the shared base plan here
+    # would make every globally requested section appear requested for this user and defeat both
+    # the chosen denominator and the selected-out section's on-demand action. Base *units* remain
+    # inherited independently by ``resolve_translation_set_units``.
+    if (
+        personal.suggest_section_selection_over_30_pages
+        and personal.pages is not None
+        and personal.pages > 30
+    ):
+        return personal
+    base = await session.get(TranslationSet, str(tset.base_set_id))
+    if not _is_valid_shared_base(tset, base):
+        return personal
+    assert base is not None
+    base_plan = resolve_translation_plan(content, base.plan, pages=pages)
+    auxiliary_ids = (
+        set(personal.auxiliary_block_ids)
+        | set(base_plan.target_block_ids)
+        | set(base_plan.auxiliary_block_ids)
+    ) - set(personal.target_block_ids)
+    full_scope = compute_translation_scope(content)
+    _sections, auxiliary_block_ids = _canonical_plan_targets(full_scope, auxiliary_ids)
+    return TranslationPlan(
+        version=personal.version,
+        include_appendix=personal.include_appendix,
+        translate_table_cells=personal.translate_table_cells,
+        suggest_section_selection_over_30_pages=(personal.suggest_section_selection_over_30_pages),
+        target_section_ids=list(personal.target_section_ids),
+        target_block_ids=list(personal.target_block_ids),
+        auxiliary_block_ids=auxiliary_block_ids,
+        pages=personal.pages,
+    )
+
+
+async def resolve_translation_set_units(
+    session: AsyncSession,
+    tset: TranslationSet,
+) -> dict[str, TranslationUnit]:
+    """Resolve one set's exact base units with its personal block-level overrides."""
+
+    async def load(set_id: str) -> list[TranslationUnit]:
+        return list(
+            (
+                await session.execute(
+                    select(TranslationUnit)
+                    .where(TranslationUnit.set_id == set_id)
+                    .order_by(TranslationUnit.id)
+                )
+            ).scalars()
+        )
+
+    resolved: dict[str, TranslationUnit] = {}
+    if tset.scope == "personal" and tset.base_set_id is not None:
+        base = await session.get(TranslationSet, str(tset.base_set_id))
+        if _is_valid_shared_base(tset, base):
+            assert base is not None
+            for unit in await load(str(base.id)):
+                resolved[unit.block_id] = unit
+    for unit in await load(str(tset.id)):
+        resolved[unit.block_id] = unit
+    return resolved
+
+
 async def resolve_display_units(
     session: AsyncSession, revision_id: str, style: str, user_id: str
 ) -> dict[str, TranslationUnit]:
     """表示用 TranslationUnit を解決(plans/02 §5.2。personal 優先→shared)。"""
-    sets_subq = (
-        select(TranslationSet.id.label("id"), TranslationSet.scope.label("scope"))
-        .where(
-            TranslationSet.revision_id == revision_id,
-            TranslationSet.style == style,
-            or_(TranslationSet.scope == "shared", TranslationSet.user_id == user_id),
-        )
-        .subquery()
-    )
-    stmt = (
-        select(TranslationUnit)
-        .join(sets_subq, sets_subq.c.id == TranslationUnit.set_id)
-        .distinct(TranslationUnit.block_id)
-        .order_by(TranslationUnit.block_id, (sets_subq.c.scope == "personal").desc())
-    )
-    rows = (await session.execute(stmt)).scalars().all()
-    return {u.block_id: u for u in rows}
+    tset = await find_effective_set(session, revision_id, style, user_id)
+    return await resolve_translation_set_units(session, tset) if tset is not None else {}
 
 
 # --- セクション翻訳(plans/06 §3-§7・§13) ----------------------------------------
@@ -930,21 +1884,26 @@ async def _refresh_set_status(
     session: AsyncSession, tset: TranslationSet, content: DocumentContent
 ) -> tuple[str, int]:
     """セット状態(pending/partial/complete)と進捗率を再計算する(§13.1)。"""
-    scope = compute_translation_scope(content)
+    plan = resolve_translation_plan(content, tset.plan, pages=None)
+    scope = translation_scope_from_plan(content, plan)
     in_scope = set(scope.in_scope_block_ids)
-    rows = (
-        await session.execute(
-            select(TranslationUnit.block_id, TranslationUnit.quality_flags).where(
-                TranslationUnit.set_id == tset.id
-            )
+    units = await resolve_translation_set_units(session, tset)
+    blocks = {block.id: block for _section, block in content.iter_blocks()}
+    scoped = [
+        {"block_id": block_id, "quality_flags": unit.quality_flags}
+        for block_id, unit in units.items()
+        if block_id in in_scope
+        and block_id in blocks
+        and translation_unit_has_required_table_cells(
+            unit,
+            blocks[block_id],
+            require_table_cells=plan.translate_table_cells,
         )
-    ).all()
-    total_units = len(rows)
-    scoped = [{"block_id": bid, "quality_flags": flags} for (bid, flags) in rows if bid in in_scope]
+    ]
     covered = {u["block_id"] for u in scoped}
-    if in_scope and covered >= in_scope:
+    if not in_scope or covered >= in_scope:
         status = "complete"
-    elif total_units > 0:
+    elif covered:
         status = "partial"
     else:
         status = "pending"
@@ -998,16 +1957,61 @@ async def translate_section(
         raise LookupError(f"section not found: {section_id}")
 
     if block_ids is None:
-        scope = compute_translation_scope(content)
-        section_map = {s["section_id"]: s["block_ids"] for s in scope.sections}
-        block_ids = section_map.get(section_id) or _translatable_block_ids(section)
+        if reason == "initial":
+            scope = translation_scope_from_plan(content, tset.plan)
+            section_map = {s["section_id"]: s["block_ids"] for s in scope.sections}
+            block_ids = list(section_map.get(section_id, []))
+        else:
+            block_ids = []
 
     blocks_by_id = {b.id: b for b in section.blocks}
-    encoded_by_id = {
-        bid: encode_block(blocks_by_id[bid].model_dump())
-        for bid in block_ids
-        if bid in blocks_by_id
+    if len(block_ids) != len(set(block_ids)):
+        raise ValueError("duplicate block ids requested for section translation")
+    translatable_section_ids = {
+        block.id for block in section.blocks if block.type in TRANSLATABLE_BLOCK_TYPES
     }
+    if not set(block_ids) <= translatable_section_ids:
+        raise ValueError("requested block ids are not translatable members of the section")
+
+    raw_pages = (revision.stats or {}).get("pages")
+    pages = raw_pages if isinstance(raw_pages, int) and not isinstance(raw_pages, bool) else None
+    stored_plan = resolve_translation_plan(content, tset.plan, pages=pages)
+    effective_plan = stored_plan
+    primary_scope = translation_scope_from_plan(content, stored_plan, pages=pages)
+    if reason in {"on_demand", "table", "retry_failed"}:
+        effective_plan = await resolve_effective_translation_plan(
+            session,
+            tset,
+            content,
+            pages=pages,
+        )
+        allowed_ids = set(
+            translation_execution_scope_from_plan(
+                content,
+                effective_plan,
+                pages=pages,
+            ).in_scope_block_ids
+        )
+    else:
+        allowed_ids = set(primary_scope.in_scope_block_ids)
+    if not set(block_ids) <= allowed_ids:
+        raise ValueError("requested block ids are outside the translation plan scope")
+
+    cells_requested = reason == "table" or effective_plan.translate_table_cells
+    prepared_by_id: dict[str, BlockToTranslate] = {}
+    for bid in block_ids:
+        block = blocks_by_id[bid]
+        if block.type == "table":
+            prepared_by_id[bid] = _prepare_table_item(
+                block,
+                cells_requested=cells_requested,
+            )
+        else:
+            prepared_by_id[bid] = BlockToTranslate(
+                encoded=encode_block(block.model_dump()),
+                block_type=block.type,
+            )
+    encoded_by_id = {bid: item.encoded for bid, item in prepared_by_id.items()}
 
     existing = {
         row.block_id: row
@@ -1025,13 +2029,33 @@ async def translate_section(
         ex = existing.get(bid)
         if ex is not None:
             if ex.state in ("edited", "protected"):
-                skipped += 1
-                continue
+                prepared = prepared_by_id[bid]
+                if (
+                    prepared.table_targets is not None
+                    and prepared.table_grid is not None
+                    and prepared.table_cells_requested
+                    and not table_cells_complete(ex.content_ja, prepared.table_grid)
+                ):
+                    prepared_by_id[bid] = _preserve_manual_table_caption(prepared, ex)
+                else:
+                    skipped += 1
+                    continue
             blocking = bool(set(ex.quality_flags or []) & BLOCKING_FLAGS)
             if ex.state == "machine" and ex.source_hash == encoded.source_hash and not blocking:
-                skipped += 1
-                continue
-        items.append(BlockToTranslate(encoded=encoded, block_type=blocks_by_id[bid].type))
+                prepared = prepared_by_id[bid]
+                if prepared.table_targets is None:
+                    skipped += 1
+                    continue
+                assert prepared.table_grid is not None
+                typed = validate_table_translation_content(ex.content_ja, prepared.table_grid)
+                cells_ready = not prepared.table_cells_requested or table_cells_complete(
+                    ex.content_ja,
+                    prepared.table_grid,
+                )
+                if typed is not None and cells_ready:
+                    skipped += 1
+                    continue
+        items.append(prepared_by_id[bid])
 
     # 文脈: セクション内翻訳可能ブロックの並び(既訳含む)。
     context_order = [bid for bid in block_ids if bid in encoded_by_id]
@@ -1091,7 +2115,7 @@ async def translate_section(
         for u in units:
             await _upsert_unit(session, tset.id, u)
             ja_text[u.block_id] = u.text_ja
-            if u.state == "source_fallback":
+            if u.state == "source_fallback" or set(u.quality_flags) & BLOCKING_FLAGS:
                 fallback += 1
             else:
                 translated += 1

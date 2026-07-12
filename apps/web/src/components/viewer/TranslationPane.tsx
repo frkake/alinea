@@ -19,6 +19,7 @@ import {
 import { useToast } from "@/components/ui/Toast";
 import type { HighlightColor } from "@/components/ui/HighlightMark";
 import { useIsMobile } from "@/hooks/useMediaQuery";
+import { useTableTranslation } from "@/hooks/use-table-translation";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
 import { FigureTableBlock } from "@/components/viewer/FigureTableBlock";
@@ -32,17 +33,16 @@ import { SectionHeading } from "@/components/viewer/SectionHeading";
 import { SelectionMenu } from "@/components/viewer/SelectionMenu";
 import { SummaryCard } from "@/components/viewer/SummaryCard";
 import { TranslatedParagraph, type PlacedHighlight } from "@/components/viewer/TranslatedParagraph";
-import { buildReferenceTargetMap, resolveReferenceTarget } from "@/components/viewer/reference-targets";
+import {
+  buildReferenceTargetMap,
+  resolveReferenceTarget,
+} from "@/components/viewer/reference-targets";
 import { isLatexSetupNoiseBlock } from "@/components/viewer/latex-noise";
 import { sectionHeadingBlock } from "@/components/viewer/section-heading-block";
 import { SOURCE_TEXT_ATTR, textOffsetWithin } from "@/components/viewer/text-offset";
 import { TranslationInlineContent } from "@/components/viewer/translation-content";
 import { extractVocabContext } from "@/components/viewer/vocab-context";
-import type {
-  DocBlock,
-  DocSection,
-  DocumentResponse,
-} from "@/components/viewer/document-types";
+import type { DocBlock, DocSection, DocumentResponse } from "@/components/viewer/document-types";
 
 function tmpId(): string {
   return `tmp_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : Date.now()}`;
@@ -66,7 +66,9 @@ export interface TranslationPaneProps {
 }
 
 /** section_id → { number, title_ja } を toc(2 階層)から引く。 */
-function buildTocMap(toc: TocNode[]): Map<string, { number: string | null; titleJa: string | null }> {
+function buildTocMap(
+  toc: TocNode[],
+): Map<string, { number: string | null; titleJa: string | null }> {
   const map = new Map<string, { number: string | null; titleJa: string | null }>();
   const walk = (nodes: TocNode[]) => {
     for (const n of nodes) {
@@ -152,9 +154,8 @@ export function TranslationPane({
   const docQuery = useQuery({
     queryKey: ["document", revisionId],
     queryFn: async () =>
-      (
-        await viewerGetDocument({ path: { revision_id: revisionId }, throwOnError: true })
-      ).data as DocumentResponse,
+      (await viewerGetDocument({ path: { revision_id: revisionId }, throwOnError: true }))
+        .data as DocumentResponse,
     staleTime: Infinity,
   });
 
@@ -259,10 +260,7 @@ export function TranslationPane({
     unitMap,
   });
   const tocMap = useMemo(() => buildTocMap(toc), [toc]);
-  const blockSectionMap = useMemo(
-    () => buildBlockSectionMap(doc?.sections ?? []),
-    [doc],
-  );
+  const blockSectionMap = useMemo(() => buildBlockSectionMap(doc?.sections ?? []), [doc]);
   const refTargets = useMemo(() => buildReferenceTargetMap(doc?.sections ?? []), [doc]);
   const onRefClick = useCallback(
     (ref: string) => {
@@ -273,7 +271,13 @@ export function TranslationPane({
   );
 
   // モバイル縮退(mobile.md §4.4): 1 カラム・本文幅 100%(720px 固定カラムは解除)。
-  const colWidth: number | string = isMobile ? "100%" : !panelOpen ? 720 : activeTab === "annotations" ? 720 : 680;
+  const colWidth: number | string = isMobile
+    ? "100%"
+    : !panelOpen
+      ? 720
+      : activeTab === "annotations"
+        ? 720
+        : 680;
 
   const togglePop = useCallback((blockId: string) => {
     setOpenPopBlockId((cur) => (cur === blockId ? null : blockId));
@@ -386,7 +390,7 @@ export function TranslationPane({
       end,
       rect: { top: rect.top, left: rect.left, bottom: rect.bottom, right: rect.right },
       // 「語彙に追加」の文脈センテンス抽出用(vocab-context.ts)。'source' のみ意味を持つ。
-      sourceFullText: side === "source" ? sourceRoot?.textContent ?? undefined : undefined,
+      sourceFullText: side === "source" ? (sourceRoot?.textContent ?? undefined) : undefined,
     });
   }, [setSelection]);
 
@@ -475,7 +479,12 @@ export function TranslationPane({
       );
       void annotationsCreate({
         path: { item_id: itemId },
-        body: { kind: "highlight", color, anchor, comment: comment && comment.length > 0 ? comment : null },
+        body: {
+          kind: "highlight",
+          color,
+          anchor,
+          comment: comment && comment.length > 0 ? comment : null,
+        },
       }).then(
         () => {
           void qc.invalidateQueries({ queryKey: annotationsQueryKey });
@@ -549,7 +558,12 @@ export function TranslationPane({
         <button
           type="button"
           onClick={() => void docQuery.refetch()}
-          style={{ border: "none", background: "transparent", color: "var(--pr-acc)", cursor: "pointer" }}
+          style={{
+            border: "none",
+            background: "transparent",
+            color: "var(--pr-acc)",
+            cursor: "pointer",
+          }}
         >
           再読み込み
         </button>
@@ -580,6 +594,10 @@ export function TranslationPane({
         hlBlockId={hlBlockId}
         pendingHighlightQuery={pendingHighlightQuery}
         isMobile={isMobile}
+        itemId={itemId}
+        revisionId={revisionId}
+        style={style}
+        translationSetId={translationSetId}
       />
     ));
   }
@@ -610,12 +628,24 @@ export function TranslationPane({
       <div
         ref={scrollRef}
         onPointerUp={onPointerUp}
-        style={{ flex: 1, overflowY: "auto", display: "flex", justifyContent: "center" }}
+        data-testid="translation-scroll-region"
+        style={{
+          flex: 1,
+          minWidth: 0,
+          width: "100%",
+          overflowY: "auto",
+          overflowX: "hidden",
+          display: "flex",
+          justifyContent: "center",
+        }}
       >
         <div
+          data-testid="translation-content-column"
           style={{
             width: colWidth,
             maxWidth: "100%",
+            minWidth: 0,
+            boxSizing: "border-box",
             padding: isMobile ? "24px 16px 120px" : "64px 0 120px",
             fontFamily: "var(--pr-jp)",
           }}
@@ -641,7 +671,9 @@ export function TranslationPane({
           }}
           onCopy={copySelection}
           onHighlight={(color) => createHighlight(color, null)}
-          onComment={(color, comment) => createHighlight(color, comment.length > 0 ? comment : null)}
+          onComment={(color, comment) =>
+            createHighlight(color, comment.length > 0 ? comment : null)
+          }
           onAddVocab={() => void addToVocab()}
         />
       ) : null}
@@ -668,6 +700,10 @@ interface SectionViewProps {
   pendingHighlightQuery: string | null;
   /** モバイル縮退(mobile.md §4.4): 段落タップで対訳ポップを開閉する。 */
   isMobile?: boolean;
+  itemId: string;
+  revisionId: string;
+  style: TranslationStyle;
+  translationSetId: string | null;
 }
 
 function SectionView({
@@ -686,6 +722,10 @@ function SectionView({
   hlBlockId,
   pendingHighlightQuery,
   isMobile = false,
+  itemId,
+  revisionId,
+  style,
+  translationSetId,
 }: SectionViewProps) {
   const meta = tocMap.get(section.id);
   const number = meta?.number ?? section.heading?.number ?? null;
@@ -714,37 +754,42 @@ function SectionView({
       {(section.blocks ?? [])
         .filter((block) => block.id !== headingBlock?.id && !isLatexSetupNoiseBlock(block))
         .map((block) => {
-        if (block.type === "paragraph") {
-          paraOrdinal += 1;
-          const label = `¶${paraOrdinal} / ${sectionLabel}`;
+          if (block.type === "paragraph") {
+            paraOrdinal += 1;
+            const label = `¶${paraOrdinal} / ${sectionLabel}`;
+            return (
+              <TranslatedParagraph
+                key={block.id}
+                block={block}
+                unit={unitMap.get(block.id) ?? null}
+                parallelLabel={label}
+                popOpen={openPopBlockId === block.id}
+                onTogglePop={() => onTogglePop(block.id)}
+                highlights={highlightsByBlock.get(block.id) ?? []}
+                onAnnotationClick={onAnnotationClick}
+                onCitationClick={onCitationClick}
+                onRefClick={onRefClick}
+                searchHighlight={hlBlockId === block.id ? pendingHighlightQuery : null}
+                isMobile={isMobile}
+              />
+            );
+          }
           return (
-            <TranslatedParagraph
+            <BlockView
               key={block.id}
               block={block}
               unit={unitMap.get(block.id) ?? null}
-              parallelLabel={label}
-              popOpen={openPopBlockId === block.id}
-              onTogglePop={() => onTogglePop(block.id)}
-              highlights={highlightsByBlock.get(block.id) ?? []}
-              onAnnotationClick={onAnnotationClick}
+              onExplainEquation={onExplainEquation}
               onCitationClick={onCitationClick}
               onRefClick={onRefClick}
-              searchHighlight={hlBlockId === block.id ? pendingHighlightQuery : null}
-              isMobile={isMobile}
+              itemId={itemId}
+              revisionId={revisionId}
+              style={style}
+              translationSetId={translationSetId}
+              sectionId={section.id}
             />
           );
-        }
-        return (
-          <BlockView
-            key={block.id}
-            block={block}
-            unit={unitMap.get(block.id) ?? null}
-            onExplainEquation={onExplainEquation}
-            onCitationClick={onCitationClick}
-            onRefClick={onRefClick}
-          />
-        );
-      })}
+        })}
       {(section.sections ?? []).map((sub) => (
         <SectionView
           key={sub.id}
@@ -763,6 +808,10 @@ function SectionView({
           hlBlockId={hlBlockId}
           pendingHighlightQuery={pendingHighlightQuery}
           isMobile={isMobile}
+          itemId={itemId}
+          revisionId={revisionId}
+          style={style}
+          translationSetId={translationSetId}
         />
       ))}
     </section>
@@ -776,12 +825,22 @@ function BlockView({
   onExplainEquation,
   onCitationClick,
   onRefClick,
+  itemId,
+  revisionId,
+  style,
+  translationSetId,
+  sectionId,
 }: {
   block: DocBlock;
   unit: TranslationUnitItem | null;
   onExplainEquation: (latex: string) => void;
   onCitationClick?: (refId: string) => void;
   onRefClick?: (ref: string, kind?: string | null) => void;
+  itemId: string;
+  revisionId: string;
+  style: TranslationStyle;
+  translationSetId: string | null;
+  sectionId: string;
 }) {
   switch (block.type) {
     case "equation":
@@ -798,15 +857,24 @@ function BlockView({
     case "heading":
       return (
         <div data-block-id={block.id}>
-          <SectionHeading number={block.number ?? null} titleJa={null} titleEn={block.title ?? ""} />
+          <SectionHeading
+            number={block.number ?? null}
+            titleJa={null}
+            titleEn={block.title ?? ""}
+          />
         </div>
       );
     case "figure":
     case "table": {
       return (
-        <FigureTableBlock
+        <TranslatableFigureTableBlock
           block={block}
           unit={unit}
+          itemId={itemId}
+          revisionId={revisionId}
+          style={style}
+          translationSetId={translationSetId}
+          sectionId={sectionId}
           onCitationClick={onCitationClick}
           onRefClick={onRefClick}
         />
@@ -840,6 +908,10 @@ function BlockView({
             lineHeight: 1.8,
             color: "var(--pr-text-body)",
             margin: "0 0 22px",
+            minWidth: 0,
+            maxWidth: "100%",
+            overflowWrap: "anywhere",
+            wordBreak: "break-word",
           }}
         >
           {text != null ? (
@@ -859,6 +931,46 @@ function BlockView({
       );
     }
   }
+}
+
+function TranslatableFigureTableBlock({
+  block,
+  unit,
+  itemId,
+  revisionId,
+  style,
+  translationSetId,
+  sectionId,
+  onCitationClick,
+  onRefClick,
+}: {
+  block: DocBlock;
+  unit: TranslationUnitItem | null;
+  itemId: string;
+  revisionId: string;
+  style: TranslationStyle;
+  translationSetId: string | null;
+  sectionId: string;
+  onCitationClick?: (refId: string) => void;
+  onRefClick?: (ref: string, kind?: string | null) => void;
+}) {
+  const tableTranslation = useTableTranslation({
+    itemId,
+    revisionId,
+    style,
+    translationSetId,
+    sectionId,
+    blockId: block.id,
+  });
+  return (
+    <FigureTableBlock
+      block={block}
+      unit={unit}
+      tableTranslation={block.type === "table" ? tableTranslation : null}
+      onCitationClick={onCitationClick}
+      onRefClick={onRefClick}
+    />
+  );
 }
 
 /** 初期スケルトン(1b §5.9)。 */

@@ -47,8 +47,15 @@ class StorageKeys:
         return f"sources/{paper_id}/{source_version}/original.pdf"
 
     @staticmethod
-    def translated_pdf(paper_id: str, source_version: str, style: str) -> str:
-        return f"sources/{paper_id}/{source_version}/translated-{style}.pdf"
+    def translated_pdf(
+        paper_id: str,
+        source_version: str,
+        style: str,
+        *,
+        translation_set_id: str | None = None,
+    ) -> str:
+        set_suffix = f"-{translation_set_id}" if translation_set_id is not None else ""
+        return f"sources/{paper_id}/{source_version}/translated-{style}{set_suffix}.pdf"
 
     @staticmethod
     def bilingual_pdf(paper_id: str, source_version: str, style: str) -> str:

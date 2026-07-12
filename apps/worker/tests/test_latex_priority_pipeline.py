@@ -1,7 +1,8 @@
+# mypy: disable-error-code="attr-defined"
 """M2-01: arXiv 取り込みの取得優先順位 LaTeX > HTML > PDF(plans/05 §1.3・§5)。
 
 - LaTeX ソース(e-print)が取得・解析できる場合、品質 A・`source_format='latex'`・
-  `parser_version='latex-1.3.0'` で構造化され、HTML 取得(SourceAsset kind='arxiv_html')は
+  `parser_version='latex-1.3.5'` で構造化され、HTML 取得(SourceAsset kind='arxiv_html')は
   行われない(優先順位の主経路化)。
 - LaTeX の取得/解析に失敗した場合は既存の HTML 経路へ**可視的に**フォールバックする
   (`jobs.log` に warn を記録。P3)。
@@ -10,6 +11,8 @@
 新規に定義し、``apps/worker/tests/conftest.py`` の既定 ``arxiv_http``/``worker_ctx``
 (空バイト e-print → 既存 HTML 経路)は変更しない(読み取り専用)。フォールバック側は
 既定の ``worker_ctx`` をそのまま使う。
+
+The tests intentionally monkeypatch private candidate and asset seams on worker modules.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import fitz
 import httpx
@@ -41,12 +44,14 @@ from alinea_core.ingest import DocumentCompleteness, build_timeline
 from alinea_core.jobs.store import JobStore
 from alinea_core.parsing.html_parser import PARSER_VERSION as HTML_PARSER_VERSION
 from alinea_core.parsing.pdf_parser import PARSER_VERSION as PDF_PARSER_VERSION
+from alinea_core.parsing.pdf_parser import ParsedPdfDocument
 from alinea_core.settings import CoreSettings
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from alinea_llm.router import LLMRouter
 from alinea_worker import pipeline as worker_pipeline
 from alinea_worker import source_candidates as source_candidate_module
 from alinea_worker.figure_assets import html_asset_url
+from alinea_worker.latex_pdf import PDF_BUILD_VERSION
 from alinea_worker.pipeline import IngestRun, run_ingest
 from alinea_worker.source_candidates import (
     embedded_pdf_bytes,
@@ -470,9 +475,7 @@ def _make_oversized_source_stub(
         return Response(_VALID_STORED_HTML, media_type="text/html; charset=utf-8")
 
     async def pdf(_request: Request) -> Response:
-        headers = (
-            {"content-length": str(declared_length)} if source == "pdf" else None
-        )
+        headers = {"content-length": str(declared_length)} if source == "pdf" else None
         return Response(_VALID_PRIORITY_PDF, headers=headers, media_type="application/pdf")
 
     return Starlette(
@@ -627,6 +630,7 @@ async def _seed_existing_pdf_revision_for_embedded_selection(
         )
     )
     pdf_candidate = parse_pdf_candidate(embedded_pdf, pdf_text="")
+    assert isinstance(pdf_candidate.parsed, ParsedPdfDocument)
     stats: dict[str, Any] = {
         **pdf_candidate.parsed.stats,
         "marker": "existing revision must not be mutated",
@@ -773,9 +777,7 @@ async def test_pdf_text_evidence_defers_content_error_to_pdf_candidate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def fail(_data: bytes) -> Any:
-        raise worker_pipeline.CandidateUnavailable(
-            "pdf", "pdf_open_error", "synthetic corrupt PDF"
-        )
+        raise worker_pipeline.CandidateUnavailable("pdf", "pdf_open_error", "synthetic corrupt PDF")
 
     monkeypatch.setattr(worker_pipeline, "count_pdf_text_evidence_isolated", fail)
     run = object.__new__(IngestRun)
@@ -801,9 +803,7 @@ async def test_pdf_text_evidence_defers_operational_failure_to_pdf_candidate(
     code: str,
 ) -> None:
     async def fail(_data: bytes) -> Any:
-        raise worker_pipeline.CandidateUnavailable(
-            "pdf", code, "synthetic child failure"
-        )
+        raise worker_pipeline.CandidateUnavailable("pdf", code, "synthetic child failure")
 
     monkeypatch.setattr(worker_pipeline, "count_pdf_text_evidence_isolated", fail)
     run = object.__new__(IngestRun)
@@ -927,6 +927,7 @@ async def test_pdf_candidate_sequence_does_not_ocr_after_accepted_text_pdf() -> 
     )
 
     assert candidate is not None and candidate.report.accepted
+    assert isinstance(candidate.parsed, ParsedPdfDocument)
     assert candidate.parsed.stats["ocr"] is False
     assert failures == []
 
@@ -1058,6 +1059,7 @@ async def test_pdf_candidate_sequence_releases_incomplete_text_candidate_before_
         nonlocal candidate_ref, parsed_ref, image_ref
         candidate = original_parse_candidate(data, pdf_text=pdf_text)
         candidate.report = _completeness_report("document_incomplete")
+        assert isinstance(candidate.parsed, ParsedPdfDocument)
         image = LargeImageSentinel()
         candidate.parsed.figure_images["large-sentinel"] = image  # type: ignore[assignment]
         candidate_ref = weakref.ref(candidate)
@@ -1093,11 +1095,14 @@ def test_pdf_ocr_checkpoint_identity_rejects_missing_or_mismatched_provenance() 
     }
     diagnostics = [dict(identity)]
 
-    assert IngestRun._checkpoint_candidate_identity(
-        {"candidate_identity": dict(identity)},
-        diagnostics,
-        source_format="pdf",
-    ) == identity
+    assert (
+        IngestRun._checkpoint_candidate_identity(
+            {"candidate_identity": dict(identity)},
+            diagnostics,
+            source_format="pdf",
+        )
+        == identity
+    )
     with pytest.raises(FetchError, match="OCR identity is missing"):
         IngestRun._checkpoint_candidate_identity({}, diagnostics, source_format="pdf")
     with pytest.raises(FetchError, match="OCR identity is invalid"):
@@ -1107,11 +1112,14 @@ def test_pdf_ocr_checkpoint_identity_rejects_missing_or_mismatched_provenance() 
             source_format="pdf",
         )
 
-    assert IngestRun._checkpoint_candidate_identity(
-        {},
-        [],
-        source_format="pdf",
-    ) is None
+    assert (
+        IngestRun._checkpoint_candidate_identity(
+            {},
+            [],
+            source_format="pdf",
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -1228,8 +1236,8 @@ def test_pdf_revision_provenance_requires_exact_fresh_parser_identity(
     }
 
     with pytest.raises(FetchError, match="parser provenance"):
-        run._validate_revision_candidate_provenance(  # type: ignore[arg-type]
-            SimpleNamespace(**revision_values)
+        run._validate_revision_candidate_provenance(
+            cast(DocumentRevision, SimpleNamespace(**revision_values))
         )
 
 
@@ -1241,16 +1249,19 @@ def test_pdf_revision_provenance_accepts_exact_fresh_parser_identity() -> None:
     run._candidate_diagnostics = []
     run.parsed_pdf = parsed
 
-    run._validate_revision_candidate_provenance(  # type: ignore[arg-type]
-        SimpleNamespace(
-            source_format="pdf",
-            quality_level="B",
-            parser_version=PDF_PARSER_VERSION,
-            stats={
-                "ocr": False,
-                "pages": parsed.stats["pages"],
-                "extracted_chars": parsed.stats["extracted_chars"],
-            },
+    run._validate_revision_candidate_provenance(
+        cast(
+            DocumentRevision,
+            SimpleNamespace(
+                source_format="pdf",
+                quality_level="B",
+                parser_version=PDF_PARSER_VERSION,
+                stats={
+                    "ocr": False,
+                    "pages": parsed.stats["pages"],
+                    "extracted_chars": parsed.stats["extracted_chars"],
+                },
+            ),
         )
     )
 
@@ -1278,6 +1289,7 @@ def _install_no_text_then_ocr_test_doubles(
     ) -> Any:
         ocr_candidate_bytes.append(data)
         candidate = original_parse_candidate(data, pdf_text=pdf_text)
+        assert isinstance(candidate.parsed, ParsedPdfDocument)
         candidate.parsed.stats["ocr"] = True
         candidate.diagnostics = [
             {
@@ -1300,9 +1312,7 @@ async def test_pdf_ocr_is_final_candidate_after_no_text_and_reuses_pdf_bytes_onc
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original_materialize = IngestRun._materialize_candidate_figures
-    text_candidate_bytes, ocr_candidate_bytes = _install_no_text_then_ocr_test_doubles(
-        monkeypatch
-    )
+    text_candidate_bytes, ocr_candidate_bytes = _install_no_text_then_ocr_test_doubles(monkeypatch)
     materialized_candidates: list[str] = []
 
     async def track_materialization(
@@ -1311,11 +1321,7 @@ async def test_pdf_ocr_is_final_candidate_after_no_text_and_reuses_pdf_bytes_onc
         **kwargs: Any,
     ) -> None:
         marker = next(
-            (
-                item["kind"]
-                for item in candidate.diagnostics
-                if item.get("kind") == "pdf_ocr"
-            ),
+            (item["kind"] for item in candidate.diagnostics if item.get("kind") == "pdf_ocr"),
             "pdf_text",
         )
         materialized_candidates.append(marker)
@@ -1447,6 +1453,7 @@ async def test_scanned_embedded_pdf_uses_ocr_before_falling_back_to_original_pdf
         assert data == embedded_pdf
         ocr_calls.append(data)
         candidate = original_parse_candidate(data, pdf_text=pdf_text)
+        assert isinstance(candidate.parsed, ParsedPdfDocument)
         candidate.parsed.stats["ocr"] = True
         candidate.diagnostics = [
             {
@@ -1729,7 +1736,7 @@ async def test_ingest_prefers_latex_source_when_available(
         .one()
     )
     assert rev.source_format == "latex"
-    assert rev.parser_version == "latex-1.3.0"
+    assert rev.parser_version == "latex-1.3.5"
     assert rev.quality_level == "A"
     assert rev.stats["candidate_failures"] == []
     assert rev.stats["completeness"]["accepted"] is True
@@ -1958,9 +1965,9 @@ async def test_legacy_revision_without_figure_identity_rolls_to_new_parser_revis
     revision_list = revisions.all()
     assert {item.parser_version for item in revision_list} == {
         "latex-1.2.0",
-        "latex-1.3.0",
+        "latex-1.3.5",
     }
-    current = next(item for item in revision_list if item.parser_version == "latex-1.3.0")
+    current = next(item for item in revision_list if item.parser_version == "latex-1.3.5")
     assert current.stats["figure_materialization_version"] == (
         worker_pipeline.FIGURE_MATERIALIZATION_VERSION
     )
@@ -2500,6 +2507,7 @@ async def test_candidate_materialization_deadline_does_not_starve_pdf_fallback(
 
     def start_deadline(
         _cls: type[worker_pipeline.MaterializationDeadline],
+        /,
         *,
         timeout_s: float,
         **_kwargs: Any,
@@ -2582,6 +2590,7 @@ async def test_validated_cache_persistence_failure_rolls_back_revision(
 
     def start_deadline(
         _cls: type[worker_pipeline.MaterializationDeadline],
+        /,
         **_kwargs: Any,
     ) -> Any:
         nonlocal starts
@@ -2952,7 +2961,7 @@ async def test_latex_wrapper_promotes_embedded_pdf_to_pdf_candidate(
         .all()
     )
     assets_by_kind = {asset.kind: asset for asset in assets}
-    assert set(assets_by_kind) == {"arxiv_latex", "pdf"}
+    assert set(assets_by_kind) == {"arxiv_latex", "pdf", "translated_pdf"}
     storage = S3Storage()
     original_asset = assets_by_kind["pdf"]
     assert original_asset.storage_key == StorageKeys.original_pdf(ids["paper_id"], "v1")
@@ -3222,7 +3231,11 @@ async def test_fresh_embedded_candidate_reuses_exact_existing_pdf_revision(
     )
     assert [str(revision.id) for revision in revisions] == [revision_id]
     assert revisions[0].content == stored_content
-    assert revisions[0].stats == stored_stats
+    current_stats = dict(revisions[0].stats)
+    translated_pdf_stats = current_stats.pop("translated_pdf")
+    assert current_stats == stored_stats
+    assert set(translated_pdf_stats) == {"natural"}
+    assert translated_pdf_stats["natural"]["build_version"] == PDF_BUILD_VERSION
     paper = await db_session.get(Paper, ids["paper_id"])
     assert paper is not None
     assert str(paper.latest_revision_id) == revision_id
@@ -3615,7 +3628,7 @@ async def test_embedded_pdf_wrapper_failure_continues_to_html(
     if len(expected_failure_codes) == 2:
         assert revision.stats["candidate_failures"][1]["embedded_pdf_source"] == "body.pdf"
     kinds = await _source_asset_kinds(db_session, ids["paper_id"])
-    assert kinds == {"arxiv_html", "pdf"}
+    assert kinds == {"arxiv_html", "pdf", "translated_pdf"}
 
 
 @pytest.mark.parametrize(
@@ -4121,7 +4134,7 @@ async def test_ingest_falls_back_to_stored_pdf_when_latex_and_html_fail(
         .one()
     )
     assert rev.source_format == "pdf"
-    assert rev.parser_version == "pdf-1.2.0"
+    assert rev.parser_version == PDF_PARSER_VERSION
     assert rev.quality_level == "B"
     assert rev.stats["candidate_failures"] == [
         {
@@ -5099,9 +5112,7 @@ async def test_ingest_rejects_malformed_structuring_checkpoint_without_reselecti
     assert calls == {"pdf": 0, "eprint": 0, "html": 0}
 
 
-@pytest.mark.parametrize(
-    "resume_stage", ["parsing", "structuring"], ids=["parsing", "structuring"]
-)
+@pytest.mark.parametrize("resume_stage", ["parsing", "structuring"], ids=["parsing", "structuring"])
 async def test_stale_parser_checkpoint_reselects_current_parser_and_completes(
     resume_stage: str,
     db_session: AsyncSession,
@@ -5387,6 +5398,66 @@ async def test_optional_candidate_http_status_records_retryable_diagnostic(
     assert revision.stats["candidate_failures"][failure_index]["code"] == expected_code
 
 
+async def test_transient_eprint_failure_is_retried_before_html_fallback(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+) -> None:
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    calls = {"eprint": 0}
+
+    async def transient_eprint(_request: Request) -> Response:
+        calls["eprint"] += 1
+        if calls["eprint"] == 1:
+            return Response("temporary upstream failure", status_code=503)
+        return Response(
+            _build_latex_archive(),
+            media_type="application/x-eprint-tar",
+        )
+
+    async def valid_html(_request: Request) -> Response:
+        return Response(_VALID_INLINE_SVG_HTML, media_type="text/html")
+
+    transport = httpx.ASGITransport(
+        app=Starlette(
+            routes=[
+                Route("/api/query", _query, methods=["GET"]),
+                Route("/oai2", _oai2, methods=["GET"]),
+                Route("/e-print/{arxiv_id:path}", transient_eprint, methods=["GET"]),
+                Route("/html/{path:path}", valid_html, methods=["GET"]),
+                Route("/pdf/{arxiv_id:path}", _pdf_valid, methods=["GET"]),
+            ]
+        )
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert calls == {"eprint": 2}
+    assert revision.source_format == "latex"
+
+
 async def test_all_candidate_failures_raise_first_retryable_error(
     db_session: AsyncSession,
     router: LLMRouter,
@@ -5538,9 +5609,7 @@ async def test_arxiv_source_download_bounds_declared_and_actual_lengths_without_
         assert revision.source_format == expected_format
         failed_format = "latex" if source == "eprint" else "arxiv_html"
         failure = next(
-            item
-            for item in revision.stats["candidate_failures"]
-            if item["format"] == failed_format
+            item for item in revision.stats["candidate_failures"] if item["format"] == failed_format
         )
         assert failure["code"] == "source_too_large"
         oversized_key = (

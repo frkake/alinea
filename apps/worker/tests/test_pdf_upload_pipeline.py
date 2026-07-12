@@ -1,3 +1,4 @@
+# mypy: disable-error-code="attr-defined"
 """PDF アップロード取り込みの worker 配線(M1-22 (a)。plans/05 §6・§9・§12.3 前段)。
 
 PY-ING-04 の worker 部: `POST /api/ingest/pdf` が積む `source='pdf_upload'` の ingest ジョブを
@@ -6,6 +7,8 @@ fetching(HTML/PDF 取得・レート制限)は一切経由しない(§9.2「ロ�
 
 フィクスチャは `packages/py-core/tests/fixtures/pdf_*.pdf`(pymupdf で自作した最小 PDF)を
 そのまま再利用する(外部ネットワーク通信なし)。
+
+The tests intentionally monkeypatch private candidate and asset seams on ``pipeline``.
 """
 
 from __future__ import annotations
@@ -25,6 +28,8 @@ from alinea_core.db.models import DocumentRevision, LibraryItem, Paper, Translat
 from alinea_core.document.blocks import DocumentContent
 from alinea_core.ingest import build_timeline
 from alinea_core.jobs.store import JobStore
+from alinea_core.parsing.pdf_parser import PARSER_VERSION as PDF_PARSER_VERSION
+from alinea_core.parsing.pdf_parser import ParsedPdfDocument
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from alinea_core.translation.pipeline import compute_translation_scope
 from alinea_worker import pipeline as worker_pipeline
@@ -196,7 +201,7 @@ async def test_pdf_upload_ingest_reaches_complete_quality_b(
     rev = await _revision(db_session, ids["paper_id"])
     assert rev.quality_level == "B"
     assert rev.source_format == "pdf"
-    assert rev.parser_version == "pdf-1.2.0"
+    assert rev.parser_version == PDF_PARSER_VERSION
     assert rev.source_version == "v1"
     source_key = StorageKeys.original_pdf(ids["paper_id"], "v1")
     assert rev.stats["selected_source"] == {
@@ -255,10 +260,11 @@ async def test_pdf_upload_ingest_reaches_complete_quality_b(
 
     # タイムライン 1 段目は「PDF 取得(拡張から直接送信)」(§10.2)。
     timeline = build_timeline(job.log)
-    assert len(timeline) == 3
+    assert len(timeline) == 4
     assert timeline[0]["label"] == "PDF 取得(拡張から直接送信)"
     assert "構造化" in timeline[1]["label"]
     assert "全文翻訳 完了" in timeline[2]["label"]
+    assert "日本語PDFをビルド" in timeline[3]["label"]
 
 
 async def test_pdf_upload_uses_ocr_after_no_text_layer_and_persists_identity(
@@ -289,6 +295,7 @@ async def test_pdf_upload_uses_ocr_after_no_text_layer_and_persists_identity(
         ocr_calls.append(data)
         candidate = original_parse_candidate(readable_pdf, pdf_text=pdf_text)
         candidate.source_bytes = data
+        assert isinstance(candidate.parsed, ParsedPdfDocument)
         candidate.parsed.stats["ocr"] = True
         candidate.diagnostics = [
             {
@@ -455,9 +462,7 @@ async def test_pdf_upload_operational_figure_failure_is_left_for_job_retry(
         raise worker_pipeline.FigureAssetError(raised_code, "synthetic operational failure")
 
     monkeypatch.setattr(worker_pipeline, "_materialize_figure_payload", fail_materialization)
-    ids = await _seed_pdf_ingest_job(
-        db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf")
-    )
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf"))
     store = JobStore(db_session)
     job = await store.claim(ids["job_id"])
     assert job is not None
@@ -502,6 +507,7 @@ async def test_pdf_validated_cache_persistence_failure_rolls_back_revision(
 
     def start_deadline(
         _cls: type[worker_pipeline.MaterializationDeadline],
+        /,
         **_kwargs: Any,
     ) -> Any:
         nonlocal starts
@@ -539,9 +545,7 @@ async def test_ambiguous_commit_preserves_committed_revision_assets_and_retry_su
     worker_ctx: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ids = await _seed_pdf_ingest_job(
-        db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf")
-    )
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf"))
     maker = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
     ctx = {**worker_ctx, "sessionmaker": maker}
     store = JobStore(db_session)
@@ -582,9 +586,7 @@ async def test_ambiguous_commit_preserves_committed_revision_assets_and_retry_su
     committed_keys.extend(
         [
             paper.thumbnail_key,
-            StorageKeys.thumbnail_retina_sibling(
-                paper.thumbnail_key, paper_id=ids["paper_id"]
-            ),
+            StorageKeys.thumbnail_retina_sibling(paper.thumbnail_key, paper_id=ids["paper_id"]),
         ]
     )
     assert all(isinstance(key, str) for key in committed_keys)
@@ -720,9 +722,7 @@ async def test_pdf_upload_stale_parser_checkpoint_reparses_with_current_version(
     db_session: AsyncSession,
     worker_ctx: dict[str, Any],
 ) -> None:
-    ids = await _seed_pdf_ingest_job(
-        db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf")
-    )
+    ids = await _seed_pdf_ingest_job(db_session, pdf_bytes=_load_pdf("pdf_quality_b_sample.pdf"))
     store = JobStore(db_session)
     first_job = await store.claim(ids["job_id"])
     assert first_job is not None
@@ -762,10 +762,8 @@ async def test_pdf_upload_stale_parser_checkpoint_reparses_with_current_version(
         .scalars()
         .all()
     )
-    assert [str(item.id) for item in revisions if item.parser_version == "pdf-1.0.0"] == [
-        legacy_id
-    ]
-    current = [item for item in revisions if item.parser_version == "pdf-1.2.0"]
+    assert [str(item.id) for item in revisions if item.parser_version == "pdf-1.0.0"] == [legacy_id]
+    current = [item for item in revisions if item.parser_version == PDF_PARSER_VERSION]
     assert len(current) == 1
     paper = await db_session.get(Paper, ids["paper_id"])
     assert paper is not None
@@ -911,7 +909,7 @@ async def test_pdf_upload_parsing_checkpoint_rejects_changed_source_bytes(
         "parsing",
         {
             "source_format": "pdf_upload",
-            "parser_version": "pdf-1.2.0",
+            "parser_version": PDF_PARSER_VERSION,
             "candidate_failures": [],
             "completeness": {"accepted": True},
             "adopt_from_revision_id": None,

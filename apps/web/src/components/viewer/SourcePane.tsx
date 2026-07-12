@@ -484,6 +484,10 @@ function SourceBlock({
           padding: "10px 14px",
           border: "1px solid var(--pr-border-card)",
           borderRadius: 8,
+          minWidth: 0,
+          maxWidth: "100%",
+          overflowWrap: "anywhere",
+          wordBreak: "break-word",
         }}
       >
         {block.title ? <strong>{block.title} </strong> : null}

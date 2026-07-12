@@ -11,7 +11,7 @@ gzip(1 ファイル投稿の arXiv 慣習)。メインファイルは `\\documen
 
 `\\input`/`\\include` を再帰展開し、`\\bibliography{...}` は同梱 `.bbl` があれば埋め込む。
 出力は `alinea_core.parsing.html_parser.ParsedDocument`(既存 IR を再利用。重複定義しない)
-で `quality_level="A"`, `source_format="latex"`, `parser_version="latex-1.3.0"`。
+で `quality_level="A"`, `source_format="latex"`, `parser_version="latex-1.3.5"`。
 
 相互参照(`\\ref`/`\\eqref`)は 2 パスで解決する: 1 パス目で全ブロックを構築しつつ `\\label` を
 label→kind map に記録し、2 パス目で保留中の `ref` インラインへ `kind` を確定する(HTML パーサの
@@ -38,7 +38,7 @@ from alinea_core.document.inlines import Inline
 from alinea_core.parsing.block_ids import assign_block_ids
 from alinea_core.parsing.html_parser import ParsedDocument
 
-PARSER_VERSION = "latex-1.3.0"
+PARSER_VERSION = "latex-1.3.5"
 
 _WS = re.compile(r"\s+")
 
@@ -226,9 +226,7 @@ class _BoundedTarInfo(tarfile.TarInfo):
             _raise_invalid_archive("e-print PAX header is truncated")
 
         pax_headers = (
-            archive.pax_headers
-            if self.type == tarfile.XGLTYPE
-            else archive.pax_headers.copy()
+            archive.pax_headers if self.type == tarfile.XGLTYPE else archive.pax_headers.copy()
         )
         raw_headers, encoding = self._bounded_pax_records(
             buffer[: self.size],
@@ -310,16 +308,10 @@ class _BoundedTarInfo(tarfile.TarInfo):
             value_end = record_end - 1
             keyword_and_value = payload[digit_end + 1 : value_end]
             raw_keyword, equals, raw_value = keyword_and_value.partition(b"=")
-            if (
-                not raw_keyword
-                or equals != b"="
-                or payload[value_end] != 0x0A
-            ):
+            if not raw_keyword or equals != b"=" or payload[value_end] != 0x0A:
                 _raise_invalid_archive("e-print PAX record has invalid framing")
             if raw_keyword.startswith(b"GNU.sparse."):
-                _raise_invalid_archive(
-                    "e-print tar archive uses unsupported sparse metadata"
-                )
+                _raise_invalid_archive("e-print tar archive uses unsupported sparse metadata")
 
             budget.reserve_pax_record(len(records) + 1)
             records.append((length, raw_keyword, raw_value))
@@ -424,16 +416,12 @@ class _BoundedGzipReader(io.RawIOBase):
                 self._streams = _reserve_compressed_stream(self._streams, "gzip")
                 self._decompressor = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
             else:
-                compressed = self._pending or self._source.read(
-                    _COMPRESSED_READ_CHUNK_BYTES
-                )
+                compressed = self._pending or self._source.read(_COMPRESSED_READ_CHUNK_BYTES)
                 self._pending = b""
                 if not isinstance(compressed, bytes):
                     raise OSError("gzip source returned non-bytes data")
                 if not compressed:
-                    raise EOFError(
-                        "compressed gzip archive ended before the stream marker"
-                    )
+                    raise EOFError("compressed gzip archive ended before the stream marker")
 
             data = self._decompressor.decompress(compressed, size)
             self._pending = self._decompressor.unconsumed_tail
@@ -496,9 +484,7 @@ class _BoundedBzip2Reader(io.RawIOBase):
                 if not isinstance(compressed, bytes):
                     raise OSError("bzip2 source returned non-bytes data")
                 if not compressed and self._decompressor.needs_input:
-                    raise EOFError(
-                        "compressed bzip2 archive ended before the stream marker"
-                    )
+                    raise EOFError("compressed bzip2 archive ended before the stream marker")
                 data = self._decompressor.decompress(compressed, max_length=size)
             if data:
                 return data
@@ -568,9 +554,7 @@ class _MemoryLimitedLzmaReader(io.RawIOBase):
                     else b""
                 )
                 if not compressed and self._decompressor.needs_input:
-                    raise EOFError(
-                        "compressed xz archive ended before the stream marker"
-                    )
+                    raise EOFError("compressed xz archive ended before the stream marker")
                 data = self._decompressor.decompress(compressed, size)
             if data:
                 return data
@@ -648,8 +632,7 @@ def _is_plausible_single_tex(data: bytes) -> bool:
     """単一TeX fallbackを、バイナリ制御文字を含まないtextに限定する。"""
 
     return not any(
-        (byte < 0x20 and byte not in _SINGLE_TEX_ALLOWED_CONTROL_BYTES)
-        or byte == 0x7F
+        (byte < 0x20 and byte not in _SINGLE_TEX_ALLOWED_CONTROL_BYTES) or byte == 0x7F
         for byte in data
     )
 
@@ -710,9 +693,7 @@ def extract_latex_archive(archive: bytes) -> LatexArchive:
         raise LatexParseError("archive_too_large", "e-print archive exceeds the input limit")
 
     compression = _archive_compression(archive)
-    bzip2_raw_fallback = compression == "bzip2" and _is_plausible_single_tex_source(
-        archive
-    )
+    bzip2_raw_fallback = compression == "bzip2" and _is_plausible_single_tex_source(archive)
     tar_recognized = False
     limited: _ArchiveExpansionReader | None = None
     extracted_files: tuple[dict[str, str], dict[str, bytes], dict[str, str]] | None = None
@@ -771,15 +752,11 @@ def extract_latex_archive(archive: bytes) -> LatexArchive:
                 if text_files:
                     extracted_files = (text_files, binary_files, raw_text_files)
                 else:
-                    raise LatexParseError(
-                        "no_main_tex", "no .tex content found in e-print archive"
-                    )
+                    raise LatexParseError("no_main_tex", "no .tex content found in e-print archive")
     except LatexParseError:
         raise
     except tarfile.ReadError as exc:
-        if tar_recognized or (
-            compression in {"bzip2", "xz"} and not bzip2_raw_fallback
-        ):
+        if tar_recognized or (compression in {"bzip2", "xz"} and not bzip2_raw_fallback):
             raise LatexParseError("invalid_archive", "e-print tar archive is invalid") from exc
     except (tarfile.TarError, ValueError, OverflowError, RecursionError) as exc:
         raise LatexParseError("invalid_archive", "e-print tar archive is invalid") from exc
@@ -853,9 +830,7 @@ _LITERAL_START_RE = re.compile(
     r"(?P<inline>verb\*?)(?![A-Za-z])"
     r")"
 )
-_ENVIRONMENT_BOUNDARY_RE = re.compile(
-    r"\\(?P<kind>begin|end)\{(?P<name>[a-zA-Z]+\*?)\}"
-)
+_ENVIRONMENT_BOUNDARY_RE = re.compile(r"\\(?P<kind>begin|end)\{(?P<name>[a-zA-Z]+\*?)\}")
 _VERB_END_TMPL = r"\\end\{{{}}}"
 
 
@@ -1320,9 +1295,7 @@ def _bib_entry_to_bibitem(
             budget.reserve_ir_object()
         authors.append(author)
     authors_text = (
-        _join_emittable(authors, ", ", budget)
-        if budget is not None
-        else ", ".join(authors)
+        _join_emittable(authors, ", ", budget) if budget is not None else ", ".join(authors)
     )
     title = fields.get("title") or ""
     venue = fields.get("journal") or fields.get("booktitle") or fields.get("publisher") or ""
@@ -1438,8 +1411,10 @@ _SETUP_CMDS = frozenset(
         "definecolor",
         "graphicspath",
         "hypersetup",
+        "let",
         "newcommand",
         "newenvironment",
+        "newif",
         "newlength",
         "newtheorem",
         "providecommand",
@@ -1474,6 +1449,37 @@ def _read_tex_control_token(text: str, pos: int) -> tuple[str, int, bool] | None
     return text[pos:end], end, False
 
 
+def _parse_let_assignment(
+    text: str,
+    start: int,
+    budget: _LatexEvaluationBudget | None = None,
+) -> tuple[str, str, int] | None:
+    r"""Read the two TeX tokens in ``\let<target>[=]<source>``."""
+
+    if budget is not None:
+        budget.reserve_operation()
+    target_pos = _skip_space(text, start)
+    target = _read_tex_control_token(text, target_pos)
+    if target is None:
+        return None
+    target_raw, target_end, target_is_word = target
+    if budget is not None and target_is_word:
+        budget.reserve_control_token()
+
+    source_pos = _skip_space(text, target_end)
+    if source_pos < len(text) and text[source_pos] == "=":
+        source_pos = _skip_space(text, source_pos + 1)
+    if source_pos >= len(text):
+        return None
+    source = _read_tex_control_token(text, source_pos)
+    if source is None:
+        return target_raw, text[source_pos], source_pos + 1
+    source_raw, source_end, source_is_word = source
+    if budget is not None and source_is_word:
+        budget.reserve_control_token()
+    return target_raw, source_raw, source_end
+
+
 def _is_tex_control_word_start(text: str, pos: int) -> bool:
     """連続 backslash を先頭からtokenizeし、``pos`` がcontrol word開始か判定する。"""
 
@@ -1494,9 +1500,7 @@ def _is_tex_control_word_start(text: str, pos: int) -> bool:
     return False
 
 
-def _search_tex_command(
-    pattern: re.Pattern[str], text: str, pos: int
-) -> re.Match[str] | None:
+def _search_tex_command(pattern: re.Pattern[str], text: str, pos: int) -> re.Match[str] | None:
     """TeX token境界にあるcontrol wordだけをregexで検索する。"""
 
     match = pattern.search(text, pos)
@@ -1542,6 +1546,10 @@ def _consume_setup_command(
     i = start
     while i < len(text) and text[i].isspace():
         i += 1
+
+    if cmd == "let":
+        assignment = _parse_let_assignment(text, start, budget)
+        return assignment[2] if assignment is not None else start
 
     if cmd == "def":
         m = _CONTROL_WORD_RE.match(text, i)
@@ -1691,9 +1699,7 @@ def _parse_newcommand_definition(
     optional_default: str | None = None
     if i < len(text) and text[i] == "[":
         count_group = (
-            _read_budgeted_square(text, i, budget)
-            if budget is not None
-            else _read_square(text, i)
+            _read_budgeted_square(text, i, budget) if budget is not None else _read_square(text, i)
         )
         if count_group is None:
             return None
@@ -1722,9 +1728,7 @@ def _parse_newcommand_definition(
         return None
     try:
         body, end = (
-            _read_budgeted_braced(text, i, budget)
-            if budget is not None
-            else _read_braced(text, i)
+            _read_budgeted_braced(text, i, budget) if budget is not None else _read_braced(text, i)
         )
     except LatexParseError as error:
         if error.kind == "source_evaluation_limit":
@@ -1764,6 +1768,21 @@ def _parse_def_definition(
             raise
         return None
     return name, _MacroDefinition(arg_count, body), end, params
+
+
+def _is_second_control_word_operand_of_primitive(text: str, command_start: int) -> bool:
+    r"""Recognize ``\ifx\foo\def``/``\let\foo=\def`` token operands."""
+
+    prefix_start = max(0, command_start - 512)
+    previous = list(_CONTROL_WORD_RE.finditer(text, prefix_start, command_start))
+    if len(previous) < 2:
+        return False
+    conditional, first_operand = previous[-2:]
+    return bool(
+        conditional.group(0) in {r"\ifx", r"\let"}
+        and not text[conditional.end() : first_operand.start()].strip()
+        and text[first_operand.end() : command_start].strip() in {"", "="}
+    )
 
 
 # ============================================================================
@@ -2000,9 +2019,7 @@ def _read_environment(
             None,
         )
         if end is None:
-            raise LatexParseError(
-                "unterminated_environment", f"unterminated environment: {name}"
-            )
+            raise LatexParseError("unterminated_environment", f"unterminated environment: {name}")
         if budget is not None:
             budget.reserve_structure_match()
             budget.reserve_control_token()
@@ -2038,9 +2055,7 @@ def _read_environment(
         target_depth -= 1
         if target_depth == 0:
             if budget is not None:
-                budget.ensure_emittable_parts(
-                    iter(((text, start, boundary.start()),))
-                )
+                budget.ensure_emittable_parts(iter(((text, start, boundary.start()),)))
             return text[start : boundary.start()], boundary.end()
     raise LatexParseError("unterminated_environment", f"unterminated environment: {name}")
 
@@ -2089,6 +2104,7 @@ def _next_literal_region(text: str, pos: int) -> tuple[int, int] | None:
 # combined patternを使い、候補ごとの再検索は行わない。
 _BEGIN_RE = re.compile(r"\\begin\{([a-zA-Z]+\*?)\}")
 _TOP_LEVEL_STRUCTURAL_RE = re.compile(
+    r"(?P<display_dollar>\$\$)|"
     r"\\(?:"
     r"(?P<section>section|subsection|subsubsection)(?P<star>\*)?(?![A-Za-z])|"
     r"begin\{(?P<environment>[a-zA-Z]+\*?)\}|"
@@ -2228,9 +2244,7 @@ def _environment_option(
                     )
                     if budget is not None:
                         budget.reserve_structure_match()
-                        budget.ensure_emittable_parts(
-                            iter(((clean, 1, close_pos),))
-                        )
+                        budget.ensure_emittable_parts(iter(((clean, 1, close_pos),)))
                     unwrapped, end = clean[1:close_pos], close_pos + 1
                 except LatexParseError as error:
                     if error.kind == "source_evaluation_limit":
@@ -2261,15 +2275,39 @@ def _iter_top_level(
     literal = _next_literal_region(text, 0)
     structural_matches = _TOP_LEVEL_STRUCTURAL_RE.finditer(text)
 
+    def is_escaped(position: int) -> bool:
+        backslashes = 0
+        cursor = position - 1
+        while cursor >= 0 and text[cursor] == "\\":
+            if budget is not None:
+                budget.reserve_operation()
+            backslashes += 1
+            cursor -= 1
+        return backslashes % 2 == 1
+
     def next_structural() -> re.Match[str] | None:
         for candidate in structural_matches:
-            if not _is_tex_control_word_start(text, candidate.start()):
-                continue
-            if budget is not None:
-                budget.reserve_structure_match()
-                budget.reserve_control_token()
+            if candidate.group("display_dollar") is not None:
+                if is_escaped(candidate.start()):
+                    continue
+                if budget is not None:
+                    budget.reserve_structure_match()
+            else:
+                if not _is_tex_control_word_start(text, candidate.start()):
+                    continue
+                if budget is not None:
+                    budget.reserve_structure_match()
+                    budget.reserve_control_token()
             return candidate
         return None
+
+    def next_display_end(start: int) -> int:
+        end = text.find("$$", start)
+        while end >= 0 and is_escaped(end):
+            if budget is not None:
+                budget.reserve_structure_match()
+            end = text.find("$$", end + 2)
+        return end
 
     structural = next_structural()
     while i < n:
@@ -2279,9 +2317,7 @@ def _iter_top_level(
             structural = next_structural()
         while literal is not None and literal[1] <= i:
             literal = _next_literal_region(text, literal[1])
-        if literal is not None and (
-            structural is None or literal[0] <= structural.start()
-        ):
+        if literal is not None and (structural is None or literal[0] <= structural.start()):
             start, end = literal
             append_text(text[i:start])
             environment = _VERB_BEGIN_RE.match(text, start)
@@ -2308,6 +2344,16 @@ def _iter_top_level(
         structural = next_structural()
         if m.start() > i:
             append_text(text[i : m.start()])
+        if m.group("display_dollar") is not None:
+            end = next_display_end(m.end())
+            if end < 0:
+                append_text(text[m.start() :])
+                break
+            if budget is not None:
+                budget.ensure_emittable_parts(iter(((text, m.end(), end),)))
+            nodes.append(("env", "equation*", text[m.end() : end]))
+            i = end + 2
+            continue
         if m.group("appendix") is not None:
             nodes.append(("appendix",))
             i = m.end()
@@ -2389,11 +2435,7 @@ def _structure_reference(
                     raw,
                     sentence_boundary.end(),
                 )
-                title_end = (
-                    next_boundary.start()
-                    if next_boundary is not None
-                    else len(raw)
-                )
+                title_end = next_boundary.start() if next_boundary is not None else len(raw)
                 out["title"] = raw[sentence_boundary.end() : title_end].strip()
     dm = _DOI_RE.search(raw)
     if dm:
@@ -2497,28 +2539,10 @@ _THEOREM_ENVS = {
 
 _CITE_CMDS = {"cite", "citet", "citep", "citeauthor", "citeyear", "citealt", "citealp"}
 _REF_CMDS = {"ref", "eqref", "autoref", "cref", "Cref", "nameref"}
-_NO_OUTPUT_CMDS = {
-    "noindent",
-    "par",
-    "newline",
-    "clearpage",
-    "newpage",
-    "bigskip",
-    "medskip",
-    "smallskip",
-    "vfill",
-    "hfill",
+_PRESENTATION_SWITCH_CMDS = {
     "centering",
-    "label",
-    "displaystyle",
-    "textstyle",
-    "scriptstyle",
-    "scriptscriptstyle",
-    "FloatBarrier",
     "raggedleft",
     "raggedright",
-    "sloppy",
-    "fussy",
     "itshape",
     "upshape",
     "bfseries",
@@ -2536,8 +2560,29 @@ _NO_OUTPUT_CMDS = {
     "LARGE",
     "huge",
     "Huge",
+}
+_NO_OUTPUT_CMDS = {
+    "noindent",
+    "par",
+    "newline",
+    "clearpage",
+    "newpage",
+    "bigskip",
+    "medskip",
+    "smallskip",
+    "vfill",
+    "hfill",
+    "label",
+    "displaystyle",
+    "textstyle",
+    "scriptstyle",
+    "scriptscriptstyle",
+    "FloatBarrier",
+    "sloppy",
+    "fussy",
     "protect",
     "unskip",
+    *_PRESENTATION_SWITCH_CMDS,
 }
 _DISCARD_ARGUMENT_CMDS = {
     "vspace": 1,
@@ -2576,45 +2621,49 @@ _SYMBOL_CMDS = {
     "times": "\u00d7",
 }
 
-_SPECIAL_RE = re.compile(
-    r"\$|\\\(|\\\)|\\\[|\\\]|\\\\|\\\s|\\[A-Za-z@]+\*?|\\[%&_#{}$~^]|~|[{}]"
-)
+_SPECIAL_RE = re.compile(r"\$|\\\(|\\\)|\\\[|\\\]|\\\\|\\\s|\\[A-Za-z@]+\*?|\\[%&_#{}$~^]|~|[{}]")
 _BIBITEM_RE = re.compile(r"\\bibitem(?:\[([^\]]*)\])?\{([^}]+)\}")
 _INCLUDEGRAPHICS_RE = re.compile(r"\\includegraphics\*?\s*(?:\[[^\]]*\]\s*)?\{([^}]+)\}")
 _MAKETITLE_RE = re.compile(r"\\maketitle\*?(?![A-Za-z])")
 _THEBIB_BEGIN_RE = re.compile(r"\\begin\{thebibliography\}")
-_STRUCTURAL_CONTROL_WORDS = frozenset(
-    {
-        "LoadClass",
-        "LoadClassWithOptions",
-        "RequirePackage",
-        "RequirePackageWithOptions",
-        "addbibresource",
-        "appendix",
-        "begin",
-        "beginappendix",
-        "bibitem",
-        "bibliography",
-        "caption",
-        "documentclass",
-        "end",
-        "footnote",
-        "href",
-        "include",
-        "includegraphics",
-        "includepdf",
-        "input",
-        "item",
-        "label",
-        "maketitle",
-        "printbibliography",
-        "section",
-        "subsection",
-        "subsubsection",
-        "url",
-        "usepackage",
-    }
-) | frozenset(_CITE_CMDS) | frozenset(_REF_CMDS) | frozenset(_FRONTMATTER_CMDS)
+_STRUCTURAL_CONTROL_WORDS = (
+    frozenset(
+        {
+            "LoadClass",
+            "LoadClassWithOptions",
+            "RequirePackage",
+            "RequirePackageWithOptions",
+            "addbibresource",
+            "appendix",
+            "begin",
+            "beginappendix",
+            "bibitem",
+            "bibliography",
+            "caption",
+            "documentclass",
+            "end",
+            "footnote",
+            "href",
+            "include",
+            "includegraphics",
+            "includepdf",
+            "input",
+            "item",
+            "label",
+            "maketitle",
+            "printbibliography",
+            "section",
+            "subsection",
+            "subsubsection",
+            "url",
+            "usepackage",
+        }
+    )
+    | frozenset(_CITE_CMDS)
+    | frozenset(_REF_CMDS)
+    | frozenset(_FRONTMATTER_CMDS)
+)
+_PRESERVED_SEMANTIC_COMMANDS = _STRUCTURAL_CONTROL_WORDS - {"maketitle"}
 _STRUCTURAL_CONTROL_SYMBOLS = frozenset({r"\(", r"\)", r"\[", r"\]"})
 _STRUCTURAL_SYMBOL_SCAN_RE = re.compile(r"[\\$]")
 
@@ -2757,9 +2806,7 @@ class _LatexEvaluationBudget:
         self.evaluated_chars += chars
         self.evaluated_bytes += byte_count
 
-    def reserve_evaluated_text(
-        self, text: str, start: int = 0, end: int | None = None
-    ) -> None:
+    def reserve_evaluated_text(self, text: str, start: int = 0, end: int | None = None) -> None:
         stop = len(text) if end is None else end
         chars = stop - start
         if chars < 0 or self.evaluated_chars + chars > self.max_evaluated_chars:
@@ -2772,9 +2819,7 @@ class _LatexEvaluationBudget:
         )
         self.reserve_evaluated_size(chars, byte_count)
 
-    def reserve_emitted_text(
-        self, text: str, start: int = 0, end: int | None = None
-    ) -> bool:
+    def reserve_emitted_text(self, text: str, start: int = 0, end: int | None = None) -> bool:
         stop = len(text) if end is None else end
         chars = stop - start
         if chars <= 0:
@@ -2820,18 +2865,14 @@ class _LatexEvaluationBudget:
             )
 
 
-def _iter_join_ranges(
-    parts: list[str], separator: str
-) -> Iterator[tuple[str, int, int]]:
+def _iter_join_ranges(parts: list[str], separator: str) -> Iterator[tuple[str, int, int]]:
     for index, part in enumerate(parts):
         if index:
             yield separator, 0, len(separator)
         yield part, 0, len(part)
 
 
-def _join_emittable(
-    parts: list[str], separator: str, budget: _LatexEvaluationBudget
-) -> str:
+def _join_emittable(parts: list[str], separator: str, budget: _LatexEvaluationBudget) -> str:
     """join結果を生成する前に出力絶対上限を検査する。"""
 
     budget.ensure_emittable_parts(_iter_join_ranges(parts, separator))
@@ -2954,13 +2995,7 @@ def _instantiate_macro_source(
         codepoint = ord(body[body_pos])
         expanded_chars += 1
         expanded_bytes += (
-            1
-            if codepoint <= 0x7F
-            else 2
-            if codepoint <= 0x7FF
-            else 3
-            if codepoint <= 0xFFFF
-            else 4
+            1 if codepoint <= 0x7F else 2 if codepoint <= 0x7FF else 3 if codepoint <= 0xFFFF else 4
         )
         body_pos += 1
     budget.reserve_evaluated_size(expanded_chars, expanded_bytes)
@@ -2988,7 +3023,27 @@ def _instantiate_macro_source(
         literal_start = body_pos
     if literal_start < len(body):
         pieces.append(body[literal_start:])
-    return i, "".join(pieces)
+    separated: list[str] = []
+    separator_count = 0
+    previous_nonempty = ""
+    for piece in pieces:
+        if (
+            piece
+            and previous_nonempty
+            and piece[0] in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz@"
+            and re.search(r"\\[A-Za-z@]+\Z", previous_nonempty) is not None
+        ):
+            # TeX tokenizes the macro body and its argument before substitution.  The
+            # string evaluator must retain that token boundary (``\else#1`` must not
+            # become a new command such as ``\elseOuter``).
+            separated.append(" ")
+            separator_count += 1
+        separated.append(piece)
+        if piece:
+            previous_nonempty = piece
+    if separator_count:
+        budget.reserve_evaluated_size(separator_count, separator_count)
+    return i, "".join(separated)
 
 
 _MAKETITLE_FIELD_ORDER = (
@@ -3187,9 +3242,8 @@ class _LatexEvaluationState:
 
     files: dict[str, str]
     macros: dict[str, _MacroDefinition] = field(default_factory=dict)
-    unsupported_macros: dict[str, _UnsupportedMacroDefinition] = field(
-        default_factory=dict
-    )
+    unsupported_macros: dict[str, _UnsupportedMacroDefinition] = field(default_factory=dict)
+    conditionals: dict[str, bool] = field(default_factory=dict)
     frontmatter: dict[str, list[str]] = field(
         default_factory=lambda: {name: [] for name in _MAKETITLE_FIELD_ORDER}
     )
@@ -3200,6 +3254,127 @@ class _LatexEvaluationState:
     evaluation_budget: _LatexEvaluationBudget = field(
         default_factory=lambda: _LatexEvaluationBudget.from_limits()
     )
+
+
+_TEX_CONDITIONAL_PRIMITIVES = frozenset(
+    {
+        "if",
+        "ifcase",
+        "ifcat",
+        "ifcsname",
+        "ifdefined",
+        "ifdim",
+        "ifeof",
+        "iffalse",
+        "ifhbox",
+        "ifhmode",
+        "ifinner",
+        "ifmmode",
+        "ifnum",
+        "ifodd",
+        "iftrue",
+        "ifvbox",
+        "ifvmode",
+        "ifvoid",
+        "ifx",
+    }
+)
+
+
+def _parse_newif_declaration(
+    text: str,
+    start: int,
+    state: _LatexEvaluationState,
+) -> int | None:
+    token = _read_tex_control_token(text, _skip_space(text, start))
+    if token is None:
+        return None
+    raw, end, is_word = token
+    name = raw[1:] if is_word else ""
+    if not name.startswith("if") or len(name) <= 2:
+        return None
+    state.evaluation_budget.reserve_control_token()
+    state.conditionals[name] = False
+    return end
+
+
+def _apply_newif_setting(command: str, state: _LatexEvaluationState) -> bool:
+    for suffix, enabled in (("true", True), ("false", False)):
+        if not command.endswith(suffix):
+            continue
+        conditional = f"if{command[: -len(suffix)]}"
+        if conditional in state.conditionals:
+            state.conditionals[conditional] = enabled
+            return True
+    return False
+
+
+def _read_known_conditional_branch(
+    text: str,
+    start: int,
+    state: _LatexEvaluationState,
+    *,
+    enabled: bool,
+) -> tuple[int, str]:
+    depth = 1
+    cursor = start
+    else_start: int | None = None
+    else_body_start: int | None = None
+    while True:
+        match = _search_tex_command(_CONTROL_WORD_RE, text, cursor)
+        if match is None:
+            raise LatexParseError(
+                "unsupported_structural_macro",
+                "a declared TeX conditional is missing its closing \\fi",
+            )
+        state.evaluation_budget.reserve_operation()
+        state.evaluation_budget.reserve_control_token()
+        command = match.group(0)[1:].rstrip("*")
+        if command in state.conditionals or command in _TEX_CONDITIONAL_PRIMITIVES:
+            depth += 1
+        elif command == "fi":
+            depth -= 1
+            if depth == 0:
+                if enabled:
+                    selected = text[start : else_start if else_start is not None else match.start()]
+                else:
+                    selected = (
+                        text[else_body_start : match.start()] if else_body_start is not None else ""
+                    )
+                return match.end(), selected
+        elif command == "else" and depth == 1 and else_start is None:
+            else_start = match.start()
+            else_body_start = match.end()
+        cursor = match.end()
+
+
+def _apply_let_assignment(
+    state: _LatexEvaluationState,
+    target_raw: str,
+    source_raw: str,
+) -> None:
+    r"""Apply the subset of ``\let`` meanings represented by the evaluator."""
+
+    target_match = _CONTROL_WORD_RE.fullmatch(target_raw)
+    if target_match is None:
+        return
+    target = target_raw[1:]
+    if target in _PRESERVED_SEMANTIC_COMMANDS:
+        return
+    state.macros.pop(target, None)
+    state.unsupported_macros.pop(target, None)
+
+    source_match = _CONTROL_WORD_RE.fullmatch(source_raw)
+    if source_match is None:
+        state.macros[target] = _MacroDefinition(0, source_raw)
+        return
+    source = source_raw[1:]
+    if source in state.macros:
+        state.macros[target] = state.macros[source]
+    elif source in state.unsupported_macros:
+        state.unsupported_macros[target] = state.unsupported_macros[source]
+    elif source == "relax":
+        state.macros[target] = _MacroDefinition(0, "")
 
 
 @dataclass(frozen=True)
@@ -3216,15 +3391,9 @@ _LATEX_LOADER_SPECS = {
     "documentclass": _LatexLoaderSpec(".cls", loaded_once=True),
     "LoadClass": _LatexLoaderSpec(".cls", loaded_once=True),
     "LoadClassWithOptions": _LatexLoaderSpec(".cls", loaded_once=True),
-    "usepackage": _LatexLoaderSpec(
-        ".sty", loaded_once=True, allow_multiple=True
-    ),
-    "RequirePackage": _LatexLoaderSpec(
-        ".sty", loaded_once=True, allow_multiple=True
-    ),
-    "RequirePackageWithOptions": _LatexLoaderSpec(
-        ".sty", loaded_once=True, allow_multiple=True
-    ),
+    "usepackage": _LatexLoaderSpec(".sty", loaded_once=True, allow_multiple=True),
+    "RequirePackage": _LatexLoaderSpec(".sty", loaded_once=True, allow_multiple=True),
+    "RequirePackageWithOptions": _LatexLoaderSpec(".sty", loaded_once=True, allow_multiple=True),
     "input": _LatexLoaderSpec(".tex", loaded_once=False, allow_unbraced=True),
     "include": _LatexLoaderSpec(".tex", loaded_once=False, allow_unbraced=True),
 }
@@ -3309,9 +3478,9 @@ def _apply_macro_definition(
     *,
     command: str,
 ) -> None:
-    if command == "providecommand" and (
-        name in state.macros or name in state.unsupported_macros
-    ):
+    if name in _PRESERVED_SEMANTIC_COMMANDS:
+        return
+    if command == "providecommand" and (name in state.macros or name in state.unsupported_macros):
         return
     state.evaluation_budget.reserve_ir_object()
     state.macros[name] = definition
@@ -3323,6 +3492,8 @@ def _apply_unsupported_macro_definition(
     name: str,
     definition: _UnsupportedMacroDefinition,
 ) -> None:
+    if name in _PRESERVED_SEMANTIC_COMMANDS:
+        return
     if definition.family.lower().startswith("provide") and (
         name in state.macros or name in state.unsupported_macros
     ):
@@ -3332,9 +3503,7 @@ def _apply_unsupported_macro_definition(
     state.macros.pop(name, None)
 
 
-def _assign_frontmatter_field(
-    state: _LatexEvaluationState, name: str, argument: str
-) -> None:
+def _assign_frontmatter_field(state: _LatexEvaluationState, name: str, argument: str) -> None:
     state.evaluation_budget.reserve_ir_object()
     if name in _MAKETITLE_SINGLETON_FIELDS:
         state.frontmatter[name] = [argument]
@@ -3484,9 +3653,7 @@ def _newcommand_argument_layout(
                     _raise_unsupported_argument_spec_limit()
                 if budget is not None:
                     budget.reserve_structure_match()
-                index = _bounded_unsupported_argument_number(
-                    match.group(1), allow_zero=False
-                )
+                index = _bounded_unsupported_argument_number(match.group(1), allow_zero=False)
                 if index is None or index > count:
                     return None
                 optional_indexes.add(index)
@@ -3502,9 +3669,7 @@ def _newcommand_argument_layout(
     )
 
 
-def _bounded_unsupported_argument_number(
-    raw: str, *, allow_zero: bool
-) -> int | None:
+def _bounded_unsupported_argument_number(raw: str, *, allow_zero: bool) -> int | None:
     clean = raw.strip()
     max_digits = len(str(_MAX_UNSUPPORTED_MACRO_GROUPS))
     if not re.fullmatch(r"[0-9]+", clean) or len(clean) > max_digits:
@@ -3577,9 +3742,7 @@ def _consume_unsupported_invocation_arguments(
 ) -> tuple[int, str]:
     layout = definition.argument_layout
     if layout is None:
-        end, fallback_arguments = _consume_grouped_unsupported_arguments(
-            text, pos, budget
-        )
+        end, fallback_arguments = _consume_grouped_unsupported_arguments(text, pos, budget)
         # 不明な引数言語では次 token を構造リスク検査にだけ使う。0 引数かもしれないため
         # ``end`` は進めず、非構造 token を invocation の一部として消費しない。
         probe, _probe_end = _read_budgeted_macro_argument(text, end, budget)
@@ -3719,6 +3882,49 @@ def _source_reaches_document_structure(
     return False
 
 
+def _macro_source_reaches_command(
+    source: str,
+    target: str,
+    state: _LatexEvaluationState,
+    *,
+    seen: frozenset[str] = frozenset(),
+) -> bool:
+    """Distinguish a definition cycle from a finite same-macro call in an argument."""
+
+    if len(seen) >= _MAX_DISPLAY_MACRO_DEPTH:
+        return True
+    for match in _evaluated_matches(
+        _CONTROL_WORD_RE,
+        source,
+        state.evaluation_budget,
+    ):
+        command = match.group(0)[1:].rstrip("*")
+        if command == target:
+            return True
+        if command in seen:
+            continue
+        supported = state.macros.get(command)
+        unsupported = state.unsupported_macros.get(command)
+        if supported is None and unsupported is None:
+            continue
+        if supported is not None:
+            nested_sources = [supported.body]
+        else:
+            assert unsupported is not None
+            nested_sources = [unsupported.body, unsupported.argument_spec]
+        if any(
+            _macro_source_reaches_command(
+                nested_source,
+                target,
+                state,
+                seen=seen | {command},
+            )
+            for nested_source in nested_sources
+        ):
+            return True
+    return False
+
+
 def _evaluate_unsupported_macro_invocation(
     text: str,
     match: re.Match[str],
@@ -3733,9 +3939,7 @@ def _evaluate_unsupported_macro_invocation(
         text, match.end(), definition, state.evaluation_budget
     )
     if (
-        _source_reaches_document_structure(
-            definition.body, state, seen=frozenset({command})
-        )
+        _source_reaches_document_structure(definition.body, state, seen=frozenset({command}))
         or _source_reaches_document_structure(
             definition.argument_spec, state, seen=frozenset({command})
         )
@@ -3767,8 +3971,24 @@ def _evaluate_macro_invocation(
         state.evaluation_budget,
     )
     end = max(end, match.end())
-    if command in macro_stack:
-        _raise_macro_expansion_limit("recursion")
+    if command in macro_stack and _macro_source_reaches_command(
+        definition.body,
+        command,
+        state,
+        seen=frozenset({command}),
+    ):
+        # Class/style size commands commonly pass their own control sequence as an opaque
+        # argument (for example ``\@setfontsize\footnotesize``).  Our bounded evaluator does
+        # not execute the unknown helper and would otherwise mistake that operand for recursive
+        # expansion.  A cycle that can reach document structure must still fail closed so a
+        # recursive figure/section macro is never silently discarded.
+        if _source_reaches_document_structure(
+            instantiated,
+            state,
+            seen=frozenset((*macro_stack, command)),
+        ):
+            _raise_macro_expansion_limit("recursion")
+        return end, ""
     if len(macro_stack) >= _MAX_DISPLAY_MACRO_DEPTH:
         _raise_macro_expansion_limit("depth")
     if state.budget.invocations <= 0:
@@ -3870,9 +4090,7 @@ def _evaluate_loaded_source(
     current_name: str,
     state: _LatexEvaluationState,
 ) -> None:
-    resolved = _resolve_latex_source_name(
-        current_name, requested, state.files, suffix=suffix
-    )
+    resolved = _resolve_latex_source_name(current_name, requested, state.files, suffix=suffix)
     if resolved is None or resolved in state.loaded_sources:
         return
     state.loaded_sources.add(resolved)
@@ -4030,6 +4248,47 @@ def _evaluate_latex_text(
             _append_evaluated_output(out, state, text, i, match.start())
         command = match.group(0)[1:].rstrip("*")
 
+        if command == "newif":
+            declaration_end = _parse_newif_declaration(text, match.end(), state)
+            if declaration_end is not None:
+                i = declaration_end
+                continue
+        if _apply_newif_setting(command, state):
+            i = match.end()
+            continue
+        if command in state.conditionals:
+            end, selected = _read_known_conditional_branch(
+                text,
+                match.end(),
+                state,
+                enabled=state.conditionals[command],
+            )
+            evaluated = _evaluate_latex_text(
+                selected,
+                source_name=source_name,
+                state=state,
+                emit=emit,
+                macro_stack=macro_stack,
+                capture_frontmatter=capture_frontmatter,
+                evaluation_reserved=True,
+            )
+            if emit:
+                _append_evaluated_output(out, state, evaluated)
+            i = end
+            continue
+
+        if command == "let":
+            assignment = _parse_let_assignment(
+                text,
+                match.end(),
+                state.evaluation_budget,
+            )
+            if assignment is not None:
+                target, source, end = assignment
+                _apply_let_assignment(state, target, source)
+                i = end
+                continue
+
         unsupported_definition = _UNSUPPORTED_DEFINITION_RE.match(text, match.start())
         if unsupported_definition is not None:
             parsed_unsupported = _parse_unsupported_macro_definition(
@@ -4074,6 +4333,13 @@ def _evaluate_latex_text(
                 i = end
                 continue
         def_definition = _DEF_RE.match(text, match.start())
+        if def_definition is not None and _is_second_control_word_operand_of_primitive(
+            text, match.start()
+        ):
+            if emit:
+                _append_evaluated_output(out, state, match.group(0))
+            i = match.end()
+            continue
         if def_definition is not None:
             parsed_def = _parse_def_definition(
                 text,
@@ -4153,6 +4419,14 @@ def _evaluate_latex_text(
                     _append_evaluated_output(out, state, "\n")
             i = match.end()
             continue
+        # Class and style files often redefine visual switches such as ``\scriptsize``
+        # through internal helpers (for example ``\@setfontsize``).  Expanding those
+        # definitions cannot change document meaning, but it pollutes equation source and
+        # can make downstream TeX compilation fail.  Keep these zero-argument switches
+        # presentation-only even when a loaded class has supplied a macro definition.
+        if command in _PRESENTATION_SWITCH_CMDS:
+            i = match.end()
+            continue
         if command in state.unsupported_macros:
             end = _evaluate_unsupported_macro_invocation(text, match, state)
             if emit:
@@ -4216,8 +4490,7 @@ def _without_includegraphics(
     visible_ranges.append((start, len(raw)))
     if budget is not None:
         budget.ensure_emittable_parts(
-            (raw, range_start, range_end)
-            for range_start, range_end in visible_ranges
+            (raw, range_start, range_end) for range_start, range_end in visible_ranges
         )
     return "".join(raw[range_start:range_end] for range_start, range_end in visible_ranges)
 
@@ -4274,10 +4547,109 @@ def _extract_bibliography(
         return text, None
     inner, end = _read_environment(text, m.end(), "thebibliography", budget)
     if budget is not None:
-        budget.ensure_emittable_parts(
-            iter(((text, 0, m.start()), (text, end, len(text))))
-        )
+        budget.ensure_emittable_parts(iter(((text, 0, m.start()), (text, end, len(text)))))
     return text[: m.start()] + text[end:], inner
+
+
+_PARAGRAPH_BREAK_RE = re.compile(r"\n[^\S\n]*\n+")
+
+
+def _top_level_paragraph_boundaries(text: str) -> Iterator[tuple[int, int]]:
+    """Yield blank-line spans that are outside brace groups and literal regions."""
+
+    depth = 0
+    i = 0
+    literal = _next_literal_region(text, 0)
+    while i < len(text):
+        while literal is not None and i >= literal[1]:
+            literal = _next_literal_region(text, literal[1])
+        if literal is not None and literal[0] <= i < literal[1]:
+            i = literal[1]
+            continue
+        char = text[i]
+        if char == "\\":
+            control = _read_tex_control_token(text, i)
+            i = control[1] if control is not None else i + 1
+            continue
+        if char == "%":
+            newline = text.find("\n", i + 1)
+            i = len(text) if newline < 0 else newline
+            continue
+        if char == "{":
+            depth += 1
+            i += 1
+            continue
+        if char == "}":
+            depth = max(0, depth - 1)
+            i += 1
+            continue
+        if char == "\n" and depth == 0:
+            boundary = _PARAGRAPH_BREAK_RE.match(text, i)
+            if boundary is not None:
+                yield boundary.start(), boundary.end()
+                i = boundary.end()
+                continue
+        i += 1
+
+
+def _top_level_equation_rows(
+    text: str,
+    budget: _LatexEvaluationBudget | None = None,
+) -> Iterator[str]:
+    """Split an outer alignment only at row separators outside nested math groups."""
+
+    row_start = 0
+    brace_depth = 0
+    environments: list[str] = []
+    i = 0
+    while i < len(text):
+        environment = _ENVIRONMENT_BOUNDARY_RE.match(text, i)
+        if environment is not None:
+            if budget is not None:
+                budget.reserve_structure_match()
+                budget.reserve_control_token()
+            name = environment.group("name")
+            if environment.group("kind") == "begin":
+                environments.append(name)
+            elif environments and environments[-1] == name:
+                environments.pop()
+            i = environment.end()
+            continue
+
+        char = text[i]
+        if char == "\\":
+            if text.startswith("\\\\", i):
+                if brace_depth == 0 and not environments:
+                    if budget is not None:
+                        budget.reserve_structure_match()
+                        budget.ensure_emittable_parts(iter(((text, row_start, i),)))
+                    row = text[row_start:i].strip()
+                    if row:
+                        yield row
+                    i += 2
+                    row_start = i
+                    continue
+                i += 2
+                continue
+            control = _read_tex_control_token(text, i)
+            if control is not None:
+                if budget is not None:
+                    budget.reserve_control_token()
+                _raw, i, _is_word = control
+                continue
+            i += 1
+            continue
+        if char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth = max(0, brace_depth - 1)
+        i += 1
+
+    if budget is not None:
+        budget.ensure_emittable_parts(iter(((text, row_start, len(text)),)))
+    row = text[row_start:].strip()
+    if row:
+        yield row
 
 
 class _LatexParser:
@@ -4323,9 +4695,7 @@ class _LatexParser:
         )
         if self._evaluation_budget is not None:
             self._evaluation_budget.reserve_structure_match()
-            self._evaluation_budget.ensure_emittable_parts(
-                iter(((text, open_pos + 1, close_pos),))
-            )
+            self._evaluation_budget.ensure_emittable_parts(iter(((text, open_pos + 1, close_pos),)))
         return text[open_pos + 1 : close_pos], close_pos + 1
 
     def _enter_parser_frame(self) -> None:
@@ -4416,9 +4786,7 @@ class _LatexParser:
             number = self._next_number(level)
             path = number.replace(".", "-")
         title = _flatten_plain(
-            self._parse_inline(
-                _without_includegraphics(title_raw, self._evaluation_budget)
-            )
+            self._parse_inline(_without_includegraphics(title_raw, self._evaluation_budget))
         )
         self._reserve_ir_object()
         sec = Section(id=f"sec-{path}", heading=SectionHeading(number=number, title=title))
@@ -4494,10 +4862,17 @@ class _LatexParser:
         if base in ("figure", "wrapfigure"):
             return self._figure_env(inner)
         if base == "table":
-            return [
-                self._table_env(inner),
-                *_includegraphics_blocks(inner, self._evaluation_budget),
-            ]
+            table = self._table_env(inner)
+            graphics = _includegraphics_blocks(inner, self._evaluation_budget)
+            if table.raw is None and graphics:
+                # Some papers ship an entire table as PDF/PNG inside a table
+                # environment.  Keep those assets attached to table blocks so
+                # the viewer renders the image with its table caption/label.
+                table.asset_key = graphics[0].asset_key
+                for graphic in graphics[1:]:
+                    graphic.type = "table"
+                return [table, *graphics[1:]]
+            return [table, *graphics]
         if base in ("itemize", "enumerate"):
             return [
                 self._list_env(
@@ -4527,17 +4902,11 @@ class _LatexParser:
             ]
         if base in ("algorithm", "algorithmic"):
             return [
-                self._algorithm_env(
-                    _without_includegraphics(inner, self._evaluation_budget)
-                ),
+                self._algorithm_env(_without_includegraphics(inner, self._evaluation_budget)),
                 *_includegraphics_blocks(inner, self._evaluation_budget),
             ]
         if base in ("verbatim", "lstlisting", "minted"):
-            return [
-                self._new_block(
-                    id="", type="code", code=inner.strip("\n"), language=None
-                )
-            ]
+            return [self._new_block(id="", type="code", code=inner.strip("\n"), language=None)]
         if base == "thebibliography":
             return [
                 *_build_bibliography_blocks(
@@ -4611,11 +4980,7 @@ class _LatexParser:
         ):
             found = True
             out.extend(self._plain_paragraphs(raw[start : match.start()]))
-            out.append(
-                self._new_block(
-                    id="", type="figure", asset_key=match.group(1).strip()
-                )
-            )
+            out.append(self._new_block(id="", type="figure", asset_key=match.group(1).strip()))
             start = match.end()
         if not found:
             return self._plain_paragraphs(raw)
@@ -4625,12 +4990,11 @@ class _LatexParser:
     def _plain_paragraphs(self, raw: str) -> list[Block]:
         out: list[Block] = []
         start = 0
-        boundaries = re.finditer(r"\n\s*\n+", raw)
-        for boundary in boundaries:
+        for boundary_start, boundary_end in _top_level_paragraph_boundaries(raw):
             if self._evaluation_budget is not None:
                 self._evaluation_budget.reserve_structure_match()
-            chunk = raw[start : boundary.start()]
-            start = boundary.end()
+            chunk = raw[start:boundary_start]
+            start = boundary_end
             if not chunk.strip():
                 continue
             inl = self._parse_inline(chunk)
@@ -4658,9 +5022,7 @@ class _LatexParser:
         if text_parts:
             text_parts.append(inner[copied_until:])
             if self._evaluation_budget is not None:
-                self._evaluation_budget.ensure_emittable_parts(
-                    _iter_join_ranges(text_parts, "")
-                )
+                self._evaluation_budget.ensure_emittable_parts(_iter_join_ranges(text_parts, ""))
             text = "".join(text_parts).strip()
         else:
             text = inner.strip()
@@ -4670,16 +5032,7 @@ class _LatexParser:
                 self._label_targets[label] = "equation"
             return [blk]
         blocks: list[Block] = []
-        row_start = 0
-        for separator in re.finditer(r"\\\\", text):
-            if self._evaluation_budget is not None:
-                self._evaluation_budget.reserve_structure_match()
-            row = text[row_start : separator.start()].strip()
-            if row:
-                blocks.append(self._new_block(id="", type="equation", latex=row))
-            row_start = separator.end()
-        row = text[row_start:].strip()
-        if row:
+        for row in _top_level_equation_rows(text, self._evaluation_budget):
             blocks.append(self._new_block(id="", type="equation", latex=row))
         if label and blocks:
             blocks[0].label = label
@@ -4757,9 +5110,7 @@ class _LatexParser:
                 m_cap.end() - 1,
             )
             caption_inlines = self._parse_inline(raw_caption)
-        blk = self._new_block(
-            id="", type="table", raw=raw, caption=caption_inlines, label=label
-        )
+        blk = self._new_block(id="", type="table", raw=raw, caption=caption_inlines, label=label)
         if label:
             self._label_targets[label] = "table"
         return blk
@@ -4850,15 +5201,18 @@ class _LatexParser:
                 _append_text(out, text[i : m.start()], self._evaluation_budget)
             tok = m.group(0)
             if tok == "$":
-                end = text.find("$", m.end())
+                double_dollar = text.startswith("$$", m.start())
+                content_start = m.end() + 1 if double_dollar else m.end()
+                delimiter = "$$" if double_dollar else "$"
+                end = text.find(delimiter, content_start)
                 if end == -1:
                     _append_text(out, text[m.start() :], self._evaluation_budget)
                     i = n
                     continue
-                out.append(
-                    self._new_inline(t="math_inline", v=text[m.end() : end].strip())
-                )
-                i = end + 1
+                value = text[content_start:end].strip()
+                if value:
+                    out.append(self._new_inline(t="math_inline", v=value))
+                i = end + len(delimiter)
                 continue
             if tok == "\\(":
                 end = text.find("\\)", m.end())
@@ -4866,9 +5220,9 @@ class _LatexParser:
                     _append_text(out, text[m.start() :], self._evaluation_budget)
                     i = n
                     continue
-                out.append(
-                    self._new_inline(t="math_inline", v=text[m.end() : end].strip())
-                )
+                value = text[m.end() : end].strip()
+                if value:
+                    out.append(self._new_inline(t="math_inline", v=value))
                 i = end + 2
                 continue
             if tok == "\\[":
@@ -4877,9 +5231,9 @@ class _LatexParser:
                     _append_text(out, text[m.start() :], self._evaluation_budget)
                     i = n
                     continue
-                out.append(
-                    self._new_inline(t="math_inline", v=text[m.end() : end].strip())
-                )
+                value = text[m.end() : end].strip()
+                if value:
+                    out.append(self._new_inline(t="math_inline", v=value))
                 i = end + 2
                 continue
             if tok == "\\)":
@@ -5011,9 +5365,7 @@ class _LatexParser:
                     out.append(inline.v or inline.href or "")
             i = max(end, match.end())
         if self._evaluation_budget is not None:
-            self._evaluation_budget.ensure_emittable_parts(
-                _iter_join_ranges(out, "")
-            )
+            self._evaluation_budget.ensure_emittable_parts(_iter_join_ranges(out, ""))
         return "".join(out)
 
     def _consume_braced_arguments(self, text: str, pos: int, count: int) -> int:
@@ -5061,9 +5413,7 @@ class _LatexParser:
             return max(pos, end), []
         if cmd in _SYMBOL_CMDS:
             arg, end = read_optional(pos)
-            return (end if arg == "" else pos), [
-                self._new_inline(t="text", v=_SYMBOL_CMDS[cmd])
-            ]
+            return (end if arg == "" else pos), [self._new_inline(t="text", v=_SYMBOL_CMDS[cmd])]
         if cmd in _CITE_CMDS:
             arg, end = read_optional(pos)
             citations: list[Inline] = []
@@ -5091,9 +5441,7 @@ class _LatexParser:
             )
             if self._fn_stack:
                 self._fn_stack[-1].append(fn_block)
-            return end, [
-                self._new_inline(t="footnote_ref", ref=f"footnote{fn_no}")
-            ]
+            return end, [self._new_inline(t="footnote_ref", ref=f"footnote{fn_no}")]
         if cmd == "url":
             arg, end = read_optional(pos)
             href = (arg or "").strip()
@@ -5113,9 +5461,7 @@ class _LatexParser:
             # IR の emphasis は v 形なので、数式・引用等は同じ列へ戻して構造を保つ。
             # テキスト片だけを emphasis にすることで ``$...$`` が表示文字へ漏れない。
             produced = [
-                self._new_inline(t="emphasis", v=child.v)
-                if child.t == "text"
-                else child
+                self._new_inline(t="emphasis", v=child.v) if child.t == "text" else child
                 for child in children
                 if child.t != "text" or child.v
             ]
@@ -5183,7 +5529,16 @@ class _LatexParser:
         args: list[str] = []
         end = pos
         while True:
-            arg, next_end = read_optional(end)
+            try:
+                arg, next_end = read_optional(end)
+            except LatexParseError as exc:
+                if exc.kind != "unbalanced_braces":
+                    raise
+                # Environment/table tokenization can hand the inline layer a bounded fragment
+                # ending inside an unknown presentation macro (multirow/rotatebox etc.).  The
+                # missing suffix is outside this fragment, so discard the incomplete command
+                # rather than rejecting the complete paper.
+                return len(text), []
             if arg is None:
                 break
             if len(args) >= _MAX_UNSUPPORTED_MACRO_GROUPS:

@@ -32,6 +32,7 @@ from alinea_core.db.models import (
     Paper,
     SourceAsset,
 )
+from alinea_core.db.revisions import get_latest_paper_revision, get_paper_revision
 from alinea_core.document.blocks import DocumentContent
 from alinea_core.ingest.dedupe import detect_duplicate
 from alinea_core.jobs.store import JobStore
@@ -68,7 +69,7 @@ BULK_QUEUE = "alinea:bulk"
 
 # 取り込み時に受け付ける Status(§1.6)。拡張 UI は planned|up_next|reading の 3 択(§3.2)。
 _VALID_STATUSES = frozenset({"planned", "up_next", "reading", "done", "reread", "on_hold"})
-_ACTIVE_JOB_STATUSES = ("queued", "running", "waiting_quota")
+_ACTIVE_JOB_STATUSES = ("queued", "running", "waiting_quota", "waiting_input")
 
 _MAX_PDF_BYTES = 50 * 1024 * 1024  # 50MB(plans/03 §3.3・plans/05 §9.1-1)
 _PDF_MAGIC = b"%PDF-"
@@ -280,15 +281,41 @@ async def _latest_ingest_job(db: DbDep, library_item_id: str) -> Job | None:
     )
 
 
-async def _active_ingest_job(db: DbDep, paper_id: str) -> Job | None:
+async def _active_ingest_job(db: DbDep, paper_id: str, *, user_id: str | None = None) -> Job | None:
+    """Return an active ingest, optionally constrained to its owner.
+
+    A caller that returns or reuses the job ID must supply ``user_id``.  The unscoped form remains
+    for shared-paper reingest paths that only perform an existence check and never expose the job.
+    """
+    conditions = [
+        Job.kind == "ingest",
+        Job.paper_id == paper_id,
+        Job.status.in_(_ACTIVE_JOB_STATUSES),
+    ]
+    if user_id is not None:
+        conditions.append(Job.user_id == user_id)
+    return (await db.execute(select(Job).where(*conditions))).scalars().first()
+
+
+def _scoped_ingest_idempotency_key(user_id: str, request_key: str) -> str:
+    digest = hashlib.sha256(f"{user_id}\0{request_key}".encode()).hexdigest()
+    return f"ingest:v1:{digest}"
+
+
+async def _prior_ingest_job(db: DbDep, *, user_id: str, request_key: str) -> Job | None:
+    """Find a user-owned retry, including raw keys written before user scoping."""
+    scoped_key = _scoped_ingest_idempotency_key(user_id, request_key)
     return (
         (
             await db.execute(
-                select(Job).where(
+                select(Job)
+                .where(
                     Job.kind == "ingest",
-                    Job.paper_id == paper_id,
-                    Job.status.in_(_ACTIVE_JOB_STATUSES),
+                    Job.user_id == user_id,
+                    Job.idempotency_key.in_((scoped_key, request_key)),
                 )
+                .order_by(Job.created_at.desc())
+                .limit(1)
             )
         )
         .scalars()
@@ -303,11 +330,19 @@ async def _reading_progress(db: DbDep, item: LibraryItem) -> int:
     block_id = rp.get("block_id")
     if not revision_id or not block_id:
         return 0
+    paper = await db.get(Paper, item.paper_id)
+    revision = (
+        await get_paper_revision(db, paper_id=paper.id, revision_id=revision_id)
+        if paper is not None
+        else None
+    )
+    if revision is None:
+        return 0
     total = (
         await db.execute(
             select(func.count())
             .select_from(BlockSearchIndex)
-            .where(BlockSearchIndex.revision_id == revision_id)
+            .where(BlockSearchIndex.revision_id == revision.id)
         )
     ).scalar_one()
     if total == 0:
@@ -315,7 +350,7 @@ async def _reading_progress(db: DbDep, item: LibraryItem) -> int:
     position = (
         await db.execute(
             select(BlockSearchIndex.position).where(
-                BlockSearchIndex.revision_id == revision_id,
+                BlockSearchIndex.revision_id == revision.id,
                 BlockSearchIndex.block_id == block_id,
             )
         )
@@ -327,7 +362,7 @@ async def _reading_progress(db: DbDep, item: LibraryItem) -> int:
             select(func.count())
             .select_from(BlockSearchIndex)
             .where(
-                BlockSearchIndex.revision_id == revision_id,
+                BlockSearchIndex.revision_id == revision.id,
                 BlockSearchIndex.position <= position,
             )
         )
@@ -341,17 +376,27 @@ async def _build_last_position(db: DbDep, item: LibraryItem) -> IngestLastPositi
     block_id = rp.get("block_id")
     if not revision_id or not block_id:
         return None
+    paper = await db.get(Paper, item.paper_id)
+    revision = (
+        await get_paper_revision(db, paper_id=paper.id, revision_id=revision_id)
+        if paper is not None
+        else None
+    )
+    if revision is None:
+        return None
     section_display = (
         await db.execute(
             select(BlockSearchIndex.section_label).where(
-                BlockSearchIndex.revision_id == revision_id,
+                BlockSearchIndex.revision_id == revision.id,
                 BlockSearchIndex.block_id == block_id,
             )
         )
-    ).scalar_one_or_none() or ""
+    ).scalar_one_or_none()
+    if section_display is None:
+        return None
     mode = rp.get("view_mode") or rp.get("mode") or "translation"
     return IngestLastPosition(
-        revision_id=str(revision_id),
+        revision_id=str(revision.id),
         block_id=str(block_id),
         mode=str(mode),
         section_display=section_display,
@@ -378,13 +423,13 @@ async def ingest_arxiv(
     body: IngestArxivRequest,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> IngestArxivResponse | JSONResponse:
+    user_id = str(user.id)
+    stored_idempotency_key = (
+        _scoped_ingest_idempotency_key(user_id, idempotency_key) if idempotency_key else None
+    )
     # 冪等: 同一キーの既存ジョブがあれば初回レスポンスを再生する(§3.2)。
     if idempotency_key:
-        prior = (
-            (await db.execute(select(Job).where(Job.idempotency_key == idempotency_key).limit(1)))
-            .scalars()
-            .first()
-        )
+        prior = await _prior_ingest_job(db, user_id=user_id, request_key=idempotency_key)
         if prior is not None:
             return IngestArxivResponse(
                 paper_id=str(prior.paper_id),
@@ -407,7 +452,7 @@ async def ingest_arxiv(
             errors=[ProblemError(field="status", message="不正なステータスです")],
         )
 
-    existing = await detect_duplicate(db, ref.id, user_id=str(user.id))
+    existing = await detect_duplicate(db, ref.id, user_id=user_id)
     if existing is not None:
         return await _duplicate_response(db, existing)
 
@@ -431,7 +476,7 @@ async def ingest_arxiv(
     await _ensure_arxiv_pdf_available(db, paper, ref, source_version, gateway, storage, settings)
 
     item = LibraryItem(
-        user_id=str(user.id),
+        user_id=user_id,
         paper_id=paper_id,
         status=status_value,
         tags=list(body.tags or []),
@@ -443,19 +488,19 @@ async def ingest_arxiv(
     except IntegrityError:
         # 競合: 同一ユーザー・同一 Paper(uq_library_items_user_paper)→ duplicate。
         await db.rollback()
-        again = await detect_duplicate(db, ref.id, user_id=str(user.id))
+        again = await detect_duplicate(db, ref.id, user_id=user_id)
         if again is not None:
             return await _duplicate_response(db, again)
         raise
     library_item_id = str(item.id)
 
     if body.collection_id:
-        await _add_to_collection(db, str(user.id), body.collection_id, library_item_id)
+        await _add_to_collection(db, user_id, body.collection_id, library_item_id)
 
     await db.commit()
 
     # 稼働中 ingest があれば再利用(uq_jobs_ingest_active との競合回避)。
-    active = await _active_ingest_job(db, paper_id)
+    active = await _active_ingest_job(db, paper_id, user_id=user_id)
     if active is not None:
         job_id = str(active.id)
     else:
@@ -470,9 +515,9 @@ async def ingest_arxiv(
                 "url": body.url,
                 "library_item_id": library_item_id,
             },
-            idempotency_key=idempotency_key,
+            idempotency_key=stored_idempotency_key,
             priority="bulk",
-            user_id=str(user.id),
+            user_id=user_id,
             paper_id=paper_id,
             library_item_id=library_item_id,
         )
@@ -535,9 +580,7 @@ async def _ensure_arxiv_pdf_available(
                 timeout_seconds=_ARXIV_PDF_PREFETCH_TIMEOUT_SECONDS,
             )
         except Exception as exc:
-            raise ProblemException(
-                "provider_error", detail="PDF 原本の保存に失敗しました"
-            ) from exc
+            raise ProblemException("provider_error", detail="PDF 原本の保存に失敗しました") from exc
         else:
             db.add(
                 SourceAsset(
@@ -555,15 +598,11 @@ async def _ensure_arxiv_pdf_available(
     await _ensure_pdf_placeholder_revision(db, paper, source_version)
 
 
-async def _ensure_pdf_placeholder_revision(
-    db: DbDep, paper: Paper, source_version: str
-) -> None:
+async def _ensure_pdf_placeholder_revision(db: DbDep, paper: Paper, source_version: str) -> None:
     """構造化前でも PDF モードを開くための空リビジョンを用意する。"""
 
-    if paper.latest_revision_id:
-        revision = await db.get(DocumentRevision, paper.latest_revision_id)
-        if revision is not None:
-            return
+    if await get_latest_paper_revision(db, paper) is not None:
+        return
 
     paper_id = str(paper.id)
     existing = (
@@ -659,6 +698,7 @@ async def _duplicate_response(
 
 # --- POST /api/ingest/pdf(§3.3) ------------------------------------------------------
 
+
 def _parse_pdf_meta(raw: str) -> IngestPdfMeta:
     try:
         payload = json.loads(raw)
@@ -740,13 +780,13 @@ async def ingest_pdf(
     meta: Annotated[str, Form()],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> IngestArxivResponse | JSONResponse:
+    user_id = str(user.id)
+    stored_idempotency_key = (
+        _scoped_ingest_idempotency_key(user_id, idempotency_key) if idempotency_key else None
+    )
     # 冪等: 同一キーの既存ジョブがあれば初回レスポンスを再生する(§3.3)。
     if idempotency_key:
-        prior = (
-            (await db.execute(select(Job).where(Job.idempotency_key == idempotency_key).limit(1)))
-            .scalars()
-            .first()
-        )
+        prior = await _prior_ingest_job(db, user_id=user_id, request_key=idempotency_key)
         if prior is not None:
             return IngestArxivResponse(
                 paper_id=str(prior.paper_id),
@@ -773,7 +813,7 @@ async def ingest_pdf(
         raise ProblemException("unsupported_media_type", detail="PDF ファイルではありません")
 
     sha256 = hashlib.sha256(data).hexdigest()
-    existing_item = await _pdf_duplicate_for_user(db, sha256, str(user.id))
+    existing_item = await _pdf_duplicate_for_user(db, sha256, user_id)
     if existing_item is not None:
         return await _duplicate_response(db, existing_item, instance="/api/ingest/pdf")
 
@@ -781,7 +821,7 @@ async def ingest_pdf(
     paper = Paper(
         title=title,
         visibility="private",
-        owner_user_id=str(user.id),
+        owner_user_id=user_id,
         pdf_sha256=sha256,
         license="unknown",
     )
@@ -791,7 +831,7 @@ async def ingest_pdf(
     except IntegrityError:
         # 競合: 同一ユーザー・同一 SHA-256(uq_papers_owner_pdf_sha256)→ duplicate。
         await db.rollback()
-        again = await _pdf_duplicate_for_user(db, sha256, str(user.id))
+        again = await _pdf_duplicate_for_user(db, sha256, user_id)
         if again is not None:
             return await _duplicate_response(db, again, instance="/api/ingest/pdf")
         raise
@@ -814,7 +854,7 @@ async def ingest_pdf(
     await _ensure_pdf_placeholder_revision(db, paper, "v1")
 
     item = LibraryItem(
-        user_id=str(user.id),
+        user_id=user_id,
         paper_id=paper_id,
         status=status_value,
         tags=list(meta_obj.tags or []),
@@ -825,14 +865,13 @@ async def ingest_pdf(
     library_item_id = str(item.id)
 
     if meta_obj.collection_id:
-        await _add_to_collection(db, str(user.id), meta_obj.collection_id, library_item_id)
+        await _add_to_collection(db, user_id, meta_obj.collection_id, library_item_id)
 
     await db.commit()
 
     # テキストレイヤ判定と最終 OCR fallback は bounded worker 側で行う。
-    user_id = str(user.id)
     job_id = await _enqueue_pdf_ingest(
-        db, wakeup, idempotency_key, user_id, paper_id, library_item_id
+        db, wakeup, stored_idempotency_key, user_id, paper_id, library_item_id
     )
 
     return IngestArxivResponse(paper_id=paper_id, library_item_id=library_item_id, job_id=job_id)

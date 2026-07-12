@@ -293,6 +293,102 @@ async def test_quality_filter_and_bib_fields(
     assert it["paper"]["year"] == 2023
 
 
+async def test_library_summary_ignores_foreign_revision_references(
+    auth: tuple[AsyncClient, str], db_session: AsyncSession
+) -> None:
+    client, uid = auth
+    item_id = await _mk_item(db_session, uid, status="reading", quality="B")
+    item = await db_session.get(LibraryItem, item_id)
+    assert item is not None
+    paper = await db_session.get(Paper, item.paper_id)
+    assert paper is not None
+    foreign_paper = Paper(
+        title="Foreign private quality A",
+        authors=[],
+        visibility="private",
+        owner_user_id=uid,
+    )
+    db_session.add(foreign_paper)
+    await db_session.flush()
+    foreign_revision = DocumentRevision(
+        paper_id=foreign_paper.id,
+        source_version="v1",
+        parser_version="test",
+        quality_level="A",
+        source_format="arxiv_html",
+        content={
+            "quality_level": "A",
+            "sections": [
+                {
+                    "id": "sec-foreign",
+                    "heading": {"number": "1", "title": "Secret"},
+                    "blocks": [
+                        {
+                            "id": "blk-foreign",
+                            "type": "paragraph",
+                            "inlines": [{"t": "text", "v": "private foreign text"}],
+                        }
+                    ],
+                }
+            ],
+        },
+        stats={},
+    )
+    db_session.add(foreign_revision)
+    await db_session.flush()
+    foreign_paper.latest_revision_id = foreign_revision.id
+    item.reading_position = {
+        "revision_id": str(foreign_revision.id),
+        "block_id": "blk-foreign",
+        "mode": "translation",
+    }
+    await db_session.commit()
+
+    listing = await client.get("/api/library-items")
+    assert listing.status_code == 200, listing.text
+    summary = listing.json()["items"][0]
+    assert summary["quality_level"] == "B"
+    assert summary["progress_pct"] == 0
+    assert summary["last_position"] is None
+
+    detail = await client.get(f"/api/library-items/{item_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["quality_level"] == "B"
+    assert detail.json()["progress_pct"] == 0
+    assert detail.json()["last_position"] is None
+
+    # reading_position が無くても foreign latest は品質として採用しない。
+    item.reading_position = None
+    paper.latest_revision_id = foreign_revision.id
+    await db_session.commit()
+    latest_listing = await client.get("/api/library-items")
+    assert latest_listing.status_code == 200, latest_listing.text
+    assert latest_listing.json()["items"][0]["quality_level"] == "B"
+
+
+async def test_library_summary_invalid_reading_revision_does_not_500(
+    auth: tuple[AsyncClient, str], db_session: AsyncSession
+) -> None:
+    client, uid = auth
+    item_id = await _mk_item(db_session, uid, status="reading", quality="A")
+    item = await db_session.get(LibraryItem, item_id)
+    assert item is not None
+    item.reading_position = {"revision_id": "not-a-uuid", "block_id": "blk-invalid"}
+    await db_session.commit()
+
+    listing = await client.get("/api/library-items")
+    assert listing.status_code == 200, listing.text
+    summary = listing.json()["items"][0]
+    assert summary["quality_level"] == "A"
+    assert summary["progress_pct"] == 0
+    assert summary["last_position"] is None
+
+    detail = await client.get(f"/api/library-items/{item_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["quality_level"] == "A"
+    assert detail.json()["last_position"] is None
+
+
 async def test_invalid_status_is_422(auth: tuple[AsyncClient, str]) -> None:
     client, _uid = auth
     r = await client.get("/api/library-items", params={"status": "bogus"})
@@ -442,6 +538,31 @@ async def test_delete_removes_item_and_private_paper(
     assert r.status_code == 204
     gone = await client.get(f"/api/library-items/{item_id}")
     assert gone.status_code == 404
+
+
+async def test_delete_cancels_waiting_input_ingest(
+    auth: tuple[AsyncClient, str], db_session: AsyncSession
+) -> None:
+    client, uid = auth
+    item_id = await _mk_item(db_session, uid)
+    item = await db_session.get(LibraryItem, item_id)
+    assert item is not None
+    db_session.add(
+        Job(
+            kind="ingest",
+            status="waiting_input",
+            stage="selecting_sections",
+            user_id=uid,
+            paper_id=item.paper_id,
+            library_item_id=item.id,
+        )
+    )
+    await db_session.commit()
+
+    response = await client.delete(f"/api/library-items/{item_id}")
+
+    assert response.status_code == 204
+    assert await _count(db_session, Job, Job.library_item_id == item_id) == 0
 
 
 async def test_delete_removes_unreferenced_public_paper_and_storage_objects(

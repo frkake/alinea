@@ -1,9 +1,41 @@
-import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, expect, test, vi } from "vitest";
-import type { TranslationUnitItem } from "@alinea/api-client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  annotationsList,
+  translationsListUnits,
+  viewerGetDocument,
+  type TranslationUnitItem,
+} from "@alinea/api-client";
 import { TranslationColumnHeader } from "@/components/viewer/TranslationColumnHeader";
-import { BilingualParagraph } from "@/components/viewer/BilingualPane";
+import { BilingualPane, BilingualParagraph } from "@/components/viewer/BilingualPane";
 import type { DocBlock } from "@/components/viewer/document-types";
+import { useTableTranslation } from "@/hooks/use-table-translation";
+
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
+  return {
+    ...actual,
+    annotationsList: vi.fn(),
+    translationsListUnits: vi.fn(),
+    viewerGetDocument: vi.fn(),
+  };
+});
+
+vi.mock("@/hooks/use-table-translation", () => ({ useTableTranslation: vi.fn() }));
+
+class FakeIntersectionObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+
+function renderWithClient(ui: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 
 // VT-VIEW-03: 対訳モード — 段落単位 2 カラム + 「段落対応 ⇄」トグル
 describe("TranslationColumnHeader (VT-VIEW-03)", () => {
@@ -18,7 +50,9 @@ describe("TranslationColumnHeader (VT-VIEW-03)", () => {
 
   test("clicking 段落対応 toggles pair sync", () => {
     const onToggle = vi.fn();
-    render(<TranslationColumnHeader style="literal" pairSync={false} onTogglePairSync={onToggle} />);
+    render(
+      <TranslationColumnHeader style="literal" pairSync={false} onTogglePairSync={onToggle} />,
+    );
     // literal スタイル名も追随する
     expect(screen.getByText("訳文 — 直訳")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "段落対応" }));
@@ -61,7 +95,12 @@ describe("BilingualParagraph (VT-VIEW-03)", () => {
   });
 
   test("shows failure notice when a failure flag is present", () => {
-    render(<BilingualParagraph block={block} unit={unit({ text_ja: null, quality_flags: ["untranslated"] })} />);
+    render(
+      <BilingualParagraph
+        block={block}
+        unit={unit({ text_ja: null, quality_flags: ["untranslated"] })}
+      />,
+    );
     expect(screen.getByText("この段落の翻訳に失敗しました")).toBeInTheDocument();
   });
 });
@@ -124,7 +163,9 @@ describe("BilingualParagraph hl parity (M1 統合ポリッシュ)", () => {
     const { container } = render(
       <BilingualParagraph block={block} unit={unit()} searchHighlight="flow" />,
     );
-    expect(container.querySelector('[data-side="source"] mark.alinea-search-hit')).toHaveTextContent("flow");
+    expect(
+      container.querySelector('[data-side="source"] mark.alinea-search-hit'),
+    ).toHaveTextContent("flow");
     expect(container.querySelector('[data-side="translation"] mark.alinea-search-hit')).toBeNull();
   });
 
@@ -132,7 +173,154 @@ describe("BilingualParagraph hl parity (M1 統合ポリッシュ)", () => {
     const { container } = render(
       <BilingualParagraph block={block} unit={unit()} searchHighlight="フロー" />,
     );
-    expect(container.querySelector('[data-side="translation"] mark.alinea-search-hit')).toHaveTextContent("フロー");
+    expect(
+      container.querySelector('[data-side="translation"] mark.alinea-search-hit'),
+    ).toHaveTextContent("フロー");
     expect(container.querySelector('[data-side="source"] mark.alinea-search-hit')).toBeNull();
+  });
+});
+
+describe("BilingualPane table translation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(annotationsList).mockResolvedValue({
+      data: {
+        items: [],
+        counts: {
+          all: 0,
+          important: 0,
+          question: 0,
+          idea: 0,
+          term: 0,
+          with_comment: 0,
+          unplaced: 0,
+        },
+      },
+    } as never);
+    vi.mocked(translationsListUnits).mockResolvedValue({
+      data: { set_id: "set-1", items: [] },
+    } as never);
+    vi.mocked(viewerGetDocument).mockResolvedValue({
+      data: {
+        revision_id: "revision-1",
+        quality_level: "A",
+        sections: [
+          {
+            id: "section-1",
+            heading: { number: "2", title: "Results" },
+            blocks: [
+              {
+                id: "table-1",
+                type: "table",
+                raw: "<table><tr><td>Source result</td></tr></table>",
+                source_grid: {
+                  supported: true,
+                  source_format: "html",
+                  reason: null,
+                  rows: [
+                    [
+                      {
+                        id: "r0c0",
+                        source: "Source result",
+                        header: false,
+                        rowspan: 1,
+                        colspan: 1,
+                        translatable: true,
+                        math: [],
+                        latex_body_start: null,
+                        latex_body_end: null,
+                        latex_wrappers: [],
+                      },
+                    ],
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    } as never);
+  });
+
+  test("shows the canonical table translation action in bilingual mode", async () => {
+    const start = vi.fn();
+    vi.mocked(useTableTranslation).mockReturnValue({
+      status: "idle",
+      error: null,
+      start,
+      retry: vi.fn(),
+    });
+
+    renderWithClient(
+      <BilingualPane
+        itemId="item-1"
+        revisionId="revision-1"
+        style="natural"
+        translationSetId="set-1"
+        translationStatus="complete"
+        toc={[]}
+        lastPosition={null}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "この表を翻訳" }));
+    expect(start).toHaveBeenCalledOnce();
+    expect(useTableTranslation).toHaveBeenCalledWith({
+      itemId: "item-1",
+      revisionId: "revision-1",
+      style: "natural",
+      translationSetId: "set-1",
+      sectionId: "section-1",
+      blockId: "table-1",
+    });
+  });
+
+  test("removes the action after the exact units query contains complete typed cells", async () => {
+    vi.mocked(useTableTranslation).mockReturnValue({
+      status: "succeeded",
+      error: null,
+      start: vi.fn(),
+      retry: vi.fn(),
+    });
+    vi.mocked(translationsListUnits).mockResolvedValue({
+      data: {
+        set_id: "set-1",
+        items: [
+          {
+            unit_id: "unit-table-1",
+            block_id: "table-1",
+            text_ja: "翻訳済み結果",
+            content_ja: {
+              kind: "table",
+              version: 1,
+              caption: null,
+              cells: [["翻訳済み結果"]],
+            },
+            state: "machine",
+            quality_flags: [],
+            proposal: null,
+          },
+        ],
+      },
+    } as never);
+
+    renderWithClient(
+      <BilingualPane
+        itemId="item-1"
+        revisionId="revision-1"
+        style="natural"
+        translationSetId="set-1"
+        translationStatus="complete"
+        toc={[]}
+        lastPosition={null}
+      />,
+    );
+
+    expect(await screen.findByText("翻訳済み結果")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "この表を翻訳" })).not.toBeInTheDocument();
+    expect(screen.queryByText("表を翻訳しました")).not.toBeInTheDocument();
+    expect(useTableTranslation).toHaveBeenCalledWith(
+      expect.objectContaining({ sectionId: "section-1", blockId: "table-1" }),
+    );
   });
 });

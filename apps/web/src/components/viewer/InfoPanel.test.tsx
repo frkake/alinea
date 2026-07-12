@@ -377,6 +377,38 @@ describe("InfoPanel (M1-21)", () => {
     expect(MockEventSource.instances[0]?.closed).toBe(true);
   });
 
+  test("reingest: waiting_input progress is shown as セクション選択待ち", async () => {
+    vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
+    const user = userEvent.setup();
+    vi.mocked(papersReingest).mockResolvedValue({ data: { job_id: "job_9" } } as never);
+
+    renderWithClient(
+      <InfoPanel
+        paper={paper()}
+        revision={revision({ page_count: 42 })}
+        licenseCard={license()}
+        ingestTimeline={TIMELINE}
+        itemId="li_1"
+      />,
+    );
+    await user.click(screen.getByText("再取り込み"));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "再取り込み" }),
+    );
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+
+    act(() => {
+      MockEventSource.instances[0]?.emit("progress", {
+        job_id: "job_9",
+        status: "waiting_input",
+        stage: "selecting_sections",
+        progress_pct: 45,
+      });
+    });
+
+    expect(await screen.findByText(/セクション選択待ち — 45%/)).toBeInTheDocument();
+  });
+
   test("reingest: SSE error event shows the problem title as a toast and clears the progress row", async () => {
     vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
     const user = userEvent.setup();

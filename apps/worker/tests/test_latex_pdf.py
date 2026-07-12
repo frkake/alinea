@@ -2,46 +2,292 @@ from __future__ import annotations
 
 import os
 import tempfile
+import uuid
 from pathlib import Path
+from typing import Any
 
+import alinea_worker.latex_pdf as latex_pdf
 import fitz
 import pytest
-from alinea_core.db.models import TranslationUnit
-from alinea_core.document.blocks import DocumentContent
+from alinea_core.db.models import (
+    DocumentRevision,
+    Paper,
+    SourceAsset,
+    TranslationSet,
+    TranslationUnit,
+    User,
+)
+from alinea_core.document.blocks import Block, DocumentContent, Section
+from alinea_core.document.inlines import Inline
 from alinea_core.parsing.latex_parser import (
     LatexArchive,
     extract_latex_archive,
     parse_arxiv_latex,
     parse_latex_source,
 )
+from alinea_core.settings import CoreSettings
+from alinea_core.storage.s3 import StorageKeys
 from alinea_worker.latex_pdf import (
     DEFAULT_TEXLIVE_IMAGE,
+    PDF_BUILD_VERSION,
     LatexPdfBuildError,
     _compile_with_docker,
     _find_overfull_boxes,
     _find_pdf_page_bound_violations,
     _translation_units_digest,
     _validate_render_coverage,
+    _validate_render_manifest,
     _validate_source_revision_match,
     _validate_translated_pdf,
     _write_rendered_source,
     render_translated_latex_source,
 )
+from alinea_worker.structured_pdf import PdfRenderManifest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
-def _unit(
-    block_id: str, text: str, content: list[dict[str, object]] | None = None
-) -> TranslationUnit:
+def _unit(block_id: str, text: str, content: object | None = None) -> TranslationUnit:
     return TranslationUnit(
         set_id="00000000-0000-0000-0000-000000000000",
         block_id=block_id,
         source_hash=f"h-{block_id}",
-        content_ja=content or [{"t": "text", "v": text}],
+        content_ja=content if content is not None else [{"t": "text", "v": text}],
         text_ja=text,
         state="machine",
         quality_flags=[],
         model="test",
     )
+
+
+def _typed_table_unit(
+    block_id: str,
+    *,
+    caption: str,
+    cells: list[list[str | None]],
+) -> TranslationUnit:
+    projection = "\n".join(
+        [caption, *(value for row in cells for value in row if value is not None)]
+    )
+    return _unit(
+        block_id,
+        projection,
+        {
+            "kind": "table",
+            "version": 1,
+            "caption": [{"t": "text", "v": caption}],
+            "cells": cells,
+        },
+    )
+
+
+def _complex_table_source() -> str:
+    return r"""
+\documentclass{article}
+\usepackage{booktabs}
+\usepackage{multirow}
+\begin{document}
+\begin{table}[t]
+\caption[Short caption]{Original table caption.}
+\label{tab:metrics}
+\centering
+\begin{tabular}{lll}
+\toprule
+\multicolumn{2}{c}{Method family} & Score \\
+\cmidrule(lr){1-2}
+\multirow{2}{*}{Baseline} & Fast mode $y_2$ & $x_1$ \\
+ & Accurate mode \(z_3\) and \[w_4\] & 95\% \\[2pt]
+\bottomrule
+\end{tabular}
+\end{table}
+\end{document}
+"""
+
+
+def test_typed_table_rendering_invalidates_caption_only_pdf_cache() -> None:
+    assert PDF_BUILD_VERSION == "japanese-pdf-3.0.12"
+
+
+def test_render_manifest_rejects_missing_or_source_fallback_blocks() -> None:
+    manifest = PdfRenderManifest(
+        expected_block_ids=frozenset({"a", "b"}),
+        translated_block_ids=frozenset({"a"}),
+        source_fallback_block_ids=frozenset({"b"}),
+    )
+
+    with pytest.raises(LatexPdfBuildError) as captured:
+        _validate_render_manifest(manifest)
+
+    assert captured.value.kind == "translated_pdf_incomplete"
+    assert captured.value.detail == {"missing": ["b"], "fallback": ["b"]}
+
+
+def test_render_typed_table_replaces_only_physical_cell_bodies() -> None:
+    tex = _complex_table_source()
+    archive = LatexArchive({"main.tex": tex}, {})
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    table = next(block for _section, block in content.iter_blocks() if block.type == "table")
+    unit = _typed_table_unit(
+        table.id,
+        caption="日本語キャプション 100%",
+        cells=[
+            ["手法群", "得点"],
+            ["基準_法", "高速 & 安全 $y_2$", None],
+            [None, r"高精度 \[w_4\] と \(z_3\)", None],
+        ],
+    )
+    unit.text_ja = ""
+
+    rendered = render_translated_latex_source(archive, content, {table.id: unit})
+
+    assert r"\caption[Short caption]{日本語キャプション 100\%}" in rendered.main_tex
+    assert r"\label{tab:metrics}" in rendered.main_tex
+    assert r"\multicolumn{2}{c}{手法群}" in rendered.main_tex
+    assert r"\multirow{2}{*}{基準\_法}" in rendered.main_tex
+    assert "高速 " + r"\&" + r" 安全 $y_2$" in rendered.main_tex
+    assert "高精度" in rendered.main_tex
+    assert r"\(z_3\)" in rendered.main_tex
+    assert r"\[w_4\]" in rendered.main_tex
+    assert r"\toprule" in rendered.main_tex
+    assert r"\cmidrule(lr){1-2}" in rendered.main_tex
+    assert r"\bottomrule" in rendered.main_tex
+    assert r"$x_1$" in rendered.main_tex
+    assert r"95\% \\[2pt]" in rendered.main_tex
+    assert "Method family" not in rendered.main_tex
+    assert "Fast mode" not in rendered.main_tex
+    assert rendered.replacements["table"] == 1
+    assert table.id in rendered.replaced_block_ids
+    assert rendered.warnings == []
+
+
+def test_render_typed_table_shape_mismatch_keeps_entire_table_and_warns() -> None:
+    tex = _complex_table_source()
+    archive = LatexArchive({"main.tex": tex}, {})
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    table = next(block for _section, block in content.iter_blocks() if block.type == "table")
+    unit = _typed_table_unit(
+        table.id,
+        caption="置換してはいけないキャプション",
+        cells=[["行数が不一致"]],
+    )
+    source_table = tex[tex.index(r"\begin{table}") : tex.index(r"\end{table}") + 11]
+
+    rendered = render_translated_latex_source(archive, content, {table.id: unit})
+    rendered_table = rendered.main_tex[
+        rendered.main_tex.index(r"\begin{table}") : rendered.main_tex.index(r"\end{table}") + 11
+    ]
+
+    assert rendered_table == source_table
+    assert table.id in rendered.replaced_block_ids
+    assert any(table.id in warning and "セル" in warning for warning in rendered.warnings)
+    _validate_render_coverage(rendered, content, {table.id: unit})
+
+
+def test_render_typed_table_rejects_unprotected_math_atomically() -> None:
+    tex = _complex_table_source()
+    archive = LatexArchive({"main.tex": tex}, {})
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    table = next(block for _section, block in content.iter_blocks() if block.type == "table")
+    unit = _typed_table_unit(
+        table.id,
+        caption="置換してはいけないキャプション",
+        cells=[
+            ["手法 $not_in_source$", "得点"],
+            ["基準法", "高速 $y_2$", None],
+            [None, r"高精度 \(z_3\) と \[w_4\]", None],
+        ],
+    )
+    source_table = tex[tex.index(r"\begin{table}") : tex.index(r"\end{table}") + 11]
+
+    rendered = render_translated_latex_source(archive, content, {table.id: unit})
+    rendered_table = rendered.main_tex[
+        rendered.main_tex.index(r"\begin{table}") : rendered.main_tex.index(r"\end{table}") + 11
+    ]
+
+    assert rendered_table == source_table
+    assert any(table.id in warning and "セル" in warning for warning in rendered.warnings)
+
+
+def test_render_unsupported_typed_cell_grid_keeps_caption_and_cells_unchanged() -> None:
+    tex = r"""
+\documentclass{article}
+\begin{document}
+\begin{table}
+\caption{Original unsupported caption.}
+\begin{tabular}{ll}
+\multicolumn{x}{c}{Method name} & Score \\
+\end{tabular}
+\end{table}
+\end{document}
+"""
+    archive = LatexArchive({"main.tex": tex}, {})
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    table = next(block for _section, block in content.iter_blocks() if block.type == "table")
+    unit = _typed_table_unit(
+        table.id,
+        caption="置換してはいけないキャプション",
+        cells=[["手法名", "得点"]],
+    )
+    source_table = tex[tex.index(r"\begin{table}") : tex.index(r"\end{table}") + 11]
+
+    rendered = render_translated_latex_source(archive, content, {table.id: unit})
+    rendered_table = rendered.main_tex[
+        rendered.main_tex.index(r"\begin{table}") : rendered.main_tex.index(r"\end{table}") + 11
+    ]
+
+    assert rendered_table == source_table
+    assert any(table.id in warning and "セル" in warning for warning in rendered.warnings)
+
+
+def test_render_typed_tabular_star_preserves_width_and_column_specification() -> None:
+    tex = r"""
+\documentclass{article}
+\begin{document}
+\begin{table}
+\caption{Original tabular star caption.}
+\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}ll}
+Method name & Score \\
+Baseline method & 95 \\
+\end{tabular*}
+\end{table}
+\end{document}
+"""
+    archive = LatexArchive({"main.tex": tex}, {})
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    table = next(block for _section, block in content.iter_blocks() if block.type == "table")
+    unit = _typed_table_unit(
+        table.id,
+        caption="日本語の評価表。",
+        cells=[["手法名", "得点"], ["基準手法", None]],
+    )
+
+    rendered = render_translated_latex_source(archive, content, {table.id: unit})
+
+    assert r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}ll}" in rendered.main_tex
+    assert r"\end{tabular*}" in rendered.main_tex
+    assert r"\caption{日本語の評価表。}" in rendered.main_tex
+    assert "手法名 & 得点" in rendered.main_tex
+    assert "基準手法 & 95" in rendered.main_tex
+    assert rendered.warnings == []
+
+
+def test_empty_projection_typed_content_is_displayable_only_for_table_blocks() -> None:
+    tex = r"\documentclass{article}\begin{document}Original paragraph.\end{document}"
+    archive = LatexArchive({"main.tex": tex}, {})
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    paragraph = next(
+        block for _section, block in content.iter_blocks() if block.type == "paragraph"
+    )
+    corrupt = _unit(
+        paragraph.id,
+        "",
+        {"kind": "table", "version": 1, "caption": None, "cells": None},
+    )
+
+    rendered = render_translated_latex_source(archive, content, {paragraph.id: corrupt})
+
+    assert "Original paragraph." in rendered.main_tex
+    assert paragraph.id not in rendered.replaced_block_ids
 
 
 def test_render_translated_latex_source_preserves_figures_equations_links_and_refs() -> None:
@@ -221,6 +467,40 @@ Original paragraph\footnote{Original footnote.} continues.
     _validate_render_coverage(rendered, content, units)
 
 
+def test_comment_only_source_line_preserves_parser_paragraph_boundaries() -> None:
+    parsed_tex = r"""
+\documentclass{article}
+\begin{document}
+First source paragraph.
+
+Second source paragraph.
+\end{document}
+"""
+    raw_tex = parsed_tex.replace(
+        "First source paragraph.\n\nSecond source paragraph.",
+        "First source paragraph.\n% editorial note retained for rebuild\nSecond source paragraph.",
+    )
+    archive = LatexArchive(
+        {"main.tex": parsed_tex},
+        {},
+        {"main.tex": raw_tex},
+    )
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    paragraphs = [block for _section, block in content.iter_blocks() if block.type == "paragraph"]
+    assert len(paragraphs) == 2
+    units = {
+        paragraphs[0].id: _unit(paragraphs[0].id, "最初の訳文。"),
+        paragraphs[1].id: _unit(paragraphs[1].id, "二番目の訳文。"),
+    }
+
+    rendered = render_translated_latex_source(archive, content, units)
+
+    assert "最初の訳文。" in rendered.main_tex
+    assert "二番目の訳文。" in rendered.main_tex
+    assert "% editorial note retained for rebuild" in rendered.main_tex
+    _validate_render_coverage(rendered, content, units)
+
+
 def test_render_translates_class_style_abstract_command() -> None:
     tex = r"""
 \documentclass{article}
@@ -364,9 +644,7 @@ Following paragraph.
     archive = LatexArchive({"main.tex": tex}, {})
     content = parse_latex_source("main.tex", archive.text_files).to_document_content()
     tracked = [
-        block
-        for _section, block in content.iter_blocks()
-        if block.type in {"paragraph", "quote"}
+        block for _section, block in content.iter_blocks() if block.type in {"paragraph", "quote"}
     ]
     assert [block.type for block in tracked] == [
         "paragraph",
@@ -600,10 +878,10 @@ def test_real_multifile_project_maps_every_translated_block_and_keeps_layout() -
     archive = extract_latex_archive(source_bytes)
     content = parse_arxiv_latex(source_bytes).to_document_content()
 
-    def translated_inlines(inlines: list[object]) -> list[dict[str, object]]:
+    def translated_inlines(inlines: list[Inline]) -> list[dict[str, object]]:
         translated: list[dict[str, object]] = []
         for inline in inlines:
-            data = inline.model_dump(exclude_none=True)  # type: ignore[union-attr]
+            data = inline.model_dump(exclude_none=True)
             if data.get("t") == "text":
                 data["v"] = "訳" + str(data.get("v") or "")
             translated.append(data)
@@ -611,6 +889,7 @@ def test_real_multifile_project_maps_every_translated_block_and_keeps_layout() -
 
     units: dict[str, TranslationUnit] = {}
     for _section, block in content.iter_blocks():
+        inlines: list[dict[str, object]]
         if block.type == "heading":
             if block.title == "References":
                 continue
@@ -646,6 +925,275 @@ def test_real_multifile_project_maps_every_translated_block_and_keeps_layout() -
     assert r"\begin{thebibliography}{9}" in rendered.main_tex
 
 
+async def test_personal_translation_pdf_uses_set_scoped_key_and_shared_base_units(
+    db_session: AsyncSession,
+    settings: CoreSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_bytes = (
+        Path(__file__).parents[3] / "packages/py-core/tests/fixtures/latex_rectified_flow.tar.gz"
+    ).read_bytes()
+    content = parse_arxiv_latex(source_bytes).to_document_content()
+    heading = next(
+        block
+        for _section, block in content.iter_blocks()
+        if block.type == "heading" and block.title != "References"
+    )
+
+    user = User(id=str(uuid.uuid4()), email=f"pdf-{uuid.uuid4().hex}@test.invalid")
+    db_session.add(user)
+    await db_session.flush()
+    paper = Paper(
+        id=str(uuid.uuid4()),
+        title="Personal translated PDF",
+        visibility="private",
+        owner_user_id=user.id,
+    )
+    db_session.add(paper)
+    await db_session.flush()
+    revision = DocumentRevision(
+        id=str(uuid.uuid4()),
+        paper_id=paper.id,
+        source_version="v1",
+        parser_version="test",
+        quality_level="A",
+        source_format="latex",
+        content=content.model_dump(mode="json"),
+        stats={},
+    )
+    db_session.add(revision)
+    await db_session.flush()
+    paper.latest_revision_id = revision.id
+    shared_set = TranslationSet(
+        id=str(uuid.uuid4()),
+        revision_id=revision.id,
+        style="natural",
+        scope="shared",
+        status="complete",
+        glossary_snapshot=[],
+    )
+    db_session.add(shared_set)
+    await db_session.flush()
+    personal_set = TranslationSet(
+        id=str(uuid.uuid4()),
+        revision_id=revision.id,
+        style="natural",
+        scope="personal",
+        user_id=user.id,
+        base_set_id=shared_set.id,
+        status="complete",
+        glossary_snapshot=[],
+    )
+    source_key = StorageKeys.latex_tar(str(paper.id), "v1")
+    db_session.add_all(
+        [
+            personal_set,
+            TranslationUnit(
+                set_id=shared_set.id,
+                block_id=heading.id,
+                source_hash="heading-source-hash",
+                content_ja=[{"t": "text", "v": "共有基底の見出し"}],
+                text_ja="共有基底の見出し",
+                state="machine",
+                quality_flags=[],
+                model="test",
+            ),
+            SourceAsset(
+                paper_id=paper.id,
+                kind="arxiv_latex",
+                source_version="v1",
+                storage_key=source_key,
+                content_type="application/gzip",
+                byte_size=len(source_bytes),
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    class MemoryStorage:
+        sources_bucket = "sources"
+
+        def __init__(self) -> None:
+            self.puts: list[tuple[str, bytes, dict[str, Any]]] = []
+
+        async def get(self, bucket: str, key: str) -> bytes:
+            assert bucket == self.sources_bucket
+            assert key == source_key
+            return source_bytes
+
+        async def put(
+            self,
+            bucket: str,
+            key: str,
+            data: bytes,
+            **kwargs: Any,
+        ) -> None:
+            assert bucket == self.sources_bucket
+            self.puts.append((key, data, kwargs))
+
+    rendered_sources: list[str] = []
+
+    async def fake_compile(rendered: Any, *, image: str, timeout_s: int) -> bytes:
+        del image, timeout_s
+        rendered_sources.append(rendered.main_tex)
+        return b"personal-pdf"
+
+    monkeypatch.setattr(latex_pdf, "_compile_rendered_source", fake_compile)
+    monkeypatch.setattr(latex_pdf, "_validate_translated_pdf", lambda _data: None)
+    storage = MemoryStorage()
+
+    outcome = await latex_pdf.build_latex_translation_pdfs_if_ready(
+        db_session,
+        storage,  # type: ignore[arg-type]
+        settings,
+        set_id=str(personal_set.id),
+    )
+
+    expected_key = StorageKeys.translated_pdf(
+        str(paper.id),
+        "v1",
+        "natural",
+        translation_set_id=str(personal_set.id),
+    )
+    assert outcome.built is True
+    assert outcome.renderer == "structured"
+    assert outcome.fallback_reason == "partial_translation_scope"
+    assert outcome.translated_key == expected_key
+    assert storage.puts[0][0] == expected_key
+    assert storage.puts[0][1] == b"personal-pdf"
+    assert storage.puts[0][2]["metadata"]["translation_set_id"] == str(personal_set.id)
+    assert "共有基底の見出し" in rendered_sources[0]
+    assert StorageKeys.translated_pdf(str(paper.id), "v1", "natural") != expected_key
+
+    asset = (
+        await db_session.execute(select(SourceAsset).where(SourceAsset.storage_key == expected_key))
+    ).scalar_one()
+    await db_session.refresh(revision)
+    assert asset.source_url == f"translation-set:{personal_set.id}"
+    assert (
+        revision.stats["translated_pdf"][f"natural:{personal_set.id}"]["storage_key"]
+        == expected_key
+    )
+
+
+async def test_builds_structured_pdf_for_html_revision(
+    db_session: AsyncSession,
+    settings: CoreSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = User(id=str(uuid.uuid4()), email=f"html-pdf-{uuid.uuid4().hex}@test.invalid")
+    db_session.add(user)
+    await db_session.flush()
+    paper = Paper(
+        id=str(uuid.uuid4()),
+        title="HTML translated PDF",
+        visibility="public",
+        owner_user_id=user.id,
+        abstract_ja="日本語の要旨です。",
+    )
+    db_session.add(paper)
+    await db_session.flush()
+    content = DocumentContent(
+        quality_level="A",
+        sections=[
+            Section(
+                id="section-1",
+                blocks=[
+                    Block(id="heading-1", type="heading", level=1, title="Introduction"),
+                    Block(id="paragraph-1", type="paragraph"),
+                ],
+            )
+        ],
+    )
+    revision = DocumentRevision(
+        id=str(uuid.uuid4()),
+        paper_id=paper.id,
+        source_version="v1",
+        parser_version="html-test",
+        quality_level="A",
+        source_format="arxiv_html",
+        content=content.model_dump(mode="json"),
+        stats={},
+    )
+    db_session.add(revision)
+    await db_session.flush()
+    paper.latest_revision_id = revision.id
+    tset = TranslationSet(
+        id=str(uuid.uuid4()),
+        revision_id=revision.id,
+        style="natural",
+        scope="shared",
+        status="complete",
+        glossary_snapshot=[],
+    )
+    db_session.add(tset)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            TranslationUnit(
+                set_id=tset.id,
+                block_id="heading-1",
+                source_hash="h1",
+                content_ja=[{"t": "text", "v": "はじめに"}],
+                text_ja="はじめに",
+                state="machine",
+                quality_flags=[],
+                model="test",
+            ),
+            TranslationUnit(
+                set_id=tset.id,
+                block_id="paragraph-1",
+                source_hash="p1",
+                content_ja=[{"t": "text", "v": "日本語の本文です。"}],
+                text_ja="日本語の本文です。",
+                state="machine",
+                quality_flags=[],
+                model="test",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    class MemoryStorage:
+        sources_bucket = "sources"
+        assets_bucket = "assets"
+
+        def __init__(self) -> None:
+            self.puts: list[tuple[str, bytes, dict[str, Any]]] = []
+
+        async def get(self, _bucket: str, _key: str) -> bytes:
+            raise AssertionError("HTML fixture has no external assets")
+
+        async def put(self, _bucket: str, key: str, data: bytes, **kwargs: Any) -> None:
+            self.puts.append((key, data, kwargs))
+
+    rendered_sources: list[str] = []
+
+    async def fake_compile(rendered: Any, *, image: str, timeout_s: int) -> bytes:
+        del image, timeout_s
+        rendered_sources.append(rendered.main_tex)
+        return b"structured-pdf"
+
+    monkeypatch.setattr(latex_pdf, "_compile_rendered_source", fake_compile)
+    monkeypatch.setattr(latex_pdf, "_validate_translated_pdf", lambda _data: None)
+    storage = MemoryStorage()
+
+    outcome = await latex_pdf.build_translation_pdfs_if_ready(
+        db_session,
+        storage,  # type: ignore[arg-type]
+        settings,
+        set_id=str(tset.id),
+    )
+
+    assert outcome.built is True
+    assert outcome.renderer == "structured"
+    assert outcome.fallback_reason == "not_latex"
+    assert "日本語の本文です" in rendered_sources[0]
+    assert storage.puts[0][1] == b"structured-pdf"
+    await db_session.refresh(revision)
+    assert revision.stats["translated_pdf"]["natural"]["renderer"] == "structured"
+
+
 @pytest.mark.skipif(
     os.getenv("ALINEA_TEST_LATEX_DOCKER") != "1",
     reason="set ALINEA_TEST_LATEX_DOCKER=1 with the TeX Live image available",
@@ -656,6 +1204,13 @@ def test_lualatex_container_compiles_searchable_japanese_pdf() -> None:
 \begin{document}
 \section{Introduction}
 Original body text.
+\begin{table}
+\caption{Original metrics.}
+\begin{tabular}{lr}
+Method name & Score \\
+Baseline method & 95 \\
+\end{tabular}
+\end{table}
 \end{document}
 """
     archive = LatexArchive({"main.tex": tex}, {})
@@ -664,9 +1219,15 @@ Original body text.
     paragraph = next(
         block for _section, block in content.iter_blocks() if block.type == "paragraph"
     )
+    table = next(block for _section, block in content.iter_blocks() if block.type == "table")
     units = {
         heading.id: _unit(heading.id, "はじめに"),
         paragraph.id: _unit(paragraph.id, "検索可能な日本語PDFの本文です。"),
+        table.id: _typed_table_unit(
+            table.id,
+            caption="日本語の評価表。",
+            cells=[["手法名", "得点"], ["基準手法", None]],
+        ),
     }
     rendered = render_translated_latex_source(archive, content, units)
 
@@ -687,5 +1248,8 @@ Original body text.
         assert "はじめに" in text
         assert "検索可能な日本語PDF" in text
         assert "本文です" in text
+        assert "日本語の評価表" in text
+        assert "手法名" in text
+        assert "基準手法" in text
     finally:
         document.close()

@@ -129,7 +129,7 @@ describe("SidePanel tabs (VT-VIEW-01)", () => {
   });
 });
 
-// VT-VIEW-04: 目次 — 翻訳進捗%・節✓・未翻訳付録(オンデマンド)・折畳レール
+// VT-VIEW-04: 目次 — 翻訳進捗%・節✓・未翻訳セクション(オンデマンド)・折畳レール
 describe("TocTree (VT-VIEW-04)", () => {
   beforeEach(resetStore);
 
@@ -172,7 +172,7 @@ describe("TocTree (VT-VIEW-04)", () => {
     onFocusSearch: vi.fn(),
   };
 
-  test("pane shows translation progress %, translated ✓, and on-demand appendix box", () => {
+  test("pane shows translation progress %, translated ✓, and an on-demand section", () => {
     render(<TocTree {...baseProps} />);
     expect(screen.getByText("翻訳 96%")).toBeInTheDocument();
     expect(screen.getByText("✓")).toBeInTheDocument();
@@ -180,11 +180,36 @@ describe("TocTree (VT-VIEW-04)", () => {
     expect(screen.getByText("今日の読書 42分")).toBeInTheDocument();
   });
 
-  test("clicking on-demand appendix triggers on-demand translation", () => {
+  test("clicking an on-demand section triggers its translation", () => {
     const onTranslateAppendix = vi.fn();
     render(<TocTree {...baseProps} onTranslateAppendix={onTranslateAppendix} />);
     fireEvent.click(screen.getByText("開くと翻訳します(オンデマンド)"));
     expect(onTranslateAppendix).toHaveBeenCalledWith("sec-app");
+  });
+
+  test("keeps a selected parent visible while a nested unselected section stays actionable", () => {
+    const onTranslateAppendix = vi.fn();
+    const selectedParent = toc[0];
+    const unselectedChild = toc[1];
+    if (!selectedParent || !unselectedChild) throw new Error("TOC fixture is incomplete");
+    const nested: TocNode[] = [
+      {
+        ...selectedParent,
+        children: [
+          {
+            ...unselectedChild,
+            section_id: "sec-1a",
+            number: "1.1",
+            title_en: "Background",
+          },
+        ],
+      },
+    ];
+    render(<TocTree {...baseProps} toc={nested} onTranslateAppendix={onTranslateAppendix} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /1\.1 Background/ }));
+    expect(onTranslateAppendix).toHaveBeenCalledWith("sec-1a");
+    expect(screen.getByRole("button", { name: /1 はじめに/ })).toBeInTheDocument();
   });
 
   test("collapsed rail exposes an open-toc control", () => {
