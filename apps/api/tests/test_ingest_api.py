@@ -23,6 +23,7 @@ import pytest_asyncio
 from alinea_api.main import app
 from alinea_api.routers.ingest import (
     ArxivGateway,
+    _ensure_arxiv_pdf_available,
     _ensure_pdf_placeholder_revision,
     get_arxiv_gateway,
     get_job_wakeup,
@@ -32,6 +33,7 @@ from alinea_api.routers.papers import get_storage
 from alinea_api.schemas.assets import encode_asset_id
 from alinea_api.services.session_service import create_session
 from alinea_api.services.user_service import upsert_user_by_email
+from alinea_api.settings import get_api_settings
 from alinea_core.arxiv.fetch import FetchError
 from alinea_core.arxiv.ids import ArxivId
 from alinea_core.arxiv.metadata import ArxivMeta
@@ -471,6 +473,43 @@ async def test_pdf_placeholder_replaces_foreign_latest_revision(
     assert placeholder is not None
     assert str(placeholder.paper_id) == str(paper.id)
     assert placeholder.parser_version == "pdf-placeholder-1.0.0"
+
+
+async def test_arxiv_pdf_placeholder_aligns_with_reused_asset_resolved_version(
+    db_session: AsyncSession, created_papers: list[str], fake_storage: Any
+) -> None:
+    """既存 PDF 資産が worker のフェッチ段で 'latest' エイリアスから実バージョン(例 'v1')へ
+    解決済みの場合、後続の取り込み要求(バージョン未指定 = 'latest')はその資産を再利用し、
+    プレースホルダも資産の実バージョンへ揃える。ここが食い違うと GET /api/papers/{id}/pdf が
+    source_version 不一致で 404 になる(§4.4 の回帰防止)。
+    """
+    paper = Paper(arxiv_id=_rand_arxiv(), title="Resolved asset paper", visibility="public")
+    db_session.add(paper)
+    await db_session.flush()
+    created_papers.append(str(paper.id))
+    db_session.add(
+        SourceAsset(
+            paper_id=paper.id,
+            kind="pdf",
+            source_version="v1",
+            storage_key=f"sources/{paper.id}/v1/original.pdf",
+            content_type="application/pdf",
+            byte_size=1,
+        )
+    )
+    await db_session.commit()
+
+    ref = ArxivId(paper.arxiv_id)
+    await _ensure_arxiv_pdf_available(
+        db_session, paper, ref, "latest", _FakeGateway(), fake_storage, get_api_settings()
+    )
+    await db_session.commit()
+
+    assert fake_storage.puts == []  # 既存資産を再利用し、新規取得は起きない
+    assert paper.latest_revision_id is not None
+    placeholder = await db_session.get(DocumentRevision, paper.latest_revision_id)
+    assert placeholder is not None
+    assert placeholder.source_version == "v1"
 
 
 # ---------------------------------------------------------------------------
@@ -1216,6 +1255,99 @@ async def test_translated_pdf_resolves_the_requesters_effective_personal_set(
     assert personal_response.content == b"personal"
     assert shared_response.status_code == 200
     assert shared_response.content == b"shared"
+
+
+async def test_paper_pdf_falls_back_when_placeholder_source_version_is_stale(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+    fake_storage: Any,
+) -> None:
+    """プレースホルダの source_version('latest')が、worker が解決済みの実資産バージョン
+    ('v1')とずれている既存行を救済する(§4.4)。まず Paper.latest_version で解決し直す。
+    """
+    user = await _login(client, db_session, redis_client, unique_email)
+    paper = Paper(
+        arxiv_id=_rand_arxiv(), title="Stale placeholder paper", visibility="public", latest_version="v1"
+    )
+    db_session.add(paper)
+    await db_session.flush()
+    created_papers.append(str(paper.id))
+    db_session.add(LibraryItem(user_id=user.id, paper_id=paper.id, status="reading"))
+    revision = DocumentRevision(
+        paper_id=paper.id,
+        source_version="latest",
+        parser_version="pdf-placeholder-1.0.0",
+        quality_level="B",
+        source_format="pdf",
+        content={"quality_level": "B", "sections": []},
+        stats={},
+    )
+    db_session.add(revision)
+    await db_session.flush()
+    paper.latest_revision_id = revision.id
+    db_session.add(
+        SourceAsset(
+            paper_id=paper.id,
+            kind="pdf",
+            source_version="v1",
+            storage_key=f"sources/{paper.id}/v1/original.pdf",
+            content_type="application/pdf",
+            byte_size=1,
+        )
+    )
+    await db_session.commit()
+
+    r = await client.get(f"/api/papers/{paper.id}/pdf", follow_redirects=False)
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("application/pdf")
+
+
+async def test_paper_pdf_falls_back_to_newest_asset_when_version_unresolved(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+    fake_storage: Any,
+) -> None:
+    """Paper.latest_version 未設定でもプレースホルダ不一致で 404 にせず、当該論文最新の
+    PDF 資産へ後退する(§4.4。P3 黙って壊れない)。"""
+    user = await _login(client, db_session, redis_client, unique_email)
+    paper = Paper(arxiv_id=_rand_arxiv(), title="Unresolved version paper", visibility="public")
+    db_session.add(paper)
+    await db_session.flush()
+    created_papers.append(str(paper.id))
+    db_session.add(LibraryItem(user_id=user.id, paper_id=paper.id, status="reading"))
+    revision = DocumentRevision(
+        paper_id=paper.id,
+        source_version="latest",
+        parser_version="pdf-placeholder-1.0.0",
+        quality_level="B",
+        source_format="pdf",
+        content={"quality_level": "B", "sections": []},
+        stats={},
+    )
+    db_session.add(revision)
+    await db_session.flush()
+    paper.latest_revision_id = revision.id
+    db_session.add(
+        SourceAsset(
+            paper_id=paper.id,
+            kind="pdf",
+            source_version="v1",
+            storage_key=f"sources/{paper.id}/v1/original.pdf",
+            content_type="application/pdf",
+            byte_size=1,
+        )
+    )
+    await db_session.commit()
+
+    r = await client.get(f"/api/papers/{paper.id}/pdf", follow_redirects=False)
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("application/pdf")
 
 
 async def test_paper_pdf_missing_asset_404(

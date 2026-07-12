@@ -387,7 +387,9 @@ def test_empty_blocks_do_not_add_visible_text_separators() -> None:
     assert report.paragraph_count == 2
 
 
-def test_rejects_unresolved_figure_assets_and_preserves_counts() -> None:
+def test_accepts_unresolved_figure_assets_as_degraded_and_preserves_counts() -> None:
+    """図アセットが未解決でも原文が完結していれば候補は採用され、縮退情報だけが残る(P3)。"""
+
     report = assess_document_completeness(
         _doc(
             _text_block("p1", "paragraph", "First paragraph."),
@@ -408,10 +410,29 @@ def test_rejects_unresolved_figure_assets_and_preserves_counts() -> None:
         unresolved_figures=1,
     )
 
-    assert not report.accepted
-    assert report.code == "figure_asset_unresolved"
+    assert report.accepted
+    assert report.code == "figure_assets_degraded"
     assert report.paragraph_count == 2
     assert report.figure_count == 2
+    assert report.unresolved_figures == 1
+
+
+def test_unresolved_figure_assets_do_not_mask_document_incomplete() -> None:
+    """図の未解決は情報コードに留まり、本文自体が不足していれば document_incomplete が優先される。"""
+
+    report = assess_document_completeness(
+        _doc(
+            Block(id="h1", type="heading", level=1),
+            _text_block("p1", "paragraph", "Only visible paragraph."),
+            Block(id="fig-1", type="figure"),
+        ),
+        pdf_text="",
+        source_manifest={},
+        unresolved_figures=1,
+    )
+
+    assert not report.accepted
+    assert report.code == "document_incomplete"
     assert report.unresolved_figures == 1
 
 

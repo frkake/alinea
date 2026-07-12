@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { libraryItemsUpdate, type LibraryItemSummary, type ViewerInit } from "@alinea/api-client";
-import { ViewerShell } from "@/components/viewer/ViewerShell";
+import { ViewerShell, type ViewerMode } from "@/components/viewer/ViewerShell";
 import { useFinishReadingStore } from "@/components/library/finishReadingStore";
 import { useViewerStore } from "@/stores/viewer-store";
 
@@ -116,7 +116,10 @@ function makeViewer(overrides: Partial<ViewerInit> = {}): ViewerInit {
   };
 }
 
-function renderWithClient(viewer: ViewerInit) {
+function renderWithClient(
+  viewer: ViewerInit,
+  options: { mode?: ViewerMode; onModeChange?: (mode: ViewerMode) => void } = {},
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const invalidateQueries = vi.spyOn(client, "invalidateQueries");
   // 実アプリでは ViewerPage 側の useQuery(["viewer", itemId]) がキャッシュへ入れる値。
@@ -125,7 +128,12 @@ function renderWithClient(viewer: ViewerInit) {
   client.setQueryData(["viewer", "li_1"], viewer);
   const rendered = render(
     <QueryClientProvider client={client}>
-      <ViewerShell itemId="li_1" viewer={viewer} mode="translation" onModeChange={vi.fn()}>
+      <ViewerShell
+        itemId="li_1"
+        viewer={viewer}
+        mode={options.mode ?? "translation"}
+        onModeChange={options.onModeChange ?? vi.fn()}
+      >
         <div>本文</div>
       </ViewerShell>
     </QueryClientProvider>,
@@ -205,7 +213,7 @@ describe("ViewerShell status change → finish-reading flow (1g §2.3)", () => {
     expect(useFinishReadingStore.getState().item).toBeNull();
   });
 
-  test("invalidates only translated PDF caches after the current item's job finishes", async () => {
+  test("invalidates PDF availability (both variants) and viewer after the current item's job finishes", async () => {
     const { invalidateQueries } = renderWithClient(
       makeViewer({
         translation: {
@@ -230,11 +238,17 @@ describe("ViewerShell status change → finish-reading flow (1g §2.3)", () => {
       expect(invalidateQueries).toHaveBeenCalledWith({
         queryKey: ["pdf-data", "pap_1", "translated"],
       });
+      // variant 指定なし(prefix match)= source/translated 双方の pdf-available を叩き直す
+      // (§4.4: 取り込み進行中に後から生える原文 PDF もヘッダのタブ判定へ反映するため)。
       expect(invalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["pdf-available", "pap_1", "translated"],
+        queryKey: ["pdf-available", "pap_1"],
+      });
+      // 取り込み失敗バナー(viewer.ingest_failure)の元データも叩き直す(P3)。
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["viewer", "li_1"],
       });
     });
-    expect(invalidateQueries).toHaveBeenCalledTimes(2);
+    expect(invalidateQueries).toHaveBeenCalledTimes(3);
   });
 
   test("ignores job completion events for a different library item", () => {
@@ -249,5 +263,33 @@ describe("ViewerShell status change → finish-reading flow (1g §2.3)", () => {
     });
 
     expect(invalidateQueries).not.toHaveBeenCalled();
+  });
+
+  test("shows the ingest failure notice instead of pane content when the revision has no blocks", () => {
+    renderWithClient(
+      makeViewer({ ingest_failure: { job_id: "job-1", stage: "parsing", code: "figure_asset_unresolved" } }),
+    );
+
+    expect(screen.getByText("取り込みに失敗しました")).toBeInTheDocument();
+    expect(screen.getByText("図表の一部を認識できませんでした")).toBeInTheDocument();
+    expect(screen.queryByText("本文")).not.toBeInTheDocument();
+    // usePdfAvailability はこのファイルで true にスタブ済み → PDF タブへの導線が出る。
+    expect(screen.getByText("PDF タブで原文を見る →")).toBeInTheDocument();
+  });
+
+  test("falls back to a generic message for an unknown failure code", () => {
+    renderWithClient(makeViewer({ ingest_failure: { job_id: "job-1", stage: "parsing", code: null } }));
+
+    expect(screen.getByText("処理中に問題が発生しました")).toBeInTheDocument();
+  });
+
+  test("does not cover the article pane with the ingest failure notice", () => {
+    renderWithClient(
+      makeViewer({ ingest_failure: { job_id: "job-1", stage: "parsing", code: "no_text_layer" } }),
+      { mode: "article" },
+    );
+
+    expect(screen.queryByText("取り込みに失敗しました")).not.toBeInTheDocument();
+    expect(screen.getByText("本文")).toBeInTheDocument();
   });
 });

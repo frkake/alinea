@@ -28,6 +28,7 @@ import type { SidePanelTabId } from "@/components/ui/SidePanelTabs";
 import { PdfSidebar } from "@/components/viewer/pdf/PdfSidebar";
 import { PdfPane } from "@/components/viewer/pdf/PdfPane";
 import { PdfDocumentProvider } from "@/components/viewer/pdf/use-pdf-document";
+import { IngestFailureNotice } from "@/components/viewer/IngestFailureNotice";
 import { useReadingPosition } from "@/hooks/use-reading-position";
 import { useReadingSession } from "@/hooks/use-reading-session";
 import { useViewerKeymap } from "@/hooks/use-viewer-keymap";
@@ -125,6 +126,9 @@ export function ViewerShell({
 
   // 部分読書: SSE で翻訳完了/失敗を受けたら該当クエリを invalidate し本文を差し替える
   // (viewer-shell §2.3。translation.unit_completed → units + viewer 進捗)。
+  // job.updated(ingest ジョブの起床通知)では、取り込み中に後から生える原文/生成 PDF の
+  // 有無(pdf-available。§4.4)と、取り込み失敗バナー(viewer.ingest_failure)の元になる
+  // viewer 本体もまとめて叩き直す(手動リロードなしで反映させる。P3)。
   useSSE({
     onEvent: (e) => {
       if (e.type === "translation.unit_completed") {
@@ -140,7 +144,9 @@ export function ViewerShell({
             : null;
         if (eventItemId === itemId) {
           void qc.invalidateQueries({ queryKey: ["pdf-data", paperId, "translated"] });
-          void qc.invalidateQueries({ queryKey: ["pdf-available", paperId, "translated"] });
+          // variant 指定なし(prefix match)で source/translated 双方の判定を叩き直す。
+          void qc.invalidateQueries({ queryKey: ["pdf-available", paperId] });
+          void qc.invalidateQueries({ queryKey: ["viewer", itemId] });
         }
       }
     },
@@ -289,7 +295,15 @@ export function ViewerShell({
                     onFocusSearch={() => openSearch()}
                   />
                 ))}
-            {children}
+            {viewer.ingest_failure && effectiveMode !== "article" ? (
+              <IngestFailureNotice
+                failure={viewer.ingest_failure}
+                pdfAvailable={pdfAvailable}
+                onOpenPdf={() => onModeChange("pdf")}
+              />
+            ) : (
+              children
+            )}
           </>
         )}
         {isMobile ? (

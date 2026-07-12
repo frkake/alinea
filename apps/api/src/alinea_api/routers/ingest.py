@@ -545,11 +545,20 @@ async def _ensure_arxiv_pdf_available(
     paper_id = str(paper.id)
     existing_pdf = (
         await db.execute(
-            select(SourceAsset.id)
+            select(SourceAsset.id, SourceAsset.source_version)
             .where(SourceAsset.paper_id == paper_id, SourceAsset.kind == "pdf")
+            .order_by(SourceAsset.created_at.desc())
             .limit(1)
         )
     ).first()
+
+    # プレースホルダは実際に保存された PDF 資産のバージョンに揃える。既存資産があれば
+    # そちらが真実(worker がフェッチ段で 'latest' エイリアスを実バージョンへ解決し、
+    # 資産行を書き換えている場合があるため)。新規保存時はこの要求時点の source_version
+    # をそのまま資産にも刻むので、両者は一致する。
+    placeholder_source_version = (
+        existing_pdf.source_version if existing_pdf is not None else source_version
+    )
 
     if existing_pdf is None:
         try:
@@ -595,7 +604,7 @@ async def _ensure_arxiv_pdf_available(
                 )
             )
 
-    await _ensure_pdf_placeholder_revision(db, paper, source_version)
+    await _ensure_pdf_placeholder_revision(db, paper, placeholder_source_version)
 
 
 async def _ensure_pdf_placeholder_revision(db: DbDep, paper: Paper, source_version: str) -> None:

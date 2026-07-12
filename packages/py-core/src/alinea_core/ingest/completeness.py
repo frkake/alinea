@@ -51,6 +51,16 @@ def _is_bare_pdf_reference(plain: str, manifest_files: Collection[str]) -> bool:
 
 @dataclass(frozen=True)
 class DocumentCompleteness:
+    """構造化候補の完全性評価。
+
+    ``code`` は ``accepted`` が ``False`` のときは不採用理由
+    (``embedded_pdf_wrapper`` / ``document_incomplete``)、``True`` のときは
+    ``None`` または情報コード ``figure_assets_degraded``
+    (``unresolved_figures`` 件の図アセットが未解決のまま採用された、という
+    診断情報)のいずれかを表す。図アセットの未解決は候補・文書全体を不採用に
+    しない(P3: 黙って壊れない) — 未解決分はブロック単位で縮退させる。
+    """
+
     accepted: bool
     code: str | None
     source_chars: int
@@ -130,8 +140,6 @@ def assess_document_completeness(
         _is_bare_pdf_reference(plain, manifest_files) for _block, plain in visible_blocks
     ):
         return report(False, "embedded_pdf_wrapper")
-    if unresolved_figures > 0:
-        return report(False, "figure_asset_unresolved")
     if coverage_source_chars >= 1_000 and len(recovered) * 100 < coverage_source_chars * 35:
         return report(False, "document_incomplete")
 
@@ -139,4 +147,12 @@ def assess_document_completeness(
         visible_paragraph_count >= 2
         or any(block.type == "heading" for block, _plain in visible_blocks)
     )
-    return report(accepted, None if accepted else "document_incomplete")
+    if not accepted:
+        return report(False, "document_incomplete")
+    # 図アセットの一部が未解決でも、原文自体は完結しているため文書全体は不採用にしない
+    # (P3: 黙って壊れない)。未解決の図はブロック単位で縮退させ、診断用に件数と
+    # 情報コードだけを報告に残す。呼び出し側(worker)は figure_asset_failures を
+    # revision の stats/joblog に記録し、キャプション/本文はそのまま保持する。
+    if unresolved_figures > 0:
+        return report(True, "figure_assets_degraded")
+    return report(True, None)

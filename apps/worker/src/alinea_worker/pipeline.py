@@ -26,6 +26,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from dataclasses import replace as _dataclass_replace
 from typing import Any
 
 import httpx
@@ -667,6 +668,35 @@ def _requires_materialized_display_asset(block: Block) -> bool:
     has_raw_grid = isinstance(block.raw, str) and bool(block.raw.strip())
     has_structured_grid = isinstance(block.structured, dict) and bool(block.structured)
     return not has_raw_grid and not has_structured_grid
+
+
+def _figure_declares_visual_source(block: Block) -> bool:
+    """図ブロックが実際に画像/インライン SVG を宣言しているかを判定する。
+
+    ``\\includegraphics`` を一つも含まない ``figure`` 環境(minted のコード
+    リスティングや tabular だけを収めたもの)は、キャプション/ラベルのみを持つ
+    通常のコンテンツブロックであり、素材化すべき資産を最初から持たない。この
+    ような図をアセット未解決の失敗として数えると、legitimate な論文パターンが
+    文書全体を不採用にしてしまう(P3: 黙って壊れない)。
+
+    パース直後(素材化・保存でミューテートされる前)のブロックにのみ安全に
+    適用できる判定であるため、``_candidate_asset_blocks`` と
+    ``_save_figures`` の素材化要否判定でのみ使う。既存リビジョンとの整合性
+    検証(``_verify_or_repair_existing_revision_assets``)は保存後に書き換わる
+    ``asset_key`` を見るため、こちらの判定には使わない。
+    """
+
+    if (block.asset_key or "").strip():
+        return True
+    return isinstance(block.raw, str) and bool(block.raw.strip())
+
+
+def _candidate_requires_materialized_asset(block: Block) -> bool:
+    """候補選定・保存時点での素材化要否(図は無画像参照を除外する版)。"""
+
+    if block.type == "figure":
+        return _figure_declares_visual_source(block)
+    return _requires_materialized_display_asset(block)
 
 
 def _candidate_failure_record(source_candidate: SourceCandidate, **extra: Any) -> dict[str, Any]:
@@ -1682,7 +1712,9 @@ class IngestRun:
     ) -> tuple[list[Block], list[str], list[str]]:
         blocks = [block for _section, block in candidate.content.iter_blocks()]
         blocks_by_id = {block.id: block for block in blocks}
-        required_ids = {block.id for block in blocks if _requires_materialized_display_asset(block)}
+        required_ids = {
+            block.id for block in blocks if _candidate_requires_materialized_asset(block)
+        }
         invalid_type_ids: list[str] = []
         if isinstance(candidate.parsed, ParsedPdfDocument):
             required_ids.update(candidate.parsed.figure_images)
@@ -1873,13 +1905,31 @@ class IngestRun:
         candidate.materialized_figures = materialized
         candidate.figure_asset_failures = failures
         candidate.figure_materialization_validated = True
-        candidate.report = assess_document_completeness(
+        report = assess_document_completeness(
             candidate.content,
             pdf_text="",
             source_char_count=candidate.report.source_chars,
             source_manifest=candidate.source_manifest,
             unresolved_figures=len(failures),
         )
+        # 縮退させてよいのは「figure/table ブロックの画像・アセットが恒久的に解決できない」
+        # 場合のみ(スコープ: 図・表)。数式アセットの失敗、参照ブロック不整合・図の総数
+        # 上限超過といった構造的な失敗、そしてネットワーク断や変換クラッシュのような
+        # 一時的(リトライで直る可能性がある)失敗は個々の図・表の欠落とは異質なので、
+        # 候補全体を不採用にして次候補・再試行に委ねる(§2.4)。表の未解決も図と同じ
+        # ルールで縮退させる(P3: 黙って壊れない — 一つの表のために文書全体を品質 B へ
+        # 落とすのは、B 側の表が改善するわけでもなく原文レイアウトと構造を失うだけで
+        # 厳密に劣化である)。
+        degradable_block_ids = {
+            block.id for block in blocks if block.type in ("figure", "table")
+        }
+        if any(
+            failure.get("figure_id") not in degradable_block_ids
+            or _is_retryable_candidate_code(failure.get("code"))
+            for failure in failures
+        ):
+            report = _dataclass_replace(report, accepted=False, code="figure_asset_unresolved")
+        candidate.report = report
 
     def _set_candidate_state(
         self,
@@ -2486,13 +2536,15 @@ class IngestRun:
     ) -> list[dict[str, Any]]:
         if (
             not candidate.figure_materialization_validated
-            or candidate.figure_asset_failures
             or len(candidate.materialized_figures) > MAX_FIGURES_PER_DOCUMENT
         ):
             raise FetchError(
                 "figure_asset_unresolved",
                 "selected candidate figure materialization identity is incomplete",
             )
+        # candidate.figure_asset_failures が非空でも、それは縮退済みの既知の未解決図
+        # (P3: 黙って壊れない)であり、既存リビジョン再利用の妨げにはしない。ここで
+        # 参照するのは実際に素材化できた図の一覧(materialized_figures)のみ。
         expected: list[dict[str, Any]] = []
         aggregate_bytes = 0
         for block_id, payload in sorted(candidate.materialized_figures.items()):
@@ -3293,14 +3345,19 @@ class IngestRun:
         if self.parsed is None or self.paper_id is None:
             return out, warnings, failures
         display_assets = [
-            block for block in self.parsed.blocks if _requires_materialized_display_asset(block)
+            block for block in self.parsed.blocks if _candidate_requires_materialized_asset(block)
         ]
         validated_cache = getattr(self, "_candidate_materialization_validated", False)
+        cached_failures_by_id: dict[str, dict[str, str]] = {}
         if validated_cache:
             expected_ids = {block.id for block in display_assets}
-            if self._candidate_figure_failures or set(self._candidate_materialized_figures) != (
-                expected_ids
-            ):
+            cached_failures_by_id = {
+                str(item["figure_id"]): item
+                for item in self._candidate_figure_failures
+                if isinstance(item, dict) and "figure_id" in item
+            }
+            accounted_ids = set(self._candidate_materialized_figures) | set(cached_failures_by_id)
+            if accounted_ids != expected_ids:
                 raise FetchError(
                     "figure_asset_unresolved",
                     "selected candidate figure cache is incomplete",
@@ -3311,6 +3368,16 @@ class IngestRun:
             if self.source_format == "arxiv_html":
                 # Author-controlled HTML is never retained in a new revision.
                 fig.raw = None
+            if validated_cache and fig.id in cached_failures_by_id:
+                # 候補選定時点で既に判明していた失敗をそのまま縮退として引き継ぐ
+                # (再素材化はしない。P3: 黙って壊れない)。
+                fig.asset_key = None
+                cached_failure = dict(cached_failures_by_id[fig.id])
+                failures.append(cached_failure)
+                warnings.append(
+                    f"図/表の保存に失敗(続行): {fig.id} [{cached_failure.get('code')}]"
+                )
+                continue
             try:
                 if deadline is not None:
                     deadline.remaining()
@@ -3436,7 +3503,7 @@ class IngestRun:
                         "source": self.source_format,
                     }
                 )
-                warnings.append(f"図の保存に失敗(続行): {fig.id} [{exc.code}]")
+                warnings.append(f"図/表の保存に失敗(続行): {fig.id} [{exc.code}]")
             except Exception as exc:
                 if staged_key is not None or validated_cache:
                     raise
@@ -3449,7 +3516,7 @@ class IngestRun:
                     }
                 )
                 warnings.append(
-                    f"図の保存に失敗(続行): {fig.id} [figure_asset_error: {type(exc).__name__}]"
+                    f"図/表の保存に失敗(続行): {fig.id} [figure_asset_error: {type(exc).__name__}]"
                 )
         return out, warnings, failures
 
@@ -3628,12 +3695,21 @@ class IngestRun:
         if self.parsed_pdf is None or self.paper_id is None:
             return output, warnings, failures
         validated_cache = getattr(self, "_candidate_materialization_validated", False)
+        cached_failures_by_id: dict[str, dict[str, str]] = {}
         if validated_cache:
             expected_ids = set(self.parsed_pdf.figure_images)
-            expected_ids.update(figure.id for figure in self.parsed_pdf.figures)
-            if self._candidate_figure_failures or set(self._candidate_materialized_figures) != (
-                expected_ids
-            ):
+            expected_ids.update(
+                block.id
+                for block in self.parsed_pdf.blocks
+                if _candidate_requires_materialized_asset(block)
+            )
+            cached_failures_by_id = {
+                str(item["figure_id"]): item
+                for item in self._candidate_figure_failures
+                if isinstance(item, dict) and "figure_id" in item
+            }
+            accounted_ids = set(self._candidate_materialized_figures) | set(cached_failures_by_id)
+            if accounted_ids != expected_ids:
                 raise FetchError(
                     "figure_asset_unresolved",
                     "selected PDF candidate figure cache is incomplete",
@@ -3652,19 +3728,33 @@ class IngestRun:
                 )
             )
             if structural_failure is not None:
-                if validated_cache:
+                cached_failure = cached_failures_by_id.get(block_id)
+                if validated_cache and cached_failure is None:
                     raise FetchError(
                         "figure_asset_unresolved",
                         "selected PDF candidate figure block identity is invalid",
                     )
-                failures.append(
-                    {"code": structural_failure, "figure_id": block_id, "source": "pdf"}
-                )
+                failure = dict(cached_failure) if cached_failure else {
+                    "code": structural_failure,
+                    "figure_id": block_id,
+                    "source": "pdf",
+                }
+                failures.append(failure)
                 warnings.append(
-                    f"図/表アセットの保存に失敗(続行): {block_id} [{structural_failure}]"
+                    f"図/表アセットの保存に失敗(続行): {block_id} [{failure['code']}]"
                 )
                 continue
             assert block is not None
+            if validated_cache and block_id in cached_failures_by_id:
+                # 候補選定時点で既に判明していた失敗をそのまま縮退として引き継ぐ
+                # (再素材化はしない。P3: 黙って壊れない)。
+                block.asset_key = None
+                cached_failure = dict(cached_failures_by_id[block_id])
+                failures.append(cached_failure)
+                warnings.append(
+                    f"図/表アセットの保存に失敗(続行): {block_id} [{cached_failure.get('code')}]"
+                )
+                continue
             try:
                 if deadline is not None:
                     deadline.remaining()

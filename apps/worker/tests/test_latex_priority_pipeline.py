@@ -2265,11 +2265,16 @@ async def test_structuring_resume_rejects_mutated_revision_content(
     assert stored.stats["revision_content_sha256"] == original_digest
 
 
-async def test_candidate_with_missing_latex_figure_falls_back_to_pdf_extraction(
+async def test_latex_figure_without_graphics_reference_is_accepted_without_fallback(
     db_session: AsyncSession,
     router: LLMRouter,
     seed_ingest_job: Any,
 ) -> None:
+    """\\includegraphics の無い figure(コードリスティング等)は未解決として
+
+    数えず、latex 候補をそのまま採用してフォールバックしない(P3: 黙って壊れない)。
+    """
+
     ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
     transport = httpx.ASGITransport(
         app=_make_candidate_status_stub(
@@ -2293,6 +2298,9 @@ async def test_candidate_with_missing_latex_figure_falls_back_to_pdf_extraction(
         assert job is not None
         await ingest_paper(ctx, store, job)
 
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
     revision = (
         (
             await db_session.execute(
@@ -2302,27 +2310,30 @@ async def test_candidate_with_missing_latex_figure_falls_back_to_pdf_extraction(
         .scalars()
         .one()
     )
-    assert revision.source_format == "pdf"
-    assert revision.stats["candidate_failures"][0]["format"] == "latex"
-    assert revision.stats["candidate_failures"][0]["code"] == "figure_asset_unresolved", (
-        revision.stats["candidate_failures"]
-    )
-    assert revision.stats["candidate_failures"][0]["unresolved_figures"] == 1
+    assert revision.source_format == "latex"
+    assert revision.stats["candidate_failures"] == []
+    assert revision.stats["figure_asset_failures"] == []
     content = DocumentContent.model_validate(revision.content)
     figures = [block for _section, block in content.iter_blocks() if block.type == "figure"]
-    assert figures
-    assert all(
-        block.asset_key and block.asset_key.startswith(f"figures/{ids['paper_id']}/{revision.id}/")
-        for block in figures
+    assert len(figures) == 2
+    resolved = next(fig for fig in figures if fig.label == "fig:mock")
+    listing = next(fig for fig in figures if fig.label == "fig:missing")
+    assert resolved.asset_key and resolved.asset_key.startswith(
+        f"figures/{ids['paper_id']}/{revision.id}/"
     )
-    assert revision.stats["figure_asset_failures"] == []
+    assert listing.asset_key is None
 
 
-async def test_candidate_with_missing_second_panel_falls_back_to_pdf_extraction(
+async def test_candidate_with_missing_second_panel_degrades_without_fallback(
     db_session: AsyncSession,
     router: LLMRouter,
     seed_ingest_job: Any,
 ) -> None:
+    """一部の図アセットが恒久的に解決できなくても latex 候補は採用され、
+
+    その図だけがブロック単位で縮退する(P3: 黙って壊れない。他候補へは逃げない)。
+    """
+
     ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
     transport = httpx.ASGITransport(
         app=_make_candidate_status_stub(
@@ -2346,6 +2357,9 @@ async def test_candidate_with_missing_second_panel_falls_back_to_pdf_extraction(
         assert job is not None
         await ingest_paper(ctx, store, job)
 
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
     revision = (
         (
             await db_session.execute(
@@ -2355,30 +2369,38 @@ async def test_candidate_with_missing_second_panel_falls_back_to_pdf_extraction(
         .scalars()
         .one()
     )
-    assert revision.source_format == "pdf"
-    latex_failure = revision.stats["candidate_failures"][0]
-    assert latex_failure["format"] == "latex"
-    assert latex_failure["code"] == "figure_asset_unresolved"
-    assert latex_failure["unresolved_figures"] == 1
-    assert latex_failure["figure_asset_failures"][0]["figure_id"]
+    assert revision.source_format == "latex"
+    assert revision.stats["candidate_failures"] == []
+    figure_failures = revision.stats["figure_asset_failures"]
+    assert len(figure_failures) == 1
+    assert figure_failures[0]["figure_id"]
+    content = DocumentContent.model_validate(revision.content)
+    figures = [block for _section, block in content.iter_blocks() if block.type == "figure"]
+    assert len(figures) == 2
+    resolved = [fig for fig in figures if fig.asset_key]
+    unresolved = [fig for fig in figures if fig.asset_key is None]
+    assert len(resolved) == 1
+    assert len(unresolved) == 1
+    assert resolved[0].asset_key.startswith(f"figures/{ids['paper_id']}/{revision.id}/")
+    assert unresolved[0].id == figure_failures[0]["figure_id"]
 
 
-@pytest.mark.parametrize(
-    "latex_source",
-    [_LATEX_STANDALONE_MISSING_ASSET_TEX, _LATEX_TABLE_MISSING_ASSET_TEX],
-    ids=["standalone-graphics", "image-backed-table"],
-)
-async def test_candidate_with_missing_nonfigure_environment_asset_falls_back_to_pdf(
-    latex_source: str,
+async def test_candidate_with_missing_image_backed_table_asset_degrades_without_fallback(
     db_session: AsyncSession,
     router: LLMRouter,
     seed_ingest_job: Any,
 ) -> None:
+    """図と同様に、表アセットの恒久的な未解決もブロック単位で縮退し、候補全体は
+
+    不採用にしない(P3: 黙って壊れない。一つの表のために文書全体を品質 B へ落とす
+    のは、B 側の表が改善するわけでもなく原文レイアウト・構造を失うだけの劣化)。
+    """
+
     ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
     transport = httpx.ASGITransport(
         app=_make_candidate_status_stub(
             eprint_status=200,
-            eprint_body=_build_latex_archive(latex_source),
+            eprint_body=_build_latex_archive(_LATEX_TABLE_MISSING_ASSET_TEX),
             html_status=404,
             pdf_bytes=_VALID_MULTI_PARAGRAPH_PDF,
         )
@@ -2397,6 +2419,9 @@ async def test_candidate_with_missing_nonfigure_environment_asset_falls_back_to_
         assert job is not None
         await ingest_paper(ctx, store, job)
 
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
     revision = (
         (
             await db_session.execute(
@@ -2406,19 +2431,86 @@ async def test_candidate_with_missing_nonfigure_environment_asset_falls_back_to_
         .scalars()
         .one()
     )
-    assert revision.source_format == "pdf"
-    latex_failure = revision.stats["candidate_failures"][0]
-    assert latex_failure["format"] == "latex"
-    assert latex_failure["code"] == "figure_asset_unresolved"
-    assert latex_failure["unresolved_figures"] == 1
+    assert revision.source_format == "latex"
+    assert revision.stats["candidate_failures"] == []
+    figure_failures = revision.stats["figure_asset_failures"]
+    assert len(figure_failures) == 1
+    assert figure_failures[0]["code"] == "asset_not_found"
+    content = DocumentContent.model_validate(revision.content)
+    tables = [block for _section, block in content.iter_blocks() if block.type == "table"]
+    assert len(tables) == 2
+    resolved = [table for table in tables if table.asset_key]
+    unresolved = [table for table in tables if table.asset_key is None]
+    assert len(resolved) == 1
+    assert len(unresolved) == 1
+    assert resolved[0].asset_key.startswith(f"figures/{ids['paper_id']}/{revision.id}/")
+    assert unresolved[0].id == figure_failures[0]["figure_id"]
 
 
-async def test_html_candidate_with_missing_second_image_falls_back_to_pdf_extraction(
+async def test_candidate_with_missing_standalone_graphics_degrades_without_fallback(
+    db_session: AsyncSession,
+    router: LLMRouter,
+    seed_ingest_job: Any,
+) -> None:
+    """\\begin{figure} の外に書かれた \\includegraphics も figure ブロックであり、
+
+    その画像が恒久的に解決できなくても他の図・表と同様に縮退する(P3: 黙って壊れない)。
+    """
+
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    transport = httpx.ASGITransport(
+        app=_make_candidate_status_stub(
+            eprint_status=200,
+            eprint_body=_build_latex_archive(_LATEX_STANDALONE_MISSING_ASSET_TEX),
+            html_status=404,
+            pdf_bytes=_VALID_MULTI_PARAGRAPH_PDF,
+        )
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {
+            "router": router,
+            "arxiv_http": http,
+            "redis": _FakeRedis(),
+            "settings": CoreSettings(alinea_arxiv_base_url="http://arxiv.test"),
+            "throttle": _noop_throttle,
+        }
+        store = JobStore(db_session)
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert revision.source_format == "latex"
+    assert revision.stats["candidate_failures"] == []
+    figure_failures = revision.stats["figure_asset_failures"]
+    assert len(figure_failures) == 1
+    assert figure_failures[0]["code"] == "asset_not_found"
+
+
+async def test_html_candidate_with_missing_second_image_degrades_without_fallback(
     db_session: AsyncSession,
     router: LLMRouter,
     seed_ingest_job: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """一部の図アセットが恒久的に解決できなくても html 候補は採用され、
+
+    その図だけがブロック単位で縮退する(P3: 黙って壊れない。品質の劣る pdf 候補へは
+    逃げない)。
+    """
+
     fetched: list[str] = []
 
     async def fetch_panel(
@@ -2468,6 +2560,9 @@ async def test_html_candidate_with_missing_second_image_falls_back_to_pdf_extrac
         await ingest_paper(ctx, store, job)
 
     assert fetched == ["panel-a.png", "panel-b.png"]
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
     revision = (
         (
             await db_session.execute(
@@ -2477,14 +2572,20 @@ async def test_html_candidate_with_missing_second_image_falls_back_to_pdf_extrac
         .scalars()
         .one()
     )
-    assert revision.source_format == "pdf"
-    html_failure = next(
-        failure
-        for failure in revision.stats["candidate_failures"]
-        if failure["format"] == "arxiv_html"
+    assert revision.source_format == "arxiv_html"
+    # e-print 自体が 404 のため latex は候補にすらならず不採用として記録される
+    # (図の縮退とは無関係)。html 側は縮退した図以外の不採用理由を残さない。
+    assert [failure["format"] for failure in revision.stats["candidate_failures"]] == ["latex"]
+    assert all(
+        failure["format"] != "arxiv_html" for failure in revision.stats["candidate_failures"]
     )
-    assert html_failure["code"] == "figure_asset_unresolved"
-    assert html_failure["unresolved_figures"] == 1
+    figure_failures = revision.stats["figure_asset_failures"]
+    assert len(figure_failures) == 1
+    assert figure_failures[0]["code"] == "asset_http_status"
+    content = DocumentContent.model_validate(revision.content)
+    figures = [block for _section, block in content.iter_blocks() if block.type == "figure"]
+    assert any(fig.asset_key for fig in figures)
+    assert any(fig.asset_key is None for fig in figures)
 
 
 async def test_candidate_materialization_deadline_does_not_starve_pdf_fallback(
@@ -2743,18 +2844,37 @@ async def test_fresh_candidate_operational_figure_failure_remains_retryable(
     assert revisions.all() == []
 
 
-async def test_all_deterministic_figure_gate_failures_preserve_unresolved_code(
+async def test_retryable_table_asset_failure_preserves_unresolved_code(
     db_session: AsyncSession,
     router: LLMRouter,
     seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """表アセットの失敗でも一時的(リトライで直る可能性がある)なものは、図と同じく
+
+    依然として候補を不採用にし、フォールバック先も尽きれば安定した失敗コードを
+    最終エラーとして残す(縮退対象は恒久的な未解決のみ。一時的な失敗は次候補・
+    再試行に委ねる。§2.4)。
+    """
+
+    real_resolve_latex_source = worker_pipeline.resolve_latex_source
+
+    def flaky_resolve_latex_source(*, requested: str, **kwargs: Any) -> Any:
+        if requested == "missing-table-panel":
+            raise worker_pipeline.FigureAssetError(
+                "asset_fetch_timeout", "synthetic transient table asset failure"
+            )
+        return real_resolve_latex_source(requested=requested, **kwargs)
+
+    monkeypatch.setattr(worker_pipeline, "resolve_latex_source", flaky_resolve_latex_source)
+
     ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
     transport = httpx.ASGITransport(
         app=_make_candidate_status_stub(
             eprint_status=200,
-            eprint_body=_build_latex_archive(_LATEX_MISSING_ASSET_TEX),
-            html_status=200,
-            html_body=_VALID_EXTERNAL_FIGURE_HTML,
+            eprint_body=_build_latex_archive(_LATEX_TABLE_MISSING_ASSET_TEX),
+            html_status=404,
+            html_body=b"",
             pdf_bytes=_incomplete_original_pdf(),
         )
     )
@@ -2772,15 +2892,19 @@ async def test_all_deterministic_figure_gate_failures_preserve_unresolved_code(
         with pytest.raises(FetchError) as error:
             await run_ingest(ctx, store, job)
 
-    assert error.value.kind == "figure_asset_unresolved"
+    assert error.value.kind == "asset_fetch_timeout"
     diagnostics = json.loads(str(error.value))
-    unresolved = [
-        failure
-        for failure in diagnostics["candidates"]
-        if failure.get("code") == "figure_asset_unresolved"
-    ]
-    assert [failure["format"] for failure in unresolved] == ["latex", "arxiv_html"]
-    assert all(failure["figure_asset_failures"] for failure in unresolved)
+    latex_failure = next(
+        failure for failure in diagnostics["candidates"] if failure["format"] == "latex"
+    )
+    assert latex_failure["code"] == "figure_asset_unresolved"
+    assert latex_failure["figure_asset_failures"][0]["code"] == "asset_fetch_timeout"
+    revisions = (
+        await db_session.execute(
+            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        )
+    ).scalars()
+    assert revisions.all() == []
 
 
 @pytest.mark.parametrize(
@@ -2822,11 +2946,17 @@ async def test_html_figure_http_status_remains_retryable_after_candidate_exhaust
     assert html_failure["figure_asset_failures"][0]["code"] == expected_code
 
 
-async def test_candidate_with_broken_html_figure_falls_back_to_pdf_extraction(
+async def test_candidate_with_broken_html_figure_degrades_without_fallback(
     db_session: AsyncSession,
     router: LLMRouter,
     seed_ingest_job: Any,
 ) -> None:
+    """latex アーカイブが利用不能で html にフォールバックした場合でも、html 自体の
+
+    図アセットが恒久的に解決できないだけなら html 候補を採用し、pdf へは逃げない
+    (P3: 黙って壊れない)。
+    """
+
     ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
     transport = httpx.ASGITransport(
         app=_make_candidate_status_stub(
@@ -2862,20 +2992,18 @@ async def test_candidate_with_broken_html_figure_falls_back_to_pdf_extraction(
         .scalars()
         .one()
     )
-    assert revision.source_format == "pdf"
-    html_failure = next(
-        item for item in revision.stats["candidate_failures"] if item["format"] == "arxiv_html"
+    assert revision.source_format == "arxiv_html"
+    latex_failure = next(
+        item for item in revision.stats["candidate_failures"] if item["format"] == "latex"
     )
-    assert html_failure["code"] == "figure_asset_unresolved"
-    assert html_failure["unresolved_figures"] == 1
-    assert html_failure["figure_asset_failures"][0]["figure_id"]
+    assert latex_failure["code"] != "figure_asset_unresolved"
+    figure_failures = revision.stats["figure_asset_failures"]
+    assert len(figure_failures) == 1
+    assert figure_failures[0]["figure_id"]
     content = DocumentContent.model_validate(revision.content)
     figures = [block for _section, block in content.iter_blocks() if block.type == "figure"]
     assert figures
-    assert all(
-        block.asset_key and block.asset_key.startswith(f"figures/{ids['paper_id']}/{revision.id}/")
-        for block in figures
-    )
+    assert all(block.asset_key is None for block in figures)
 
 
 async def test_latex_wrapper_promotes_embedded_pdf_to_pdf_candidate(
@@ -3876,6 +4004,11 @@ async def test_unsafe_inline_svg_css_failure_does_not_persist_raw(
     router: LLMRouter,
     seed_ingest_job: Any,
 ) -> None:
+    """安全でないインライン SVG は figure の縮退として除去され、html 候補自体は
+
+    採用される(素材は落としても、危険な CSS は決して保存しない)。
+    """
+
     ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
     transport = httpx.ASGITransport(
         app=_make_candidate_status_stub(
@@ -3898,6 +4031,9 @@ async def test_unsafe_inline_svg_css_failure_does_not_persist_raw(
         assert job is not None
         await ingest_paper(ctx, store, job)
 
+    completed = await store.get(ids["job_id"])
+    assert completed is not None
+    assert completed.status == "succeeded", completed.error
     revision = (
         (
             await db_session.execute(
@@ -3907,16 +4043,17 @@ async def test_unsafe_inline_svg_css_failure_does_not_persist_raw(
         .scalars()
         .one()
     )
-    assert revision.source_format == "pdf"
-    html_failure = next(
-        failure
-        for failure in revision.stats["candidate_failures"]
-        if failure["format"] == "arxiv_html"
+    assert revision.source_format == "arxiv_html"
+    # e-print 自体が 404 のため latex は候補にすらならず不採用として記録される
+    # (図の縮退とは無関係)。html 側は縮退した図以外の不採用理由を残さない。
+    assert [failure["format"] for failure in revision.stats["candidate_failures"]] == ["latex"]
+    assert all(
+        failure["format"] != "arxiv_html" for failure in revision.stats["candidate_failures"]
     )
-    assert html_failure["code"] == "figure_asset_unresolved"
-    assert html_failure["figure_asset_failures"][0]["code"] == "unsafe_inline_figure"
+    figure_failures = revision.stats["figure_asset_failures"]
+    assert len(figure_failures) == 1
+    assert figure_failures[0]["code"] == "unsafe_inline_figure"
     assert "@import" not in json.dumps(revision.content)
-    assert revision.stats["figure_asset_failures"] == []
 
 
 async def test_reingest_creates_repaired_revision_after_html_parser_rollout(
@@ -4794,6 +4931,11 @@ async def test_parsing_checkpoint_revalidates_figures_before_creating_revision(
     seed_ingest_job: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """resume 時に図を再検証しても、恒久的な単一図の未解決だけではジョブを失敗させず、
+
+    縮退したまま同じ候補からリビジョンを作成する(P3: 黙って壊れない)。
+    """
+
     ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
     storage = S3Storage()
     pdf_key = StorageKeys.original_pdf(ids["paper_id"], "v1")
@@ -4856,16 +4998,25 @@ async def test_parsing_checkpoint_revalidates_figures_before_creating_revision(
 
     completed = await store.get(ids["job_id"])
     assert completed is not None
-    assert completed.status == "failed"
-    assert json.loads(completed.error or "{}")["code"] == "figure_asset_unresolved"
+    assert completed.status == "succeeded", completed.error
     assert materialized == ["inline.svg"]
     assert calls == {"pdf": 0, "eprint": 0, "html": 0}
-    revisions = (
-        await db_session.execute(
-            select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+    revision = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
         )
-    ).scalars()
-    assert revisions.all() == []
+        .scalars()
+        .one()
+    )
+    assert revision.source_format == "arxiv_html"
+    figure_failures = revision.stats["figure_asset_failures"]
+    assert len(figure_failures) == 1
+    # インライン SVG は _materialize_inline_svg 経由のため、内部の
+    # _materialize_figure_payload 失敗(image_invalid)は unsafe_inline_figure に
+    # 再分類される。
+    assert figure_failures[0]["code"] == "unsafe_inline_figure"
 
 
 @pytest.mark.parametrize(

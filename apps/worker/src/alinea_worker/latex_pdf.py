@@ -47,7 +47,6 @@ from alinea_core.settings import CoreSettings
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from alinea_core.translation.pipeline import (
     BLOCKING_FLAGS,
-    TRANSLATABLE_BLOCK_TYPES,
     resolve_translation_set_units,
 )
 from alinea_core.translation.table_cells import (
@@ -66,17 +65,35 @@ from alinea_worker.structured_pdf import (
     render_structured_japanese_source,
 )
 
-PDF_BUILD_VERSION = "japanese-pdf-3.0.12"
+PDF_BUILD_VERSION = "japanese-pdf-3.0.14"
 DEFAULT_TEXLIVE_IMAGE = "alinea-texlive-ja:latest"
 _REPO_DOCKER_WRAPPER = Path(__file__).resolve().parents[4] / "scripts" / "dev-docker.sh"
 
 _SECTION_CMD_RE = re.compile(r"\\(?:section|subsection|subsubsection)\*?(?:\s*\[[^\]]*\])?\s*\{")
 _CAPTION_CMD_RE = re.compile(r"\\caption\*?(?:\s*\[[^\]]*\])?\s*\{")
+_INCLUDEGRAPHICS_CMD_RE = re.compile(r"\\includegraphics\*?(?:\s*\[[^\]]*\])?\s*\{")
 _ITEM_RE = re.compile(r"\\item\b\s*(?:\[[^\]]*\])?")
 _OVERFULL_RE = re.compile(r"Overfull \\[hv]box \((?P<pt>[0-9.]+)pt too")
 _JAPANESE_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
-_VISIBLE_TEX_CONTROL_RE = re.compile(r"\\[A-Za-z@]{2,}")
-_PDF_BOUNDS_TOLERANCE_PT = 2.0
+# 元の `\[A-Za-z@]{2,}` は単純すぎて、コードリスティングやファイルパス、URL 中の
+# エスケープされたコマンド(例: `\Users\name`, `\_foo`, `\%`)にも誤検知する。
+# 未展開のままだと明らかにレイアウトが壊れる構造コマンド(見出し・引用・
+# 相互参照・環境・図表・脚注)のみに対象を限定し、引数の `{` を伴う場合だけ
+# 「展開されずに残った生の TeX」と見なす。原文 PDF のテキストとの比較も
+# 検討したが、このバリデータは PDF バイト列しか受け取らない(HTML 由来の
+# リビジョンには比較対象の原文 PDF がない)ため、コマンド集合を絞る方式を採用する。
+_VISIBLE_TEX_CONTROL_RE = re.compile(
+    r"\\(?:section|subsection|subsubsection|chapter|paragraph|"
+    r"cite|citet|citep|citeauthor|citeyear|citealt|citealp|"
+    r"ref|eqref|autoref|cref|Cref|nameref|"
+    r"begin|end|includegraphics|caption|label|footnote)\*?"
+    r"(?:\s*\[[^\]\n]{0,80}\])?\s*\{"
+)
+# 日本語は原文の英語より字幅が広く、原文レイアウトを保ったまま再コンパイルすると
+# 数 pt 程度の Overfull box が出るのは正常な範囲。約 1em(本文フォントサイズ
+# 10-12pt 相当)までは許容し、それを超える食い込みだけを
+# 「本当に破綻したレイアウト」として検出する。
+_PDF_BOUNDS_TOLERANCE_PT = 12.0
 _LATEX_SOURCE_KINDS = ("arxiv_latex", "latex")
 
 _SKIP_ENVS = {
@@ -769,6 +786,13 @@ def _replace_abstract_command(tex: str, abstract_ja: str | None) -> str:
 
 def _replace_caption(inner: str, cursor: _TranslationCursor, block_type: str) -> str:
     block, unit = cursor.take(block_type)
+    # \includegraphics が複数枚ある figure/wrapfigure 環境は、パーサー側(_figure_env)が
+    # 画像ごとに figure ブロックを1つずつ生成し、キャプションは先頭の画像のブロックにのみ
+    # 付与する。ここで消費するブロック数を画像枚数に合わせないと、以降の figure ブロックの
+    # 位置対応が1つずれ、無関係なキャプションが入れ替わって描画されてしまう。
+    extra_images = max(0, len(_INCLUDEGRAPHICS_CMD_RE.findall(inner)) - 1)
+    for _ in range(extra_images):
+        cursor.take(block_type)
     m = _CAPTION_CMD_RE.search(inner)
     replacement = _unit_to_latex(unit, cursor, source_latex=inner)
     if m is None or replacement is None:
@@ -1470,6 +1494,18 @@ def _validate_source_revision_match(archive: LatexArchive, content: DocumentCont
     )
 
 
+# LaTeX 原文への位置置換(source レンダラー)は、\paragraph の再定義でパーサー側
+# だけに段落境界が増える、複数画像 figure 環境の内部展開など、正規化のわずかな
+# 不一致でごく少数のブロックだけがどうしても原文へ書き戻せないことがある。
+# こうした僅少な欠落を理由に「原文レイアウトを維持した日本語PDF」を丸ごと
+# 汎用レイアウト(structured)へ後退させるのは、体験としては明確な劣化になる
+# (レイアウト維持+数ブロックだけ英語のまま残る > レイアウトを完全に放棄する)。
+# 90% 以上のブロックが実際に原文へ書き戻せていれば、原文レイアウトを維持し
+# 残りは原文(英語)のまま表示する。閾値未満は正規化の不一致では説明できない
+# 本当のマッピング破綻とみなし、従来通り例外を投げて汎用レイアウトへ後退する。
+_SOURCE_RENDER_MIN_COVERAGE = 0.9
+
+
 def _validate_render_coverage(
     rendered: RenderedLatexSource,
     content: DocumentContent,
@@ -1481,20 +1517,34 @@ def _validate_render_coverage(
         if (unit := units.get(block.id)) is not None and _unit_is_displayable_for_block(unit, block)
     }
     missing = sorted(expected - set(rendered.replaced_block_ids))
-    if missing:
-        by_id = {block.id: block.type for _section, block in content.iter_blocks()}
+    if not missing:
+        return
+    by_id = {block.id: block.type for _section, block in content.iter_blocks()}
+    replaced = len(expected) - len(missing)
+    coverage = replaced / len(expected) if expected else 1.0
+    if coverage < _SOURCE_RENDER_MIN_COVERAGE:
         raise LatexPdfBuildError(
             "translation_mapping_incomplete",
             "not every translated block could be mapped back to the LaTeX source",
             detail={
                 "expected": len(expected),
-                "replaced": len(expected) - len(missing),
+                "replaced": replaced,
                 "missing": [
                     f"{block_id}:{by_id.get(block_id, 'unknown')}" for block_id in missing[:20]
                 ],
                 "warnings": rendered.warnings[:10],
             },
         )
+    # 閾値以上のカバレッジは原文レイアウトを維持したまま後退させない。未マッピングの
+    # ブロックは原文(英語)のまま残るため、その件数と内訳を warnings に残し、
+    # joblog(tasks/translate.py の fallback-warning 経路)で運用が把握できるようにする。
+    missing_desc = ", ".join(
+        f"{block_id}:{by_id.get(block_id, 'unknown')}" for block_id in missing[:20]
+    )
+    rendered.warnings.append(
+        "一部の翻訳ブロックをLaTeX原文へ書き戻せなかったため原文(英語)のまま残しました: "
+        f"{replaced}/{len(expected)} 件を置換 (未反映: {missing_desc})"
+    )
 
 
 def _validate_render_manifest(manifest: PdfRenderManifest) -> None:
@@ -1705,17 +1755,6 @@ def _structured_replacements(
     return dict(Counter(by_id[block_id] for block_id in manifest.translated_block_ids))
 
 
-def _translation_scope_is_partial(
-    content: DocumentContent, units: dict[str, TranslationUnit]
-) -> bool:
-    translatable_ids = {
-        block.id
-        for _section, block in content.iter_blocks()
-        if block.type in TRANSLATABLE_BLOCK_TYPES
-    }
-    return not translatable_ids.issubset(units)
-
-
 async def _load_structured_binary_assets(
     storage: S3Storage,
     content: DocumentContent,
@@ -1835,7 +1874,12 @@ async def build_translation_pdfs_if_ready(
     replacements: dict[str, int]
     translated_pdf: bytes
 
-    if revision.source_format == "latex" and not _translation_scope_is_partial(content, units):
+    # 参考文献セクションは常に翻訳対象外、付録も設定次第で対象外になるため
+    # (compute_translation_scope 参照)、実運用では units が全翻訳対象ブロックを
+    # 覆っていない論文が大半である。それを理由に汎用レイアウトへ後退させると、
+    # 原文レイアウト維持という機能の意味が失われる。ここでは訳がある
+    # ブロックだけを置換し、訳のないブロックは原文(英語)のまま残す。
+    if revision.source_format == "latex":
         fallback_reason = None
         try:
             latex_asset = await _find_latex_asset(
@@ -1887,8 +1931,6 @@ async def build_translation_pdfs_if_ready(
             warnings = list(source_rendered.warnings)
             manifest = _source_render_manifest(source_rendered, content, units)
             replacements = dict(source_rendered.replacements)
-    elif revision.source_format == "latex":
-        fallback_reason = "partial_translation_scope"
 
     if renderer == "structured":
         structured_rendered, translated_pdf, asset_warnings = await _render_structured_pdf(

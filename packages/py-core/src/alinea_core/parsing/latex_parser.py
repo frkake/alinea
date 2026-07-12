@@ -2537,6 +2537,9 @@ _THEOREM_ENVS = {
     "proof": "Proof",
 }
 
+# tabularray (tblr 系) のセル/行頭書式コマンド。グリッド抽出前に除去する。
+_TBLR_CELL_PREFIX_RE = re.compile(r"\\Set(?:Cell|Row)\b")
+
 _CITE_CMDS = {"cite", "citet", "citep", "citeauthor", "citeyear", "citealt", "citealp"}
 _REF_CMDS = {"ref", "eqref", "autoref", "cref", "Cref", "nameref"}
 _PRESENTATION_SWITCH_CMDS = {
@@ -3925,6 +3928,31 @@ def _macro_source_reaches_command(
     return False
 
 
+_EXPANDAFTER_SPLICE_PREFIX_RE = re.compile(r"\\expandafter\s*\{\s*\Z")
+_EXPANDAFTER_SPLICE_LOOKAROUND_CHARS = 32
+
+
+def _is_expandafter_value_splice_reference(text: str, match: re.Match[str]) -> bool:
+    r"""``\expandafter{\foo}`` は再帰呼び出しではなく、``\foo`` の直前の値を差し込む定型句である。
+
+    ``\xdef\foo{\expandafter{\foo}...}`` ( ``\g@addto@macro`` 系ヘルパーが生成する、リストへ要素を
+    蓄積していく古典的な慣用句。例えば ``\xdef\metadatalist{\expandafter{\metadatalist}\sep ...}`` )
+    は、実際の TeX では新しい ``\xdef`` が確定する前に ``\foo`` を一度だけ展開してから差し込むため、
+    最終的な定義に ``\foo`` 自身への参照は残らず、有限回で必ず終了する。本evaluatorには
+    ``\expandafter`` の一発展開という primitive が無く、``#3`` のような引用元の control sequence を
+    そのまま文字列として body へ埋め込むため、この位置に現れる ``\foo`` を見かけ上の再帰呼び出しと
+    誤認してしまう。ちょうどこの構文位置( ``\expandafter{`` の直後かつ ``}`` の直前で他の内容を
+    伴わない )に現れる場合に限り、不透明な値参照として扱い、構造到達判定・fail-closed の対象から
+    外す。
+    """
+
+    prefix = text[max(0, match.start() - _EXPANDAFTER_SPLICE_LOOKAROUND_CHARS) : match.start()]
+    if _EXPANDAFTER_SPLICE_PREFIX_RE.search(prefix) is None:
+        return False
+    suffix = text[match.end() : match.end() + _EXPANDAFTER_SPLICE_LOOKAROUND_CHARS]
+    return suffix.lstrip(" \t\r\n").startswith("}")
+
+
 def _evaluate_unsupported_macro_invocation(
     text: str,
     match: re.Match[str],
@@ -3977,6 +4005,12 @@ def _evaluate_macro_invocation(
         state,
         seen=frozenset({command}),
     ):
+        if _is_expandafter_value_splice_reference(text, match):
+            # \g@addto@macro 型のリスト蓄積慣用句 ( \xdef\metadatalist{\expandafter{\metadatalist}
+            # \sep ...} など ) は、この位置の \foo が実TeXでは前回の値の差し込みに過ぎず、決して
+            # \foo 自身を再度実行しない。構造到達判定に関わらずここで安全にドロップしてよい
+            # ( 実際に蓄積された内容は #3 以降の残りテキストとして引き続き評価される )。
+            return end, ""
         # Class/style size commands commonly pass their own control sequence as an opaque
         # argument (for example ``\@setfontsize\footnotesize``).  Our bounded evaluator does
         # not execute the unknown helper and would otherwise mistake that operand for recursive
@@ -5102,6 +5136,8 @@ class _LatexParser:
                 )
             except LatexParseError:
                 raw = None
+        if raw is None:
+            raw = self._tabularray_table_raw(display_inner)
         caption_inlines: list[Inline] = []
         m_cap = re.search(r"\\caption\{", display_inner)
         if m_cap:
@@ -5114,6 +5150,135 @@ class _LatexParser:
         if label:
             self._label_targets[label] = "table"
         return blk
+
+    def _tabularray_table_raw(self, display_inner: str) -> str | None:
+        """tabularray (`tblr`/`longtblr`/`talltblr`) を classic `tabular` と同じ grid 表現へ落とす。
+
+        タイトル/hline 等の見た目オプション ``{...}`` は入れ子波括弧
+        (``column{1}={bg=white}`` 等)を含むため正規表現では切り出せない。
+        既存の balanced-brace ヘルパで安全にスキップし、行/セル本体だけを
+        classic tabular の raw 文字列へ包み直す(列指定の内容自体は下流の
+        grid 抽出で使われないため空でよい)。壊れている・未対応の場合は
+        raw=None のまま caption-only に留め、パース全体は継続する。
+        """
+
+        m_tblr = re.search(r"\\begin\{(tblr|longtblr|talltblr)\}", display_inner)
+        if not m_tblr:
+            return None
+        try:
+            env_inner, _end = _read_environment(
+                display_inner,
+                m_tblr.end(),
+                m_tblr.group(1),
+                self._evaluation_budget,
+            )
+            body = self._skip_tblr_options(env_inner)
+            body = self._strip_tblr_cell_prefixes(body)
+            synthetic = "\\begin{tabular}{}" + body + "\\end{tabular}"
+            return _without_includegraphics(
+                self._expand_macros_in_raw(synthetic),
+                self._evaluation_budget,
+            )
+        except LatexParseError:
+            return None
+
+    def _skip_tblr_options(self, env_inner: str) -> str:
+        """`\\begin{tblr}` 直後の任意 `[outer-spec]` と必須 `{inner-spec}` を読み飛ばす。"""
+
+        pos = _skip_space(env_inner, 0)
+        if pos < len(env_inner) and env_inner[pos] == "[":
+            close_pos = _matching_square(
+                env_inner,
+                pos,
+                self._evaluation_budget,
+                base_depth=self._parser_depth,
+            )
+            if close_pos is None:
+                raise LatexParseError("unbalanced_braces", "tblr の outer spec が不正")
+            if self._evaluation_budget is not None:
+                self._evaluation_budget.reserve_structure_match()
+            pos = _skip_space(env_inner, close_pos + 1)
+        if pos >= len(env_inner) or env_inner[pos] != "{":
+            raise LatexParseError("unbalanced_braces", "tblr の inner spec が見つからない")
+        _options, body_start = self._read_parser_braced(env_inner, pos)
+        return env_inner[body_start:]
+
+    def _tblr_cell_boundaries(self, body: str) -> list[int]:
+        """トップレベルの `&` / `\\\\` 直後をセル先頭位置として返す(SetCell 検出専用の簡易走査)。
+
+        最終的な行/セル分割は下流(table_cells)の厳密な実装に委ねるため、
+        ここでは `\\SetCell` 等の先頭コマンドを見つけるための目安の境界で十分。
+        """
+
+        starts = [0]
+        depth = 0
+        i = 0
+        n = len(body)
+        while i < n:
+            ch = body[i]
+            if ch == "\\" and i + 1 < n:
+                if body[i + 1] == "\\":
+                    i += 2
+                    starts.append(i)
+                    continue
+                i += 2
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                if depth > 0:
+                    depth -= 1
+            elif ch == "&" and depth == 0:
+                starts.append(i + 1)
+            i += 1
+        return starts
+
+    def _strip_tblr_cell_prefixes(self, body: str) -> str:
+        """セル/行先頭の `\\SetCell{...}` `\\SetCell[...]{...}` `\\SetRow{...}` を除去する。
+
+        これらの書式コマンドはグリッド抽出に不要なだけでなく、汎用マクロ除去
+        (未知マクロは名前だけ捨てて `{...}` の中身を残す)に巻き込まれると
+        `bg=red` のような残骸がセル本文の先頭へ混入してしまう。境界が明確な
+        単純形だけを対象とし、判定できない場合は本文を失わないよう何もしない。
+        """
+
+        removals: list[tuple[int, int]] = []
+        for pos in sorted(set(self._tblr_cell_boundaries(body))):
+            j = _skip_space(body, pos)
+            match = _TBLR_CELL_PREFIX_RE.match(body, j)
+            if match is None:
+                continue
+            k = _skip_space(body, match.end())
+            try:
+                if k < len(body) and body[k] == "[":
+                    close_pos = _matching_square(
+                        body,
+                        k,
+                        self._evaluation_budget,
+                        base_depth=self._parser_depth,
+                    )
+                    if close_pos is None:
+                        continue
+                    k = _skip_space(body, close_pos + 1)
+                if k >= len(body) or body[k] != "{":
+                    continue
+                _content, close_brace = self._read_parser_braced(body, k)
+            except LatexParseError:
+                continue
+            if self._evaluation_budget is not None:
+                self._evaluation_budget.reserve_structure_match()
+            removals.append((pos, close_brace))
+        if not removals:
+            return body
+        out: list[str] = []
+        cursor = 0
+        for start, end in removals:
+            out.append(body[cursor:start])
+            cursor = end
+        out.append(body[cursor:])
+        if self._evaluation_budget is not None:
+            self._evaluation_budget.ensure_emittable_parts(_iter_join_ranges(out, ""))
+        return "".join(out)
 
     def _list_env(self, inner: str, *, ordered: bool) -> Block:
         items: list[list[Inline]] = []

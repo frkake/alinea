@@ -92,6 +92,17 @@ class TimelineEntry(BaseModel):
     label: str
 
 
+class IngestFailure(BaseModel):
+    """最新 ingest ジョブが failed かつ表示可能な本文が無い場合のみ設定する(P3 §)。
+
+    Japanese 文言はフロントで ``code`` から組み立てる(バックエンドは UI 文言を持たない)。
+    """
+
+    job_id: str
+    stage: str
+    code: str | None = None
+
+
 class ViewerInit(BaseModel):
     """plans/03 §6.1 のレスポンス。"""
 
@@ -105,6 +116,7 @@ class ViewerInit(BaseModel):
     license_card: LicenseCard
     ingest_timeline: list[TimelineEntry]
     today_reading_minutes: int
+    ingest_failure: IngestFailure | None = None
 
 
 # --- §6.2 リビジョン一覧 ------------------------------------------------------------

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 import tempfile
 import uuid
@@ -28,12 +29,15 @@ from alinea_core.parsing.latex_parser import (
 from alinea_core.settings import CoreSettings
 from alinea_core.storage.s3 import StorageKeys
 from alinea_worker.latex_pdf import (
+    _SOURCE_RENDER_MIN_COVERAGE,
     DEFAULT_TEXLIVE_IMAGE,
     PDF_BUILD_VERSION,
     LatexPdfBuildError,
+    RenderedLatexSource,
     _compile_with_docker,
     _find_overfull_boxes,
     _find_pdf_page_bound_violations,
+    _source_render_manifest,
     _translation_units_digest,
     _validate_render_coverage,
     _validate_render_manifest,
@@ -105,7 +109,7 @@ def _complex_table_source() -> str:
 
 
 def test_typed_table_rendering_invalidates_caption_only_pdf_cache() -> None:
-    assert PDF_BUILD_VERSION == "japanese-pdf-3.0.12"
+    assert PDF_BUILD_VERSION == "japanese-pdf-3.0.14"
 
 
 def test_render_manifest_rejects_missing_or_source_fallback_blocks() -> None:
@@ -120,6 +124,72 @@ def test_render_manifest_rejects_missing_or_source_fallback_blocks() -> None:
 
     assert captured.value.kind == "translated_pdf_incomplete"
     assert captured.value.detail == {"missing": ["b"], "fallback": ["b"]}
+
+
+def _paragraph_content_and_units(count: int) -> tuple[DocumentContent, dict[str, TranslationUnit]]:
+    blocks = [Block(id=f"p{index}", type="paragraph") for index in range(count)]
+    content = DocumentContent(quality_level="A", sections=[Section(id="sec-1", blocks=blocks)])
+    units = {block.id: _unit(block.id, f"訳文{index}") for index, block in enumerate(blocks)}
+    return content, units
+
+
+def _rendered_source_stub(replaced_block_ids: frozenset[str]) -> RenderedLatexSource:
+    return RenderedLatexSource(
+        main_tex_name="main.tex",
+        main_tex="",
+        support_text_files={},
+        binary_files={},
+        replacements={"paragraph": len(replaced_block_ids)},
+        replaced_block_ids=replaced_block_ids,
+        warnings=[],
+    )
+
+
+def test_validate_render_coverage_accepts_fully_mapped_document() -> None:
+    """全ブロックが原文へ書き戻せた場合は従来通り何も起きない(回帰確認)。"""
+    content, units = _paragraph_content_and_units(5)
+    rendered = _rendered_source_stub(frozenset(units))
+
+    _validate_render_coverage(rendered, content, units)
+
+    assert rendered.warnings == []
+
+
+def test_validate_render_coverage_tolerates_small_missing_fraction() -> None:
+    """20件中1件だけ原文へ書き戻せなくても(95% >= 90%のしきい値)例外にはならず、
+    原文レイアウトを維持したまま manifest の source_fallback に計上される。
+    """
+    content, units = _paragraph_content_and_units(20)
+    replaced_block_ids = frozenset(block_id for block_id in units if block_id != "p0")
+    rendered = _rendered_source_stub(replaced_block_ids)
+
+    _validate_render_coverage(rendered, content, units)
+
+    assert any("p0" in warning for warning in rendered.warnings)
+    manifest = _source_render_manifest(rendered, content, units)
+    assert manifest.expected_block_ids == frozenset(units)
+    assert manifest.translated_block_ids == replaced_block_ids
+    assert manifest.source_fallback_block_ids == frozenset({"p0"})
+
+
+def test_validate_render_coverage_raises_when_missing_fraction_is_large() -> None:
+    """20件中10件しか原文へ書き戻せない(50% < 90%のしきい値)場合は、
+    正規化の不一致では説明できない本当のマッピング破綻として従来通り例外を投げる。
+    """
+    content, units = _paragraph_content_and_units(20)
+    replaced_block_ids = frozenset(f"p{index}" for index in range(10))
+    rendered = _rendered_source_stub(replaced_block_ids)
+
+    with pytest.raises(LatexPdfBuildError) as captured:
+        _validate_render_coverage(rendered, content, units)
+
+    assert captured.value.kind == "translation_mapping_incomplete"
+    assert captured.value.detail["expected"] == 20
+    assert captured.value.detail["replaced"] == 10
+
+
+def test_source_render_min_coverage_threshold_is_defensible() -> None:
+    assert _SOURCE_RENDER_MIN_COVERAGE == 0.9
 
 
 def test_render_typed_table_replaces_only_physical_cell_bodies() -> None:
@@ -367,6 +437,61 @@ E = mc^2
     assert rendered.replacements["figure"] == 1
 
 
+def test_render_multi_image_figure_does_not_shift_following_figure_captions() -> None:
+    """1つの figure* に複数枚の \\includegraphics があると、パーサー(_figure_env)は
+    画像ごとに figure ブロックを1枚ずつ作り、キャプションは先頭の画像だけに付与する。
+    レンダラー側がこれに合わせて複数ブロックを消費しないと、後続の figure の位置対応が
+    1つずれ、無関係なキャプションが入れ替わって描画されてしまう
+    (Attention Is All You Need 論文の翻訳PDFで検出された回帰)。
+    """
+    tex = r"""
+\documentclass{article}
+\usepackage{graphicx}
+\begin{document}
+\begin{figure*}
+\includegraphics{a1.pdf}
+\includegraphics{a2.pdf}
+\caption{First multi-image caption.}
+\end{figure*}
+
+\begin{figure*}
+\includegraphics{b1.pdf}
+\caption{Second single-image caption.}
+\end{figure*}
+\end{document}
+"""
+    archive = LatexArchive(
+        {"main.tex": tex},
+        {"a1.pdf": b"%PDF-1.4\n%%EOF\n", "a2.pdf": b"%PDF-1.4\n%%EOF\n", "b1.pdf": b"%PDF-1.4\n%%EOF\n"},
+    )
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    figures = [block for _section, block in content.iter_blocks() if block.type == "figure"]
+    # 1枚目の figure* は2枚の画像で2ブロックに分かれ、先頭だけキャプションを持つ。
+    assert len(figures) == 3
+    captioned_first, captionless, captioned_second = figures
+    units = {
+        captioned_first.id: _unit(
+            captioned_first.id,
+            "最初のキャプション。",
+            [{"t": "text", "v": "最初のキャプション。"}],
+        ),
+        captioned_second.id: _unit(
+            captioned_second.id,
+            "二番目のキャプション。",
+            [{"t": "text", "v": "二番目のキャプション。"}],
+        ),
+    }
+
+    rendered = render_translated_latex_source(archive, content, units)
+
+    assert r"\caption{最初のキャプション。}" in rendered.main_tex
+    assert r"\caption{二番目のキャプション。}" in rendered.main_tex
+    assert "First multi-image caption" not in rendered.main_tex
+    assert "Second single-image caption" not in rendered.main_tex
+    assert rendered.replaced_block_ids == {captioned_first.id, captioned_second.id}
+    _validate_render_coverage(rendered, content, units)
+
+
 def test_find_overfull_boxes_detects_material_latex_overflow() -> None:
     log = "\n".join(
         [
@@ -395,10 +520,12 @@ def test_translation_digest_changes_with_pdf_visible_content() -> None:
 
 
 def test_find_pdf_page_bound_violations_detects_text_outside_page() -> None:
+    # 12pt 程度のわずかな食い込みは _PDF_BOUNDS_TOLERANCE_PT の許容範囲に収まるため、
+    # 本当にページ外へ大きく突き出したケース(32pt 分の overflow)で検証する。
     doc = fitz.open()
     try:
         page = doc.new_page(width=300, height=420)
-        page.insert_text((292, 72), "outside page bounds", fontsize=12)
+        page.insert_text((292, 200), "outside page bounds", fontsize=72)
 
         findings = _find_pdf_page_bound_violations(doc)
     finally:
@@ -406,6 +533,61 @@ def test_find_pdf_page_bound_violations_detects_text_outside_page() -> None:
 
     assert findings
     assert "kind=text" in findings[0]
+
+
+def test_find_pdf_page_bound_violations_ignores_small_overfull_drift() -> None:
+    """日本語は原文の英語より字幅が広く、原文レイアウトを保ったまま再コンパイルすると
+    数 pt 程度の Overfull box が出るのは正常な範囲(§_PDF_BOUNDS_TOLERANCE_PT)。
+    このようなわずかな食い込みだけで汎用レイアウトへフォールバックしてはならない。
+    """
+    doc = fitz.open()
+    try:
+        page = doc.new_page(width=300, height=420)
+        # 通常サイズのフォントでページ右端からわずかにあふれる程度の食い込み。
+        page.insert_text((292, 72), "outside page bounds", fontsize=12)
+
+        findings = _find_pdf_page_bound_violations(doc)
+    finally:
+        doc.close()
+
+    assert findings == []
+
+
+def _build_pdf_with_japanese_and_backslash_text(*, extra: str) -> bytes:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "日本語の本文です。", fontsize=12, fontname="japan-s")
+    page.insert_text((72, 100), extra, fontsize=12)
+    data = bytes(doc.tobytes())
+    doc.close()
+    return data
+
+
+def test_validate_translated_pdf_ignores_code_and_url_backslash_tokens() -> None:
+    """コードリスティングやファイルパス、URL 中の
+    エスケープされたコマンドは、生の TeX が漏れた
+    証拠ではないので visible_latex では検知しない。
+    """
+    pdf_bytes = _build_pdf_with_japanese_and_backslash_text(
+        extra=r"See C:\Users\name and \_foo or \% for details, plus \alpha.",
+    )
+
+    _validate_translated_pdf(pdf_bytes)
+
+
+def test_validate_translated_pdf_still_rejects_leaked_section_command() -> None:
+    r"""未展開の `\section{...}` が可視テキストへ残っている場合は
+    本当のレイアウト破綻(LuaLaTeX がマクロを展開できなかった)
+    なので、引き続き検知する。
+    """
+    pdf_bytes = _build_pdf_with_japanese_and_backslash_text(
+        extra=r"\section{Leaked heading}",
+    )
+
+    with pytest.raises(LatexPdfBuildError) as captured:
+        _validate_translated_pdf(pdf_bytes)
+
+    assert captured.value.kind == "visible_latex"
 
 
 def test_render_keeps_source_layout_and_translates_footnote() -> None:
@@ -930,6 +1112,10 @@ async def test_personal_translation_pdf_uses_set_scoped_key_and_shared_base_unit
     settings: CoreSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # この論文は見出し 1 個しか翻訳されていない(典型的な部分翻訳スコープ)。
+    # 以前は partial_translation_scope ゲートが常に汎用レイアウトへ後退させていたが、
+    # それでは実運用のほとんどの論文で原文レイアウト維持が失われてしまうため、
+    # 訳がある見出しだけ置換し、原文レイアウトを維持する source レンダラーを使う。
     source_bytes = (
         Path(__file__).parents[3] / "packages/py-core/tests/fixtures/latex_rectified_flow.tar.gz"
     ).read_bytes()
@@ -1056,8 +1242,8 @@ async def test_personal_translation_pdf_uses_set_scoped_key_and_shared_base_unit
         translation_set_id=str(personal_set.id),
     )
     assert outcome.built is True
-    assert outcome.renderer == "structured"
-    assert outcome.fallback_reason == "partial_translation_scope"
+    assert outcome.renderer == "source"
+    assert outcome.fallback_reason is None
     assert outcome.translated_key == expected_key
     assert storage.puts[0][0] == expected_key
     assert storage.puts[0][1] == b"personal-pdf"
@@ -1074,6 +1260,335 @@ async def test_personal_translation_pdf_uses_set_scoped_key_and_shared_base_unit
         revision.stats["translated_pdf"][f"natural:{personal_set.id}"]["storage_key"]
         == expected_key
     )
+
+
+async def test_build_translation_pdf_uses_source_renderer_with_untranslated_references_and_appendix(
+    db_session: AsyncSession,
+    settings: CoreSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """compute_translation_scope(packages/py-core 側)は参考文献セクションを常に翻訳対象外にし、
+    付録も既定設定次第で対象外にする。そのため実運用では units が全 TRANSLATABLE_BLOCK_TYPES
+    ブロックを覆わない論文がほとんどであり、それを理由に汎用レイアウトへ後退してはならない
+    (partial_translation_scope ゲート撤廃の回帰テスト)。
+    """
+    source_bytes = (
+        Path(__file__).parents[3] / "packages/py-core/tests/fixtures/latex_rectified_flow.tar.gz"
+    ).read_bytes()
+    content = parse_arxiv_latex(source_bytes).to_document_content()
+
+    def translated_inlines(inlines: list[Inline]) -> list[dict[str, object]]:
+        translated: list[dict[str, object]] = []
+        for inline in inlines:
+            data = inline.model_dump(exclude_none=True)
+            if data.get("t") == "text":
+                data["v"] = "訳" + str(data.get("v") or "")
+            translated.append(data)
+        return translated
+
+    # 参考文献(References)と付録(Proofs, \appendix 配下)は未翻訳のまま残す。
+    excluded_headings = {"References", "Proofs"}
+    skip_section = False
+    units_payload: dict[str, list[dict[str, object]]] = {}
+    for _section, block in content.iter_blocks():
+        if block.type == "heading":
+            skip_section = block.title in excluded_headings
+            if skip_section:
+                continue
+            units_payload[block.id] = [{"t": "text", "v": "訳" + str(block.title or "")}]
+            continue
+        if skip_section:
+            continue
+        if block.type in {"figure", "table"}:
+            units_payload[block.id] = translated_inlines(list(block.caption))
+        elif block.type == "list":
+            inlines: list[dict[str, object]] = []
+            for index, item in enumerate(block.items):
+                if index:
+                    inlines.append({"t": "text", "v": "\n- "})
+                inlines.extend(translated_inlines(list(item)))
+            units_payload[block.id] = inlines
+        elif block.type in {"paragraph", "quote", "theorem", "footnote"}:
+            units_payload[block.id] = translated_inlines(list(block.inlines))
+        # equation / algorithm / code / reference_entry はそもそも翻訳対象外。
+
+    user = User(id=str(uuid.uuid4()), email=f"pdf-scope-{uuid.uuid4().hex}@test.invalid")
+    db_session.add(user)
+    await db_session.flush()
+    paper = Paper(
+        id=str(uuid.uuid4()),
+        title="Untranslated references and appendix",
+        visibility="public",
+        owner_user_id=user.id,
+    )
+    db_session.add(paper)
+    await db_session.flush()
+    revision = DocumentRevision(
+        id=str(uuid.uuid4()),
+        paper_id=paper.id,
+        source_version="v1",
+        parser_version="test",
+        quality_level="A",
+        source_format="latex",
+        content=content.model_dump(mode="json"),
+        stats={},
+    )
+    db_session.add(revision)
+    await db_session.flush()
+    paper.latest_revision_id = revision.id
+    tset = TranslationSet(
+        id=str(uuid.uuid4()),
+        revision_id=revision.id,
+        style="natural",
+        scope="shared",
+        status="complete",
+        glossary_snapshot=[],
+    )
+    db_session.add(tset)
+    await db_session.flush()
+    source_key = StorageKeys.latex_tar(str(paper.id), "v1")
+    db_session.add_all(
+        [
+            TranslationUnit(
+                set_id=tset.id,
+                block_id=block_id,
+                source_hash=f"hash-{block_id}",
+                content_ja=content_ja,
+                text_ja="".join(str(item.get("v") or "") for item in content_ja),
+                state="machine",
+                quality_flags=[],
+                model="test",
+            )
+            for block_id, content_ja in units_payload.items()
+        ]
+        + [
+            SourceAsset(
+                paper_id=paper.id,
+                kind="arxiv_latex",
+                source_version="v1",
+                storage_key=source_key,
+                content_type="application/gzip",
+                byte_size=len(source_bytes),
+            )
+        ]
+    )
+    await db_session.commit()
+
+    class MemoryStorage:
+        sources_bucket = "sources"
+        assets_bucket = "assets"
+
+        def __init__(self) -> None:
+            self.puts: list[tuple[str, bytes, dict[str, Any]]] = []
+
+        async def get(self, bucket: str, key: str) -> bytes:
+            assert bucket == self.sources_bucket
+            assert key == source_key
+            return source_bytes
+
+        async def put(self, bucket: str, key: str, data: bytes, **kwargs: Any) -> None:
+            self.puts.append((key, data, kwargs))
+
+    rendered_sources: list[str] = []
+
+    async def fake_compile(rendered: Any, *, image: str, timeout_s: int) -> bytes:
+        del image, timeout_s
+        rendered_sources.append(rendered.main_tex)
+        return b"scoped-source-pdf"
+
+    monkeypatch.setattr(latex_pdf, "_compile_rendered_source", fake_compile)
+    monkeypatch.setattr(latex_pdf, "_validate_translated_pdf", lambda _data: None)
+    storage = MemoryStorage()
+
+    outcome = await latex_pdf.build_translation_pdfs_if_ready(
+        db_session,
+        storage,  # type: ignore[arg-type]
+        settings,
+        set_id=str(tset.id),
+    )
+
+    assert outcome.built is True
+    assert outcome.renderer == "source"
+    assert outcome.fallback_reason is None
+    rendered_main_tex = rendered_sources[0]
+    assert r"\section{訳Introduction}" in rendered_main_tex
+    # 付録(Proofs)は units が無いため原文(英語)のまま残る。
+    assert r"\section{Proofs}" in rendered_main_tex
+    assert "Appendix proof text that should not be auto translated at all" in rendered_main_tex
+    # 参考文献は compute_translation_scope で常に翻訳対象外であり、原文のまま残る。
+    assert r"\begin{thebibliography}{9}" in rendered_main_tex
+    assert storage.puts[0][1] == b"scoped-source-pdf"
+
+
+async def test_build_translation_pdf_stays_source_renderer_when_missing_fraction_is_small(
+    db_session: AsyncSession,
+    settings: CoreSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1/15 ブロック(93% >= 90%のしきい値)だけ原文へ書き戻せなくても、汎用レイアウトへ
+    後退せず source レンダラーを維持し、manifest の source_fallback に計上されることを
+    確認する(translation_mapping_incomplete の全か無かのグレースフルデグラデーション回帰)。
+    """
+    source_bytes = (
+        Path(__file__).parents[3] / "packages/py-core/tests/fixtures/latex_rectified_flow.tar.gz"
+    ).read_bytes()
+    content = parse_arxiv_latex(source_bytes).to_document_content()
+
+    def translated_inlines(inlines: list[Inline]) -> list[dict[str, object]]:
+        translated: list[dict[str, object]] = []
+        for inline in inlines:
+            data = inline.model_dump(exclude_none=True)
+            if data.get("t") == "text":
+                data["v"] = "訳" + str(data.get("v") or "")
+            translated.append(data)
+        return translated
+
+    units_payload: dict[str, list[dict[str, object]]] = {}
+    for _section, block in content.iter_blocks():
+        if block.type == "heading":
+            if block.title == "References":
+                continue
+            units_payload[block.id] = [{"t": "text", "v": "訳" + str(block.title or "")}]
+        elif block.type in {"figure", "table"}:
+            units_payload[block.id] = translated_inlines(list(block.caption))
+        elif block.type == "list":
+            inlines: list[dict[str, object]] = []
+            for index, item in enumerate(block.items):
+                if index:
+                    inlines.append({"t": "text", "v": "\n- "})
+                inlines.extend(translated_inlines(list(item)))
+            units_payload[block.id] = inlines
+        elif block.type in {"paragraph", "quote", "theorem", "footnote"}:
+            units_payload[block.id] = translated_inlines(list(block.inlines))
+
+    user = User(id=str(uuid.uuid4()), email=f"pdf-partial-{uuid.uuid4().hex}@test.invalid")
+    db_session.add(user)
+    await db_session.flush()
+    paper = Paper(
+        id=str(uuid.uuid4()),
+        title="Small missing mapping fraction",
+        visibility="public",
+        owner_user_id=user.id,
+    )
+    db_session.add(paper)
+    await db_session.flush()
+    revision = DocumentRevision(
+        id=str(uuid.uuid4()),
+        paper_id=paper.id,
+        source_version="v1",
+        parser_version="test",
+        quality_level="A",
+        source_format="latex",
+        content=content.model_dump(mode="json"),
+        stats={},
+    )
+    db_session.add(revision)
+    await db_session.flush()
+    paper.latest_revision_id = revision.id
+    tset = TranslationSet(
+        id=str(uuid.uuid4()),
+        revision_id=revision.id,
+        style="natural",
+        scope="shared",
+        status="complete",
+        glossary_snapshot=[],
+    )
+    db_session.add(tset)
+    await db_session.flush()
+    source_key = StorageKeys.latex_tar(str(paper.id), "v1")
+    db_session.add_all(
+        [
+            TranslationUnit(
+                set_id=tset.id,
+                block_id=block_id,
+                source_hash=f"hash-{block_id}",
+                content_ja=content_ja,
+                text_ja="".join(str(item.get("v") or "") for item in content_ja),
+                state="machine",
+                quality_flags=[],
+                model="test",
+            )
+            for block_id, content_ja in units_payload.items()
+        ]
+        + [
+            SourceAsset(
+                paper_id=paper.id,
+                kind="arxiv_latex",
+                source_version="v1",
+                storage_key=source_key,
+                content_type="application/gzip",
+                byte_size=len(source_bytes),
+            )
+        ]
+    )
+    await db_session.commit()
+    assert len(units_payload) == 15
+
+    class MemoryStorage:
+        sources_bucket = "sources"
+        assets_bucket = "assets"
+
+        def __init__(self) -> None:
+            self.puts: list[tuple[str, bytes, dict[str, Any]]] = []
+
+        async def get(self, bucket: str, key: str) -> bytes:
+            assert bucket == self.sources_bucket
+            assert key == source_key
+            return source_bytes
+
+        async def put(self, bucket: str, key: str, data: bytes, **kwargs: Any) -> None:
+            self.puts.append((key, data, kwargs))
+
+    dropped_ids: list[str] = []
+    original_render = latex_pdf.render_translated_latex_source
+
+    def flaky_render(
+        archive: LatexArchive,
+        rendered_content: DocumentContent,
+        units: dict[str, TranslationUnit],
+        *,
+        abstract_ja: str | None = None,
+    ) -> RenderedLatexSource:
+        rendered = original_render(archive, rendered_content, units, abstract_ja=abstract_ja)
+        # 15件中1件だけ「原文へ書き戻せなかった」状況を人為的に作り、しきい値以上の
+        # カバレッジでは source レンダラーを維持できることを確認する。
+        dropped_id = sorted(rendered.replaced_block_ids)[0]
+        dropped_ids.append(dropped_id)
+        return dataclasses.replace(
+            rendered, replaced_block_ids=frozenset(rendered.replaced_block_ids - {dropped_id})
+        )
+
+    rendered_sources: list[str] = []
+
+    async def fake_compile(rendered: Any, *, image: str, timeout_s: int) -> bytes:
+        del image, timeout_s
+        rendered_sources.append(rendered.main_tex)
+        return b"partial-source-pdf"
+
+    monkeypatch.setattr(latex_pdf, "render_translated_latex_source", flaky_render)
+    monkeypatch.setattr(latex_pdf, "_compile_rendered_source", fake_compile)
+    monkeypatch.setattr(latex_pdf, "_validate_translated_pdf", lambda _data: None)
+    storage = MemoryStorage()
+
+    outcome = await latex_pdf.build_translation_pdfs_if_ready(
+        db_session,
+        storage,  # type: ignore[arg-type]
+        settings,
+        set_id=str(tset.id),
+    )
+
+    assert outcome.built is True
+    assert outcome.renderer == "source"
+    assert outcome.fallback_reason is None
+    assert len(dropped_ids) == 1
+    assert any(dropped_ids[0] in warning for warning in outcome.warnings)
+    assert storage.puts[0][1] == b"partial-source-pdf"
+
+    await db_session.refresh(revision)
+    manifest = revision.stats["translated_pdf"]["natural"]["manifest"]
+    assert manifest["expected"] == 15
+    assert manifest["translated"] == 14
+    assert manifest["source_fallback"] == 1
 
 
 async def test_builds_structured_pdf_for_html_revision(

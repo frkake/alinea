@@ -69,6 +69,7 @@ from alinea_api.schemas.viewer import (
     FigureItem,
     FigurePosition,
     FiguresResponse,
+    IngestFailure,
     ReferenceInLibrary,
     ReferenceItem,
     ReferencesResponse,
@@ -956,6 +957,7 @@ async def get_viewer(item_id: str, user: CurrentUser, db: DbDep) -> ViewerInit:
     timeline = joblog.build_timeline(ingest_job.log if ingest_job is not None else [])
 
     return ViewerInit(
+        ingest_failure=_build_ingest_failure(ingest_job, content),
         library_item=_build_library_item_summary(item, paper, revision, content),
         revision=RevisionInfo(
             id=str(revision.id),
@@ -981,6 +983,28 @@ async def get_viewer(item_id: str, user: CurrentUser, db: DbDep) -> ViewerInit:
 async def _count(db: AsyncSession, model: Any, column: Any, value: Any) -> int:
     result = await db.scalar(select(func.count()).select_from(model).where(column == value))
     return int(result or 0)
+
+
+def _ingest_error_code(error: str | None) -> str | None:
+    """jobs.error(JSON 文字列)から code だけを取り出す。壊れた JSON は None(黙って諦める)。"""
+    if not error:
+        return None
+    try:
+        parsed = json.loads(error)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    return parsed.get("code") if isinstance(parsed, dict) else None
+
+
+def _build_ingest_failure(job: Job | None, content: DocumentContent) -> IngestFailure | None:
+    """直近の ingest が failed かつ本文が空(プレースホルダのまま)のときだけ返す(P3)。
+
+    構造化中(running/queued)や、失敗後も表示可能な本文が残っている場合は None にする
+    (§6.1。取り込み中の段階的表示(P2)を失敗バナーで覆わない)。
+    """
+    if job is None or job.status != "failed" or content.iter_blocks():
+        return None
+    return IngestFailure(job_id=str(job.id), stage=job.stage, code=_ingest_error_code(job.error))
 
 
 # --- §6.2 リビジョン一覧 ------------------------------------------------------------

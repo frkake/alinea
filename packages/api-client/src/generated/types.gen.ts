@@ -1661,6 +1661,27 @@ export type IngestCheckSaved = {
 };
 
 /**
+ * IngestFailure
+ * 最新 ingest ジョブが failed かつ表示可能な本文が無い場合のみ設定する(P3 §)。
+ *
+ * Japanese 文言はフロントで ``code`` から組み立てる(バックエンドは UI 文言を持たない)。
+ */
+export type IngestFailure = {
+    /**
+     * Job Id
+     */
+    job_id: string;
+    /**
+     * Stage
+     */
+    stage: string;
+    /**
+     * Code
+     */
+    code?: string | null;
+};
+
+/**
  * IngestLastPosition
  * §1.7 ``LastPosition``。読みかけ位置の要約(拡張・1d カードの「前回…」表示)。
  */
@@ -4121,6 +4142,7 @@ export type ViewerInit = {
      * Today Reading Minutes
      */
     today_reading_minutes: number;
+    ingest_failure?: IngestFailure | null;
 };
 
 /**

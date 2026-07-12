@@ -409,6 +409,20 @@ async def _build_latex_translation_pdf_after_complete(
         return
     for warning in outcome.warnings:
         await joblog.log(store.session, ingest_job, "translating_body", "warn", warning)
+    # fallback_reason=="not_latex" は LaTeX 以外の原稿での正規の汎用レイアウト選択
+    # であり、フォールバックではない。それ以外の理由(page_bounds・visible_latex・
+    # translation_mapping_incomplete 等)が入っている場合は、原文レイアウト維持を
+    # 試みた LaTeX 原稿が検証に失敗して汎用レイアウトへ後退したことを意味するので、
+    # 黙って切り替えず明示的にログへ残す。
+    if outcome.renderer == "structured" and outcome.fallback_reason not in (None, "not_latex"):
+        await joblog.log(
+            store.session,
+            ingest_job,
+            "translating_body",
+            "warn",
+            "レイアウト維持PDFではなく汎用レイアウトで生成した",
+            detail={"reason": outcome.fallback_reason},
+        )
     await joblog.log(
         store.session,
         ingest_job,

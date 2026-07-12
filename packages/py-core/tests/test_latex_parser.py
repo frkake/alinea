@@ -36,6 +36,7 @@ from alinea_core.parsing.latex_parser import (
     parse_latex_source,
     select_main_tex,
 )
+from alinea_core.translation.table_cells import parse_table_grid
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 _TAR_GZ = _FIXTURES / "latex_rectified_flow.tar.gz"
@@ -2102,6 +2103,63 @@ def test_recursive_graphics_macro_fails_instead_of_silently_losing_figure() -> N
 \newcommand{\recursiveasset}{\recursiveasset\includegraphics{cycle-panel.png}}
 \begin{document}
 \recursiveasset
+\end{document}
+"""
+
+    with pytest.raises(LatexParseError) as caught:
+        parse_latex_source("main.tex", {"main.tex": source})
+
+    assert caught.value.kind == "macro_expansion_limit"
+
+
+def test_expandafter_list_accumulator_self_reference_is_not_treated_as_recursion() -> None:
+    r"""``\g@addto@macro`` 型のリスト蓄積慣用句は再帰ではなく、fail-closed の対象外であるべき。
+
+    実際の arXiv 論文(``robbyant.cls``)の ``\metadata``/``\addtolist``/``\metadatalist`` は
+    ``\xdef\metadatalist{\expandafter{\metadatalist}...}`` という古典的な蓄積パターンを使う。
+    実TeXでは ``\expandafter`` が確定前の値を一度だけ展開して差し込むため必ず有限回で終了するが、
+    この評価器は ``\expandafter`` の一発展開を再現できず、差し込まれた ``\metadatalist`` を見かけの
+    再帰呼び出しと誤認し、論文全体のLaTeX解析を失敗させていた(quality A 失われ PDF fallback)。
+    このテストはその慣用句を最小再現し、解析が成功し文書構造(節・本文)が生成されることを確認する。
+    """
+
+    source = r"""
+\documentclass{article}
+\newcommand{\metadatalist}{}
+\newcommand{\metadataformat}[1]{#1}
+\newcommand{\addtolist}[2]{\xdef#1{\expandafter{#1}#2}}
+\newcommand{\metadata}[1]{\addtolist{\metadatalist}{\metadataformat{#1}}}
+\begin{document}
+\metadata{Alpha}
+\metadata{Beta}
+\section{Body}
+\metadatalist
+Visible paragraph text.
+\end{document}
+"""
+
+    parsed = parse_latex_source("main.tex", {"main.tex": source}).to_document_content()
+
+    visible = "\n".join(block_to_plain(block) for _section, block in parsed.iter_blocks())
+    assert "Body" in visible
+    assert "Visible paragraph text" in visible
+    assert "Beta" in visible
+
+
+def test_expandafter_wrapped_structural_recursion_still_fails_closed() -> None:
+    r"""``\expandafter{...}`` に包まれていても、蓄積慣用句の形と一致しなければ安全側に倒す。
+
+    ``\expandafter{\reclist ...}`` のように、自己参照の直後に ``}`` 以外の内容(ここでは
+    ``\includegraphics``)が続く場合は、値の差し込み(splice)ではなく本物の無限再帰の可能性がある
+    ため、この判別ロジックの対象外とし、既存の fail-closed 経路(構造到達時は例外)を維持しなければ
+    ならない。
+    """
+
+    source = r"""
+\documentclass{article}
+\newcommand{\reclist}{\expandafter{\reclist\includegraphics{cycle-panel.png}}}
+\begin{document}
+\reclist
 \end{document}
 """
 
@@ -4648,6 +4706,153 @@ def test_table_keeps_tabular_latex_source() -> None:
     assert tbl.raw is not None
     assert "\\begin{tabular}" in tbl.raw
     assert "Ours & 0.99" in tbl.raw
+
+
+def test_tblr_table_produces_populated_tabular_grid() -> None:
+    """tabularray の `tblr` は classic tabular と同じ grid 表現に落ちる(arXiv 2607.07534 再現)。"""
+    source = r"""
+\documentclass{article}
+\begin{document}
+\section{Results}
+\begin{table}[t]
+    \small\centering
+    \caption{Comparison with recent interactive world models.}
+    \label{tab:comparison}
+    \SetTblrInner{rowsep=1.2pt}
+    \SetTblrInner{colsep=4.6pt}
+    \definecolor{linegray}{HTML}{BDBDBD}
+    \definecolor{bg_purple}{HTML}{6A67F3}
+    \begin{tblr}{
+        cells={halign=l,valign=m},
+        column{1}={bg=white},
+        column{7}={bg=bg_purple, fg=white},
+        hline{2}={0.5pt, fg=linegray},
+    }
+    \ & \textbf{M-G 3.0}~\cite{matrix3} & \textbf{D-W} & \textbf{LingBot} & \textbf{Happy} & \textbf{Genie 3} & \textbf{Ours} \\
+    Generation Duration & Minutes & Minutes & Minutes & Minutes & Minutes & Hours (Infinite) \\
+    Semantic Interaction & None & None & None & Few & Few & Infinite \\
+    Domain & Game & General & General & General & General & General \\
+    Dynamic Degree & Medium & Medium & High & Medium & Medium & High \\
+    Real-time & \ding{51} & \ding{51} & \ding{51} & \ding{51} & \ding{51} & \ding{51} \\
+    Open-source & \ding{51} & \ding{51} & \ding{51} & \ding{55} & \ding{55} & \ding{51} \\
+    \end{tblr}
+\end{table}
+\end{document}
+"""
+
+    document = parse_latex_source("main.tex", {"main.tex": source})
+    tbl = next(b for b in document.blocks if b.type == "table")
+
+    assert tbl.label == "tab:comparison"
+    assert "Comparison with recent interactive world models" in block_to_plain(tbl)
+    assert tbl.raw is not None
+    assert "\\begin{tabular}" in tbl.raw
+    assert "Generation Duration" in tbl.raw
+    assert "Hours (Infinite)" in tbl.raw
+
+    grid = parse_table_grid(tbl.raw)
+    assert grid.supported
+    assert len(grid.rows) == 7
+    assert all(len(row) == 7 for row in grid.rows)
+    flat = [cell.source for row in grid.rows for cell in row]
+    assert "Generation Duration" in flat
+    assert "Hours (Infinite)" in flat
+    assert "Ours" in flat
+
+
+def test_longtblr_table_produces_populated_grid() -> None:
+    """`longtblr` も `tblr` と同じ options-skip 経路で grid 化される。"""
+    source = r"""
+\documentclass{article}
+\begin{document}
+\section{Results}
+\begin{table}[t]
+    \caption{Long variant.}
+    \label{tab:long}
+    \begin{longtblr}[caption={}]{
+        colspec={X[1] X[1]},
+        row{1}={bg=white},
+    }
+    Method & Score \\
+    Baseline & 0.50 \\
+    Ours & 0.99 \\
+    \end{longtblr}
+\end{table}
+\end{document}
+"""
+
+    document = parse_latex_source("main.tex", {"main.tex": source})
+    tbl = next(b for b in document.blocks if b.type == "table")
+
+    assert tbl.label == "tab:long"
+    assert tbl.raw is not None
+    assert "\\begin{tabular}" in tbl.raw
+
+    grid = parse_table_grid(tbl.raw)
+    assert grid.supported
+    assert len(grid.rows) == 3
+    flat = [cell.source for row in grid.rows for cell in row]
+    assert "Baseline" in flat
+    assert "Ours" in flat
+
+
+def test_tblr_setcell_prefix_is_stripped_without_losing_cell_text() -> None:
+    """`\\SetCell{...}` の先頭コマンドは除去し、セル本文自体は保持する。"""
+    source = r"""
+\documentclass{article}
+\begin{document}
+\section{Results}
+\begin{table}[t]
+    \caption{SetCell variant.}
+    \label{tab:setcell}
+    \begin{tblr}{colspec={ll}}
+    \SetRow{bg=white} Method & Score \\
+    Baseline & \SetCell{bg=red}Failing \\
+    Ours & \SetCell[c]{bg=green,fg=white}0.99 \\
+    \end{tblr}
+\end{table}
+\end{document}
+"""
+
+    document = parse_latex_source("main.tex", {"main.tex": source})
+    tbl = next(b for b in document.blocks if b.type == "table")
+
+    assert tbl.raw is not None
+    assert "\\SetCell" not in tbl.raw
+    assert "\\SetRow" not in tbl.raw
+
+    grid = parse_table_grid(tbl.raw)
+    assert grid.supported
+    flat = [cell.source for row in grid.rows for cell in row]
+    assert "Failing" in flat
+    assert "0.99" in flat
+    assert "Method" in flat
+
+
+def test_tblr_malformed_options_degrade_to_caption_only_without_raising() -> None:
+    """options group が閉じていない tblr は caption-only へ安全に劣化する。"""
+    source = r"""
+\documentclass{article}
+\begin{document}
+\section{Results}
+\begin{table}[t]
+    \caption{Broken options.}
+    \label{tab:broken}
+    \begin{tblr}{
+        cells={halign=l,valign=m
+    Method & Score \\
+    Ours & 0.99 \\
+    \end{tblr}
+\end{table}
+\end{document}
+"""
+
+    document = parse_latex_source("main.tex", {"main.tex": source})
+    tbl = next(b for b in document.blocks if b.type == "table")
+
+    assert tbl.label == "tab:broken"
+    assert "Broken options" in block_to_plain(tbl)
+    assert tbl.raw is None
 
 
 def test_list_ordered_flag_and_items() -> None:

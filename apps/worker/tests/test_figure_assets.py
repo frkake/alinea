@@ -2431,6 +2431,132 @@ async def test_latex_image_backed_table_is_persisted_as_a_table_asset() -> None:
     assert storage.puts == [("assets", expected_key, png, "image/png")]
 
 
+def _two_paragraph_blocks() -> list[Block]:
+    return [
+        Block(
+            id=f"p-{index}",
+            type="paragraph",
+            inlines=[{"t": "text", "v": f"Complete synthetic paragraph {index}."}],
+        )
+        for index in range(2)
+    ]
+
+
+async def test_latex_caption_only_table_degrades_without_fallback() -> None:
+    """tblr など未対応環境で raw/structured grid が得られない caption-only な表も、
+
+    図と同じルールでブロック単位に縮退し、候補全体は不採用にしない
+    (P3: 黙って壊れない。§2.4 のスコープは figure/table 両方)。
+    """
+    table = Block(id="tbl-1", type="table")
+    content = DocumentContent(
+        quality_level="A",
+        sections=[Section(id="sec-1", blocks=[*_two_paragraph_blocks(), table])],
+    )
+    candidate = SourceCandidate(
+        source_format="latex",
+        content=content,
+        parsed=SimpleNamespace(),
+        report=DocumentCompleteness(True, None, 0, 70, 2, 0),
+        source_bytes=b"tex synthetic",
+        diagnostics=[],
+    )
+    run = object.__new__(IngestRun)
+
+    await run._materialize_candidate_figures(
+        candidate,
+        http=None,
+        deadline=worker_pipeline.MaterializationDeadline.start(timeout_s=30.0),
+    )
+
+    assert candidate.report.accepted is True
+    assert candidate.report.code == "figure_assets_degraded"
+    assert candidate.report.unresolved_figures == 1
+    assert candidate.materialized_figures == {}
+    assert candidate.figure_asset_failures == [
+        {"code": "missing_asset_key", "figure_id": "tbl-1", "source": "latex"}
+    ]
+
+
+async def test_latex_retryable_table_asset_failure_rejects_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """表アセットの失敗でも一時的(リトライで直る可能性がある)なものは、図と同じく
+
+    ブロック単位の縮退はせず候補全体を不採用にする(§2.4)。
+    """
+    table = Block(id="tbl-1", type="table", asset_key="table-panel.png")
+    content = DocumentContent(
+        quality_level="A",
+        sections=[Section(id="sec-1", blocks=[*_two_paragraph_blocks(), table])],
+    )
+    candidate = SourceCandidate(
+        source_format="latex",
+        content=content,
+        parsed=SimpleNamespace(),
+        report=DocumentCompleteness(True, None, 0, 70, 2, 0),
+        source_bytes=b"tex synthetic",
+        diagnostics=[],
+        latex_binary_files={"table-panel.png": _raster_bytes("PNG")},
+    )
+
+    async def fail_materialize(*_args: Any, **_kwargs: Any) -> FigureAssetPayload:
+        raise FigureAssetError("asset_fetch_timeout", "synthetic transient table asset failure")
+
+    monkeypatch.setattr(worker_pipeline, "_materialize_figure_payload", fail_materialize)
+    run = object.__new__(IngestRun)
+
+    await run._materialize_candidate_figures(
+        candidate,
+        http=None,
+        deadline=worker_pipeline.MaterializationDeadline.start(timeout_s=30.0),
+    )
+
+    assert candidate.report.accepted is False
+    assert candidate.report.code == "figure_asset_unresolved"
+    assert candidate.materialized_figures == {}
+    assert candidate.figure_asset_failures == [
+        {"code": "asset_fetch_timeout", "figure_id": "tbl-1", "source": "latex"}
+    ]
+
+
+async def test_latex_mixed_figure_and_table_failures_both_degrade() -> None:
+    """恒久的に解決できない図と表が混在しても、両方がブロック単位で縮退し
+
+    候補全体は不採用にしない(P3: 黙って壊れない。図・表の縮退は同一ルール)。
+    """
+    figure = Block(id="fig-1", type="figure", asset_key="missing-figure.png")
+    table = Block(id="tbl-1", type="table")
+    content = DocumentContent(
+        quality_level="A",
+        sections=[Section(id="sec-1", blocks=[*_two_paragraph_blocks(), figure, table])],
+    )
+    candidate = SourceCandidate(
+        source_format="latex",
+        content=content,
+        parsed=SimpleNamespace(),
+        report=DocumentCompleteness(True, None, 0, 70, 2, 0),
+        source_bytes=b"tex synthetic",
+        diagnostics=[],
+    )
+    run = object.__new__(IngestRun)
+
+    await run._materialize_candidate_figures(
+        candidate,
+        http=None,
+        deadline=worker_pipeline.MaterializationDeadline.start(timeout_s=30.0),
+    )
+
+    assert candidate.report.accepted is True
+    assert candidate.report.code == "figure_assets_degraded"
+    assert candidate.report.unresolved_figures == 2
+    assert candidate.materialized_figures == {}
+    assert candidate.figure_asset_failures == [
+        {"code": "asset_not_found", "figure_id": "fig-1", "source": "latex"},
+        {"code": "missing_asset_key", "figure_id": "tbl-1", "source": "latex"},
+    ]
+
+
 async def test_pdf_candidate_rejects_orphan_extracted_asset_before_persistence() -> None:
     content = DocumentContent(
         quality_level="B",
@@ -3239,14 +3365,8 @@ async def test_pipeline_routes_document_conversions_through_isolated_process(
     assert failures == []
 
 
-@pytest.mark.parametrize(
-    ("requested", "expected_code"),
-    [("", "missing_asset_key"), (r"\iftoggle{largefigures", "invalid_asset_path")],
-)
-async def test_pipeline_failure_clears_public_asset_key_and_records_diagnostic(
-    requested: str, expected_code: str
-) -> None:
-    fig = Block(id="fig-bad", type="figure", asset_key=requested)
+async def test_pipeline_failure_clears_public_asset_key_and_records_diagnostic() -> None:
+    fig = Block(id="fig-bad", type="figure", asset_key=r"\iftoggle{largefigures")
     run, storage = _figure_run(fig, {"images/plot.png": _raster_bytes("PNG")})
 
     output, warnings, failures = await run._save_figures("revision-id")
@@ -3257,30 +3377,30 @@ async def test_pipeline_failure_clears_public_asset_key_and_records_diagnostic(
     assert warnings and "fig-bad" in warnings[0]
     assert failures == [
         {
-            "code": expected_code,
+            "code": "invalid_asset_path",
             "figure_id": "fig-bad",
             "source": "latex",
         }
     ]
 
 
-async def test_pipeline_records_missing_asset_key_without_upload() -> None:
-    fig = Block(id="fig-missing", type="figure", asset_key=None)
+@pytest.mark.parametrize("asset_key", [None, ""], ids=["none", "blank"])
+async def test_figure_without_declared_source_requires_no_asset(asset_key: str | None) -> None:
+    """\\includegraphics の無い figure(コードリスティング等)は素材化を要求しない(P3)。
+
+    asset_key が最初から未設定の図は、コード/表のみを収めたキャプション付き
+    コンテンツブロックであり、失敗としてカウントしてはならない。
+    """
+    fig = Block(id="fig-listing", type="figure", asset_key=asset_key)
     run, storage = _figure_run(fig, {})
 
     output, warnings, failures = await run._save_figures("revision-id")
 
-    assert fig.asset_key is None
+    assert fig.asset_key == asset_key
     assert output == {}
     assert storage.puts == []
-    assert warnings and "fig-missing" in warnings[0]
-    assert failures == [
-        {
-            "code": "missing_asset_key",
-            "figure_id": "fig-missing",
-            "source": "latex",
-        }
-    ]
+    assert warnings == []
+    assert failures == []
 
 
 async def test_pipeline_limits_figure_count_per_document(

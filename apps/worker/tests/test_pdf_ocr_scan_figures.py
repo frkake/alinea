@@ -269,7 +269,13 @@ def _pdf_table_candidate(*, raw: str | None) -> tuple[SourceCandidate, Block]:
 
 
 @pytest.mark.parametrize("raw", [None, "", "   "])
-async def test_pdf_table_without_raw_or_image_fails_closed(raw: str | None) -> None:
+async def test_pdf_table_without_raw_or_image_degrades_without_fallback(
+    raw: str | None,
+) -> None:
+    """raw/構造化グリッドも画像も持たない表は、図と同様にブロック単位で縮退する
+
+    (P3: 黙って壊れない。恒久的な単一表の未解決のために候補全体は不採用にしない)。
+    """
     candidate, table = _pdf_table_candidate(raw=raw)
     run = object.__new__(IngestRun)
 
@@ -279,8 +285,9 @@ async def test_pdf_table_without_raw_or_image_fails_closed(raw: str | None) -> N
         deadline=MaterializationDeadline.start(timeout_s=30.0),
     )
 
-    assert candidate.report.accepted is False
-    assert candidate.report.code == "figure_asset_unresolved"
+    assert candidate.report.accepted is True
+    assert candidate.report.code == "figure_assets_degraded"
+    assert candidate.materialized_figures == {}
     assert candidate.figure_asset_failures == [
         {
             "code": "missing_asset_key",

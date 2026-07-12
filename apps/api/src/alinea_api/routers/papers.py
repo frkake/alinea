@@ -226,6 +226,42 @@ async def paper_pdf(
         .scalars()
         .first()
     )
+    if asset is None and variant == "source" and revision is not None:
+        # 不整合フォールバック: プレースホルダ生成時点の source_version(要求時のエイリアス
+        # 'latest' 等)と、その後 worker が確定させた実バージョンがずれている既存行の救済(§4.4)。
+        # まず Paper.latest_version で解決し直し、それでも見つからなければ当該論文の最新の
+        # PDF 資産へ後退する。所有チェックは上の assert_paper_access 済み、kind は
+        # _PDF_KINDS のまま絞り込むので translated 資産は対象外(provenance は変えない)。
+        fallback_conditions = [SourceAsset.paper_id == paper_id, SourceAsset.kind.in_(kinds)]
+        if paper.latest_version and paper.latest_version != revision.source_version:
+            asset = (
+                (
+                    await db.execute(
+                        select(SourceAsset)
+                        .where(
+                            *fallback_conditions,
+                            SourceAsset.source_version == paper.latest_version,
+                        )
+                        .order_by(SourceAsset.created_at.desc(), SourceAsset.id.asc())
+                        .limit(1)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+        if asset is None:
+            asset = (
+                (
+                    await db.execute(
+                        select(SourceAsset)
+                        .where(*fallback_conditions)
+                        .order_by(SourceAsset.created_at.desc(), SourceAsset.id.asc())
+                        .limit(1)
+                    )
+                )
+                .scalars()
+                .first()
+            )
     if asset is None:
         raise ProblemException("not_found")
 
