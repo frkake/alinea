@@ -109,8 +109,23 @@ export interface ViewerShellProps {
 // apps/web/src/stores/viewer-store.ts
 import { create } from 'zustand';
 import type { SidePanelTabId } from '@/components/ui/SidePanelTabs';
-import type { ViewerMode } from '@/components/viewer/ViewerShell';
-import type { Style } from '@alinea/api-client';
+import type { Preset } from '@/components/viewer/article/types';
+
+export type TranslationStyle = 'natural' | 'literal';
+export type PendingScrollTarget =
+  | { kind: 'block'; blockId: string }
+  | { kind: 'section'; sectionId: string }
+  | null;
+
+export interface ViewerSelection {
+  blockId: string;
+  side: 'source' | 'translation';
+  quote: string;
+  start: number | null;
+  end: number | null;
+  rect: { top: number; left: number; bottom: number; right: number };
+  sourceFullText?: string;
+}
 
 interface ViewerStoreState {
   itemId: string | null;
@@ -118,46 +133,81 @@ interface ViewerStoreState {
 
   // 目次(§5)
   tocOpen: boolean;                       // true=232pxペイン / false=44pxレール
-  bookmarkFilter: boolean;                // レールのしおりアイコン起動(§5.2)
   activeSectionId: string | null;         // 現在位置ハイライト(スクロール連動)
 
   // サイドパネル(§6)
   panelOpen: boolean;
   activeTab: SidePanelTabId;              // 'chat'|'notes'|'annotations'|'figures'|'resources'|'info'
 
-  // 翻訳スタイル(§4.4)
-  style: Style;                           // 'natural' | 'literal'
+  // 翻訳スタイル・直訳生成(§4.4)
+  style: TranslationStyle;
+  literalStatus: 'unknown' | 'generating' | 'ready';
+  literalJobId: string | null;
+  literalSetId: string | null;
 
   // 読書位置(§8)・モード間の位置引き継ぎ(§3.4)
   currentBlockId: string | null;          // 先頭可視ブロック
-  pendingScrollTarget:                    // 本文ペインが消費して null に戻す
-    | { kind: 'block'; blockId: string }
-    | { kind: 'section'; sectionId: string }
-    | null;
+  pendingScrollTarget: PendingScrollTarget;
 
   // 論文内検索(§7)
   searchOpen: boolean;
   searchQuery: string;
-  searchActiveIndex: number;
 
-  // 対訳ポップ開閉シグナル(§10 キー `t`。0 起点で +1。1b の TranslationPane が
-  // 値の変化を購読し、currentBlockId の対訳ポップをトグルする)
+  // キーボード操作シグナル(§10。0 起点で +1)
   bilingualPopToggleSignal: number;
+  bookmarkToggleSignal: number;
+
+  // 記事の再生成状態(1h §5.3)
+  articleRegenerating: boolean;
+  articleRegenProgressPct: number;
+  activeArticlePreset: Preset | null;
+
+  // テキスト選択(選択メニュー。null=非表示)
+  selection: ViewerSelection | null;
+
+  // 検索・深リンクの一発消費ターゲット
+  pendingAnnotationId: string | null;
+  pendingNoteId: string | null;
+  pendingReferenceId: string | null;
+  pendingHighlightQuery: string | null;
+  pendingChatThreadId: string | null;
+  pendingChatMessageId: string | null;
 
   // actions
+  initViewer(itemId: string, revisionId: string): void;
   setTocOpen(open: boolean): void;
   setPanel(open: boolean, tab?: SidePanelTabId): void;
-  setStyle(style: Style): void;
+  setStyle(style: TranslationStyle): void;
+  setLiteralGeneration(state: {
+    status: 'unknown' | 'generating' | 'ready';
+    jobId?: string | null;
+    setId?: string | null;
+  }): void;
   setCurrentBlock(blockId: string, sectionId: string): void;
-  requestScroll(target: ViewerStoreState['pendingScrollTarget']): void;
+  setArticleRegenState(state: { regenerating: boolean; progressPct?: number }): void;
+  setActiveArticlePreset(preset: Preset): void;
+  requestScroll(target: PendingScrollTarget): void;
+  consumeScroll(): void;
   openSearch(query?: string): void;
   closeSearch(): void;
-  toggleBilingualPop(): void;             // bilingualPopToggleSignal を +1 するだけ
+  setSearchQuery(query: string): void;
+  toggleBilingualPop(): void;
+  toggleBookmark(): void;
+  setSelection(selection: ViewerSelection | null): void;
+  requestAnnotationFocus(annotationId: string): void;
+  consumeAnnotationFocus(): void;
+  requestNoteFocus(noteId: string): void;
+  consumeNoteFocus(): void;
+  requestReferenceFocus(refId: string): void;
+  consumeReferenceFocus(): void;
+  setPendingHighlightQuery(query: string | null): void;
+  requestChatFocus(target: { threadId?: string | null; messageId?: string | null }): void;
+  consumeChatFocus(): void;
 }
 ```
 
-- ストアは論文単位に 1 つ(ページマウントで初期化)。**永続化(決定)**: `tocOpen` は `localStorage['alinea-toc-open:{itemId}']`(値: `"1"` / `"0"`)、`activeTab`・`panelOpen` は `sessionStorage['alinea-viewer-panel:{itemId}']`(値: `"chat"` 等 / `"closed"`)、`style` は `localStorage['alinea-viewer-style:{itemId}']`。理由: 目次開閉と書体系は再訪でも維持したい設定、タブはセッション内文脈のため。
-- URL に置くのは `mode` のみ(§3)。パネル・目次状態は URL に載せない。決定。理由: 共有・ブックマークで意味を持つのは表示モードと位置だけであり、URL の直交性を保つ。
+- ストアは論文単位に 1 つ(ページマウントで `initViewer` を呼ぶ)。**永続化(決定)**: `tocOpen` は `localStorage['alinea-toc-open:{itemId}']`(値: `"1"` / `"0"`)、`activeTab`・`panelOpen` は `sessionStorage['alinea-viewer-panel:{itemId}']`(値: `"chat"` 等 / `"closed"`)、`style` は `localStorage['alinea-viewer-style:{itemId}']`、`activeArticlePreset` は `localStorage['alinea-article-preset:{itemId}']`。理由: 目次開閉・書体系・記事プリセットは再訪でも維持し、タブはセッション内文脈とする。
+- `mode` は URL クエリが正でストアには持たない。`block` / `section` / `panel` / `hl` / `annotation` / `note` / `thread` / `message` の補助クエリはページで一度だけ読み、対応するスクロール・深リンクの一発消費状態へ移して URL から除去する(§3)。
 
 ## 3. 表示モードのルーティング(URL 契約)
 
@@ -172,6 +222,9 @@ interface ViewerStoreState {
 | `block` | `blk-…` | 深リンク位置。横断検索 4e「該当位置へ」、PDF⇄訳文相互リンク、根拠ジャンプの外部遷移 |
 | `section` | `sec-…` | セクション深リンク(目次共有・「続きから」外部導線) |
 | `panel` | `chat` / `notes` / `annotations` / `figures` / `resources` / `info` | 初期アクティブタブ+パネルを開く。4e「スレッドを開く」= `?panel=chat&thread=th_…`(`thread` の消費は ChatTab 担当) |
+| `hl` | 検索語 | 遷移先ブロックだけを一時マークする |
+| `annotation` / `note` | `ann_…` / `note_…` | 対応タブの該当カードを一度だけフォーカスする |
+| `thread` / `message` | `th_…` / `msg_…` | ChatPanel が該当スレッドを選択し、メッセージへスクロールする |
 
 ### 3.2 正規化規則(page.tsx。決定)
 
@@ -265,7 +318,7 @@ const MODE_OPTIONS = [
 - コンテナ: width:44px、flex:none、background:`var(--pr-bg-pane)`、border-right:1px solid `var(--pr-border-pane)`、flex 縦、align-items:center、padding:12px 0、gap:14px。
 - アイコン 3 つ(上から):
   1. 「☰」: font-size:13px、color:`var(--pr-text-sub)`。クリック→`setTocOpen(true)`。`aria-label="目次を開く"`。
-  2. `BookmarkIcon` 10×12: color:`var(--pr-text-muted)`。クリック→`setTocOpen(true)` + `bookmarkFilter=true`(目次をブックマーク付き節のみ強調表示: 非該当行を `opacity:0.45` に落とす。決定)。ペインを閉じると `bookmarkFilter` はリセット。
+  2. `BookmarkIcon` 10×12: color:`var(--pr-text-muted)`。クリック→`onToggle(true)` で目次を開く(`aria-label="ブックマーク"`)。ブックマーク絞り込み状態は持たない。
   3. `MagnifierIcon` 12×12: color:`var(--pr-text-muted)`。クリック→ヘッダ検索へフォーカス(キー `/` と同一動作)。
 
 ### 5.3 TocPane(232px 目次ペイン。1a 実測)
@@ -336,7 +389,7 @@ const MODE_OPTIONS = [
 
 - 起動: 検索ボックスクリックまたはキー `/`。`searchOpen=true` でボックスが実 input 化しフォーカス(見た目は不変。フォーカスリングは plans/08 §5 共通規約)。
 - クエリ 2 文字以上で `GET /api/revisions/{revision_id}/search?q=&limit=50` を 300ms デバウンス実行。対象は原文・訳文の両面、訳文ヒットは原文ブロックと同一視して 1 件(API 仕様)。
-- **結果ドロップダウン(決定。デザイン未描画のため本書で確定)**: `Popover`(width 300px、placement `bottom-end`、caret なし、アンカー=検索ボックス)。各行: padding 8px 12px、border-bottom 1px `var(--pr-border-hair)`。1 行目=`display`(「§2.2 ¶3」。font 10px、color `var(--pr-text-muted)`)、2 行目=`snippet`(font 11.5px、color `var(--pr-text-body)`、2 行 clamp。`<mark>` は `.alinea-search-hit`=bg rgba(196,148,50,0.30)、plans/08 §5.17)。アクティブ行(`searchActiveIndex`)は bg `var(--pr-bg-hover)`。ヒット 0 件は `EmptyState` 縮小版「一致なし」(font 11px、muted、padding 16px)。
+- **結果ドロップダウン(決定。デザイン未描画のため本書で確定)**: `Popover`(width 300px、placement `bottom-end`、caret なし、アンカー=検索ボックス)。各行: padding 8px 12px、border-bottom 1px `var(--pr-border-hair)`。1 行目=`display`(「§2.2 ¶3」。font 10px、color `var(--pr-text-muted)`)、2 行目=`snippet`(font 11.5px、color `var(--pr-text-body)`、2 行 clamp。`<mark>` は `.alinea-search-hit`=bg rgba(196,148,50,0.30)、plans/08 §5.17)。アクティブ行は `InPaperSearch` のローカル `activeIndex` で bg `var(--pr-bg-hover)`。ヒット 0 件は `EmptyState` 縮小版「一致なし」(font 11px、muted、padding 16px)。
 - キー操作: `↓`/`↑` で行移動、`Enter` でアクティブ行の `block_id` へジャンプ(`requestScroll`)+ドロップダウンは開いたまま(連続ジャンプ可)、`Esc` で `closeSearch()`(input blur+ドロップダウン閉+クエリ保持)。
 - **目次マーカー(docs/04 §12 の決定を実装)**: 検索結果が開いている間、ヒットを含む節の `TocRow` 行末に 5×5px の丸ドット(background:`var(--pr-amber)`、margin-left:auto)を表示する。`closeSearch()` で消える。
 - PDF モードでは同一 UI でヒット先を page+bbox 位置へジャンプ(bbox 無しは節先頭ページ)。記事モードではヒット先が原文位置のため、`Enter` で `?mode=translation&block=…` へ遷移する(記事本文自体は検索対象外。横断検索 4e が担当)。決定。
