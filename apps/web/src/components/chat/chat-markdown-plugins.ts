@@ -77,6 +77,8 @@ function fenceContainer(value: string, start: number, line: string): FenceContai
   if (listIndent !== undefined && logicalLine.startsWith(" ".repeat(listIndent))) {
     return { blockquoteDepth: blockquote.depth, listIndent, fallbackIndent: 0 };
   }
+  if (listIndent !== undefined)
+    return { blockquoteDepth: blockquote.depth, listIndent: 0, fallbackIndent: 0 };
 
   const fallbackIndent = /^( {4,})/.exec(logicalLine)?.[0].length ?? 0;
   return { blockquoteDepth: blockquote.depth, listIndent: 0, fallbackIndent };

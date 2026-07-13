@@ -91,6 +91,15 @@ describe("normalizeDisplayMath", () => {
     expect(normalized).toContain("$$\nafter\n$$");
   });
 
+  test("does not mistake ordinary ordered-list continuation text for a fence", () => {
+    const markdown = ["1.    item", "     ~~~", "     $$normalText$$", "", "$$after$$"].join("\n");
+    const normalized = normalizeDisplayMath(markdown);
+
+    expect(normalized).toContain("1.    item\n     ~~~");
+    expect(normalized).toContain("$$\nnormalText\n$$");
+    expect(normalized).toContain("$$\nafter\n$$");
+  });
+
   test("leaves an unfinished streaming expression visible", () => {
     expect(normalizeDisplayMath("途中 $$x^2")).toBe("途中 $$x^2");
   });
