@@ -72,6 +72,30 @@ describe("normalizeDisplayMath", () => {
     expect(normalizeDisplayMath(markdown)).toBe(markdown);
   });
 
+  test("recognizes a blockquote tilde closer without post-marker whitespace", () => {
+    const markdown = ["> ~~~text", "> $$notMath$$", ">~~~", "", "$$after$$"].join("\n");
+    const normalized = normalizeDisplayMath(markdown);
+
+    expect(normalized).toContain("> $$notMath$$\n>~~~");
+    expect(normalized).toContain("$$\nafter\n$$");
+  });
+
+  test("recognizes a longer blockquote backtick closer without post-marker whitespace", () => {
+    const markdown = ["> ````text", "> $$notMath$$", ">`````", "", "$$after$$"].join("\n");
+    const normalized = normalizeDisplayMath(markdown);
+
+    expect(normalized).toContain("> $$notMath$$\n>`````");
+    expect(normalized).toContain("$$\nafter\n$$");
+  });
+
+  test("recognizes a list fence when its closer uses a smaller valid continuation indent", () => {
+    const markdown = ["- item", "    ~~~text", "    $$notMath$$", "  ~~~", "", "$$after$$"].join("\n");
+    const normalized = normalizeDisplayMath(markdown);
+
+    expect(normalized).toContain("    $$notMath$$\n  ~~~");
+    expect(normalized).toContain("$$\nafter\n$$");
+  });
+
   test("leaves an unfinished streaming expression visible", () => {
     expect(normalizeDisplayMath("途中 $$x^2")).toBe("途中 $$x^2");
   });
@@ -150,6 +174,68 @@ describe("replaceEvidenceMarkers", () => {
     replaceEvidenceMarkers(tree);
 
     expect(tree).toEqual(rootWithParagraph("[[ev:]] [[ev:-1]] [[ev:1.5]] [[ev:1a]]"));
+  });
+
+  test("leaves markers literal inside link and link-reference ancestors", () => {
+    const tree: Root = {
+      type: "root",
+      children: [
+        {
+          type: "paragraph",
+          children: [
+            {
+              type: "link",
+              url: "https://example.com",
+              children: [
+                {
+                  type: "emphasis",
+                  children: [{ type: "text", value: "See [[ev:12]]" }],
+                },
+              ],
+            },
+            { type: "text", value: " と " },
+            {
+              type: "linkReference",
+              identifier: "source",
+              label: "source",
+              referenceType: "full",
+              children: [{ type: "text", value: "[[ev:13]]" }],
+            },
+          ],
+        },
+      ],
+    };
+
+    replaceEvidenceMarkers(tree);
+
+    expect(tree).toEqual({
+      type: "root",
+      children: [
+        {
+          type: "paragraph",
+          children: [
+            {
+              type: "link",
+              url: "https://example.com",
+              children: [
+                {
+                  type: "emphasis",
+                  children: [{ type: "text", value: "See [[ev:12]]" }],
+                },
+              ],
+            },
+            { type: "text", value: " と " },
+            {
+              type: "linkReference",
+              identifier: "source",
+              label: "source",
+              referenceType: "full",
+              children: [{ type: "text", value: "[[ev:13]]" }],
+            },
+          ],
+        },
+      ],
+    });
   });
 
   test("is exposed through the remark transformer", () => {
