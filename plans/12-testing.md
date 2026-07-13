@@ -276,7 +276,7 @@ async def user(db):        # factories.py 参照。以降 as_user(client, user) 
 | VT-VIEW-06 | FigureRefPopover | 図表参照クリック→その場ポップ(スクロール位置不変)・両言語キャプション・3 アクション |
 | VT-VIEW-07 | BilingualPane | 段落単位 2 カラムの行アライン(段落数不一致データでも対応が崩れない) |
 | VT-VIEW-08 | AnnotationListPanel | フィルタ(すべて/重要/疑問/アイデア/コメントのみ)+未配置 0 件表示+「⤓ Markdown エクスポート」導線 |
-| VT-VIEW-09 | EvidenceHighlight | 「✦ チャットの根拠 · 式(5)」本文側バッジの表示/解除 |
+| VT-VIEW-09 | BilingualPane / viewer-chat-store `chatEvidence` | 根拠チップクリックで対象数式ブロックを強調し、「✦ チャットの根拠 · 式(5)」本文側バッジを表示/解除 |
 | VT-VIEW-10 | ChatMessage / ChatMarkdown | 「AI生成」バッジ・「論文外の知識」「推測」ボックス・`[[ev:n]]`→EvidenceChip 展開・GFM・インライン/ブロック KaTeX・表/コード/ブロック数式のスクロールラッパー・HTML/画像/危険 URL の無効化 |
 | VT-VIEW-11 | ChatComposer | 免責文の固定表示(逐語)・定型チップ 5 種 |
 | VT-VIEW-12 | QuickActionChips | 5 種のラベルと quick_action 値の対応・入力候補 2 種 |

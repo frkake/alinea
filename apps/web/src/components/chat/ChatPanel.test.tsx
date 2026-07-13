@@ -53,8 +53,8 @@ function assistantMessage(overrides: Partial<ChatMessageData> = {}): ChatMessage
   };
 }
 
-// VT-VIEW-09: アシスタント回答に「AI生成」バッジと根拠チップが出る
-describe("ChatMessage assistant (VT-VIEW-09)", () => {
+// VT-VIEW-10: アシスタント回答に「AI生成」バッジと根拠チップが出る
+describe("ChatMessage assistant (VT-VIEW-10)", () => {
   test("shows AI generated badge and inline evidence chip", () => {
     const onEvidenceJump = vi.fn();
     const anchor = anchorRef();
@@ -139,7 +139,7 @@ describe("ChatMessage assistant (VT-VIEW-09)", () => {
   });
 });
 
-describe("ChatMessage user Markdown regression", () => {
+describe("ChatMessage user Markdown regression (VT-VIEW-10)", () => {
   test("keeps user Markdown literal without strong text or KaTeX", () => {
     const { container } = render(
       <ChatMessage
@@ -156,8 +156,8 @@ describe("ChatMessage user Markdown regression", () => {
   });
 });
 
-// VT-VIEW-07: SSE ストリーミング表示(生成中インジケータ / 逐次テキスト)
-describe("ChatMessage streaming (VT-VIEW-07)", () => {
+// VT-VIEW-10: SSE ストリーミング表示(生成中インジケータ / 逐次テキスト)
+describe("ChatMessage streaming (VT-VIEW-10)", () => {
   test("shows typing indicator while streaming with no content yet", () => {
     render(<ChatMessage message={assistantMessage({ blocks: [] })} streaming />);
     expect(screen.getByLabelText("生成中")).toBeInTheDocument();
@@ -178,8 +178,8 @@ describe("ChatMessage streaming (VT-VIEW-07)", () => {
   });
 });
 
-// VT-VIEW-12: 回答アクション(再生成・コピー)
-describe("ChatMessage actions (VT-VIEW-12)", () => {
+// VT-VIEW-10: 回答アクション(再生成・コピー)
+describe("ChatMessage actions (VT-VIEW-10)", () => {
   test("regenerate and copy call their handlers with the message", () => {
     const onRegenerate = vi.fn();
     const onCopy = vi.fn();
@@ -223,8 +223,8 @@ describe("ChatMessage actions (VT-VIEW-12)", () => {
   });
 });
 
-// VT-VIEW-10: 入力エリア(免責文固定・送信活性制御)
-describe("ChatComposer (VT-VIEW-10)", () => {
+// VT-VIEW-11: 入力エリア(免責文固定・送信活性制御)
+describe("ChatComposer (VT-VIEW-11)", () => {
   test("shows the fixed disclaimer verbatim", () => {
     render(<ChatComposer onSend={vi.fn()} />);
     expect(screen.getByText(CHAT_DISCLAIMER)).toBeInTheDocument();
@@ -253,8 +253,8 @@ describe("ChatComposer (VT-VIEW-10)", () => {
   });
 });
 
-// VT-VIEW-11: 定型チップ 5 種
-describe("QuickActionChips (VT-VIEW-11)", () => {
+// VT-VIEW-12: 定型チップ 5 種
+describe("QuickActionChips (VT-VIEW-12)", () => {
   const labels = ["3行要約", "初心者向け解説", "貢献と限界", "実験設定の整理", "実装の要点"];
 
   test("renders the 5 fixed suggestion chips in order", () => {

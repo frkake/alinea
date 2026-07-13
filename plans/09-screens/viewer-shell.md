@@ -110,7 +110,7 @@ export interface ViewerShellProps {
 import { create } from 'zustand';
 import type { SidePanelTabId } from '@/components/ui/SidePanelTabs';
 import type { ViewerMode } from '@/components/viewer/ViewerShell';
-import type { AnchorRef, Style } from '@alinea/api-client';
+import type { Style } from '@alinea/api-client';
 
 interface ViewerStoreState {
   itemId: string | null;
@@ -135,9 +135,6 @@ interface ViewerStoreState {
     | { kind: 'section'; sectionId: string }
     | null;
 
-  // チャット根拠の本文強調(1a「✦ チャットの根拠」。設定は ChatTab、描画は本文ペイン)
-  evidenceHighlight: AnchorRef | null;
-
   // 論文内検索(§7)
   searchOpen: boolean;
   searchQuery: string;
@@ -153,7 +150,6 @@ interface ViewerStoreState {
   setStyle(style: Style): void;
   setCurrentBlock(blockId: string, sectionId: string): void;
   requestScroll(target: ViewerStoreState['pendingScrollTarget']): void;
-  setEvidenceHighlight(anchor: AnchorRef | null): void;
   openSearch(query?: string): void;
   closeSearch(): void;
   toggleBilingualPop(): void;             // bilingualPopToggleSignal を +1 するだけ
@@ -419,7 +415,7 @@ const MODE_OPTIONS = [
 
 1. シェルの寸法・色・文言を画面ファイル側で上書きしない。画面固有の差(例: 注釈タブ 320px、記事モードのヘッダ差し替え)は**本書に規則として記載済みのもののみ**存在する。新たな差分が必要になった場合は本書を先に改訂する。
 2. 本文ペイン→シェルへの通知は viewer-store の action(`setCurrentBlock` / `requestScroll` の消費)のみ。ペイン同士の直接参照は禁止。
-3. タブ本体→本文への操作(根拠ジャンプ・注釈ジャンプ・図表ジャンプ)はすべて `requestScroll` + `setEvidenceHighlight` を経由する。
+3. タブ本体→本文への操作(根拠ジャンプ・注釈ジャンプ・図表ジャンプ)はすべて `requestScroll` を経由する。根拠ジャンプ時は `viewer-chat-store` の `setChatEvidence` が対象 `blockId`/`display` を更新し、`BilingualPane` が本文側「✦ チャットの根拠」強調とバッジを描画する。
 
 ## 12. 受け入れ基準
 
