@@ -4,7 +4,7 @@ import type { CSSProperties } from "react";
 import type { AnchorRef, ChatMessage as ChatMessageData } from "@alinea/api-client";
 import { AiMark, AIBadge } from "@/components/ui/AIBadge";
 import { EvidenceChip } from "@/components/ui/EvidenceChip";
-import { EvidenceHighlight } from "@/components/chat/EvidenceHighlight";
+import { ChatMarkdown } from "@/components/chat/ChatMarkdown";
 
 export interface ChatMessageProps {
   message: ChatMessageData;
@@ -81,7 +81,11 @@ export function ChatMessage({
       ) : streaming && !hasContent ? (
         <div
           aria-label="生成中"
-          style={{ fontSize: 12.6, color: "var(--pr-text-muted)", animation: "alinea-pulse 1.2s ease-in-out infinite" }}
+          style={{
+            fontSize: 12.6,
+            color: "var(--pr-text-muted)",
+            animation: "alinea-pulse 1.2s ease-in-out infinite",
+          }}
         >
           …
         </div>
@@ -91,16 +95,22 @@ export function ChatMessage({
             return <AsideBox key={i} label={block.label} text={block.text} />;
           }
           return (
-            <p
+            <div
               key={i}
-              style={{ fontSize: 12.6, lineHeight: 1.85, color: "var(--pr-text-body)", margin: 0 }}
+              style={{
+                fontSize: 12.6,
+                lineHeight: 1.85,
+                color: "var(--pr-text-body)",
+                margin: 0,
+                minWidth: 0,
+              }}
             >
-              <EvidenceHighlight
+              <ChatMarkdown
                 text={block.text}
                 evidence={block.evidence ?? []}
                 onEvidenceJump={onEvidenceJump}
               />
-            </p>
+            </div>
           );
         })
       )}
@@ -142,7 +152,7 @@ function AsideBox({ label, text }: { label: "outside_knowledge" | "speculation";
       <span style={{ marginRight: 5, verticalAlign: 1 }}>
         <AIBadge variant={label === "speculation" ? "guess" : "external"} />
       </span>
-      {text}
+      <ChatMarkdown text={text} evidence={[]} />
     </div>
   );
 }
@@ -177,7 +187,9 @@ function UserMessage({ message }: { message: ChatMessageData }) {
             onJump={() => undefined}
           />
         ))}
-        <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--pr-text-muted)" }}>あなた</span>
+        <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--pr-text-muted)" }}>
+          あなた
+        </span>
       </div>
       {quote ? (
         <div

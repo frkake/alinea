@@ -1,13 +1,17 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { chatListMessages, chatListThreads, type AnchorRef, type ChatMessage as ChatMessageData } from "@alinea/api-client";
+import {
+  chatListMessages,
+  chatListThreads,
+  type AnchorRef,
+  type ChatMessage as ChatMessageData,
+} from "@alinea/api-client";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { ChatComposer, CHAT_DISCLAIMER } from "@/components/chat/ChatComposer";
 import { QuickActionChips } from "@/components/chat/QuickActionChips";
-import { EvidenceHighlight } from "@/components/chat/EvidenceHighlight";
 import { useViewerStore } from "@/stores/viewer-store";
 
 vi.mock("@alinea/api-client", async (importOriginal) => {
@@ -49,6 +53,8 @@ function assistantMessage(overrides: Partial<ChatMessageData> = {}): ChatMessage
 // VT-VIEW-09: アシスタント回答に「AI生成」バッジと根拠チップが出る
 describe("ChatMessage assistant (VT-VIEW-09)", () => {
   test("shows AI generated badge and inline evidence chip", () => {
+    const onEvidenceJump = vi.fn();
+    const anchor = anchorRef();
     render(
       <ChatMessage
         message={assistantMessage({
@@ -56,29 +62,79 @@ describe("ChatMessage assistant (VT-VIEW-09)", () => {
             {
               type: "markdown",
               text: "結局 [[ev:1]] の回帰に帰着します。",
-              evidence: [{ ref: 1, display: "¶2", anchor: anchorRef() }],
+              evidence: [{ ref: 1, display: "¶2", anchor }],
+            },
+          ],
+        })}
+        onEvidenceJump={onEvidenceJump}
+      />,
+    );
+    expect(screen.getByText("AI生成")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("¶2"));
+    expect(onEvidenceJump).toHaveBeenCalledWith(anchor);
+  });
+
+  test("renders Markdown blocks with headings, GFM tables, and display math", () => {
+    const { container } = render(
+      <ChatMessage
+        message={assistantMessage({
+          blocks: [
+            {
+              type: "markdown",
+              text: [
+                "## 解析結果",
+                "",
+                "| 指標 | 値 |",
+                "| --- | --- |",
+                "| 損失 | $L$ |",
+                "",
+                "同じ行の表示数式 $$x^2$$ です。",
+              ].join("\n"),
+              evidence: [],
             },
           ],
         })}
       />,
     );
-    expect(screen.getByText("AI生成")).toBeInTheDocument();
-    expect(screen.getByText("¶2")).toBeInTheDocument();
+
+    expect(screen.getByRole("heading", { name: "解析結果" })).toHaveProperty("tagName", "H2");
+    const table = container.querySelector(".alinea-chat-table-scroll table");
+    expect(table).toHaveTextContent("損失");
+    expect(table?.querySelector(".katex")).not.toBeNull();
+    expect(container.querySelectorAll(".alinea-chat-math-block .katex-display")).toHaveLength(1);
   });
 
-  test("renders outside-knowledge aside box with 論文外の知識 label", () => {
-    render(
+  test("renders outside-knowledge aside Markdown with its label", () => {
+    const { container } = render(
       <ChatMessage
         message={assistantMessage({
           blocks: [
             { type: "markdown", text: "本文の要点です。", evidence: [] },
-            { type: "aside", label: "outside_knowledge", text: "一般にはこうです。" },
+            { type: "aside", label: "outside_knowledge", text: "**一般則** は $x^2$ です。" },
           ],
         })}
       />,
     );
     expect(screen.getByText("論文外の知識")).toBeInTheDocument();
-    expect(screen.getByText("一般にはこうです。")).toBeInTheDocument();
+    expect(screen.getByText("一般則")).toHaveProperty("tagName", "STRONG");
+    expect(container.querySelector(".katex")).not.toBeNull();
+  });
+});
+
+describe("ChatMessage user Markdown regression", () => {
+  test("keeps user Markdown literal without strong text or KaTeX", () => {
+    const { container } = render(
+      <ChatMessage
+        message={assistantMessage({
+          role: "user",
+          blocks: [{ type: "markdown", text: "**そのまま** $x$", evidence: [] }],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("**そのまま** $x$")).toBeInTheDocument();
+    expect(container.querySelector("strong")).toBeNull();
+    expect(container.querySelector(".katex")).toBeNull();
   });
 });
 
@@ -94,7 +150,9 @@ describe("ChatMessage streaming (VT-VIEW-07)", () => {
   test("renders accumulated delta text during streaming", () => {
     render(
       <ChatMessage
-        message={assistantMessage({ blocks: [{ type: "markdown", text: "整流フローは", evidence: [] }] })}
+        message={assistantMessage({
+          blocks: [{ type: "markdown", text: "整流フローは", evidence: [] }],
+        })}
         streaming
       />,
     );
@@ -131,7 +189,12 @@ describe("ChatMessage actions (VT-VIEW-12)", () => {
         message={assistantMessage({
           status: "error",
           blocks: [],
-          error: { type: "about:blank", title: "回答の生成に失敗しました", status: 502, code: "provider_error" },
+          error: {
+            type: "about:blank",
+            title: "回答の生成に失敗しました",
+            status: 502,
+            code: "provider_error",
+          },
         })}
         onRetry={onRetry}
       />,
@@ -198,30 +261,6 @@ describe("QuickActionChips (VT-VIEW-11)", () => {
   });
 });
 
-// 根拠チップ双方向リンク(EvidenceHighlight): [[ev:n]] → チップ + ジャンプ
-describe("EvidenceHighlight", () => {
-  test("substitutes [[ev:n]] with an evidence chip and jumps on click", () => {
-    const onJump = vi.fn();
-    const anchor = anchorRef({ block_id: "blk-eq5", display: "式(5) · §2.1" });
-    render(
-      <EvidenceHighlight
-        text="学習目的は [[ev:1]] に帰着します。"
-        evidence={[{ ref: 1, display: "式(5) · §2.1", anchor }]}
-        onEvidenceJump={onJump}
-      />,
-    );
-    const chip = screen.getByText("式(5) · §2.1");
-    fireEvent.click(chip);
-    expect(onJump).toHaveBeenCalledWith(anchor);
-  });
-
-  test("renders bold markdown", () => {
-    const { container } = render(<EvidenceHighlight text="これは **重要** です。" evidence={[]} />);
-    const bold = within(container).getByText("重要");
-    expect(bold.tagName).toBe("B");
-  });
-});
-
 function renderWithClient(ui: ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
@@ -242,7 +281,12 @@ describe("ChatPanel deep link (M1 統合ポリッシュ)", () => {
       data: {
         items: [
           { id: "th-main", title: "メイン", is_main: true, created_at: "2026-07-01T00:00:00Z" },
-          { id: "th-sub", title: "サブスレッド", is_main: false, created_at: "2026-07-02T00:00:00Z" },
+          {
+            id: "th-sub",
+            title: "サブスレッド",
+            is_main: false,
+            created_at: "2026-07-02T00:00:00Z",
+          },
         ],
       },
     } as never);
