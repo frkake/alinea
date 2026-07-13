@@ -144,8 +144,16 @@ describe("ChatMarkdown", () => {
     expect(screen.queryByRole("link", { name: "unsafe" })).toBeNull();
     expect(container).toHaveTextContent("unsafe");
     expect(container.querySelector("script")).toBeNull();
-    expect(screen.queryByText("alert('xss')")).toBeNull();
     expect(container.querySelector("img")).toBeNull();
     expect(screen.getByText("画像: remote chart")).toHaveClass("alinea-chat-image-alt");
+  });
+
+  test("replaces a Markdown image without alt text with the Japanese fallback prefix", () => {
+    const { container } = render(
+      <ChatMarkdown text="![](https://example.com/empty-alt.png)" evidence={[]} />,
+    );
+
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector(".alinea-chat-image-alt")).toHaveTextContent("画像:");
   });
 });

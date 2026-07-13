@@ -1,12 +1,9 @@
 "use client";
 
 import type { AnchorRef, EvidenceRef } from "@alinea/api-client";
-import type { Root } from "mdast";
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
 import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Plugin } from "unified";
-import { visit } from "unist-util-visit";
 import { EvidenceChip } from "@/components/ui/EvidenceChip";
 import { EVIDENCE_PROPERTY, remarkEvidence } from "@/components/chat/chat-markdown-plugins";
 
@@ -23,24 +20,6 @@ type MarkdownAnchorProps = ComponentPropsWithoutRef<"a"> &
 type MarkdownTableProps = ComponentPropsWithoutRef<"table"> & ExtraProps;
 type MarkdownPreProps = ComponentPropsWithoutRef<"pre"> & ExtraProps;
 type MarkdownImageProps = ComponentPropsWithoutRef<"img"> & ExtraProps;
-
-const SCRIPT_OPENING_TAG = /^<script\b/i;
-const SCRIPT_CLOSING_TAG = /<\/script\s*>/i;
-
-/** Drops raw script elements before the markdown renderer can expose their text content. */
-const remarkStripScripts: Plugin<[], Root> = () => (tree) => {
-  visit(tree, "html", (node, index, parent) => {
-    if (index === undefined || parent === undefined || !SCRIPT_OPENING_TAG.test(node.value)) return;
-
-    let lastIndex = index;
-    while (lastIndex < parent.children.length) {
-      const sibling = parent.children[lastIndex];
-      if (sibling?.type === "html" && SCRIPT_CLOSING_TAG.test(sibling.value)) break;
-      lastIndex += 1;
-    }
-    parent.children.splice(index, lastIndex - index + 1);
-  });
-};
 
 function parseEvidenceReference(value: unknown): number | undefined {
   if (typeof value === "number") return Number.isSafeInteger(value) ? value : undefined;
@@ -74,8 +53,7 @@ function ChatPre({ children }: MarkdownPreProps) {
 }
 
 function ChatImage({ alt }: MarkdownImageProps) {
-  if (!alt) return null;
-  return <span className="alinea-chat-image-alt">画像: {alt}</span>;
+  return <span className="alinea-chat-image-alt">画像: {alt ?? ""}</span>;
 }
 
 /** Safe GFM renderer for assistant messages, including verified evidence references. */
@@ -115,11 +93,7 @@ export function ChatMarkdown({ text, evidence, onEvidenceJump }: ChatMarkdownPro
 
   return (
     <div className="alinea-chat-markdown">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkStripScripts, remarkEvidence]}
-        skipHtml
-        components={components}
-      >
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkEvidence]} skipHtml components={components}>
         {text}
       </ReactMarkdown>
     </div>
