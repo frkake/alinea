@@ -16,7 +16,7 @@ import { dragSelect, openViewer } from "../fixtures/viewer";
  *   block_id を引用する `[[evidence:blk-XXX]]` を返す必要があるが現状はエコー応答で根拠を
  *   出さない。加えてチャット既定モデルの anthropic/openai ストリーミングアダプタが同梱 SDK と
  *   非互換(`output_config` / Responses API)。これらは packages/llm(別レーン)の課題。
- *   UI 単体は VT-VIEW-09/10(EvidenceChip/EvidenceHighlight)が担保。followups 参照。
+ *   UI 単体は VT-VIEW-09/10(EvidenceChip/ChatMarkdown)が担保。followups 参照。
  */
 test.describe("PW-08 チャット(選択→AIに質問→チャットタブ)", () => {
   test("本文選択→「✦ AIに質問」でチャットタブが開き、入力欄と免責文が出る", async ({ page }) => {
