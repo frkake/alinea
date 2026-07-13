@@ -170,6 +170,98 @@ describe("ChatMarkdown", () => {
     expect(container.querySelectorAll(".katex")).toHaveLength(3);
     expect(container.querySelectorAll(".alinea-chat-math-block .katex-display")).toHaveLength(2);
     expect(container.querySelector("pre.alinea-chat-code-block .katex-display")).toBeNull();
+    expect(container.querySelector("p .katex")?.closest(".alinea-chat-math-block")).toBeNull();
+  });
+
+  test("preserves link destinations and table cells that contain double-dollar pairs", () => {
+    const { container } = render(
+      <ChatMarkdown
+        text={[
+          "[safe](https://example.com/$$x$$)",
+          "",
+          "| Metric | Value |",
+          "| --- | --- |",
+          "| loss | $$x^2$$ |",
+        ].join("\n")}
+        evidence={[]}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "safe" })).toHaveAttribute(
+      "href",
+      "https://example.com/$$x$$",
+    );
+    expect(container.querySelector(".alinea-chat-table-scroll td")).toHaveTextContent("loss");
+    expect(container.querySelector(".alinea-chat-table-scroll td:last-child")).not.toBeNull();
+    expect(container.querySelector(".alinea-chat-math-block")).toBeNull();
+  });
+
+  test("preserves angle-bracket link destinations that contain double-dollar pairs", () => {
+    render(<ChatMarkdown text="[x](<https://example.com/)$$x$$>)" evidence={[]} />);
+
+    expect(screen.getByRole("link", { name: "x" })).toHaveAttribute(
+      "href",
+      "https://example.com/)$$x$$",
+    );
+  });
+
+  test("preserves spaced angle-bracket link destinations that contain double-dollar pairs", () => {
+    render(<ChatMarkdown text="[x]( <https://example.com/)$$x$$> )" evidence={[]} />);
+
+    expect(screen.getByRole("link", { name: "x" })).toHaveAttribute(
+      "href",
+      "https://example.com/)$$x$$",
+    );
+  });
+
+  test("preserves reference-style link destinations that contain double-dollar pairs", () => {
+    render(
+      <ChatMarkdown
+        text={["[safe][id]", "", "[id]: https://example.com/$$x$$"].join("\n")}
+        evidence={[]}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "safe" })).toHaveAttribute(
+      "href",
+      "https://example.com/$$x$$",
+    );
+  });
+
+  test("preserves GFM literal autolinks that contain double-dollar pairs", () => {
+    render(<ChatMarkdown text="https://example.com/$$x$$" evidence={[]} />);
+
+    expect(screen.getByRole("link", { name: "https://example.com/$$x$$" })).toHaveAttribute(
+      "href",
+      "https://example.com/$$x$$",
+    );
+  });
+
+  test("keeps double-dollar pairs in blockquoted GFM table cells", () => {
+    const { container } = render(
+      <ChatMarkdown
+        text={["> | Metric | Value |", "> | --- | --- |", "> | loss | $$x^2$$ |"].join("\n")}
+        evidence={[]}
+      />,
+    );
+
+    expect(container.querySelector("blockquote .alinea-chat-table-scroll td")).toHaveTextContent(
+      "loss",
+    );
+    expect(
+      container.querySelector("blockquote .alinea-chat-table-scroll td:last-child"),
+    ).not.toBeNull();
+    expect(container.querySelector(".alinea-chat-math-block")).toBeNull();
+  });
+
+  test("keeps math-labelled fenced code as an ordinary code block", () => {
+    const { container } = render(
+      <ChatMarkdown text={["```math", "x^2", "```"].join("\n")} evidence={[]} />,
+    );
+
+    expect(container.querySelector("pre.alinea-chat-code-block")).toHaveTextContent("x^2");
+    expect(container.querySelector(".alinea-chat-math-block")).toBeNull();
+    expect(container.querySelector(".katex")).toBeNull();
   });
 
   test("uses the shared student macro in chat math", () => {

@@ -135,6 +135,20 @@
   margin: 0;
   padding: 0.25rem 0;
 }
+.alinea-chat-markdown .katex {
+  display: inline-block;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+.alinea-chat-math-block .katex {
+  display: block;
+  max-width: none;
+  overflow: visible;
+}
 .alinea-chat-markdown .katex-error {
   display: inline-block;
   max-width: 100%;

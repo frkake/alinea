@@ -111,6 +111,72 @@ describe("normalizeDisplayMath", () => {
   test("does not use escaped dollar pairs as delimiters", () => {
     expect(normalizeDisplayMath("\\$$x^2$$")).toBe("\\$$x^2$$");
   });
+
+  test("leaves double-dollar pairs in Markdown link destinations unchanged", () => {
+    const markdown = "[safe](https://example.com/$$x$$)";
+
+    expect(normalizeDisplayMath(markdown)).toBe(markdown);
+  });
+
+  test("leaves double-dollar pairs in angle-bracket link destinations unchanged", () => {
+    const markdown = "[x](<https://example.com/)$$x$$>)";
+
+    expect(normalizeDisplayMath(markdown)).toBe(markdown);
+  });
+
+  test("leaves double-dollar pairs in spaced angle-bracket link destinations unchanged", () => {
+    const markdown = "[x]( <https://example.com/)$$x$$> )";
+
+    expect(normalizeDisplayMath(markdown)).toBe(markdown);
+  });
+
+  test("leaves double-dollar pairs in multiline angle-bracket link destinations unchanged", () => {
+    const markdown = ["[x](", "<https://example.com/)$$x$$>", ")"].join("\n");
+
+    expect(normalizeDisplayMath(markdown)).toBe(markdown);
+  });
+
+  test("leaves double-dollar pairs in reference-style link destinations unchanged", () => {
+    const markdown = ["[safe][id]", "", "[id]: https://example.com/$$x$$"].join("\n");
+
+    expect(normalizeDisplayMath(markdown)).toBe(markdown);
+  });
+
+  test("leaves double-dollar pairs in Markdown autolinks unchanged", () => {
+    const markdown = "<https://example.com/$$x$$>";
+
+    expect(normalizeDisplayMath(markdown)).toBe(markdown);
+  });
+
+  test("leaves double-dollar pairs in GFM literal autolinks unchanged", () => {
+    const markdown = "https://example.com/$$x$$";
+
+    expect(normalizeDisplayMath(markdown)).toBe(markdown);
+  });
+
+  test("continues normalizing invalid GFM literal-autolink prose", () => {
+    const markdown = "https://$$x$$";
+
+    expect(normalizeDisplayMath(markdown)).toBe("https://\n\n$$\nx\n$$\n\n");
+  });
+
+  test("leaves double-dollar pairs in GFM table rows unchanged", () => {
+    const markdown = ["| Metric | Value |", "| --- | --- |", "| loss | $$x^2$$ |"].join("\n");
+
+    expect(normalizeDisplayMath(markdown)).toBe(markdown);
+  });
+
+  test("leaves double-dollar pairs in blockquoted GFM table rows unchanged", () => {
+    const markdown = ["> | Metric | Value |", "> | --- | --- |", "> | loss | $$x^2$$ |"].join("\n");
+
+    expect(normalizeDisplayMath(markdown)).toBe(markdown);
+  });
+
+  test("continues normalizing pipe prose that is not a valid GFM table", () => {
+    const markdown = ["| Heading |", "| --- | --- |", "| value | $$x^2$$ |"].join("\n");
+
+    expect(normalizeDisplayMath(markdown)).toContain("$$\nx^2\n$$");
+  });
 });
 
 describe("replaceEvidenceMarkers", () => {

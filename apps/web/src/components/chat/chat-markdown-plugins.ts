@@ -1,6 +1,10 @@
 import type { Link, Root, Text } from "mdast";
 import type { Plugin } from "unified";
+import { unified } from "unified";
 import { visit } from "unist-util-visit";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import remarkParse from "remark-parse";
 
 export const EVIDENCE_PROPERTY = "data-alinea-evidence-ref";
 
@@ -23,6 +27,44 @@ function lineEnd(value: string, start: number): number {
 
 function isLineStart(value: string, index: number): boolean {
   return index === 0 || value[index - 1] === "\n";
+}
+
+interface MarkdownSourceRange {
+  start: number;
+  end: number;
+}
+
+function protectedMarkdownRanges(markdown: string): MarkdownSourceRange[] {
+  const tree = unified().use(remarkParse).use(remarkGfm).use(remarkMath).parse(markdown);
+  const ranges: MarkdownSourceRange[] = [];
+  visit(tree, ["link", "linkReference", "definition", "table"], (node) => {
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    if (start !== undefined && end !== undefined) ranges.push({ start, end });
+  });
+  ranges.sort((left, right) => left.start - right.start);
+
+  const merged: MarkdownSourceRange[] = [];
+  for (const range of ranges) {
+    const previous = merged.at(-1);
+    if (previous !== undefined && range.start <= previous.end) {
+      previous.end = Math.max(previous.end, range.end);
+      continue;
+    }
+    merged.push({ ...range });
+  }
+  return merged;
+}
+
+function protectedRangeEnd(
+  ranges: readonly MarkdownSourceRange[],
+  cursor: number,
+): number | undefined {
+  for (const range of ranges) {
+    if (range.end <= cursor) continue;
+    return range.start <= cursor ? range.end : undefined;
+  }
+  return undefined;
 }
 
 interface BlockquotePrefix {
@@ -166,7 +208,11 @@ function isOwnLineDelimiter(value: string, index: number): boolean {
   );
 }
 
-function displayMathClosingDelimiter(value: string, opening: number): number | undefined {
+function displayMathClosingDelimiter(
+  value: string,
+  opening: number,
+  protectedRanges: readonly MarkdownSourceRange[],
+): number | undefined {
   let cursor = opening + 2;
   while (cursor < value.length) {
     const fencedEnd = codeFenceEnd(value, cursor);
@@ -183,14 +229,21 @@ function displayMathClosingDelimiter(value: string, opening: number): number | u
       }
     }
 
+    const protectedEnd = protectedRangeEnd(protectedRanges, cursor);
+    if (protectedEnd !== undefined) {
+      cursor = protectedEnd;
+      continue;
+    }
+
     if (isDollarPair(value, cursor)) return cursor;
     cursor += 1;
   }
   return undefined;
 }
 
-/** Converts inline `$$…$$` pairs into flow display-math blocks without touching code. */
+/** Converts inline `$$…$$` pairs into flow display-math blocks without touching protected Markdown. */
 export function normalizeDisplayMath(markdown: string): string {
+  const protectedRanges = protectedMarkdownRanges(markdown);
   let normalized = "";
   let cursor = 0;
   let sourceCursor = 0;
@@ -210,12 +263,18 @@ export function normalizeDisplayMath(markdown: string): string {
       }
     }
 
+    const protectedEnd = protectedRangeEnd(protectedRanges, cursor);
+    if (protectedEnd !== undefined) {
+      cursor = protectedEnd;
+      continue;
+    }
+
     if (!isDollarPair(markdown, cursor)) {
       cursor += 1;
       continue;
     }
 
-    const closing = displayMathClosingDelimiter(markdown, cursor);
+    const closing = displayMathClosingDelimiter(markdown, cursor, protectedRanges);
     if (closing === undefined) return normalized + markdown.slice(sourceCursor);
 
     if (isOwnLineDelimiter(markdown, cursor) && isOwnLineDelimiter(markdown, closing)) {
