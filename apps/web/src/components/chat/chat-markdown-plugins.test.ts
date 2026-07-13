@@ -25,6 +25,10 @@ describe("normalizeDisplayMath", () => {
     expect(normalizeDisplayMath("前 $$ x^2 $$ 後")).toBe("前 \n\n$$\nx^2\n$$\n\n 後");
   });
 
+  test("leaves an empty same-line dollar pair unchanged", () => {
+    expect(normalizeDisplayMath("a $$$$ b")).toBe("a $$$$ b");
+  });
+
   test("leaves an existing multiline display block in order with its prose", () => {
     const markdown = ["前の文章", "$$", "x^2", "$$", "後の文章"].join("\n");
 

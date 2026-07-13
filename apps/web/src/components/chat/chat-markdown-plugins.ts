@@ -223,7 +223,13 @@ export function normalizeDisplayMath(markdown: string): string {
       continue;
     }
 
-    normalized += `${markdown.slice(sourceCursor, cursor)}\n\n$$\n${markdown.slice(cursor + 2, closing).trim()}\n$$\n\n`;
+    const math = markdown.slice(cursor + 2, closing).trim();
+    if (math.length === 0) {
+      cursor = closing + 2;
+      continue;
+    }
+
+    normalized += `${markdown.slice(sourceCursor, cursor)}\n\n$$\n${math}\n$$\n\n`;
     sourceCursor = closing + 2;
     cursor = sourceCursor;
   }
