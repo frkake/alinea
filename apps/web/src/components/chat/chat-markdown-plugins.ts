@@ -37,7 +37,7 @@ interface MarkdownSourceRange {
 function protectedMarkdownRanges(markdown: string): MarkdownSourceRange[] {
   const tree = unified().use(remarkParse).use(remarkGfm).use(remarkMath).parse(markdown);
   const ranges: MarkdownSourceRange[] = [];
-  visit(tree, ["link", "linkReference", "definition", "table"], (node) => {
+  visit(tree, ["link", "linkReference", "definition", "table", "html"], (node) => {
     const start = node.position?.start.offset;
     const end = node.position?.end.offset;
     if (start !== undefined && end !== undefined) ranges.push({ start, end });

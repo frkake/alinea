@@ -108,7 +108,8 @@ const rehypePreserveMathCodeFences: Plugin<[], RehypeRoot> = () => (tree) => {
       node.tagName !== "code" ||
       parent?.type !== "element" ||
       parent.tagName !== "pre" ||
-      !hasClassName(node.properties.className, "language-math")
+      !hasClassName(node.properties.className, "language-math") ||
+      hasClassName(node.properties.className, "math-display")
     )
       return;
 

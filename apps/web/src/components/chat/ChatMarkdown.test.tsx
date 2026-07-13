@@ -173,6 +173,14 @@ describe("ChatMarkdown", () => {
     expect(container.querySelector("p .katex")?.closest(".alinea-chat-math-block")).toBeNull();
   });
 
+  test("renders normalized display math in exactly one math block", () => {
+    const { container } = render(<ChatMarkdown text="$$x$$" evidence={[]} />);
+
+    expect(container.querySelectorAll(".alinea-chat-math-block")).toHaveLength(1);
+    expect(container.querySelector(".alinea-chat-math-block .alinea-chat-math-block")).toBeNull();
+    expect(container.querySelector(".alinea-chat-math-block .katex-display")).not.toBeNull();
+  });
+
   test("preserves link destinations and table cells that contain double-dollar pairs", () => {
     const { container } = render(
       <ChatMarkdown
@@ -262,6 +270,17 @@ describe("ChatMarkdown", () => {
     expect(container.querySelector("pre.alinea-chat-code-block")).toHaveTextContent("x^2");
     expect(container.querySelector(".alinea-chat-math-block")).toBeNull();
     expect(container.querySelector(".katex")).toBeNull();
+  });
+
+  test("keeps raw HTML with math-looking attributes inert", () => {
+    const { container } = render(
+      <ChatMarkdown text={'<a href="https://example.com/$$x$$">link</a>'} evidence={[]} />,
+    );
+
+    expect(container.querySelector("a")).toBeNull();
+    expect(container.querySelector(".alinea-chat-math-block")).toBeNull();
+    expect(container).toHaveTextContent("link");
+    expect(container).not.toHaveTextContent("$$x$$");
   });
 
   test("uses the shared student macro in chat math", () => {

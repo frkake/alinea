@@ -177,6 +177,12 @@ describe("normalizeDisplayMath", () => {
 
     expect(normalizeDisplayMath(markdown)).toContain("$$\nx^2\n$$");
   });
+
+  test("leaves raw HTML attributes containing double-dollar pairs unchanged", () => {
+    const markdown = '<a href="https://example.com/$$x$$">link</a>';
+
+    expect(normalizeDisplayMath(markdown)).toBe(markdown);
+  });
 });
 
 describe("replaceEvidenceMarkers", () => {
