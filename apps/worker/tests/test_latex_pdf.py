@@ -20,6 +20,7 @@ from alinea_core.db.models import (
 )
 from alinea_core.document.blocks import Block, DocumentContent, Section
 from alinea_core.document.inlines import Inline
+from alinea_core.document.plaintext import block_to_plain
 from alinea_core.parsing.latex_parser import (
     LatexArchive,
     extract_latex_archive,
@@ -37,6 +38,7 @@ from alinea_worker.latex_pdf import (
     _compile_with_docker,
     _find_overfull_boxes,
     _find_pdf_page_bound_violations,
+    _rewrite_minted_frozencache_package,
     _source_render_manifest,
     _translation_units_digest,
     _validate_render_coverage,
@@ -109,7 +111,7 @@ def _complex_table_source() -> str:
 
 
 def test_typed_table_rendering_invalidates_caption_only_pdf_cache() -> None:
-    assert PDF_BUILD_VERSION == "japanese-pdf-3.0.14"
+    assert PDF_BUILD_VERSION == "japanese-pdf-3.0.16"
 
 
 def test_render_manifest_rejects_missing_or_source_fallback_blocks() -> None:
@@ -492,6 +494,245 @@ def test_render_multi_image_figure_does_not_shift_following_figure_captions() ->
     _validate_render_coverage(rendered, content, units)
 
 
+def test_minted_with_blank_lines_does_not_derail_following_paragraphs() -> None:
+    """カスタム環境内で入れ子 quote と minted が併存すると、_transform_env の
+    「本文中の quote 検出」フォールバックが _replace_paragraphs にそのまま
+    minted を含む本文を渡してしまう。minted 内部の空行を段落境界として数えると、
+    幻の段落がそこに生まれ、以降の実在ブロック(Answer text./Following paragraph.)
+    の位置対応がズレる(arXiv:2403.08299 AutoDev で検出された回帰と同種の失敗)。
+    verbatim 系環境を丸ごと不透明な断片として避けていれば、コードは書き換えられず
+    後続ブロックも正しく対応したままになるはずである。
+    """
+    tex = r"""
+\documentclass{article}
+\usepackage{minted}
+\newenvironment{important}{\begin{quote}}{\end{quote}}
+\begin{document}
+\begin{important}
+Question heading.
+
+\begin{quote}
+Choice A or choice B.
+\end{quote}
+
+\begin{minted}{python}
+def foo():
+
+    return 1
+\end{minted}
+
+Answer text.
+\end{important}
+
+Following paragraph.
+\end{document}
+"""
+    archive = LatexArchive({"main.tex": tex}, {})
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    paragraphs = [block for _section, block in content.iter_blocks() if block.type == "paragraph"]
+    assert [block_to_plain(block) for block in paragraphs] == [
+        "Question heading.",
+        "Choice A or choice B.",
+        "python def foo(): return 1",
+        "Answer text.",
+        "Following paragraph.",
+    ]
+    question, choice, _code_leaked_as_paragraph, answer, following = paragraphs
+    units = {
+        question.id: _unit(question.id, "質問見出し。"),
+        choice.id: _unit(choice.id, "選択肢AまたはB。"),
+        answer.id: _unit(answer.id, "回答文。"),
+        following.id: _unit(following.id, "後続段落。"),
+    }
+
+    rendered = render_translated_latex_source(archive, content, units)
+
+    assert "質問見出し。" in rendered.main_tex
+    assert "選択肢AまたはB。" in rendered.main_tex
+    assert "回答文。" in rendered.main_tex
+    assert "後続段落。" in rendered.main_tex
+    # minted の中身(空行を含む)は一切書き換えられていない。
+    assert "def foo():\n\n    return 1" in rendered.main_tex
+    assert answer.id in rendered.replaced_block_ids
+    assert following.id in rendered.replaced_block_ids
+    # following はコード漏れブロックの直後ではなく正しく answer の後に来ている。
+    assert rendered.main_tex.index("回答文。") < rendered.main_tex.index("後続段落。")
+
+
+def test_phantom_raw_paragraph_is_skipped_without_consuming_a_block() -> None:
+    """`\\begin{document}` 直後に置かれた \\definecolor/\\newcommand の塊は、
+    _layout_only_chunk の既知コマンド一覧に無いため「翻訳可能な段落」に見えてしまう。
+    内容照合が無いと、この幻の段落が実在する最初の見出し・段落ブロックを誤って
+    消費し、それ以降の全ブロックの位置対応がズレる
+    (arXiv:2403.08299 AutoDev で検出された回帰の直接の原因)。
+    """
+    tex = r"""
+\documentclass{article}
+\begin{document}
+\definecolor{ForestGreen}{RGB}{34,139,34}
+\newcommand{\nb}[1]{\fbox{#1}}
+
+\section{Introduction}
+Original first paragraph.
+\end{document}
+"""
+    archive = LatexArchive({"main.tex": tex}, {})
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    heading = next(block for _section, block in content.iter_blocks() if block.type == "heading")
+    paragraph = next(
+        block for _section, block in content.iter_blocks() if block.type == "paragraph"
+    )
+    units = {
+        heading.id: _unit(heading.id, "はじめに"),
+        paragraph.id: _unit(paragraph.id, "最初の段落。"),
+    }
+
+    rendered = render_translated_latex_source(archive, content, units)
+
+    # マクロ定義は幻の段落として消費されず、原文のまま残る。
+    assert r"\definecolor{ForestGreen}{RGB}{34,139,34}" in rendered.main_tex
+    assert r"\newcommand{\nb}[1]{\fbox{#1}}" in rendered.main_tex
+    # 実在する見出し・段落ブロックはズレずに正しく置換される。
+    assert r"\section{はじめに}" in rendered.main_tex
+    assert "最初の段落。" in rendered.main_tex
+    assert "Original first paragraph." not in rendered.main_tex
+    assert heading.id in rendered.replaced_block_ids
+    assert paragraph.id in rendered.replaced_block_ids
+    assert any("内容不一致" in warning for warning in rendered.warnings)
+
+
+def test_empty_normalized_raw_segment_does_not_auto_match_a_real_block() -> None:
+    """``\\justifying`` のような引数の無い書式コマンド単体は、正規化すると完全に
+    空文字列になる。比較材料が無い側を無条件に許容すると、この「何も無い」raw断片が
+    実在する段落ブロックへ自動一致してしまう(比較不能をブロック側の情報不足と同様に
+    扱うと退行する非対称なケース)。ブロック側に実在する内容があるなら、raw側が空でも
+    一致とみなしてはならない(arXiv:2607.07534 LingBot の \\abstract{ / \\justifying で検出)。
+    """
+    tex = r"""
+\documentclass{article}
+\begin{document}
+\justifying
+\section{Introduction}
+Original first paragraph.
+\end{document}
+"""
+    archive = LatexArchive({"main.tex": tex}, {})
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    heading = next(block for _section, block in content.iter_blocks() if block.type == "heading")
+    paragraph = next(
+        block for _section, block in content.iter_blocks() if block.type == "paragraph"
+    )
+    units = {
+        heading.id: _unit(heading.id, "はじめに"),
+        paragraph.id: _unit(paragraph.id, "最初の段落。"),
+    }
+
+    rendered = render_translated_latex_source(archive, content, units)
+
+    assert r"\justifying" in rendered.main_tex
+    assert r"\section{はじめに}" in rendered.main_tex
+    assert "最初の段落。" in rendered.main_tex
+    assert "Original first paragraph." not in rendered.main_tex
+    assert heading.id in rendered.replaced_block_ids
+    assert paragraph.id in rendered.replaced_block_ids
+    assert any("内容不一致" in warning for warning in rendered.warnings)
+
+
+def test_missing_raw_structure_skips_just_that_block() -> None:
+    """構造化ブロック側にだけ存在し raw 側に対応するテキストが無いブロック
+    (例えば再翻訳の際に古いブロックが取り残された場合)は、それ単体だけが
+    孤立した欠落になるべきで、後続の実在ブロックの位置対応を破壊してはならない。
+    """
+    tex = r"""
+\documentclass{article}
+\begin{document}
+\section{Introduction}
+First real paragraph.
+
+Second real paragraph.
+\end{document}
+"""
+    archive = LatexArchive({"main.tex": tex}, {})
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    heading = next(block for _section, block in content.iter_blocks() if block.type == "heading")
+    real_paragraphs = [
+        block for _section, block in content.iter_blocks() if block.type == "paragraph"
+    ]
+    assert len(real_paragraphs) == 2
+    first, second = real_paragraphs
+    orphan = Block(
+        id="blk-orphan-ghost",
+        type="paragraph",
+        inlines=[Inline(t="text", v="Ghost paragraph with no raw counterpart.")],
+    )
+    # first と second の間に、raw 側に対応が無い孤立ブロックを挿入する。
+    section = content.sections[0]
+    section.blocks.insert(section.blocks.index(first) + 1, orphan)
+
+    units = {
+        heading.id: _unit(heading.id, "はじめに"),
+        first.id: _unit(first.id, "最初の段落。"),
+        orphan.id: _unit(orphan.id, "幽霊の段落。"),
+        second.id: _unit(second.id, "二番目の段落。"),
+    }
+
+    rendered = render_translated_latex_source(archive, content, units)
+
+    assert "最初の段落。" in rendered.main_tex
+    assert "二番目の段落。" in rendered.main_tex
+    # 孤立ブロックの訳文はどこにも紛れ込まない。
+    assert "幽霊の段落。" not in rendered.main_tex
+    assert first.id in rendered.replaced_block_ids
+    assert second.id in rendered.replaced_block_ids
+    assert orphan.id not in rendered.replaced_block_ids
+    assert rendered.main_tex.index("最初の段落。") < rendered.main_tex.index("二番目の段落。")
+
+
+def test_wrong_content_same_type_candidate_is_not_consumed() -> None:
+    """構造化ブロックの並び順が raw と一致しない(型は同じ)場合、位置だけに頼ると
+    無関係な訳文が無関係な段落に紛れ込む(誤った位置への置換)。内容照合があれば、
+    型が同じでも内容が違う候補は消費せず、内容が一致する候補まで再同期するか、
+    見つからなければ原文(英語)のまま残さなければならない
+    (誤った位置への置換は、未対応で原文が残ることより悪い)。
+    """
+    tex = r"""
+\documentclass{article}
+\begin{document}
+Apples grow on trees in autumn orchards.
+
+The committee approved the quarterly budget report.
+\end{document}
+"""
+    archive = LatexArchive({"main.tex": tex}, {})
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    section = content.sections[0]
+    paragraphs = [block for block in section.blocks if block.type == "paragraph"]
+    assert len(paragraphs) == 2
+    first, second = paragraphs
+    # 構造化データ側だけブロックの並びが入れ替わっている状況を模す。
+    i, j = section.blocks.index(first), section.blocks.index(second)
+    section.blocks[i], section.blocks[j] = section.blocks[j], section.blocks[i]
+
+    units = {
+        first.id: _unit(first.id, "リンゴの段落。"),
+        second.id: _unit(second.id, "予算の段落。"),
+    }
+
+    rendered = render_translated_latex_source(archive, content, units)
+
+    # リンゴの raw 段落には、内容が一致する first の訳文が再同期して対応する。
+    assert "リンゴの段落。" in rendered.main_tex
+    assert "Apples grow on trees in autumn orchards." not in rendered.main_tex
+    # 型だけ合致する無関係な訳文(予算)がリンゴの段落に紛れ込んではならない。
+    assert "予算の段落。" not in rendered.main_tex
+    # 逆方向へは再同期できないため、2番目の raw 段落は誤った訳文より
+    # 原文(英語)のまま残ることを優先する。
+    assert "The committee approved the quarterly budget report." in rendered.main_tex
+    assert first.id in rendered.replaced_block_ids
+    assert second.id not in rendered.replaced_block_ids
+    assert any("内容不一致" in warning for warning in rendered.warnings)
+
+
 def test_find_overfull_boxes_detects_material_latex_overflow() -> None:
     log = "\n".join(
         [
@@ -506,6 +747,72 @@ def test_find_overfull_boxes_detects_material_latex_overflow() -> None:
     assert len(findings) == 2
     assert "12.345pt" in findings[0]
     assert r"\vbox" in findings[1]
+
+
+def test_rewrite_minted_frozencache_package_switches_to_legacy_minted2() -> None:
+    # TeXLive2026 の minted v3 は arXiv 標準の frozencache キャッシュ同梱パターンを
+    # 読めずコンパイル失敗するため、legacy 互換の minted2 へ書き換える。
+    tex = r"\usepackage[frozencache,cachedir=.]{minted}"
+
+    rewritten = _rewrite_minted_frozencache_package(tex)
+
+    assert rewritten == r"\usepackage[frozencache,cachedir=.]{minted2}"
+
+
+def test_rewrite_minted_frozencache_package_leaves_plain_minted_untouched() -> None:
+    # frozencache/finalizecache を使わない通常の minted は v3 + 制限付き shell-escape の
+    # latexminted 経路が正しいので書き換えない。
+    tex = r"\usepackage{minted}"
+
+    assert _rewrite_minted_frozencache_package(tex) == tex
+
+
+def test_rewrite_minted_frozencache_package_ignores_commented_line() -> None:
+    # コメント化された \usepackage は書き換え対象外(finalizecache も frozencache と
+    # 同様に v2 専用キャッシュモードとして扱う)。
+    tex = r"% \usepackage[finalizecache,cachedir=.]{minted}"
+
+    assert _rewrite_minted_frozencache_package(tex) == tex
+
+
+def test_rewrite_minted_frozencache_package_handles_option_order_variant() -> None:
+    tex = r"\usepackage[cachedir=.,frozencache]{minted}"
+
+    rewritten = _rewrite_minted_frozencache_package(tex)
+
+    assert rewritten == r"\usepackage[cachedir=.,frozencache]{minted2}"
+
+
+def test_write_rendered_source_rewrites_minted_frozencache_in_written_tex_files() -> None:
+    # レンダリング後のプリアンブルはメイン .tex に限らず support .tex にも含まれ得るため、
+    # workdir への書き出し(_write_rendered_source)側で両方に同じ書き換えを適用する。
+    rendered = RenderedLatexSource(
+        main_tex_name="main.tex",
+        main_tex=(
+            "\\documentclass{article}\n"
+            "\\usepackage[frozencache,cachedir=.]{minted}\n"
+            "\\begin{document}\n\\end{document}\n"
+        ),
+        support_text_files={
+            "preamble.tex": "\\usepackage[frozencache,cachedir=.]{minted}\n",
+            "refs.bib": "@article{x, title={frozencache}}\n",
+        },
+        binary_files={},
+        replacements={},
+    )
+
+    with tempfile.TemporaryDirectory(prefix="alinea-latex-test-") as tmp:
+        root = Path(tmp)
+        _write_rendered_source(root, rendered)
+
+        main_text = (root / "main.tex").read_text(encoding="utf-8")
+        preamble_text = (root / "preamble.tex").read_text(encoding="utf-8")
+        bib_text = (root / "refs.bib").read_text(encoding="utf-8")
+
+    assert r"\usepackage[frozencache,cachedir=.]{minted2}" in main_text
+    assert r"\usepackage[frozencache,cachedir=.]{minted2}" in preamble_text
+    # .tex 以外(.bib など)は対象外で、内容中の "frozencache" という文字列も変更しない。
+    assert bib_text == "@article{x, title={frozencache}}\n"
 
 
 def test_translation_digest_changes_with_pdf_visible_content() -> None:

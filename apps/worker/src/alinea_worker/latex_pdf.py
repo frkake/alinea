@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -65,7 +66,7 @@ from alinea_worker.structured_pdf import (
     render_structured_japanese_source,
 )
 
-PDF_BUILD_VERSION = "japanese-pdf-3.0.14"
+PDF_BUILD_VERSION = "japanese-pdf-3.0.16"
 DEFAULT_TEXLIVE_IMAGE = "alinea-texlive-ja:latest"
 _REPO_DOCKER_WRAPPER = Path(__file__).resolve().parents[4] / "scripts" / "dev-docker.sh"
 
@@ -74,6 +75,12 @@ _CAPTION_CMD_RE = re.compile(r"\\caption\*?(?:\s*\[[^\]]*\])?\s*\{")
 _INCLUDEGRAPHICS_CMD_RE = re.compile(r"\\includegraphics\*?(?:\s*\[[^\]]*\])?\s*\{")
 _ITEM_RE = re.compile(r"\\item\b\s*(?:\[[^\]]*\])?")
 _OVERFULL_RE = re.compile(r"Overfull \\[hv]box \((?P<pt>[0-9.]+)pt too")
+# TeXLive2026 (minted v3) が frozencache/finalizecache キャッシュを読めない問題の
+# 回避に使う。 \usepackage[<options>]{minted} 全体にマッチさせ、options 側は
+# frozencache/finalizecache の有無をカンマ分割で判定する(順序・空白は問わない)。
+_MINTED_USEPACKAGE_RE = re.compile(
+    r"\\usepackage\s*\[(?P<options>[^\]]*)\]\s*\{\s*minted\s*\}"
+)
 _JAPANESE_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 # 元の `\[A-Za-z@]{2,}` は単純すぎて、コードリスティングやファイルパス、URL 中の
 # エスケープされたコマンド(例: `\Users\name`, `\_foo`, `\%`)にも誤検知する。
@@ -194,6 +201,82 @@ _LAYOUT_ARTIFACT_BLOCK_RE = re.compile(
     r"^\s*-\d+(?:\.\d+)?(?:mm|cm|pt|pc|in|ex|em)?"
     r"(?:\s+\d+(?:\.\d+)?(?:mm|cm|pt|pc|in|ex|em)?)*\s*$"
 )
+# verbatim 系環境は内部に空行があっても1つの不透明な断片として扱う。
+# `_replace_paragraphs` の空行分割より前に丸ごと切り出し、段落境界や
+# カーソル消費の対象から外す(本文中に直接書かれていても figure/table に
+# 包まれていても同様に保護する)。
+_VERBATIM_ENV_RE = re.compile(
+    r"\\begin\{(verbatim\*?|Verbatim\*?|lstlisting|minted)\}.*?\\end\{\1\}",
+    re.DOTALL,
+)
+
+# _TranslationCursor.take() の内容検証で使う正規化・類似度判定。
+# 構造化ブロックの平文(block_to_plain 等)と、レンダラーが実際に走査している
+# 生 TeX 断片を同じ土台で比較できるよう、コマンド名・波括弧・数式記号・空白を
+# 落として英数字主体の文字列へ簡約する。厳密な逆変換ではなく「まったく違う内容
+# かどうか」を安価に見分けるための正規化であることに注意(逆に完全一致を要求
+# すると、引用の任意引数や脚注の展開差のような正常な揺れで誤検知してしまう)。
+_MATCH_COMMAND_RE = re.compile(r"\\[A-Za-z]+\*?")
+_MATCH_NON_WORD_RE = re.compile(r"[^\w]+")
+_MATCH_PREFIX_CHARS = 400
+# 実測(AutoDev 論文の再現)では正しい対応は 0.9 超、無関係な断片(色定義や
+# マクロ定義の断片など)は 0.1 未満に分かれるため、余裕を持たせても十分安全。
+_MATCH_MIN_SCORE = 0.6
+# 同じ型の候補を何個先まで内容照合するか。これを超えても一致しなければ、
+# その raw セグメントは「対応するブロックが無い(幻の段落)」とみなし、
+# カーソルを進めずに原文のまま残す。
+_RESYNC_WINDOW = 8
+
+
+def _normalize_for_match(text: str) -> str:
+    normalized = _COMMENT_MARKER_RE.sub(" ", text)
+    normalized = _MATCH_COMMAND_RE.sub(" ", normalized)
+    normalized = _MATCH_NON_WORD_RE.sub(" ", normalized)
+    return " ".join(normalized.lower().split())[:_MATCH_PREFIX_CHARS]
+
+
+def _match_source_text(block: Block) -> str:
+    """位置対応の内容検証に使う平文。
+
+    見出しは block_to_plain だと自動採番(``block.number``)が先頭に付くが、
+    生 TeX の ``\\section{...}`` 引数には採番が含まれないため、比較は
+    ``block.title`` 単体で行う。figure/table は block_to_plain がそもそも
+    キャプションだけを返すため、呼び出し側でキャプション引数だけを渡せば
+    そのまま比較できる。
+    """
+
+    if block.type == "heading":
+        return block.title or ""
+    return block_to_plain(block)
+
+
+def _content_match_score(raw_norm: str, block_norm: str) -> float:
+    """比較材料が無い側は判定不能として通す(退行防止)。両方ある場合のみ判定する。
+
+    ただし非対称に扱う: ブロック側に平文が無い(キャプション無し figure/table や
+    空見出しなど)場合は検証不能として通すが、raw 側がコマンド名だけで実体が無い
+    (``\\abstract{`` や ``\\justifying`` だけの断片。正規化すると空文字列になる)のに
+    ブロック側には実在する本文がある場合、それを自動一致とみなしてはならない。
+    そうしないと、この「何も無い」raw 断片が実在段落を誤って消費してしまう
+    (LingBot 論文 arXiv:2607.07534 の \\abstract{ / \\justifying で検出)。
+    """
+
+    if not block_norm:
+        return 1.0
+    if not raw_norm:
+        return 0.0
+    if raw_norm in block_norm or block_norm in raw_norm:
+        return 1.0
+    matcher = SequenceMatcher(None, raw_norm, block_norm, autojunk=False)
+    longest = matcher.find_longest_match(0, len(raw_norm), 0, len(block_norm))
+    coverage = longest.size / min(len(raw_norm), len(block_norm))
+    return max(matcher.ratio(), coverage)
+
+
+def _content_matches(raw_text: str, block: Block) -> bool:
+    raw_norm = _normalize_for_match(raw_text)
+    block_norm = _normalize_for_match(_match_source_text(block))
+    return _content_match_score(raw_norm, block_norm) >= _MATCH_MIN_SCORE
 
 
 class LatexPdfBuildError(RuntimeError):
@@ -252,19 +335,79 @@ class _TranslationCursor:
             if block.type == "footnote" and block.label
         }
 
-    def take(self, *types: str) -> tuple[Block | None, TranslationUnit | None]:
+    def take(
+        self, *types: str, match_text: str | None = None
+    ) -> tuple[Block | None, TranslationUnit | None]:
+        """次に消費すべきブロックを取り出す。
+
+        ``match_text`` を渡すと、単純な「型が合う次のブロック」ではなく、
+        その raw セグメントの内容とブロックの平文が一致するかどうかも検証する
+        (内容非対応の消費フィックス)。呼び出し元がまだ raw セグメントの
+        テキストを特定できない箇所(複数画像 figure の余剰ブロックを型だけで
+        飛ばす等)では ``match_text=None`` のまま従来通りの位置ベース動作を使う。
+        """
+
         self._consume_layout_artifacts()
         wanted = set(types)
+        if match_text is None:
+            return self._take_positional(wanted, types)
+        return self._take_verified(wanted, types, match_text)
+
+    def _resolve(self, block: Block) -> tuple[Block | None, TranslationUnit | None]:
+        unit = self.units.get(block.id)
+        if unit is not None and _unit_is_displayable_for_block(unit, block):
+            return block, unit
+        return block, None
+
+    def _take_positional(
+        self, wanted: set[str], types: tuple[str, ...]
+    ) -> tuple[Block | None, TranslationUnit | None]:
         for idx in range(self.pos, len(self.blocks)):
             block = self.blocks[idx]
             if block.type not in wanted:
                 continue
             self.pos = idx + 1
-            unit = self.units.get(block.id)
-            if unit is not None and _unit_is_displayable_for_block(unit, block):
-                return block, unit
-            return block, None
+            return self._resolve(block)
         self.warnings.append(f"対応するブロックが見つかりません: {','.join(types)}")
+        return None, None
+
+    def _take_verified(
+        self, wanted: set[str], types: tuple[str, ...], match_text: str
+    ) -> tuple[Block | None, TranslationUnit | None]:
+        """内容照合つきで次のブロックを取り出す(位置ズレの再同期)。
+
+        同じ型の候補を ``_RESYNC_WINDOW`` 個先まで内容照合し、一致するものが
+        見つかればそこへ再同期する(途中で内容不一致だったブロックは消費せず
+        孤立した欠落として残す)。見つからなければこの raw セグメントを
+        「対応するブロックが無い幻の断片」とみなし、カーソルを進めずに
+        呼び出し元へ None を返す(原文をそのまま残させる)。どちらの場合も
+        誤った位置への置換より、置換されずに原文が残ることを優先する。
+        """
+
+        idx = self.pos
+        checked = 0
+        skipped_ids: list[str] = []
+        while idx < len(self.blocks) and checked < _RESYNC_WINDOW:
+            block = self.blocks[idx]
+            if block.type not in wanted:
+                idx += 1
+                continue
+            checked += 1
+            if _content_matches(match_text, block):
+                if skipped_ids:
+                    self.warnings.append(
+                        "内容不一致のブロックを飛び越えて再同期しました: "
+                        f"skipped={','.join(skipped_ids)} matched={block.id} "
+                        f"raw={match_text[:60]!r}"
+                    )
+                self.pos = idx + 1
+                return self._resolve(block)
+            skipped_ids.append(block.id)
+            idx += 1
+        self.warnings.append(
+            "raw セグメントに対応するブロックが見つからないため原文のまま残しました"
+            f"(内容不一致): types={','.join(types)} raw={match_text[:60]!r}"
+        )
         return None, None
 
     def _consume_layout_artifacts(self) -> None:
@@ -784,16 +927,33 @@ def _replace_abstract_command(tex: str, abstract_ja: str | None) -> str:
     return tex[: match.start()] + replacement + tex[end:]
 
 
+def _extract_caption_text(inner: str) -> tuple[re.Match[str] | None, str | None]:
+    """環境内の ``\\caption{...}`` 引数を取り出す。内容照合の match_text にも使う。"""
+
+    match = _CAPTION_CMD_RE.search(inner)
+    if match is None:
+        return None, None
+    try:
+        caption_text, _end = _read_braced(inner, match.end() - 1)
+    except LatexParseError:
+        return match, None
+    return match, caption_text
+
+
 def _replace_caption(inner: str, cursor: _TranslationCursor, block_type: str) -> str:
-    block, unit = cursor.take(block_type)
+    m, caption_text = _extract_caption_text(inner)
+    # block_to_plain(figure/table) はキャプションの平文しか返さないため、内容照合も
+    # 環境本体全体ではなくキャプション引数だけで行う(無いときは本体全体で妥協する)。
+    match_text = caption_text if caption_text is not None else inner
+    block, unit = cursor.take(block_type, match_text=match_text)
     # \includegraphics が複数枚ある figure/wrapfigure 環境は、パーサー側(_figure_env)が
     # 画像ごとに figure ブロックを1つずつ生成し、キャプションは先頭の画像のブロックにのみ
     # 付与する。ここで消費するブロック数を画像枚数に合わせないと、以降の figure ブロックの
-    # 位置対応が1つずれ、無関係なキャプションが入れ替わって描画されてしまう。
+    # 位置対応が1つずれ、無関係なキャプションが入れ替わって描画されてしまう。この余剰分は
+    # 内容ではなく枚数で決まるため、内容照合はせず従来通り型だけで飛ばす。
     extra_images = max(0, len(_INCLUDEGRAPHICS_CMD_RE.findall(inner)) - 1)
     for _ in range(extra_images):
         cursor.take(block_type)
-    m = _CAPTION_CMD_RE.search(inner)
     replacement = _unit_to_latex(unit, cursor, source_latex=inner)
     if m is None or replacement is None:
         return inner
@@ -808,19 +968,21 @@ def _table_mapping_warning(cursor: _TranslationCursor, block: Block | None, reas
 
 
 def _replace_table(inner: str, cursor: _TranslationCursor) -> str:
-    block, unit = cursor.take("table")
+    caption_match, caption_text = _extract_caption_text(inner)
+    block, unit = cursor.take(
+        "table", match_text=caption_text if caption_text is not None else inner
+    )
     if block is None or unit is None:
         return inner
 
     # Legacy table units remain caption-only.
     if not isinstance(unit.content_ja, dict):
-        match = _CAPTION_CMD_RE.search(inner)
         replacement = _unit_to_latex(unit, cursor, source_latex=inner)
-        if match is None or replacement is None:
+        if caption_match is None or replacement is None:
             return inner
-        rendered_caption, end = _replace_braced_command_arg(inner, match, replacement)
+        rendered_caption, end = _replace_braced_command_arg(inner, caption_match, replacement)
         cursor.mark(block)
-        return inner[: match.start()] + rendered_caption + inner[end:]
+        return inner[: caption_match.start()] + rendered_caption + inner[end:]
 
     raw = block.raw or ""
     grid = parse_table_grid(raw)
@@ -917,7 +1079,7 @@ def _top_level_item_matches(inner: str) -> list[re.Match[str]]:
 
 
 def _replace_list_items(inner: str, cursor: _TranslationCursor) -> str:
-    block, unit = cursor.take("list")
+    block, unit = cursor.take("list", match_text=inner)
     if unit is None or not _unit_is_displayable(unit):
         return inner
     matches = _top_level_item_matches(inner)
@@ -959,7 +1121,7 @@ def _replace_list_items(inner: str, cursor: _TranslationCursor) -> str:
 
 
 def _replace_whole_env(inner: str, cursor: _TranslationCursor, block_type: str) -> str:
-    block, unit = cursor.take(block_type)
+    block, unit = cursor.take(block_type, match_text=inner)
     replacement = _unit_to_latex(unit, cursor, source_latex=inner)
     if replacement is None:
         return inner
@@ -996,7 +1158,7 @@ def _replace_tcolorbox_title(prefix: str, cursor: _TranslationCursor) -> str:
         source_title = prefix[value_start:value_end].strip()
         wrapped = False
 
-    block, unit = cursor.take("paragraph")
+    block, unit = cursor.take("paragraph", match_text=source_title)
     replacement = _unit_to_latex(unit, cursor, source_latex=source_title)
     if replacement is None:
         return prefix
@@ -1030,7 +1192,57 @@ def _trailing_layout(chunk: str) -> str:
     return match.group("suffix") if match else ""
 
 
+def _split_verbatim_segments(text: str) -> list[tuple[bool, str]]:
+    """verbatim 系環境を丸ごと不透明な断片として切り出す。
+
+    内部に空行があっても後続の段落分割(_PARAGRAPH_SEPARATOR_RE)の対象にしない。
+    figure/table に包まれた minted は _replace_caption 側でキャプション以外を
+    素通しするため元々安全だが、地の文に直接書かれた verbatim/lstlisting/minted は
+    段落分割にさらされると空行区切りで「幻の段落」を生み、位置対応の消費先を
+    ズレさせてしまう(単純な begin/end のペアなので入れ子は想定しない)。
+    """
+
+    segments: list[tuple[bool, str]] = []
+    pos = 0
+    for match in _VERBATIM_ENV_RE.finditer(text):
+        if match.start() > pos:
+            segments.append((False, text[pos : match.start()]))
+        segments.append((True, match.group(0)))
+        pos = match.end()
+    if pos < len(text):
+        segments.append((False, text[pos:]))
+    return segments
+
+
 def _replace_paragraphs(
+    text: str,
+    cursor: _TranslationCursor,
+    *,
+    strip_leading_options: bool = False,
+) -> str:
+    segments = _split_verbatim_segments(text)
+    if not any(is_verbatim for is_verbatim, _segment in segments):
+        return _replace_paragraphs_segment(
+            text, cursor, strip_leading_options=strip_leading_options
+        )
+    out: list[str] = []
+    first = True
+    for is_verbatim, segment in segments:
+        if is_verbatim:
+            out.append(segment)
+            continue
+        out.append(
+            _replace_paragraphs_segment(
+                segment,
+                cursor,
+                strip_leading_options=strip_leading_options if first else False,
+            )
+        )
+        first = False
+    return "".join(out)
+
+
+def _replace_paragraphs_segment(
     text: str,
     cursor: _TranslationCursor,
     *,
@@ -1052,7 +1264,7 @@ def _replace_paragraphs(
         if _layout_only_chunk(chunk):
             out.append(chunk)
             continue
-        block, unit = cursor.take("paragraph")
+        block, unit = cursor.take("paragraph", match_text=chunk)
         replacement = _unit_to_latex(
             unit,
             cursor,
@@ -1154,8 +1366,8 @@ def _transform_latex_text(text: str, cursor: _TranslationCursor, abstract_ja: st
         match = min(matches, key=lambda m: m.start())
         out.append(_replace_paragraphs(text[i : match.start()], cursor))
         if match is m_sec:
-            block, unit = cursor.take("heading")
             source_title, source_end = _read_braced(text, match.end() - 1)
+            block, unit = cursor.take("heading", match_text=source_title)
             replacement = _unit_to_latex(unit, cursor, source_latex=source_title)
             repl, end = _replace_braced_command_arg(text, match, replacement)
             if replacement is not None:
@@ -1172,6 +1384,23 @@ def _transform_latex_text(text: str, cursor: _TranslationCursor, abstract_ja: st
         out.append(text[inner_end:end])
         i = end
     return "".join(out)
+
+
+def _find_comment_start(line: str) -> int | None:
+    """行中で最初にコメントとして機能する "%" の位置を返す(直前の連続する
+    "\\" が偶数個ならエスケープされていない実コメント開始とみなす)。無ければ None。"""
+
+    for index, char in enumerate(line):
+        if char != "%":
+            continue
+        slash_count = 0
+        before = index - 1
+        while before >= 0 and line[before] == "\\":
+            slash_count += 1
+            before -= 1
+        if slash_count % 2 == 0:
+            return index
+    return None
 
 
 def _protect_latex_comments(files: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
@@ -1193,18 +1422,7 @@ def _protect_latex_comments(files: dict[str, str]) -> tuple[dict[str, str], dict
                 lines.append(line)
                 in_verbatim = verbatim_end.search(line) is None
                 continue
-            comment_at: int | None = None
-            for index, char in enumerate(line):
-                if char != "%":
-                    continue
-                slash_count = 0
-                before = index - 1
-                while before >= 0 and line[before] == "\\":
-                    slash_count += 1
-                    before -= 1
-                if slash_count % 2 == 0:
-                    comment_at = index
-                    break
+            comment_at = _find_comment_start(line)
             if comment_at is None:
                 lines.append(line)
                 continue
@@ -1222,6 +1440,35 @@ def _restore_latex_comments(text: str, comments: dict[str, str]) -> str:
     for marker, original in comments.items():
         text = text.replace(marker, original)
     return text
+
+
+def _rewrite_minted_frozencache_package(tex: str) -> str:
+    """TeXLive2026 は minted v3.8.0 を同梱し、v2 専用の frozencache/finalizecache
+    キャッシュ運用(\\pygtex / default.pygstyle を同梱する arXiv 標準構成)を解釈できず
+    "Missing definition for highlighting style" で確定的にコンパイル失敗する。
+    TeXLive2026 に同梱される legacy 互換パッケージ minted2(v2 と同じ環境名を提供)へ
+    書き換えることで、同梱キャッシュを使う論文を確定的にコンパイルできるようにする。
+    frozencache/finalizecache を使わない通常の \\usepackage{minted} は、v3 + 制限付き
+    shell-escape の latexminted 経路が正しいため書き換えない。コメント行(% で始まる、
+    または行中の実コメント以降)は対象外とし、_find_comment_start と同じ判定基準を使う。"""
+
+    def rewrite_line(line: str) -> str:
+        comment_at = _find_comment_start(line)
+        pieces: list[str] = []
+        pos = 0
+        for match in _MINTED_USEPACKAGE_RE.finditer(line):
+            if comment_at is not None and match.start() >= comment_at:
+                break
+            options = [opt.strip() for opt in match.group("options").split(",")]
+            if "frozencache" not in options and "finalizecache" not in options:
+                continue
+            pieces.append(line[pos : match.start()])
+            pieces.append(re.sub(r"\{\s*minted\s*\}", "{minted2}", match.group(0)))
+            pos = match.end()
+        pieces.append(line[pos:])
+        return "".join(pieces)
+
+    return "".join(rewrite_line(line) for line in tex.splitlines(keepends=True))
 
 
 def _expand_project_includes(
@@ -1333,12 +1580,18 @@ def _write_rendered_source(
     if main is None:
         raise LatexPdfBuildError("invalid_latex", "unsafe main TeX path")
     main.parent.mkdir(parents=True, exist_ok=True)
-    main.write_text(rendered.main_tex, encoding="utf-8")
+    # TeXLive2026=minted v3 は v2 frozencache キャッシュを読まないため、arXiv 標準の
+    # 同梱キャッシュ論文は legacy の minted2 で確定的にコンパイルする。プリアンブルは
+    # メイン .tex に限らず \input/\include で分割された support .tex にも書かれ得るため、
+    # コンパイル workdir へ書き出す .tex 全てに同じ書き換えを適用する。
+    main.write_text(_rewrite_minted_frozencache_package(rendered.main_tex), encoding="utf-8")
     for name, text in rendered.support_text_files.items():
         path = _safe_write_path(root, name)
         if path is None:
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
+        if name.lower().endswith(".tex"):
+            text = _rewrite_minted_frozencache_package(text)
         path.write_text(text, encoding="utf-8")
     for name, data in rendered.binary_files.items():
         path = _safe_write_path(root, name)
