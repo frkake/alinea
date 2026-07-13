@@ -54,6 +54,24 @@ describe("normalizeDisplayMath", () => {
     expect(normalizeDisplayMath(markdown)).toBe(markdown);
   });
 
+  test("does not rewrite dollar pairs inside a blockquoted tilde fence", () => {
+    const markdown = ["> ~~~text", "> $$notMath$$", "> ~~~"].join("\n");
+
+    expect(normalizeDisplayMath(markdown)).toBe(markdown);
+  });
+
+  test("does not rewrite dollar pairs inside a list-indented tilde fence", () => {
+    const markdown = ["- item", "    ~~~text", "    $$notMath$$", "    ~~~"].join("\n");
+
+    expect(normalizeDisplayMath(markdown)).toBe(markdown);
+  });
+
+  test("recognizes a longer backtick closing fence inside a blockquote", () => {
+    const markdown = ["> ```text", "> $$notMath$$", "> ````"].join("\n");
+
+    expect(normalizeDisplayMath(markdown)).toBe(markdown);
+  });
+
   test("leaves an unfinished streaming expression visible", () => {
     expect(normalizeDisplayMath("途中 $$x^2")).toBe("途中 $$x^2");
   });

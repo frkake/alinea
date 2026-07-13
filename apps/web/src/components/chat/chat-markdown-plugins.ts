@@ -25,13 +25,34 @@ function isLineStart(value: string, index: number): boolean {
   return index === 0 || value[index - 1] === "\n";
 }
 
+function containerPrefixLength(line: string): number {
+  let cursor = 0;
+  while (cursor < line.length) {
+    const blockquote = /^( {0,3}>[ \t]?)/.exec(line.slice(cursor));
+    if (blockquote !== null) {
+      cursor += blockquote[0].length;
+      continue;
+    }
+
+    const listIndent = /^( {4,})/.exec(line.slice(cursor));
+    if (listIndent !== null) {
+      cursor += listIndent[0].length;
+      continue;
+    }
+
+    break;
+  }
+  return cursor;
+}
+
 function codeFenceEnd(value: string, start: number): number | undefined {
   if (!isLineStart(value, start)) return undefined;
 
   const openingEnd = lineEnd(value, start);
   const rawOpeningLine = value.slice(start, openingEnd);
   const openingLine = rawOpeningLine.endsWith("\r") ? rawOpeningLine.slice(0, -1) : rawOpeningLine;
-  const opening = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(openingLine);
+  const prefix = openingLine.slice(0, containerPrefixLength(openingLine));
+  const opening = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(openingLine.slice(prefix.length));
   if (opening === null) return undefined;
 
   const fence = opening[2];
@@ -46,7 +67,8 @@ function codeFenceEnd(value: string, start: number): number | undefined {
     const candidateEnd = lineEnd(value, cursor);
     const rawCandidate = value.slice(cursor, candidateEnd);
     const candidate = rawCandidate.endsWith("\r") ? rawCandidate.slice(0, -1) : rawCandidate;
-    if (closing.test(candidate)) return candidateEnd === value.length ? candidateEnd : candidateEnd + 1;
+    if (candidate.startsWith(prefix) && closing.test(candidate.slice(prefix.length)))
+      return candidateEnd === value.length ? candidateEnd : candidateEnd + 1;
     cursor = candidateEnd === value.length ? value.length : candidateEnd + 1;
   }
 
