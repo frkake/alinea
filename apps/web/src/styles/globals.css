@@ -25,7 +25,7 @@
 /* Chat Markdown: keep rich content readable without allowing wide code, tables, or math to grow the panel. */
 .alinea-chat-markdown {
   min-width: 0;
-  color: var(--pr-text-body);
+  color: inherit;
   font-family: var(--pr-font-ui);
   line-height: 1.7;
   overflow-wrap: anywhere;

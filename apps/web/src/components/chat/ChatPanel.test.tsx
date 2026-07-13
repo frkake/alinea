@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -13,6 +14,8 @@ import { ChatPanel } from "@/components/chat/ChatPanel";
 import { ChatComposer, CHAT_DISCLAIMER } from "@/components/chat/ChatComposer";
 import { QuickActionChips } from "@/components/chat/QuickActionChips";
 import { useViewerStore } from "@/stores/viewer-store";
+
+const chatMarkdownStyles = readFileSync("src/styles/globals.css", "utf8");
 
 vi.mock("@alinea/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@alinea/api-client")>();
@@ -118,6 +121,21 @@ describe("ChatMessage assistant (VT-VIEW-09)", () => {
     expect(screen.getByText("論文外の知識")).toBeInTheDocument();
     expect(screen.getByText("一般則")).toHaveProperty("tagName", "STRONG");
     expect(container.querySelector(".katex")).not.toBeNull();
+  });
+
+  test("inherits the muted aside color for Markdown content", () => {
+    const { container } = render(
+      <ChatMessage
+        message={assistantMessage({
+          blocks: [{ type: "aside", label: "outside_knowledge", text: "補足です。" }],
+        })}
+      />,
+    );
+
+    expect(
+      container.querySelector('[style*="--pr-text-sub"] .alinea-chat-markdown'),
+    ).not.toBeNull();
+    expect(chatMarkdownStyles).toMatch(/\.alinea-chat-markdown\s*\{[^}]*color:\s*inherit;/);
   });
 });
 
