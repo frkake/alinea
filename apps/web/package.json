@@ -18,22 +18,31 @@
     "e2e:report": "playwright show-report"
   },
   "dependencies": {
-    "@tanstack/react-query": "5.81.5",
+    "@alinea/api-client": "workspace:*",
     "@alinea/tokens": "workspace:*",
+    "@tanstack/react-query": "5.81.5",
     "clsx": "2.1.1",
+    "katex": "0.16.22",
     "next": "15.4.2",
+    "pdfjs-dist": "4.10.38",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "zustand": "5.0.6",
-    "@alinea/api-client": "workspace:*",
-    "katex": "0.16.22",
-    "pdfjs-dist": "4.10.38"
+    "react-markdown": "10.1.0",
+    "rehype-katex": "7.0.1",
+    "remark-gfm": "4.0.1",
+    "remark-math": "6.0.0",
+    "unified": "11.0.5",
+    "unist-util-visit": "5.0.0",
+    "zustand": "5.0.6"
   },
   "devDependencies": {
+    "@playwright/test": "1.53.2",
     "@tailwindcss/postcss": "4.1.11",
     "@testing-library/jest-dom": "6.6.3",
     "@testing-library/react": "16.3.0",
     "@testing-library/user-event": "14.6.1",
+    "@types/katex": "0.16.7",
+    "@types/mdast": "4.0.4",
     "@types/node": "24.0.10",
     "@types/react": "19.1.8",
     "@types/react-dom": "19.1.6",
@@ -41,8 +50,6 @@
     "jsdom": "26.1.0",
     "tailwindcss": "4.1.11",
     "typescript": "5.8.3",
-    "vitest": "3.2.4",
-    "@types/katex": "0.16.7",
-    "@playwright/test": "1.53.2"
+    "vitest": "3.2.4"
   }
 }
