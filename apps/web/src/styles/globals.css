@@ -22,6 +22,143 @@
   padding: 1px 4px;
 }
 
+/* Chat Markdown: keep rich content readable without allowing wide code, tables, or math to grow the panel. */
+.alinea-chat-markdown {
+  min-width: 0;
+  color: var(--pr-text-body);
+  font-family: var(--pr-font-ui);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.alinea-chat-markdown > :first-child {
+  margin-top: 0;
+}
+.alinea-chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+.alinea-chat-markdown :is(p, ul, ol, blockquote, hr, pre) {
+  margin: 0.7rem 0;
+}
+.alinea-chat-markdown :is(h1, h2, h3, h4, h5, h6) {
+  margin: 1.15rem 0 0.5rem;
+  color: var(--pr-text);
+  font-weight: 650;
+  line-height: 1.35;
+}
+.alinea-chat-markdown h1 {
+  font-size: 1.3em;
+}
+.alinea-chat-markdown h2 {
+  font-size: 1.18em;
+}
+.alinea-chat-markdown h3 {
+  font-size: 1.08em;
+}
+.alinea-chat-markdown :is(ul, ol) {
+  padding-left: 1.5rem;
+}
+.alinea-chat-markdown li + li {
+  margin-top: 0.2rem;
+}
+.alinea-chat-markdown blockquote {
+  padding-left: 0.85rem;
+  color: var(--pr-text-sub);
+  border-left: 2px solid var(--pr-border-quote);
+}
+.alinea-chat-markdown hr {
+  border: 0;
+  border-top: 1px solid var(--pr-border-soft);
+}
+.alinea-chat-markdown a {
+  color: var(--pr-acc);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.alinea-chat-markdown :not(pre) > code {
+  padding: 0.08em 0.32em;
+  color: var(--pr-text-body);
+  font-family: var(--pr-font-mono);
+  font-size: 0.9em;
+  background: var(--pr-bg-inset);
+  border: 1px solid var(--pr-border-card);
+  border-radius: 3px;
+}
+.alinea-chat-code-block {
+  max-width: 100%;
+  min-width: 0;
+  padding: 0.75rem;
+  overflow-x: auto;
+  color: var(--pr-text-body);
+  font-family: var(--pr-font-mono);
+  font-size: 0.9em;
+  line-height: 1.55;
+  white-space: pre;
+  background: var(--pr-bg-inset);
+  border: 1px solid var(--pr-border-card);
+  border-radius: 5px;
+}
+.alinea-chat-table-scroll {
+  max-width: 100%;
+  min-width: 0;
+  margin: 0.7rem 0;
+  overflow-x: auto;
+  border: 1px solid var(--pr-border-card);
+  border-radius: 5px;
+}
+.alinea-chat-table-scroll table {
+  width: 100%;
+  min-width: max-content;
+  border-collapse: collapse;
+}
+.alinea-chat-table-scroll :is(th, td) {
+  padding: 0.45rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+  border: 1px solid var(--pr-border-row);
+}
+.alinea-chat-table-scroll th {
+  color: var(--pr-text);
+  background: var(--pr-bg-inset);
+  font-weight: 650;
+}
+.alinea-chat-math-block {
+  max-width: 100%;
+  min-width: 0;
+  margin: 0.7rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.alinea-chat-math-block .katex-display {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  padding: 0.25rem 0;
+}
+.alinea-chat-markdown .katex-error {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0.12rem 0.3rem;
+  overflow-x: auto;
+  vertical-align: middle;
+  color: var(--pr-text-body) !important;
+  font-family: var(--pr-font-mono);
+  font-size: 0.9em;
+  white-space: pre;
+  background: var(--pr-bg-inset);
+  border: 1px solid var(--pr-border-card);
+  border-radius: 3px;
+}
+.alinea-chat-image-alt {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0.2rem 0.45rem;
+  color: var(--pr-text-sub);
+  background: var(--pr-bg-inset);
+  border: 1px solid var(--pr-border-card);
+  border-radius: 3px;
+}
+
 /* デスクトップ基準: min-width 1200px(plans/08 §7.2 MIN_APP_WIDTH)。
    768px 未満はモバイル縮退レイアウト(plans/09-screens/mobile.md §2 決定)のため
    min-width を 0 とし、100vw に収まるようにする。768〜1199px はデスクトップ縮小

@@ -3,6 +3,7 @@ import katex from "katex";
 const BASE_MACROS: Record<string, string> = {
   "\\bm": "\\boldsymbol{#1}",
   "\\mathbbm": "\\mathbb{#1}",
+  "\\student": "\\operatorname{student}",
 };
 
 const UNDEFINED_COMMAND_RE = /Undefined control sequence: (\\[A-Za-z]+|\\.)/;
@@ -70,6 +71,11 @@ function renderFallback(display: boolean): string {
   return `<${tag} class="alinea-math-fallback" role="img" aria-label="${label}">［数式］</${tag}>`;
 }
 
+/** Returns an isolated KaTeX macro map so renderers cannot share mutations. */
+export function createKatexMacros(): Record<string, string> {
+  return { ...BASE_MACROS };
+}
+
 /**
  * KaTeX による数式レンダリング(訳文モードのブロック/インライン数式)。
  *
@@ -81,7 +87,7 @@ function renderFallback(display: boolean): string {
 export function renderMath(latex: string, options?: { display?: boolean }): string {
   const display = options?.display ?? false;
   let prepared = prepareLatex(latex, display);
-  const macros = { ...BASE_MACROS };
+  const macros = createKatexMacros();
   for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
       return katex.renderToString(prepared, {

@@ -1,7 +1,16 @@
 import { describe, expect, test } from "vitest";
-import { renderBlockMath, renderInlineMath } from "@/lib/katex-render";
+import { createKatexMacros, renderBlockMath, renderInlineMath } from "@/lib/katex-render";
 
 describe("katex-render recovery", () => {
+  test("creates isolated macro maps with the shared student macro", () => {
+    const first = createKatexMacros();
+    const second = createKatexMacros();
+    first["\\student"] = "mutated";
+
+    expect(first).not.toBe(second);
+    expect(second["\\student"]).toBe("\\operatorname{student}");
+  });
+
   test("wraps align rows before rendering block math", () => {
     const html = renderBlockMath("\\nabla f(x) &= x + 1");
 

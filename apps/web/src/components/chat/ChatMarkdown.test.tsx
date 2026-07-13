@@ -156,4 +156,44 @@ describe("ChatMarkdown", () => {
     expect(container.querySelector("img")).toBeNull();
     expect(container.querySelector(".alinea-chat-image-alt")).toHaveTextContent("画像:");
   });
+
+  test("renders inline and complete display math without using code blocks", () => {
+    const { container } = render(
+      <ChatMarkdown
+        text={["Inline $v_t$.", "", "Same line $$x^2$$.", "", "$$", "\\frac{a}{b}", "$$"].join(
+          "\n",
+        )}
+        evidence={[]}
+      />,
+    );
+
+    expect(container.querySelectorAll(".katex")).toHaveLength(3);
+    expect(container.querySelectorAll(".alinea-chat-math-block .katex-display")).toHaveLength(2);
+    expect(container.querySelector("pre.alinea-chat-code-block .katex-display")).toBeNull();
+  });
+
+  test("uses the shared student macro in chat math", () => {
+    const { container } = render(<ChatMarkdown text="$\\student(x)$" evidence={[]} />);
+
+    expect(container.querySelector(".katex")).toHaveTextContent("student");
+  });
+
+  test("shows malformed math as readable KaTeX error content", () => {
+    const { container } = render(<ChatMarkdown text="$\\notacommand{$" evidence={[]} />);
+
+    expect(container.querySelector(".katex-error")).toHaveTextContent("\\notacommand{");
+  });
+
+  test("keeps unfinished math literal until its display delimiter arrives", () => {
+    const { container, rerender } = render(
+      <ChatMarkdown text="途中 $$\\frac{a}{b}" evidence={[]} />,
+    );
+
+    expect(container.querySelector(".katex")).toBeNull();
+    expect(container).toHaveTextContent("途中 $$\\frac{a}{b}");
+
+    rerender(<ChatMarkdown text="途中 $$\\frac{a}{b}$$" evidence={[]} />);
+
+    expect(container.querySelector(".alinea-chat-math-block .katex-display")).not.toBeNull();
+  });
 });
