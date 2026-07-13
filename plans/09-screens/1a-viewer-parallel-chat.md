@@ -365,7 +365,7 @@ h=52px、flex:none、background:#FFFFFF(→ `--pr-bg-card`)、border-bottom:1px 
    - 本文: 「この式が最小化しているものを、直感的に説明して。」font-size:12.6px、line-height:1.7、color:#24272B(→ `--pr-text-body`)。
 3. アシスタント回答(AssistantMessage。カードなし、flex-column、gap:7px、padding:0 2px):
    - ヘッダ行: 「✦ アシスタント」color:var(--pr-a)、font-size:11px、font-weight:700(`✦`= `AiMark` 共通)。バッジ「AI生成」= `AIBadge`(variant='generated'): inline-flex、height:15px、padding:0 5px、border:1px solid #DDD9CF(→ `--pr-border-control`)、border-radius:3px、font-size:9px、color:#8A8E94(→ `--pr-text-icon`)、font-weight:600。
-   - 段落(MessageMarkdown。font-size:12.6px、line-height:1.85、color:#24272B): `MessageBlock{type:'markdown'}` の text を Markdown レンダリング(太字は `<b>`、数式は KaTeX inline)し、`[[ev:n]]` トークンを `EvidenceChip`(size='inline')に置換。
+   - 段落(MessageMarkdown。font-size:12.6px、line-height:1.85、color:#24272B): `MessageBlock{type:'markdown'}` の text をリッチな GFM Markdown として安全にレンダリングし、インライン/フェンスドコード、インライン/ブロック KaTeX、`[[ev:n]]` トークンの `EvidenceChip`(size='inline')展開に対応する。表・コード・ブロック数式は横スクロールラッパーに収め、生の HTML と画像取得は無効にする。
      - 段落1逐語: 「式(5)は「**位置と時刻だけから、直線補間の進む向きを当てる**」回帰です。ペア (X₀, X₁) を結ぶ補間 X_t の速度は常に X₁−X₀ なので、これを教師に v を最小二乗で学習します 」+ 根拠チップ「式(5)」「§2.1」。
      - 段落2逐語: 「複数の直線が同じ点を通る場合、v はそれらの向きの**条件付き期待値** 𝔼[X₁−X₀ | X_t] に収束します。交差する経路が「平均の向き」に置き換わるため、得られるODEの経路は交差しません 」+ 根拠チップ「§2.1 ¶4」「図2」。
    - インライン根拠チップ共通(`EvidenceChip` size='inline'): inline-flex、height:16px、padding:0 6px、border:1px solid var(--pr-am)、color:var(--pr-a)、background:var(--pr-as)、border-radius:4px、font-size:9.5px、font-weight:600、vertical-align:2px、2 個目以降 margin-left:3px。
