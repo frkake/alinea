@@ -55,7 +55,11 @@ function previousLine(value: string, start: number): string | undefined {
   return line.endsWith("\r") ? line.slice(0, -1) : line;
 }
 
-function listContinuationIndent(value: string, start: number, blockquoteDepth: number): number | undefined {
+function listContinuationIndent(
+  value: string,
+  start: number,
+  blockquoteDepth: number,
+): number | undefined {
   const line = previousLine(value, start);
   if (line === undefined) return undefined;
 
@@ -155,7 +159,9 @@ function isOwnLineDelimiter(value: string, index: number): boolean {
   const start = value.lastIndexOf("\n", index) + 1;
   const nextLine = value.indexOf("\n", index + 2);
   const end = nextLine === -1 ? value.length : nextLine;
-  return /^[ \t\r]*$/.test(value.slice(start, index)) && /^[ \t\r]*$/.test(value.slice(index + 2, end));
+  return (
+    /^[ \t\r]*$/.test(value.slice(start, index)) && /^[ \t\r]*$/.test(value.slice(index + 2, end))
+  );
 }
 
 function displayMathClosingDelimiter(value: string, opening: number): number | undefined {
@@ -249,13 +255,15 @@ export function replaceEvidenceMarkers(tree: Root): void {
     let cursor = 0;
     for (const match of node.value.matchAll(EVIDENCE_MARKER_RE)) {
       const start = match.index ?? 0;
-      if (start > cursor) replacement.push({ type: "text", value: node.value.slice(cursor, start) });
+      if (start > cursor)
+        replacement.push({ type: "text", value: node.value.slice(cursor, start) });
       replacement.push(evidenceLink(Number(match[1])));
       cursor = start + match[0].length;
     }
 
     if (replacement.length === 0) return;
-    if (cursor < node.value.length) replacement.push({ type: "text", value: node.value.slice(cursor) });
+    if (cursor < node.value.length)
+      replacement.push({ type: "text", value: node.value.slice(cursor) });
     parent.children.splice(index, 1, ...replacement);
   });
 }

@@ -36,14 +36,7 @@ describe("normalizeDisplayMath", () => {
   });
 
   test("does not rewrite dollar pairs inside backtick and tilde fenced code", () => {
-    const markdown = [
-      "```text",
-      "$$backtick$$",
-      "```",
-      "~~~text",
-      "$$tilde$$",
-      "~~~~",
-    ].join("\n");
+    const markdown = ["```text", "$$backtick$$", "```", "~~~text", "$$tilde$$", "~~~~"].join("\n");
 
     expect(normalizeDisplayMath(markdown)).toBe(markdown);
   });
@@ -89,7 +82,9 @@ describe("normalizeDisplayMath", () => {
   });
 
   test("recognizes a list fence when its closer uses a smaller valid continuation indent", () => {
-    const markdown = ["- item", "    ~~~text", "    $$notMath$$", "  ~~~", "", "$$after$$"].join("\n");
+    const markdown = ["- item", "    ~~~text", "    $$notMath$$", "  ~~~", "", "$$after$$"].join(
+      "\n",
+    );
     const normalized = normalizeDisplayMath(markdown);
 
     expect(normalized).toContain("    $$notMath$$\n  ~~~");
