@@ -88,6 +88,20 @@ function messageToMarkdown(message: ChatMessageData): string {
     .join("\n\n");
 }
 
+/** Combines fetched history with optimistic messages without duplicating server-assigned IDs. */
+export function mergeDisplayMessages(
+  history: readonly ChatMessageData[],
+  localUser: ChatMessageData | null,
+  localAssistant: ChatMessageData | null,
+): ChatMessageData[] {
+  const messagesById = new Map<string, ChatMessageData>();
+  for (const message of history) messagesById.set(message.id, message);
+  for (const message of [localUser, localAssistant]) {
+    if (message) messagesById.set(message.id, message);
+  }
+  return [...messagesById.values()];
+}
+
 /**
  * 読解チャットタブ(1a §4.5・docs/05)。スレッド・履歴取得+ SSE 送信/再生成を担う。
  * SSE は POST fetch ストリーム(plans/03 §10.3 の start/delta/evidence/done/error を逐次パース)。
@@ -344,9 +358,7 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
   }, [activeThreadId, summarizing, itemId, qc, toast, setPanel]);
 
   const activeThread = (threadsQuery.data?.items ?? []).find((t) => t.id === activeThreadId);
-  const displayMessages = [...history];
-  if (localUser) displayMessages.push(localUser);
-  if (localAssistant) displayMessages.push(localAssistant);
+  const displayMessages = mergeDisplayMessages(history, localUser, localAssistant);
   const isEmpty = displayMessages.length === 0;
 
   const chipStyle: CSSProperties = {

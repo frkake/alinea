@@ -10,7 +10,7 @@ import {
   type ChatMessage as ChatMessageData,
 } from "@alinea/api-client";
 import { ChatMessage } from "@/components/chat/ChatMessage";
-import { ChatPanel } from "@/components/chat/ChatPanel";
+import { ChatPanel, mergeDisplayMessages } from "@/components/chat/ChatPanel";
 import { ChatComposer, CHAT_DISCLAIMER } from "@/components/chat/ChatComposer";
 import { QuickActionChips } from "@/components/chat/QuickActionChips";
 import { useViewerStore } from "@/stores/viewer-store";
@@ -52,6 +52,18 @@ function assistantMessage(overrides: Partial<ChatMessageData> = {}): ChatMessage
     ...overrides,
   };
 }
+
+describe("mergeDisplayMessages", () => {
+  test("keeps one message when a local streaming message has reached history", () => {
+    const history = [assistantMessage({ id: "1", blocks: [] })];
+    const localAssistant = assistantMessage({
+      id: "1",
+      blocks: [{ type: "markdown", text: "streamed response", evidence: [] }],
+    });
+
+    expect(mergeDisplayMessages(history, null, localAssistant)).toEqual([localAssistant]);
+  });
+});
 
 // VT-VIEW-10: アシスタント回答に「AI生成」バッジと根拠チップが出る
 describe("ChatMessage assistant (VT-VIEW-10)", () => {
