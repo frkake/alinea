@@ -181,6 +181,22 @@ describe("ChatMarkdown", () => {
     expect(container.querySelector(".alinea-chat-math-block .katex-display")).not.toBeNull();
   });
 
+  test("keeps same-line display math inside blockquotes and list items", () => {
+    const { container } = render(
+      <ChatMarkdown
+        text={["> before $$x^2$$ after", "", "- before $$y^2$$ after"].join("\n")}
+        evidence={[]}
+      />,
+    );
+
+    expect(container.querySelector("blockquote .alinea-chat-math-block .katex-display")).not.toBeNull();
+    expect(container.querySelector("blockquote")).toHaveTextContent("before");
+    expect(container.querySelector("blockquote")).toHaveTextContent("after");
+    expect(container.querySelector("li .alinea-chat-math-block .katex-display")).not.toBeNull();
+    expect(container.querySelector("li")).toHaveTextContent("before");
+    expect(container.querySelector("li")).toHaveTextContent("after");
+  });
+
   test("preserves link destinations and table cells that contain double-dollar pairs", () => {
     const { container } = render(
       <ChatMarkdown

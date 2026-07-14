@@ -11,7 +11,7 @@ import { visit } from "unist-util-visit";
 import { EvidenceChip } from "@/components/ui/EvidenceChip";
 import {
   EVIDENCE_PROPERTY,
-  normalizeDisplayMath,
+  remarkDisplayMath,
   remarkEvidence,
 } from "@/components/chat/chat-markdown-plugins";
 import { createKatexMacros } from "@/lib/katex-render";
@@ -199,7 +199,7 @@ export function ChatMarkdown({ text, evidence, onEvidenceJump }: ChatMarkdownPro
   return (
     <div className="alinea-chat-markdown">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath, remarkEvidence]}
+        remarkPlugins={[remarkGfm, remarkMath, remarkDisplayMath(text), remarkEvidence]}
         rehypePlugins={[
           rehypePreserveMathCodeFences,
           [
@@ -215,7 +215,7 @@ export function ChatMarkdown({ text, evidence, onEvidenceJump }: ChatMarkdownPro
         skipHtml
         components={components}
       >
-        {normalizeDisplayMath(text)}
+        {text}
       </ReactMarkdown>
     </div>
   );

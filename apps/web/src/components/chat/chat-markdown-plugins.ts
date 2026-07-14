@@ -1,299 +1,102 @@
-import type { Link, Root, Text } from "mdast";
+import type { Link, Paragraph, Root, Text } from "mdast";
 import type { Plugin } from "unified";
-import { unified } from "unified";
 import { visit } from "unist-util-visit";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import remarkParse from "remark-parse";
 
 export const EVIDENCE_PROPERTY = "data-alinea-evidence-ref";
 
 const EVIDENCE_MARKER_RE = /\[\[ev:(\d+)\]\]/g;
 
-function isEscaped(value: string, index: number): boolean {
-  let slashCount = 0;
-  for (let cursor = index - 1; cursor >= 0 && value[cursor] === "\\"; cursor -= 1) slashCount += 1;
-  return slashCount % 2 === 1;
+interface InlineMathNode {
+  type: "inlineMath";
+  value: string;
+  position?: {
+    start?: { offset?: number };
+    end?: { offset?: number };
+  };
 }
 
-function isDollarPair(value: string, index: number): boolean {
-  return value[index] === "$" && value[index + 1] === "$" && !isEscaped(value, index);
+interface DisplayMathNode {
+  type: "math";
+  value: string;
+  meta: null;
+  data: {
+    hName: "pre";
+    hChildren: Array<{
+      type: "element";
+      tagName: "code";
+      properties: { className: string[] };
+      children: Array<{ type: "text"; value: string }>;
+    }>;
+  };
 }
 
-function lineEnd(value: string, start: number): number {
-  const end = value.indexOf("\n", start);
-  return end === -1 ? value.length : end;
+function isInlineMath(
+  node: Paragraph["children"][number],
+): node is Paragraph["children"][number] & InlineMathNode {
+  return (node as { type?: unknown }).type === "inlineMath";
 }
 
-function isLineStart(value: string, index: number): boolean {
-  return index === 0 || value[index - 1] === "\n";
-}
-
-interface MarkdownSourceRange {
-  start: number;
-  end: number;
-}
-
-function protectedMarkdownRanges(markdown: string): MarkdownSourceRange[] {
-  const tree = unified().use(remarkParse).use(remarkGfm).use(remarkMath).parse(markdown);
-  const ranges: MarkdownSourceRange[] = [];
-  visit(tree, ["link", "linkReference", "definition", "table", "html"], (node) => {
-    const start = node.position?.start.offset;
-    const end = node.position?.end.offset;
-    if (start !== undefined && end !== undefined) ranges.push({ start, end });
-  });
-  ranges.sort((left, right) => left.start - right.start);
-
-  const merged: MarkdownSourceRange[] = [];
-  for (const range of ranges) {
-    const previous = merged.at(-1);
-    if (previous !== undefined && range.start <= previous.end) {
-      previous.end = Math.max(previous.end, range.end);
-      continue;
-    }
-    merged.push({ ...range });
-  }
-  return merged;
-}
-
-function protectedRangeEnd(
-  ranges: readonly MarkdownSourceRange[],
-  cursor: number,
-): number | undefined {
-  for (const range of ranges) {
-    if (range.end <= cursor) continue;
-    return range.start <= cursor ? range.end : undefined;
-  }
-  return undefined;
-}
-
-interface BlockquotePrefix {
-  depth: number;
-  length: number;
-}
-
-interface FenceContainer {
-  blockquoteDepth: number;
-  listIndent: number;
-  fallbackIndent: number;
-}
-
-function blockquotePrefix(line: string): BlockquotePrefix {
-  let cursor = 0;
-  let depth = 0;
-  while (cursor < line.length) {
-    const blockquote = /^( {0,3}>[ \t]?)/.exec(line.slice(cursor));
-    if (blockquote === null) break;
-    cursor += blockquote[0].length;
-    depth += 1;
-  }
-  return { depth, length: cursor };
-}
-
-function previousLine(value: string, start: number): string | undefined {
-  if (start === 0) return undefined;
-  const previousStart = value.lastIndexOf("\n", start - 2) + 1;
-  const line = value.slice(previousStart, start - 1);
-  return line.endsWith("\r") ? line.slice(0, -1) : line;
-}
-
-function listContinuationIndent(
-  value: string,
-  start: number,
-  blockquoteDepth: number,
-): number | undefined {
-  const line = previousLine(value, start);
-  if (line === undefined) return undefined;
-
-  const blockquote = blockquotePrefix(line);
-  if (blockquote.depth !== blockquoteDepth) return undefined;
-
-  const marker = /^( {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]{1,4})/.exec(line.slice(blockquote.length));
-  return marker?.[0].length;
-}
-
-function fenceContainer(value: string, start: number, line: string): FenceContainer {
-  const blockquote = blockquotePrefix(line);
-  const logicalLine = line.slice(blockquote.length);
-  const listIndent = listContinuationIndent(value, start, blockquote.depth);
-  if (listIndent !== undefined && logicalLine.startsWith(" ".repeat(listIndent))) {
-    return { blockquoteDepth: blockquote.depth, listIndent, fallbackIndent: 0 };
-  }
-  if (listIndent !== undefined)
-    return { blockquoteDepth: blockquote.depth, listIndent: 0, fallbackIndent: 0 };
-
-  const fallbackIndent = /^( {4,})/.exec(logicalLine)?.[0].length ?? 0;
-  return { blockquoteDepth: blockquote.depth, listIndent: 0, fallbackIndent };
-}
-
-function logicalLineWithinContainer(line: string, container: FenceContainer): string | undefined {
-  const blockquote = blockquotePrefix(line);
-  if (blockquote.depth !== container.blockquoteDepth) return undefined;
-
-  let logicalLine = line.slice(blockquote.length);
-  if (container.listIndent > 0) {
-    const indentation = /^ */.exec(logicalLine)?.[0].length ?? 0;
-    if (indentation < container.listIndent) return undefined;
-    logicalLine = logicalLine.slice(container.listIndent);
-  } else if (container.fallbackIndent > 0) {
-    const indent = " ".repeat(container.fallbackIndent);
-    if (!logicalLine.startsWith(indent)) return undefined;
-    logicalLine = logicalLine.slice(indent.length);
-  }
-
-  return logicalLine;
-}
-
-function codeFenceEnd(value: string, start: number): number | undefined {
-  if (!isLineStart(value, start)) return undefined;
-
-  const openingEnd = lineEnd(value, start);
-  const rawOpeningLine = value.slice(start, openingEnd);
-  const openingLine = rawOpeningLine.endsWith("\r") ? rawOpeningLine.slice(0, -1) : rawOpeningLine;
-  const container = fenceContainer(value, start, openingLine);
-  const logicalOpeningLine = logicalLineWithinContainer(openingLine, container);
-  if (logicalOpeningLine === undefined) return undefined;
-  const opening = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(logicalOpeningLine);
-  if (opening === null) return undefined;
-
-  const fence = opening[2];
-  if (fence === undefined) return undefined;
-  const fenceCharacter = fence.charAt(0);
-  const info = opening[3] ?? "";
-  if (fenceCharacter === "`" && info.includes("`")) return undefined;
-
-  const closing = new RegExp(`^ {0,3}${fenceCharacter}{${fence.length},}[ \\t]*$`);
-  let cursor = openingEnd === value.length ? value.length : openingEnd + 1;
-  while (cursor < value.length) {
-    const candidateEnd = lineEnd(value, cursor);
-    const rawCandidate = value.slice(cursor, candidateEnd);
-    const candidate = rawCandidate.endsWith("\r") ? rawCandidate.slice(0, -1) : rawCandidate;
-    const logicalCandidate = logicalLineWithinContainer(candidate, container);
-    if (logicalCandidate !== undefined && closing.test(logicalCandidate))
-      return candidateEnd === value.length ? candidateEnd : candidateEnd + 1;
-    cursor = candidateEnd === value.length ? value.length : candidateEnd + 1;
-  }
-
-  return value.length;
-}
-
-function backtickRunLength(value: string, start: number): number {
-  let end = start;
-  while (value[end] === "`") end += 1;
-  return end - start;
-}
-
-function inlineCodeEnd(value: string, start: number): number | undefined {
-  const delimiterLength = backtickRunLength(value, start);
-  let cursor = start + delimiterLength;
-  while (cursor < value.length) {
-    if (value[cursor] !== "`") {
-      cursor += 1;
-      continue;
-    }
-
-    const candidateLength = backtickRunLength(value, cursor);
-    if (candidateLength === delimiterLength) return cursor + delimiterLength;
-    cursor += candidateLength;
-  }
-  return undefined;
-}
-
-function isOwnLineDelimiter(value: string, index: number): boolean {
-  const start = value.lastIndexOf("\n", index) + 1;
-  const nextLine = value.indexOf("\n", index + 2);
-  const end = nextLine === -1 ? value.length : nextLine;
+function isDoubleDollarInlineMath(node: InlineMathNode, markdown: string): boolean {
+  const start = node.position?.start?.offset;
+  const end = node.position?.end?.offset;
   return (
-    /^[ \t\r]*$/.test(value.slice(start, index)) && /^[ \t\r]*$/.test(value.slice(index + 2, end))
+    start !== undefined &&
+    end !== undefined &&
+    markdown.slice(start, start + 2) === "$$" &&
+    markdown.slice(end - 2, end) === "$$"
   );
 }
 
-function displayMathClosingDelimiter(
-  value: string,
-  opening: number,
-  protectedRanges: readonly MarkdownSourceRange[],
-): number | undefined {
-  let cursor = opening + 2;
-  while (cursor < value.length) {
-    const fencedEnd = codeFenceEnd(value, cursor);
-    if (fencedEnd !== undefined) {
-      cursor = fencedEnd;
+function splitParagraphOnDisplayMath(
+  paragraph: Paragraph,
+  markdown: string,
+): Array<Paragraph | DisplayMathNode> | undefined {
+  const blocks: Array<Paragraph | DisplayMathNode> = [];
+  let pending: Paragraph["children"] = [];
+  let foundDisplayMath = false;
+
+  for (const child of paragraph.children) {
+    if (isInlineMath(child) && isDoubleDollarInlineMath(child, markdown)) {
+      foundDisplayMath = true;
+      if (pending.length > 0) blocks.push({ type: "paragraph", children: pending });
+      blocks.push({
+        type: "math",
+        value: child.value,
+        meta: null,
+        data: {
+          hName: "pre",
+          hChildren: [
+            {
+              type: "element",
+              tagName: "code",
+              properties: { className: ["language-math", "math-display"] },
+              children: [{ type: "text", value: child.value }],
+            },
+          ],
+        },
+      });
+      pending = [];
       continue;
     }
-
-    if (value[cursor] === "`") {
-      const codeEnd = inlineCodeEnd(value, cursor);
-      if (codeEnd !== undefined) {
-        cursor = codeEnd;
-        continue;
-      }
-    }
-
-    const protectedEnd = protectedRangeEnd(protectedRanges, cursor);
-    if (protectedEnd !== undefined) {
-      cursor = protectedEnd;
-      continue;
-    }
-
-    if (isDollarPair(value, cursor)) return cursor;
-    cursor += 1;
+    pending.push(child);
   }
-  return undefined;
+
+  if (!foundDisplayMath) return undefined;
+  if (pending.length > 0) blocks.push({ type: "paragraph", children: pending });
+  return blocks;
 }
 
-/** Converts inline `$$…$$` pairs into flow display-math blocks without touching protected Markdown. */
-export function normalizeDisplayMath(markdown: string): string {
-  const protectedRanges = protectedMarkdownRanges(markdown);
-  let normalized = "";
-  let cursor = 0;
-  let sourceCursor = 0;
+/** Promotes same-line `$$…$$` expressions to flow math while preserving Markdown containers. */
+export function remarkDisplayMath(markdown: string): Plugin<[], Root> {
+  return () => (tree) => {
+    visit(tree, "paragraph", (paragraph, index, parent) => {
+      if (index === undefined || parent === undefined) return;
 
-  while (cursor < markdown.length) {
-    const fencedEnd = codeFenceEnd(markdown, cursor);
-    if (fencedEnd !== undefined) {
-      cursor = fencedEnd;
-      continue;
-    }
-
-    if (markdown[cursor] === "`") {
-      const codeEnd = inlineCodeEnd(markdown, cursor);
-      if (codeEnd !== undefined) {
-        cursor = codeEnd;
-        continue;
-      }
-    }
-
-    const protectedEnd = protectedRangeEnd(protectedRanges, cursor);
-    if (protectedEnd !== undefined) {
-      cursor = protectedEnd;
-      continue;
-    }
-
-    if (!isDollarPair(markdown, cursor)) {
-      cursor += 1;
-      continue;
-    }
-
-    const closing = displayMathClosingDelimiter(markdown, cursor, protectedRanges);
-    if (closing === undefined) return normalized + markdown.slice(sourceCursor);
-
-    if (isOwnLineDelimiter(markdown, cursor) && isOwnLineDelimiter(markdown, closing)) {
-      cursor = closing + 2;
-      continue;
-    }
-
-    const math = markdown.slice(cursor + 2, closing).trim();
-    if (math.length === 0) {
-      cursor = closing + 2;
-      continue;
-    }
-
-    normalized += `${markdown.slice(sourceCursor, cursor)}\n\n$$\n${math}\n$$\n\n`;
-    sourceCursor = closing + 2;
-    cursor = sourceCursor;
-  }
-
-  return normalized + markdown.slice(sourceCursor);
+      const blocks = splitParagraphOnDisplayMath(paragraph, markdown);
+      if (blocks === undefined) return;
+      parent.children.splice(index, 1, ...blocks);
+    });
+  };
 }
 
 function evidenceLink(reference: number): Link {

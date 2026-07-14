@@ -1,9 +1,12 @@
 import type { Root } from "mdast";
 import { unified } from "unified";
 import { describe, expect, test } from "vitest";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import remarkParse from "remark-parse";
 import {
   EVIDENCE_PROPERTY,
-  normalizeDisplayMath,
+  remarkDisplayMath,
   remarkEvidence,
   replaceEvidenceMarkers,
 } from "@/components/chat/chat-markdown-plugins";
@@ -20,168 +23,73 @@ function rootWithParagraph(value: string): Root {
   };
 }
 
-describe("normalizeDisplayMath", () => {
-  test("turns a complete same-line expression into a trimmed display block", () => {
-    expect(normalizeDisplayMath("前 $$ x^2 $$ 後")).toBe("前 \n\n$$\nx^2\n$$\n\n 後");
+function transformDisplayMath(markdown: string): Root {
+  const processor = unified()
+    .use(remarkParse)
+    .use(remarkGfm)
+    .use(remarkMath)
+    .use(remarkDisplayMath(markdown));
+  return processor.runSync(processor.parse(markdown)) as Root;
+}
+
+describe("remarkDisplayMath", () => {
+  test("keeps same-line display math inside a blockquote", () => {
+    const tree = transformDisplayMath("> before $$x^2$$ after");
+
+    expect(tree).toMatchObject({
+      children: [
+        {
+          type: "blockquote",
+          children: [
+            { type: "paragraph", children: [{ type: "text", value: "before " }] },
+            { type: "math", value: "x^2" },
+            { type: "paragraph", children: [{ type: "text", value: " after" }] },
+          ],
+        },
+      ],
+    });
   });
 
-  test("leaves an empty same-line dollar pair unchanged", () => {
-    expect(normalizeDisplayMath("a $$$$ b")).toBe("a $$$$ b");
+  test("keeps same-line display math inside a list item", () => {
+    const tree = transformDisplayMath("- before $$x^2$$ after");
+
+    expect(tree).toMatchObject({
+      children: [
+        {
+          type: "list",
+          children: [
+            {
+              type: "listItem",
+              children: [
+                { type: "paragraph", children: [{ type: "text", value: "before " }] },
+                { type: "math", value: "x^2" },
+                { type: "paragraph", children: [{ type: "text", value: " after" }] },
+              ],
+            },
+          ],
+        },
+      ],
+    });
   });
 
-  test("leaves an existing multiline display block in order with its prose", () => {
-    const markdown = ["前の文章", "$$", "x^2", "$$", "後の文章"].join("\n");
+  test("does not convert double-dollar pairs inside indented or fenced code", () => {
+    const markdown = ["    $$indented$$", "", "```text", "$$fenced$$", "```"].join("\n");
+    const tree = transformDisplayMath(markdown);
 
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
+    expect(tree).toMatchObject({
+      children: [
+        { type: "code", value: "$$indented$$" },
+        { type: "code", lang: "text", value: "$$fenced$$" },
+      ],
+    });
   });
 
-  test("does not rewrite dollar pairs inside inline code spans", () => {
-    expect(normalizeDisplayMath("`$$x$$` と ``$$y$$``")).toBe("`$$x$$` と ``$$y$$``");
-  });
+  test("leaves existing multiline display math inside a blockquote unchanged", () => {
+    const tree = transformDisplayMath(["> $$", "> x^2", "> $$"].join("\n"));
 
-  test("does not rewrite dollar pairs inside backtick and tilde fenced code", () => {
-    const markdown = ["```text", "$$backtick$$", "```", "~~~text", "$$tilde$$", "~~~~"].join("\n");
-
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
-  });
-
-  test("requires a fence closing delimiter with the same character and sufficient length", () => {
-    const markdown = ["````text", "$$still code$$", "```"].join("\n");
-
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
-  });
-
-  test("does not rewrite dollar pairs inside a blockquoted tilde fence", () => {
-    const markdown = ["> ~~~text", "> $$notMath$$", "> ~~~"].join("\n");
-
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
-  });
-
-  test("does not rewrite dollar pairs inside a list-indented tilde fence", () => {
-    const markdown = ["- item", "    ~~~text", "    $$notMath$$", "    ~~~"].join("\n");
-
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
-  });
-
-  test("recognizes a longer backtick closing fence inside a blockquote", () => {
-    const markdown = ["> ```text", "> $$notMath$$", "> ````"].join("\n");
-
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
-  });
-
-  test("recognizes a blockquote tilde closer without post-marker whitespace", () => {
-    const markdown = ["> ~~~text", "> $$notMath$$", ">~~~", "", "$$after$$"].join("\n");
-    const normalized = normalizeDisplayMath(markdown);
-
-    expect(normalized).toContain("> $$notMath$$\n>~~~");
-    expect(normalized).toContain("$$\nafter\n$$");
-  });
-
-  test("recognizes a longer blockquote backtick closer without post-marker whitespace", () => {
-    const markdown = ["> ````text", "> $$notMath$$", ">`````", "", "$$after$$"].join("\n");
-    const normalized = normalizeDisplayMath(markdown);
-
-    expect(normalized).toContain("> $$notMath$$\n>`````");
-    expect(normalized).toContain("$$\nafter\n$$");
-  });
-
-  test("recognizes a list fence when its closer uses a smaller valid continuation indent", () => {
-    const markdown = ["- item", "    ~~~text", "    $$notMath$$", "  ~~~", "", "$$after$$"].join(
-      "\n",
-    );
-    const normalized = normalizeDisplayMath(markdown);
-
-    expect(normalized).toContain("    $$notMath$$\n  ~~~");
-    expect(normalized).toContain("$$\nafter\n$$");
-  });
-
-  test("does not mistake ordinary ordered-list continuation text for a fence", () => {
-    const markdown = ["1.    item", "     ~~~", "     $$normalText$$", "", "$$after$$"].join("\n");
-    const normalized = normalizeDisplayMath(markdown);
-
-    expect(normalized).toContain("1.    item\n     ~~~");
-    expect(normalized).toContain("$$\nnormalText\n$$");
-    expect(normalized).toContain("$$\nafter\n$$");
-  });
-
-  test("leaves an unfinished streaming expression visible", () => {
-    expect(normalizeDisplayMath("途中 $$x^2")).toBe("途中 $$x^2");
-  });
-
-  test("does not use escaped dollar pairs as delimiters", () => {
-    expect(normalizeDisplayMath("\\$$x^2$$")).toBe("\\$$x^2$$");
-  });
-
-  test("leaves double-dollar pairs in Markdown link destinations unchanged", () => {
-    const markdown = "[safe](https://example.com/$$x$$)";
-
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
-  });
-
-  test("leaves double-dollar pairs in angle-bracket link destinations unchanged", () => {
-    const markdown = "[x](<https://example.com/)$$x$$>)";
-
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
-  });
-
-  test("leaves double-dollar pairs in spaced angle-bracket link destinations unchanged", () => {
-    const markdown = "[x]( <https://example.com/)$$x$$> )";
-
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
-  });
-
-  test("leaves double-dollar pairs in multiline angle-bracket link destinations unchanged", () => {
-    const markdown = ["[x](", "<https://example.com/)$$x$$>", ")"].join("\n");
-
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
-  });
-
-  test("leaves double-dollar pairs in reference-style link destinations unchanged", () => {
-    const markdown = ["[safe][id]", "", "[id]: https://example.com/$$x$$"].join("\n");
-
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
-  });
-
-  test("leaves double-dollar pairs in Markdown autolinks unchanged", () => {
-    const markdown = "<https://example.com/$$x$$>";
-
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
-  });
-
-  test("leaves double-dollar pairs in GFM literal autolinks unchanged", () => {
-    const markdown = "https://example.com/$$x$$";
-
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
-  });
-
-  test("continues normalizing invalid GFM literal-autolink prose", () => {
-    const markdown = "https://$$x$$";
-
-    expect(normalizeDisplayMath(markdown)).toBe("https://\n\n$$\nx\n$$\n\n");
-  });
-
-  test("leaves double-dollar pairs in GFM table rows unchanged", () => {
-    const markdown = ["| Metric | Value |", "| --- | --- |", "| loss | $$x^2$$ |"].join("\n");
-
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
-  });
-
-  test("leaves double-dollar pairs in blockquoted GFM table rows unchanged", () => {
-    const markdown = ["> | Metric | Value |", "> | --- | --- |", "> | loss | $$x^2$$ |"].join("\n");
-
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
-  });
-
-  test("continues normalizing pipe prose that is not a valid GFM table", () => {
-    const markdown = ["| Heading |", "| --- | --- |", "| value | $$x^2$$ |"].join("\n");
-
-    expect(normalizeDisplayMath(markdown)).toContain("$$\nx^2\n$$");
-  });
-
-  test("leaves raw HTML attributes containing double-dollar pairs unchanged", () => {
-    const markdown = '<a href="https://example.com/$$x$$">link</a>';
-
-    expect(normalizeDisplayMath(markdown)).toBe(markdown);
+    expect(tree).toMatchObject({
+      children: [{ type: "blockquote", children: [{ type: "math", value: "x^2" }] }],
+    });
   });
 });
 
