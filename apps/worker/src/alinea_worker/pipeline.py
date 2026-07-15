@@ -565,6 +565,10 @@ class IngestJobPayload(BaseModel):
     requested_version: str | None = None
     url: str | None = None
     library_item_id: str | None = None
+    # Raise the per-document figure budget for this reingest so deferred figures
+    # (marked `figure_deferred` on a prior degraded ingest) get materialized on
+    # demand.  None keeps the default MAX_FIGURES_PER_DOCUMENT.
+    figure_limit: int | None = None
     # 通知「変更する」(B→A 昇格提案の apply。plans/03 §16.4・plans/05 §12.3)経由の reingest
     # にのみ立てるフラグ。structuring で新リビジョンが確定した時点で adopt-revision と同一の
     # 内部処理(papers.latest_revision_id 切替+reanchor_paper)を自動実行する(M1-07 followup)。
@@ -925,6 +929,15 @@ class IngestRun:
         self.user_id: str | None = str(job.user_id) if job.user_id else None
         self.payload = IngestJobPayload.model_validate(job.payload or {})
         self.ckpt = JobStore.get_checkpoint(job)
+        # Per-job figure budget: a deferred-figure reingest may raise it above the
+        # default so more figures materialize.  Clamp to the default floor.
+        self._figure_limit = max(
+            MAX_FIGURES_PER_DOCUMENT, self.payload.figure_limit or MAX_FIGURES_PER_DOCUMENT
+        )
+        # A raised figure budget is an explicit request to re-materialize more
+        # figures, so an existing revision (built at the lower budget) must not
+        # be reused — a fresh revision is always produced.
+        self._figure_limit_raised = self._figure_limit > MAX_FIGURES_PER_DOCUMENT
         self.is_pdf_upload = self.payload.source == "pdf_upload"
         # pdf_upload には arxiv_id/url が無い(plans/05 §9.1)。arXiv 系のみ ID 正規化する。
         self.ref: ArxivId | None = (
@@ -1872,8 +1885,8 @@ class IngestRun:
         # equation display assets) cannot be deferred, so they keep the
         # structural `figure_limit_exceeded` code that rejects the candidate.
         deferred_blocks: list[Block] = []
-        if len(blocks) > MAX_FIGURES_PER_DOCUMENT:
-            excess = blocks[MAX_FIGURES_PER_DOCUMENT:]
+        if len(blocks) > self._figure_limit:
+            excess = blocks[self._figure_limit :]
             non_deferrable = [b for b in excess if b.type not in ("figure", "table")]
             if non_deferrable:
                 # Excess includes structural display assets (e.g. equations)
@@ -1889,7 +1902,7 @@ class IngestRun:
                 blocks = []
             else:
                 deferred_blocks = excess
-                blocks = blocks[:MAX_FIGURES_PER_DOCUMENT]
+                blocks = blocks[: self._figure_limit]
                 failures.extend(
                     {
                         "code": "figure_deferred",
@@ -2665,7 +2678,7 @@ class IngestRun:
     ) -> list[dict[str, Any]]:
         if (
             not candidate.figure_materialization_validated
-            or len(candidate.materialized_figures) > MAX_FIGURES_PER_DOCUMENT
+            or len(candidate.materialized_figures) > self._figure_limit
         ):
             raise FetchError(
                 "figure_asset_unresolved",
@@ -3510,7 +3523,7 @@ class IngestRun:
             try:
                 if deadline is not None:
                     deadline.remaining()
-                if figure_index >= MAX_FIGURES_PER_DOCUMENT:
+                if figure_index >= self._figure_limit:
                     raise FigureAssetError("figure_limit_exceeded", "document has too many figures")
                 materialized_budget = MAX_TOTAL_FIGURE_MATERIALIZED_BYTES - materialized_bytes
                 if materialized_budget <= 0:
@@ -3887,7 +3900,7 @@ class IngestRun:
             try:
                 if deadline is not None:
                     deadline.remaining()
-                if figure_index >= MAX_FIGURES_PER_DOCUMENT:
+                if figure_index >= self._figure_limit:
                     raise FigureAssetError("figure_limit_exceeded", "document has too many figures")
                 materialized_budget = MAX_TOTAL_FIGURE_MATERIALIZED_BYTES - materialized_bytes
                 if materialized_budget <= 0:

@@ -1822,7 +1822,8 @@ async def test_ingest_degrades_over_limit_figures_and_still_succeeds(
     transport = httpx.ASGITransport(app=_make_latex_arxiv_stub(archive))
     async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
         ctx = {**latex_worker_ctx, "arxiv_http": http}
-        ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+        arxiv_id = _arxiv_id()
+        ids = await seed_ingest_job(db_session, arxiv_id=arxiv_id)
         store = JobStore(db_session)
         job = await store.claim(ids["job_id"])
         assert job is not None
@@ -1856,6 +1857,84 @@ async def test_ingest_degrades_over_limit_figures_and_still_succeeds(
     assert len(materialized) == 2
     assert len(deferred_blocks) == 1
     assert deferred_blocks[0].id == deferred[0]["figure_id"]
+
+
+async def test_raised_figure_limit_materializes_all_figures(
+    db_session: AsyncSession,
+    latex_worker_ctx: dict[str, Any],
+    seed_ingest_job: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With the default budget lowered to 2 but the per-job figure_limit raised to
+    # 3, all three figures materialize (no deferral) — the on-demand
+    # limit-expansion path for a fresh ingest.
+    monkeypatch.setattr(worker_pipeline, "MAX_FIGURES_PER_DOCUMENT", 2)
+    three_figure_tex = (
+        "\\documentclass{article}\n"
+        "\\graphicspath{{../images/}}\n"
+        "\\begin{document}\n"
+        "\\section{Introduction}\n"
+        "This is a deterministic mock introduction for pipeline testing purposes here.\n"
+        "\\begin{figure}\\includegraphics{fig-a}\\caption{First mock figure.}\\end{figure}\n"
+        "\\begin{figure}\\includegraphics{fig-b}\\caption{Second mock figure.}\\end{figure}\n"
+        "\\begin{figure}\\includegraphics{fig-c}\\caption{Third mock figure.}\\end{figure}\n"
+        "\\section{Method}\n"
+        "The method section describes the approach in detail for testing purposes here. "
+        "It includes enough structured prose to remain a complete source candidate before its "
+        "declared display assets are checked. The explanation covers inputs, transformations, "
+        "evaluation, limitations, and reproducible observations without depending on a paper.\n"
+        "\\end{document}\n"
+    )
+    figure = _tiny_pdf_figure()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name, data in (
+            ("paper/main.tex", three_figure_tex.encode()),
+            ("images/fig-a.pdf", figure),
+            ("images/fig-b.pdf", figure),
+            ("images/fig-c.pdf", figure),
+        ):
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            info.mtime = 0
+            tar.addfile(info, io.BytesIO(data))
+    archive = gzip.compress(buf.getvalue(), mtime=0)
+
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    store = JobStore(db_session)
+    # Re-point the seeded job at a raised figure budget (the on-demand path).
+    seeded = await store.get(ids["job_id"])
+    assert seeded is not None
+    seeded.payload = {**(seeded.payload or {}), "figure_limit": 3}
+    await db_session.commit()
+    transport = httpx.ASGITransport(app=_make_latex_arxiv_stub(archive))
+    async with httpx.AsyncClient(transport=transport, base_url="http://arxiv.test") as http:
+        ctx = {**latex_worker_ctx, "arxiv_http": http}
+        job = await store.claim(ids["job_id"])
+        assert job is not None
+        await ingest_paper(ctx, store, job)
+
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    assert job.status == "succeeded", job.error
+    rev = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .one()
+    )
+    content = DocumentContent.model_validate(rev.content)
+    figures = [block for _sec, block in content.iter_blocks() if block.type == "figure"]
+    assert len(figures) == 3
+    assert all(block.asset_key for block in figures)
+    assert [
+        item
+        for item in rev.stats["figure_asset_failures"]
+        if item.get("code") == "figure_deferred"
+    ] == []
 
 
 @pytest.mark.parametrize("selected_format", ["latex", "pdf"])
