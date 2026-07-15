@@ -15,6 +15,7 @@ import random
 import time
 import uuid
 from typing import Any
+from unittest.mock import AsyncMock, call
 
 import pytest
 from _summary_contract import assert_summary_lines_contract
@@ -52,7 +53,9 @@ from alinea_core.translation.placeholder import encode_block
 from alinea_llm.errors import ProviderChainExhausted
 from alinea_llm.router import LLMRouter
 from alinea_llm.testing.fake_provider import FakeLLMProvider
+import alinea_worker.pipeline as worker_pipeline
 from alinea_worker.pipeline import IngestRun, deps_from_ctx
+from alinea_worker.source_candidates import CandidateUnavailable
 from alinea_worker.tasks.ingest import ingest_paper
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,6 +86,95 @@ async def _units_for_set(db: AsyncSession, set_id: str) -> dict[str, Translation
         .all()
     )
     return {u.block_id: u for u in rows}
+
+
+async def test_latex_eprint_rate_limit_uses_exponential_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = object.__new__(IngestRun)
+    attempts = 0
+
+    async def fetch_once(_http: object) -> bytes:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise CandidateUnavailable("latex", "rate_limited", "rate limited")
+        return b"latex archive"
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(run, "_fetch_latex_candidate_bytes_once", fetch_once)
+    monkeypatch.setattr(worker_pipeline.asyncio, "sleep", sleep)
+
+    assert await run._fetch_latex_candidate_bytes(object()) == b"latex archive"
+    assert sleep.await_args_list == [call(20), call(40)]
+
+
+async def test_latex_eprint_rate_limit_honors_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = object.__new__(IngestRun)
+    attempts = 0
+
+    async def fetch_once(_http: object) -> bytes:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise CandidateUnavailable(
+                "latex", "rate_limited", "rate limited", retry_after_s=120
+            )
+        return b"latex archive"
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(run, "_fetch_latex_candidate_bytes_once", fetch_once)
+    monkeypatch.setattr(worker_pipeline.asyncio, "sleep", sleep)
+
+    assert await run._fetch_latex_candidate_bytes(object()) == b"latex archive"
+    assert sleep.await_args_list == [call(120), call(120)]
+
+
+async def test_latex_eprint_rate_limit_retries_beyond_network_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # arXiv 429s recover after several minutes; the LaTeX candidate must not be
+    # abandoned after the (shorter) transient-network retry budget.
+    run = object.__new__(IngestRun)
+    attempts = 0
+
+    async def fetch_once(_http: object) -> bytes:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 6:
+            raise CandidateUnavailable("latex", "rate_limited", "rate limited")
+        return b"latex archive"
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(run, "_fetch_latex_candidate_bytes_once", fetch_once)
+    monkeypatch.setattr(worker_pipeline.asyncio, "sleep", sleep)
+
+    assert await run._fetch_latex_candidate_bytes(object()) == b"latex archive"
+    # 5 backoffs before the 6th success, each capped at 60s.
+    assert sleep.await_count == 5
+    assert all(delay <= 60 for ((delay,), _kwargs) in sleep.await_args_list)
+
+
+async def test_latex_eprint_network_error_keeps_short_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = object.__new__(IngestRun)
+    attempts = 0
+
+    async def fetch_once(_http: object) -> bytes:
+        nonlocal attempts
+        attempts += 1
+        raise CandidateUnavailable("latex", "network_error", "boom")
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(run, "_fetch_latex_candidate_bytes_once", fetch_once)
+    monkeypatch.setattr(worker_pipeline.asyncio, "sleep", sleep)
+
+    with pytest.raises(CandidateUnavailable):
+        await run._fetch_latex_candidate_bytes(object())
+    assert attempts == worker_pipeline._LATEX_FETCH_MAX_ATTEMPTS
 
 
 # ===========================================================================

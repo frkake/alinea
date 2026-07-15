@@ -683,7 +683,10 @@ def _latex_visible_text(value: str) -> tuple[str, list[str]]:
         math_items.append(match.group(0))
         if len(math_items) > MAX_TABLE_MATH_FRAGMENTS:
             raise _Unsupported("LaTeX cell has too many math fragments")
-        return f"ALINEAMATHPLACEHOLDER{len(math_items) - 1}END"
+        # The marker must not begin with a letter: a preceding command such as
+        # ``\\quad$...$`` would otherwise consume it as one control word during
+        # visible-text normalization.
+        return f"__ALINEA_MATH_{len(math_items) - 1}__"
 
     protected = _MATH_RE.sub(protect_math, value)
     protected = _replace_latex_visible_wrappers(protected)
@@ -698,7 +701,7 @@ def _latex_visible_text(value: str) -> tuple[str, list[str]]:
     protected = protected.replace("~", " ")
     protected = protected.replace("{", "").replace("}", "")
     protected = re.sub(
-        r"ALINEAMATHPLACEHOLDER(\d+)END",
+        r"__ALINEA_MATH_(\d+)__",
         lambda match: math_items[int(match.group(1))],
         protected,
     )
@@ -820,7 +823,15 @@ def _parse_latex(raw: str) -> CanonicalTableGrid:
                 (body_s, body_e, rowspan, colspan, wrappers, source, math_items, header)
             )
         # A trailing rule after the last row separator is not a physical row.
-        if all(not item[5] for item in parsed_segments) and len(parsed_segments) == 1:
+        # Do not use visible text as the discriminator: a source macro such as
+        # ``\\textbf{\\PEvideo}`` can expand only while parsing the complete
+        # document, yet it remains a physical cell whose source offsets are
+        # required when writing the translated table back to the original TeX.
+        if len(parsed_segments) == 1 and not re.sub(
+            r"(?<!\\)%[^\n]*(?:\n|$)",
+            "",
+            raw[parsed_segments[0][0] : parsed_segments[0][1]],
+        ).strip():
             continue
         if not parsed_segments:
             continue

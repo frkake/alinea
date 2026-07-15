@@ -1,9 +1,36 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, type ReactNode, useState } from "react";
 import type { FigureContentOut, FigureLinkCardOut } from "@alinea/api-client";
 import { renderMarkdownLite } from "@/components/vocab/markdown-lite";
 import type { AnchorRef } from "@/components/viewer/article/types";
+import { renderInlineMath } from "@/lib/katex-render";
+
+const MATH_FRAGMENT_RE = /\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$|\\\\\(([\s\S]+?)\\\\\)/g;
+
+function renderSourceTableCell(text: string): ReactNode {
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(MATH_FRAGMENT_RE)) {
+    const raw = match[0];
+    const start = match.index ?? 0;
+    if (start > cursor) parts.push(<Fragment key={`text-${start}`}>{text.slice(cursor, start)}</Fragment>);
+    const latex = raw.startsWith("$$")
+      ? raw.slice(2, -2)
+      : raw.startsWith("$")
+        ? raw.slice(1, -1)
+        : raw.slice(2, -2);
+    parts.push(
+      <span
+        key={`math-${start}`}
+        dangerouslySetInnerHTML={{ __html: renderInlineMath(latex) }}
+      />,
+    );
+    cursor = start + raw.length;
+  }
+  if (cursor < text.length) parts.push(<Fragment key={`text-${cursor}`}>{text.slice(cursor)}</Fragment>);
+  return parts.length > 0 ? parts : text;
+}
 
 function SourceTable({ rows }: { rows: string[][] }) {
   return (
@@ -43,7 +70,7 @@ function SourceTable({ rows }: { rows: string[][] }) {
                       fontWeight: rowIndex < 2 ? 700 : 400,
                     }}
                   >
-                    {cell || "—"}
+                    {cell ? renderSourceTableCell(cell) : "—"}
                   </Cell>
                 );
               })}

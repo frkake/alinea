@@ -385,7 +385,24 @@ async def test_save_position_repeatedly_prioritizes_only_shared_and_own_personal
 # ---------------------------------------------------------------------------
 # §6.1 ビューア初期化複合
 # ---------------------------------------------------------------------------
-async def test_viewer_init_shape(auth_client: AsyncClient, seeded: Seeded) -> None:
+async def test_viewer_init_shape(
+    auth_client: AsyncClient,
+    seeded: Seeded,
+    db_session: AsyncSession,
+) -> None:
+    revision = await db_session.get(DocumentRevision, seeded.revision_id)
+    assert revision is not None
+    revision.stats = {
+        "pages": 40,
+        "translated_pdf": {
+            "natural": {
+                "renderer": "source",
+                "fallback_reason": None,
+            }
+        },
+    }
+    await db_session.commit()
+
     v = await auth_client.get(f"/api/library-items/{seeded.library_item_id}/viewer")
     assert v.status_code == 200, v.text
     body = v.json()
@@ -396,6 +413,9 @@ async def test_viewer_init_shape(auth_client: AsyncClient, seeded: Seeded) -> No
     assert body["revision"]["id"] == seeded.revision_id
     assert body["revision"]["figure_count"] == 2
     assert body["revision"]["table_count"] == 2
+    assert body["revision"]["source_format"] == "arxiv_html"
+    assert body["revision"]["translated_pdf_renderer"] == "source"
+    assert body["revision"]["translated_pdf_fallback_reason"] is None
 
     # ライセンスカード(cc-by-4.0 → 図表転載可)。
     assert body["license_card"]["license"] == "cc-by-4.0"

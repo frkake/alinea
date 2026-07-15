@@ -18,8 +18,10 @@ import json
 import re
 import uuid
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import Any
 
+import alinea_worker.tasks.translate as translate_tasks
 import pytest
 from alinea_core.db.models import (
     DocumentRevision,
@@ -135,6 +137,33 @@ async def _enqueue(
         paper_id=str(ctx_data["paper"].id),
         library_item_id=str(ctx_data["library_item"].id),
     )
+
+
+async def test_completed_reingest_forces_pdf_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
+    rebuilt_with: list[bool] = []
+
+    class Session:
+        async def get(self, _model: Any, _job_id: str) -> Any:
+            return SimpleNamespace(payload={"mode": "reingest"})
+
+    async def fake_build(*_args: Any, **kwargs: Any) -> Any:
+        rebuilt_with.append(bool(kwargs.get("force")))
+        return SimpleNamespace(built=False, skipped_reason="already_built")
+
+    monkeypatch.setattr(
+        translate_tasks,
+        "build_translation_pdfs_if_ready",
+        fake_build,
+    )
+
+    await translate_tasks._build_latex_translation_pdf_after_complete(
+        {"settings": object(), "s3": object()},
+        SimpleNamespace(session=Session()),
+        "reingest-job",
+        "translation-set",
+    )
+
+    assert rebuilt_with == [True]
 
 
 def _content_with_table() -> DocumentContent:

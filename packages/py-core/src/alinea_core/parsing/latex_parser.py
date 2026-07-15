@@ -11,7 +11,7 @@ gzip(1 ファイル投稿の arXiv 慣習)。メインファイルは `\\documen
 
 `\\input`/`\\include` を再帰展開し、`\\bibliography{...}` は同梱 `.bbl` があれば埋め込む。
 出力は `alinea_core.parsing.html_parser.ParsedDocument`(既存 IR を再利用。重複定義しない)
-で `quality_level="A"`, `source_format="latex"`, `parser_version="latex-1.3.5"`。
+で `quality_level="A"`, `source_format="latex"`, `parser_version="latex-1.3.7"`。
 
 相互参照(`\\ref`/`\\eqref`)は 2 パスで解決する: 1 パス目で全ブロックを構築しつつ `\\label` を
 label→kind map に記録し、2 パス目で保留中の `ref` インラインへ `kind` を確定する(HTML パーサの
@@ -38,7 +38,7 @@ from alinea_core.document.inlines import Inline
 from alinea_core.parsing.block_ids import assign_block_ids
 from alinea_core.parsing.html_parser import ParsedDocument
 
-PARSER_VERSION = "latex-1.3.5"
+PARSER_VERSION = "latex-1.3.7"
 
 _WS = re.compile(r"\s+")
 
@@ -1373,7 +1373,14 @@ def _extract_document_body(
     text: str,
     budget: _LatexEvaluationBudget | None = None,
 ) -> str:
-    m = re.search(r"\\begin\{document\}", text)
+    m = next(
+        (
+            candidate
+            for candidate in re.finditer(r"\\begin\{document\}", text)
+            if not re.search(r"\\string\s*$", text[max(0, candidate.start() - 32) : candidate.start()])
+        ),
+        None,
+    )
     if not m:
         raise LatexParseError("no_main_tex", "no \\begin{document} found")
     inner, _end = _read_environment(text, m.end(), "document", budget)
@@ -1785,6 +1792,36 @@ def _is_second_control_word_operand_of_primitive(text: str, command_start: int) 
     )
 
 
+# Primitives whose next control-word token is a *reference* (its meaning is
+# examined or copied), never a definition site.  A definition-shaped control
+# word appearing here is an operand, e.g.
+# ``\ifdefined\NewDocumentCommand`` or ``\let\foo=\def``.
+_CONTROL_WORD_OPERAND_PRIMITIVES = frozenset(
+    {r"\ifdefined", r"\ifx", r"\ifcsname", r"\let", r"\expandafter", r"\csname"}
+)
+
+
+def _is_control_word_operand_of_primitive(text: str, command_start: int) -> bool:
+    r"""Recognize a control word used as a primitive's token operand.
+
+    Covers the first operand of ``\ifdefined``/``\ifx``/``\let`` (as in
+    ``\ifdefined\NewDocumentCommand``) as well as the second ``\ifx``/``\let``
+    operand handled by :func:`_is_second_control_word_operand_of_primitive`.
+    """
+
+    if _is_second_control_word_operand_of_primitive(text, command_start):
+        return True
+    prefix_start = max(0, command_start - 512)
+    previous = list(_CONTROL_WORD_RE.finditer(text, prefix_start, command_start))
+    if not previous:
+        return False
+    preceding = previous[-1]
+    return bool(
+        preceding.group(0) in _CONTROL_WORD_OPERAND_PRIMITIVES
+        and not text[preceding.end() : command_start].strip()
+    )
+
+
 # ============================================================================
 # 汎用ブレース/環境スキャナ
 # ============================================================================
@@ -2033,6 +2070,11 @@ def _read_environment(
     literal = _next_literal_region(text, start)
     for boundary in boundary_pattern.finditer(text, start):
         if not _is_tex_control_word_start(text, boundary.start()):
+            continue
+        # ``\string\begin{...}`` is a logging/diagnostic string, not an
+        # environment boundary.  Treating it as a real begin makes classes
+        # such as MLSys report an unterminated document environment.
+        if re.search(r"\\string\s*$", text[max(0, boundary.start() - 32) : boundary.start()]):
             continue
         while literal is not None and literal[1] <= boundary.start():
             literal = _next_literal_region(text, literal[1])
@@ -2295,6 +2337,8 @@ def _iter_top_level(
             else:
                 if not _is_tex_control_word_start(text, candidate.start()):
                     continue
+                if re.search(r"\\string\s*$", text[max(0, candidate.start() - 32) : candidate.start()]):
+                    continue
                 if budget is not None:
                     budget.reserve_structure_match()
                     budget.reserve_control_token()
@@ -2527,6 +2571,7 @@ def _append_text(
 # 種別名 → 表示名(theorem 系。plans/05 §4.2 の「種別名+番号」を LaTeX でも保持)。
 _THEOREM_ENVS = {
     "theorem": "Theorem",
+    "assumption": "Assumption",
     "lemma": "Lemma",
     "corollary": "Corollary",
     "proposition": "Proposition",
@@ -2580,6 +2625,7 @@ _NO_OUTPUT_CMDS = {
     "textstyle",
     "scriptstyle",
     "scriptscriptstyle",
+    "selectfont",
     "FloatBarrier",
     "sloppy",
     "fussy",
@@ -3284,6 +3330,12 @@ _TEX_CONDITIONAL_PRIMITIVES = frozenset(
 )
 
 
+# Control words that close an open TeX conditional.  `\fi` is the primitive;
+# `\repeat` is plain TeX's loop terminator, defined as `\let\repeat=\fi`, so it
+# closes the conditional that guards a `\loop` body.
+_TEX_CONDITIONAL_TERMINATORS = frozenset({"fi", "repeat"})
+
+
 def _parse_newif_declaration(
     text: str,
     start: int,
@@ -3335,7 +3387,11 @@ def _read_known_conditional_branch(
         command = match.group(0)[1:].rstrip("*")
         if command in state.conditionals or command in _TEX_CONDITIONAL_PRIMITIVES:
             depth += 1
-        elif command == "fi":
+        elif command in _TEX_CONDITIONAL_TERMINATORS:
+            # `\fi` closes a conditional; plain TeX's `\loop ... \repeat`
+            # ends the loop with `\let\repeat=\fi`, so `\repeat` closes the
+            # conditional guarding the loop body (e.g. `acl.sty`'s
+            # `\fillzeros`).  Both decrement the same nesting counter.
             depth -= 1
             if depth == 0:
                 if enabled:
@@ -4324,6 +4380,15 @@ def _evaluate_latex_text(
                 continue
 
         unsupported_definition = _UNSUPPORTED_DEFINITION_RE.match(text, match.start())
+        if unsupported_definition is not None and _is_control_word_operand_of_primitive(
+            text, match.start()
+        ):
+            # e.g. ``\ifdefined\NewDocumentCommand\else...\fi`` — the control
+            # word is the primitive's token operand, not a definition site.
+            if emit:
+                _append_evaluated_output(out, state, match.group(0))
+            i = match.end()
+            continue
         if unsupported_definition is not None:
             parsed_unsupported = _parse_unsupported_macro_definition(
                 text,
@@ -4895,7 +4960,7 @@ class _LatexParser:
             ]
         if base in ("figure", "wrapfigure"):
             return self._figure_env(inner)
-        if base == "table":
+        if base in ("table", "wraptable"):
             table = self._table_env(inner)
             graphics = _includegraphics_blocks(inner, self._evaluation_budget)
             if table.raw is None and graphics:

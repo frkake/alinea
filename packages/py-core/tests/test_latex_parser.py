@@ -1347,7 +1347,7 @@ def test_raw_tar_may_start_with_incidental_bzip2_magic(
 
 def test_parser_version_and_quality() -> None:
     doc = _doc()
-    assert doc.parser_version == PARSER_VERSION == "latex-1.3.5"
+    assert doc.parser_version == PARSER_VERSION == "latex-1.3.7"
     assert doc.quality_level == "A"
     assert doc.source_format == "latex"
 
@@ -1370,6 +1370,23 @@ def test_parses_all_twelve_block_types() -> None:
         "reference_entry",
     }
     assert expected <= kinds, f"missing block types: {expected - kinds}"
+
+
+def test_assumption_environment_is_parsed_as_a_theorem_block() -> None:
+    source = r"""
+\documentclass{article}
+\begin{document}
+\begin{assumption}[Quadratic growth]
+There exists $\mu > 0$ such that the objective grows quadratically.
+\end{assumption}
+\end{document}
+"""
+
+    document = parse_latex_source("main.tex", {"main.tex": source})
+
+    assumptions = [block for block in document.blocks if block.type == "theorem"]
+    assert len(assumptions) == 1
+    assert "There exists" in block_to_plain(assumptions[0])
 
 
 def test_all_block_ids_are_prefixed_pathsafe_and_unique() -> None:
@@ -3718,6 +3735,59 @@ def test_unsupported_control_symbol_is_one_mandatory_tex_token() -> None:
     assert "control-symbol-asset.png" not in str(caught.value)
 
 
+def test_plain_tex_repeat_closes_conditional_in_skipped_branch() -> None:
+    # `acl.sty` guards its line-number setup behind a disabled `\newif`
+    # branch whose body defines `\fillzeros` with a plain-TeX
+    # `\loop ... \ifnum ... \repeat`.  `\repeat` acts as `\fi` for the
+    # loop's conditional, so the branch is balanced even though it holds
+    # more `\if` than literal `\fi` tokens.
+    source = r"""
+\documentclass{article}
+\newif\ifshowlines
+\showlinesfalse
+\ifshowlines
+  \def\fillzeros#1{\loop\ifnum#1<10 \advance#1 by 1 \repeat}
+\fi
+\begin{document}
+Body text here.
+\end{document}
+"""
+
+    document = parse_latex_source("main.tex", {"main.tex": source})
+
+    body = "".join(
+        inline.v or ""
+        for block in document.blocks
+        for inline in block.inlines
+        if inline.t == "text"
+    )
+    assert "Body text here." in body
+
+
+def test_plain_tex_repeat_closes_conditional_in_selected_branch() -> None:
+    source = r"""
+\documentclass{article}
+\newif\ifshowlines
+\showlinestrue
+\ifshowlines
+  \def\fillzeros#1{\loop\ifnum#1<10 \advance#1 by 1 \repeat}
+\fi
+\begin{document}
+Body text here.
+\end{document}
+"""
+
+    document = parse_latex_source("main.tex", {"main.tex": source})
+
+    body = "".join(
+        inline.v or ""
+        for block in document.blocks
+        for inline in block.inlines
+        if inline.t == "text"
+    )
+    assert "Body text here." in body
+
+
 def test_control_word_star_is_a_separate_mandatory_tex_token() -> None:
     source = r"""
 \documentclass{article}
@@ -4082,6 +4152,22 @@ def test_unknown_unsupported_layout_caps_consecutive_group_consumption() -> None
     assert caught.value.kind == "unsupported_structural_macro"
 
 
+def test_selectfont_does_not_consume_following_colored_lstinline_tokens() -> None:
+    tokens = "".join(r"{\color{depth20}\lstinline{token}}" for _ in range(33))
+    source = "\n".join(
+        [
+            r"\documentclass{article}",
+            r"\begin{document}",
+            r"\fontfamily{phv}\selectfont " + tokens,
+            r"\end{document}",
+        ]
+    )
+
+    document = parse_latex_source("main.tex", {"main.tex": source}).to_document_content()
+
+    assert "token" in "\n".join(block_to_plain(block) for block in flatten_blocks(document.sections))
+
+
 @pytest.mark.parametrize(("group_count", "raises_limit"), [(3, False), (4, True)])
 def test_unsupported_definition_group_cap_applies_before_collecting_groups(
     monkeypatch: pytest.MonkeyPatch,
@@ -4261,6 +4347,30 @@ def test_ifx_can_compare_against_def_without_creating_a_fake_ifx_macro() -> None
   \DeclareRobustCommand{\cite}[1]{\@citess{#1}}
 \fi
 \makeatother
+\begin{document}
+\section{Introduction}
+Visible body text.
+\end{document}
+"""
+
+    parsed = parse_latex_source("main.tex", {"main.tex": source})
+
+    content = parsed.to_document_content()
+    assert any(
+        block.type == "paragraph" and "Visible body text" in block_to_plain(block)
+        for _section, block in content.iter_blocks()
+    )
+
+
+def test_ifdefined_guard_does_not_misread_operand_as_a_definition() -> None:
+    # A very common preamble guard loads `xparse` on old LaTeX kernels:
+    #   \ifdefined\NewDocumentCommand\else\RequirePackage{xparse}\fi
+    # `\NewDocumentCommand` here is the definedness operand of `\ifdefined`,
+    # not a document command being defined, so it must not be treated as an
+    # unsupported structural definition.
+    source = r"""
+\documentclass{article}
+\ifdefined\NewDocumentCommand\else\RequirePackage{xparse}\fi
 \begin{document}
 \section{Introduction}
 Visible body text.

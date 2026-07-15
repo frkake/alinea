@@ -27,6 +27,31 @@ describe("article figures", () => {
     expect(screen.queryByText("図(原論文の画像)")).not.toBeInTheDocument();
   });
 
+  test("renders LaTeX fragments in source-table cells instead of exposing commands", () => {
+    const { container } = render(
+      <FigureEmbedBlock
+        figure={{
+          figure_block_id: "blk-math-table",
+          kind: "table",
+          image_url: "",
+          table_rows: [
+            ["通信量", "$ T \\cdot N_H \\cdot D_H $"],
+            ["パラメータサイズ", "$\\frac{W}{N_{TP}}$"],
+          ],
+          caption_ja: "計算量の比較",
+          credit: "出典",
+          license_badge: "CC BY",
+          caption_separated: false,
+          share_alike: false,
+        }}
+      />,
+    );
+
+    expect(container.querySelectorAll(".katex")).toHaveLength(2);
+    expect(screen.getByRole("table")).not.toHaveTextContent("\\\\cdot");
+    expect(screen.getByRole("table")).not.toHaveTextContent("\\\\frac");
+  });
+
   test("keeps very wide source figures readable instead of shrinking them into a thin strip", () => {
     render(
       <FigureEmbedBlock

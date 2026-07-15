@@ -216,6 +216,7 @@ class CandidateUnavailable(Exception):  # noqa: N818 - task-defined public API
     source_format: str
     code: str
     message: str
+    retry_after_s: int | None = None
 
     def __str__(self) -> str:
         return self.message

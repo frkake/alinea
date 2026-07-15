@@ -68,7 +68,9 @@ export function SaveForm({ preview, onSave, saving = false, error = null }: Save
           <div className="ext-quality ext-quality-a">✓ LaTeX ソースあり — 品質レベル A 見込み</div>
         )}
         {preview.latexAvailable === false && (
-          <div className="ext-quality ext-quality-b">LaTeX ソースなし — 品質レベル B 見込み</div>
+          <div className="ext-quality ext-quality-b">
+            LaTeX ソースは取り込み時に確認 — 品質は解析後に確定
+          </div>
         )}
       </div>
 

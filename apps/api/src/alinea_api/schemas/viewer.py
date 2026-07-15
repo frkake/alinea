@@ -23,12 +23,15 @@ from alinea_api.schemas.common import (
 class RevisionInfo(BaseModel):
     id: str
     quality_level: str
+    source_format: str
     source_version: str | None
     parser_version: str
     page_count: int | None
     figure_count: int
     table_count: int
     created_at: str
+    translated_pdf_renderer: str | None = None
+    translated_pdf_fallback_reason: str | None = None
 
 
 class NewerRevision(BaseModel):

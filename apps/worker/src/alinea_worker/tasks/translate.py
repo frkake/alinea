@@ -376,12 +376,16 @@ async def _build_latex_translation_pdf_after_complete(
     settings = ctx.get("settings") or get_settings()
     storage = ctx.get("s3") or S3Storage(settings)
     ingest_job = await store.session.get(Job, ingest_job_id) if ingest_job_id else None
+    force_rebuild = bool(
+        ingest_job is not None and (ingest_job.payload or {}).get("mode") == "reingest"
+    )
     try:
         outcome = await build_translation_pdfs_if_ready(
             store.session,
             storage,
             settings,
             set_id=set_id,
+            force=force_rebuild,
         )
     except LatexPdfBuildError as exc:
         if ingest_job is not None:

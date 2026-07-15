@@ -87,6 +87,46 @@ def _typed_table_unit(
     )
 
 
+@pytest.mark.parametrize("placeholder", ["（図）", "(図)"])
+def test_image_only_figure_placeholder_is_not_required_for_source_rendering(
+    placeholder: str,
+) -> None:
+    figure = Block(id="image-only", type="figure", asset_key="figures/image-only.png")
+
+    assert latex_pdf._unit_is_displayable_for_block(_unit(figure.id, placeholder), figure) is False
+
+
+def test_source_renderer_expands_unbraced_input_files() -> None:
+    main = r"""
+\documentclass{article}
+\begin{document}
+\input section
+\end{document}
+"""
+    body = "This text is translated."
+    archive = LatexArchive(
+        text_files={"main.tex": main, "section.tex": body},
+        raw_text_files={"main.tex": main, "section.tex": body},
+        binary_files={},
+    )
+    content = parse_latex_source("main.tex", archive.text_files).to_document_content()
+    paragraph = next(
+        block
+        for _section, block in content.iter_blocks()
+        if block.type == "paragraph" and "This text" in block_to_plain(block)
+    )
+
+    rendered = render_translated_latex_source(
+        archive,
+        content,
+        {paragraph.id: _unit(paragraph.id, "取り込まれた本文を翻訳します。")},
+    )
+
+    assert "取り込まれた本文を翻訳します。" in rendered.main_tex
+    assert r"\input section" not in rendered.main_tex
+    assert paragraph.id in rendered.replaced_block_ids
+
+
 def _complex_table_source() -> str:
     return r"""
 \documentclass{article}
@@ -111,7 +151,7 @@ def _complex_table_source() -> str:
 
 
 def test_typed_table_rendering_invalidates_caption_only_pdf_cache() -> None:
-    assert PDF_BUILD_VERSION == "japanese-pdf-3.0.16"
+    assert PDF_BUILD_VERSION == "japanese-pdf-3.0.22"
 
 
 def test_render_manifest_rejects_missing_or_source_fallback_blocks() -> None:
@@ -157,21 +197,16 @@ def test_validate_render_coverage_accepts_fully_mapped_document() -> None:
     assert rendered.warnings == []
 
 
-def test_validate_render_coverage_tolerates_small_missing_fraction() -> None:
-    """20件中1件だけ原文へ書き戻せなくても(95% >= 90%のしきい値)例外にはならず、
-    原文レイアウトを維持したまま manifest の source_fallback に計上される。
-    """
+def test_validate_render_coverage_rejects_any_missing_translation() -> None:
+    """日本語PDFは訳文が欠けてはならない。"""
     content, units = _paragraph_content_and_units(20)
     replaced_block_ids = frozenset(block_id for block_id in units if block_id != "p0")
     rendered = _rendered_source_stub(replaced_block_ids)
 
-    _validate_render_coverage(rendered, content, units)
+    with pytest.raises(LatexPdfBuildError) as captured:
+        _validate_render_coverage(rendered, content, units)
 
-    assert any("p0" in warning for warning in rendered.warnings)
-    manifest = _source_render_manifest(rendered, content, units)
-    assert manifest.expected_block_ids == frozenset(units)
-    assert manifest.translated_block_ids == replaced_block_ids
-    assert manifest.source_fallback_block_ids == frozenset({"p0"})
+    assert captured.value.kind == "translation_mapping_incomplete"
 
 
 def test_validate_render_coverage_raises_when_missing_fraction_is_large() -> None:
@@ -191,7 +226,7 @@ def test_validate_render_coverage_raises_when_missing_fraction_is_large() -> Non
 
 
 def test_source_render_min_coverage_threshold_is_defensible() -> None:
-    assert _SOURCE_RENDER_MIN_COVERAGE == 0.9
+    assert _SOURCE_RENDER_MIN_COVERAGE == 1.0
 
 
 def test_render_typed_table_replaces_only_physical_cell_bodies() -> None:
@@ -225,6 +260,9 @@ def test_render_typed_table_replaces_only_physical_cell_bodies() -> None:
     assert r"\bottomrule" in rendered.main_tex
     assert r"$x_1$" in rendered.main_tex
     assert r"95\% \\[2pt]" in rendered.main_tex
+    assert r"\begin{adjustbox}{max width=\textwidth}" in rendered.main_tex
+    assert r"\end{adjustbox}" in rendered.main_tex
+    assert r"\usepackage{adjustbox}" in rendered.main_tex
     assert "Method family" not in rendered.main_tex
     assert "Fast mode" not in rendered.main_tex
     assert rendered.replacements["table"] == 1
@@ -1359,6 +1397,27 @@ def test_source_revision_match_accepts_carried_over_block_ids() -> None:
     _validate_source_revision_match(archive, content)
 
 
+def test_source_revision_match_accepts_ingest_normalized_unresolved_equation_ref() -> None:
+    """取り込み時に未解決の式参照を text へ縮退しても source PDF を使える。"""
+
+    source = r"""
+\documentclass{article}
+\begin{document}
+\section{Intro}
+As shown in Equation~\eqref{missing-equation}, this holds.
+\end{document}
+"""
+    archive = LatexArchive({"main.tex": source}, {})
+    parsed = parse_latex_source("main.tex", archive.text_files)
+    content = parsed.to_document_content()
+    paragraph = next(block for _section, block in content.iter_blocks() if block.type == "paragraph")
+    reference = next(inline for inline in paragraph.inlines if inline.t == "ref")
+    reference.t = "text"
+    reference.v = ""
+
+    _validate_source_revision_match(archive, content)
+
+
 def test_real_multifile_project_maps_every_translated_block_and_keeps_layout() -> None:
     fixture = (
         Path(__file__).parents[3] / "packages/py-core/tests/fixtures/latex_rectified_flow.tar.gz"
@@ -1725,6 +1784,18 @@ async def test_build_translation_pdf_uses_source_renderer_with_untranslated_refe
     # 参考文献は compute_translation_scope で常に翻訳対象外であり、原文のまま残る。
     assert r"\begin{thebibliography}{9}" in rendered_main_tex
     assert storage.puts[0][1] == b"scoped-source-pdf"
+
+    forced = await latex_pdf.build_translation_pdfs_if_ready(
+        db_session,
+        storage,  # type: ignore[arg-type]
+        settings,
+        set_id=str(tset.id),
+        force=True,
+    )
+
+    assert forced.built is True
+    assert len(rendered_sources) == 2
+    assert len(storage.puts) == 2
 
 
 async def test_build_translation_pdf_stays_source_renderer_when_missing_fraction_is_small(

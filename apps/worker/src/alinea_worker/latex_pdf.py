@@ -66,11 +66,15 @@ from alinea_worker.structured_pdf import (
     render_structured_japanese_source,
 )
 
-PDF_BUILD_VERSION = "japanese-pdf-3.0.16"
+PDF_BUILD_VERSION = "japanese-pdf-3.0.22"
 DEFAULT_TEXLIVE_IMAGE = "alinea-texlive-ja:latest"
 _REPO_DOCKER_WRAPPER = Path(__file__).resolve().parents[4] / "scripts" / "dev-docker.sh"
 
 _SECTION_CMD_RE = re.compile(r"\\(?:section|subsection|subsubsection)\*?(?:\s*\[[^\]]*\])?\s*\{")
+_STANDALONE_PARAGRAPH_CMD_RE = re.compile(r"\\paragraph\*?(?:\s*\[[^\]]*\])?\s*\{")
+_FRONTMATTER_TRANSLATABLE_CMD_RE = re.compile(
+    r"\\(?P<name>contribution|correspondence)(?:\s*\[[^\]]*\])?\s*\{"
+)
 _CAPTION_CMD_RE = re.compile(r"\\caption\*?(?:\s*\[[^\]]*\])?\s*\{")
 _INCLUDEGRAPHICS_CMD_RE = re.compile(r"\\includegraphics\*?(?:\s*\[[^\]]*\])?\s*\{")
 _ITEM_RE = re.compile(r"\\item\b\s*(?:\[[^\]]*\])?")
@@ -120,7 +124,7 @@ _SKIP_ENVS = {
     "thebibliography",
 }
 _FIGURE_ENVS = {"figure", "wrapfigure"}
-_TABLE_ENVS = {"table"}
+_TABLE_ENVS = {"table", "wraptable"}
 _LIST_ENVS = {"itemize", "enumerate"}
 _QUOTE_ENVS = {"quote", "quotation"}
 _TRANSPARENT_ENVS = {
@@ -133,6 +137,7 @@ _TRANSPARENT_ENVS = {
 }
 _THEOREM_ENVS = {
     "theorem",
+    "assumption",
     "lemma",
     "corollary",
     "proposition",
@@ -161,6 +166,9 @@ _LEADING_PARAGRAPH_PREFIX_RE = re.compile(
 )
 _LABEL_RE = re.compile(r"\\label\{[^}]*\}")
 _FOOTNOTE_CMD_RE = re.compile(r"\\footnote(?:\s*\[[^\]]*\])?\s*\{")
+_NONVISIBLE_MATCH_COMMAND_RE = re.compile(
+    r"\\(?:todo[A-Za-z@]*|fxnote|fixme|noteToSelf)\b"
+)
 _COMMENT_MARKER_RE = re.compile(r"%__ALINEA_COMMENT_(\d+)__")
 _PARAGRAPH_SEPARATOR_RE = re.compile(
     r"(\n(?:(?:[ \t]*\n)|(?:[ \t]*%__ALINEA_COMMENT_\d+__[ \t]*\n))+)"
@@ -191,7 +199,9 @@ _COLORED_EMPHASIS_CMD_RE = re.compile(
 )
 _LINEBREAK_CMD_RE = re.compile(r"\\\\\s*(?P<option>\[[^\]]*\])?")
 _HREF_LABEL_MARKER = "__ALINEA_HREF_LABEL__"
-_INPUT_CMD_RE = re.compile(r"\\(?P<command>input|include)\{(?P<name>[^}]+)\}")
+_INPUT_CMD_RE = re.compile(
+    r"\\(?P<command>input|include)(?:\{(?P<braced_name>[^}]+)\}|\s+(?P<bare_name>[^\s%\\{}]+))"
+)
 _PRESERVED_BODY_COMMAND_RE = re.compile(
     r"\\(?:bibliography|bibliographystyle|addbibresource|nocite)\b"
     r"(?:\s*\[[^\]]*\])?\s*\{[^{}]*\}|"
@@ -209,6 +219,13 @@ _VERBATIM_ENV_RE = re.compile(
     r"\\begin\{(verbatim\*?|Verbatim\*?|lstlisting|minted)\}.*?\\end\{\1\}",
     re.DOTALL,
 )
+_OPAQUE_PARAGRAPH_SEGMENT_RE = re.compile(
+    r"\\begin\{(?:verbatim\*?|Verbatim\*?|lstlisting|minted)\}.*?"
+    r"\\end\{(?:verbatim\*?|Verbatim\*?|lstlisting|minted)\}"
+    r"|(?<!\\)\$\$.*?(?<!\\)\$\$"
+    r"|\\\[.*?\\\]",
+    re.DOTALL,
+)
 
 # _TranslationCursor.take() の内容検証で使う正規化・類似度判定。
 # 構造化ブロックの平文(block_to_plain 等)と、レンダラーが実際に走査している
@@ -218,6 +235,11 @@ _VERBATIM_ENV_RE = re.compile(
 # すると、引用の任意引数や脚注の展開差のような正常な揺れで誤検知してしまう)。
 _MATCH_COMMAND_RE = re.compile(r"\\[A-Za-z]+\*?")
 _MATCH_NON_WORD_RE = re.compile(r"[^\w]+")
+_ZERO_ARGUMENT_COMMAND_RE = re.compile(
+    r"\\(?:newcommand|renewcommand|providecommand)\s*\{\\(?P<name>[A-Za-z@]+)\}"
+    r"(?:\s*\[\s*0\s*\])?\s*\{"
+)
+_COMMAND_USE_RE = re.compile(r"\\(?P<name>[A-Za-z@]+)\b")
 _MATCH_PREFIX_CHARS = 400
 # 実測(AutoDev 論文の再現)では正しい対応は 0.9 超、無関係な断片(色定義や
 # マクロ定義の断片など)は 0.1 未満に分かれるため、余裕を持たせても十分安全。
@@ -228,8 +250,63 @@ _MATCH_MIN_SCORE = 0.6
 _RESYNC_WINDOW = 8
 
 
+def _strip_footnote_bodies_for_match(text: str) -> str:
+    """Remove footnote bodies because they are represented by separate IR blocks."""
+
+    parts: list[str] = []
+    position = 0
+    for match in _FOOTNOTE_CMD_RE.finditer(text):
+        try:
+            _body, end = _read_braced(text, match.end() - 1)
+        except LatexParseError:
+            continue
+        parts.append(text[position : match.start()])
+        parts.append(" ")
+        position = end
+    parts.append(text[position:])
+    return "".join(parts)
+
+
+def _strip_nonvisible_macro_bodies_for_match(text: str) -> str:
+    """Remove editorial macro payloads from matching without altering emitted TeX.
+
+    Draft sources commonly put a long ``\\todo...{...}`` immediately before a
+    paragraph. The payload has no PDF-visible text, but it used to consume the
+    bounded comparison prefix and prevent the following visible paragraph from
+    matching its parsed block.
+    """
+
+    parts: list[str] = []
+    position = 0
+    for match in _NONVISIBLE_MATCH_COMMAND_RE.finditer(text):
+        cursor = match.end()
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        if cursor < len(text) and text[cursor] == "[":
+            option_end = text.find("]", cursor + 1)
+            if option_end == -1:
+                continue
+            cursor = option_end + 1
+            while cursor < len(text) and text[cursor].isspace():
+                cursor += 1
+        if cursor >= len(text) or text[cursor] != "{":
+            continue
+        try:
+            _body, end = _read_braced(text, cursor)
+        except LatexParseError:
+            continue
+        parts.append(text[position : match.start()])
+        parts.append(" ")
+        position = end
+    parts.append(text[position:])
+    return "".join(parts)
+
+
 def _normalize_for_match(text: str) -> str:
-    normalized = _COMMENT_MARKER_RE.sub(" ", text)
+    normalized = _COMMENT_MARKER_RE.sub(
+        " ",
+        _strip_nonvisible_macro_bodies_for_match(_strip_footnote_bodies_for_match(text)),
+    )
     normalized = _MATCH_COMMAND_RE.sub(" ", normalized)
     normalized = _MATCH_NON_WORD_RE.sub(" ", normalized)
     return " ".join(normalized.lower().split())[:_MATCH_PREFIX_CHARS]
@@ -273,8 +350,36 @@ def _content_match_score(raw_norm: str, block_norm: str) -> float:
     return max(matcher.ratio(), coverage)
 
 
-def _content_matches(raw_text: str, block: Block) -> bool:
-    raw_norm = _normalize_for_match(raw_text)
+def _zero_argument_command_bodies(tex: str) -> dict[str, str]:
+    """Return safe zero-argument command bodies for source-text matching only."""
+
+    commands: dict[str, str] = {}
+    for match in _ZERO_ARGUMENT_COMMAND_RE.finditer(tex):
+        try:
+            body, _end = _read_braced(tex, match.end() - 1)
+        except LatexParseError:
+            continue
+        if "#" not in body:
+            commands[match.group("name")] = body
+    return commands
+
+
+def _expand_zero_argument_commands(text: str, commands: dict[str, str]) -> str:
+    """Expand only known zero-argument commands before comparing visible text."""
+
+    expanded = text
+    for _ in range(8):
+        next_text = _COMMAND_USE_RE.sub(
+            lambda match: commands.get(match.group("name"), match.group(0)), expanded
+        )
+        if next_text == expanded:
+            break
+        expanded = next_text
+    return expanded
+
+
+def _content_matches(raw_text: str, block: Block, commands: dict[str, str]) -> bool:
+    raw_norm = _normalize_for_match(_expand_zero_argument_commands(raw_text, commands))
     block_norm = _normalize_for_match(_match_source_text(block))
     return _content_match_score(raw_norm, block_norm) >= _MATCH_MIN_SCORE
 
@@ -312,7 +417,14 @@ class LatexPdfBuildOutcome:
 class _TranslationCursor:
     """Consumes document blocks in source order while the TeX tree is transformed."""
 
-    def __init__(self, content: DocumentContent, units: dict[str, TranslationUnit]) -> None:
+    def __init__(
+        self,
+        content: DocumentContent,
+        units: dict[str, TranslationUnit],
+        *,
+        zero_argument_commands: dict[str, str] | None = None,
+        is_fairmeta: bool = False,
+    ) -> None:
         tracked = {
             "heading",
             "paragraph",
@@ -325,6 +437,8 @@ class _TranslationCursor:
         }
         self.blocks = [block for _section, block in content.iter_blocks() if block.type in tracked]
         self.units = units
+        self.zero_argument_commands = zero_argument_commands or {}
+        self.is_fairmeta = is_fairmeta
         self.pos = 0
         self.replacements: dict[str, int] = {}
         self.replaced_block_ids: set[str] = set()
@@ -393,7 +507,7 @@ class _TranslationCursor:
                 idx += 1
                 continue
             checked += 1
-            if _content_matches(match_text, block):
+            if _content_matches(match_text, block, self.zero_argument_commands):
                 if skipped_ids:
                     self.warnings.append(
                         "内容不一致のブロックを飛び越えて再同期しました: "
@@ -460,6 +574,13 @@ def _unit_is_displayable(unit: TranslationUnit) -> bool:
 
 
 def _unit_is_displayable_for_block(unit: TranslationUnit, block: Block) -> bool:
+    # Captions are the only visible source text for a figure.  The translation
+    # pipeline records a synthetic ``（図）`` unit for image-only figures so the
+    # viewer can represent the block, but there is no TeX text to replace in a
+    # source-preserving PDF.  Treating it as required would incorrectly force a
+    # structured-PDF fallback for multi-panel figures.
+    if block.type == "figure" and not block.caption and unit.text_ja.strip() in {"（図）", "(図)"}:
+        return False
     typed_table = (
         block.type == "table"
         and isinstance(unit.content_ja, dict)
@@ -873,6 +994,7 @@ def _inject_japanese_preamble(tex: str) -> str:
     preamble = r"""
 % alinea-ja-pdf: Japanese PDF build support
 \usepackage{iftex}
+\usepackage{adjustbox}
 \ifLuaTeX
   \usepackage{luatexja}
   \usepackage{luatexja-fontspec}
@@ -894,14 +1016,19 @@ def _inject_luatex_compat(tex: str) -> str:
     document_class = re.search(r"\\documentclass(?:\s*\[[^\]]*\])?\s*\{", tex)
     if document_class is None:
         return tex
+    legacy_pdfoutput = re.search(r"\\pdfoutput\b", tex)
     compat = r"""% alinea-luatex-compat: legacy pdfLaTeX classes under LuaLaTeX
 \ifdefined\directlua
   \ifdefined\pdfoutput\else
     \let\pdfoutput\outputmode
   \fi
+  \providecommand\pdfmapline[1]{}
 \fi
 """
-    return tex[: document_class.start()] + compat + tex[document_class.start() :]
+    insertion_at = document_class.start()
+    if legacy_pdfoutput is not None:
+        insertion_at = min(insertion_at, legacy_pdfoutput.start())
+    return tex[:insertion_at] + compat + tex[insertion_at:]
 
 
 def _replace_braced_command_arg(
@@ -967,6 +1094,64 @@ def _table_mapping_warning(cursor: _TranslationCursor, block: Block | None, reas
     cursor.warnings.append(f"表セルの対応が一致しないため原文を保持しました: {block_id} ({reason})")
 
 
+def _source_tabular_fragment(inner: str) -> str | None:
+    """Return the exact tabular fragment emitted by the source document.
+
+    Parser ``block.raw`` is normalized for reading and may remove presentational
+    wrappers such as ``\\textbf{...}``. Cell overlays need offsets in the actual
+    TeX string, so they must be based on this source fragment instead.
+    """
+
+    for match in _BEGIN_RE.finditer(inner):
+        name = match.group(1)
+        if name.rstrip("*") not in {"tabular", "tabularx", "tabulary", "longtable"}:
+            continue
+        try:
+            _body, end = _read_environment(inner, match.end(), name)
+        except LatexParseError:
+            return None
+        return inner[match.start() : end]
+    return None
+
+
+def _constrain_source_tabular_width(inner: str) -> str:
+    """Shrink translated tabulars only when they exceed their original line width."""
+
+    raw = _source_tabular_fragment(inner)
+    if raw is None or not re.match(r"\\begin\{(?:tabular|tabularx|tabulary)\*?\}", raw):
+        return inner
+    start = inner.find(raw)
+    if start < 0 or inner.find(raw, start + 1) >= 0:
+        return inner
+    wrapped = rf"\begin{{adjustbox}}{{max width=\textwidth}}{raw}\end{{adjustbox}}"
+    return inner[:start] + wrapped + inner[start + len(raw) :]
+
+
+def _source_grid_with_translation_contract(
+    source_grid: CanonicalTableGrid, contract_grid: CanonicalTableGrid
+) -> CanonicalTableGrid | None:
+    """Combine source offsets with the parser's persisted-cell translation contract."""
+
+    if len(source_grid.rows) != len(contract_grid.rows):
+        return None
+    rows = []
+    for source_row, contract_row in zip(source_grid.rows, contract_grid.rows, strict=True):
+        if len(source_row) != len(contract_row):
+            return None
+        rows.append(
+            [
+                source_cell.model_copy(
+                    update={
+                        "translatable": contract_cell.translatable,
+                        "math": contract_cell.math,
+                    }
+                )
+                for source_cell, contract_cell in zip(source_row, contract_row, strict=True)
+            ]
+        )
+    return source_grid.model_copy(update={"rows": rows})
+
+
 def _replace_table(inner: str, cursor: _TranslationCursor) -> str:
     caption_match, caption_text = _extract_caption_text(inner)
     block, unit = cursor.take(
@@ -984,33 +1169,40 @@ def _replace_table(inner: str, cursor: _TranslationCursor) -> str:
         cursor.mark(block)
         return inner[: caption_match.start()] + rendered_caption + inner[end:]
 
-    raw = block.raw or ""
-    grid = parse_table_grid(raw)
+    raw = _source_tabular_fragment(inner) or block.raw or ""
+    source_grid = parse_table_grid(raw)
+    # Validate the persisted matrix against parser-normalized cells (macro names
+    # such as ``\\llama{}`` are expanded there), then overlay it onto the exact
+    # source grid whose offsets still include presentational macros.
+    grid = parse_table_grid(block.raw or raw)
     if grid.supported:
         translated = validate_table_translation_content(unit.content_ja, grid)
         if translated is None:
             _table_mapping_warning(cursor, block, "invalid typed matrix")
-            cursor.mark(block)
             return inner
     else:
         try:
             translated = TableTranslationContent.model_validate(unit.content_ja)
         except (TypeError, ValueError):
             _table_mapping_warning(cursor, block, grid.reason or "unsupported source grid")
-            cursor.mark(block)
             return inner
         if translated.cells is not None:
             _table_mapping_warning(cursor, block, grid.reason or "unsupported source grid")
-            cursor.mark(block)
             return inner
 
     rendered = inner
     if grid.supported and translated.cells is not None:
-        rendered_raw = _overlay_latex_table_cells(raw, grid, translated)
+        if not source_grid.supported:
+            _table_mapping_warning(cursor, block, source_grid.reason or "source table grid")
+            return inner
+        overlay_grid = _source_grid_with_translation_contract(source_grid, grid)
+        if overlay_grid is None:
+            _table_mapping_warning(cursor, block, "source grid shape")
+            return inner
+        rendered_raw = _overlay_latex_table_cells(raw, overlay_grid, translated)
         raw_start = inner.find(raw) if raw else -1
         if rendered_raw is None or raw_start < 0 or inner.find(raw, raw_start + 1) >= 0:
             _table_mapping_warning(cursor, block, "source offsets")
-            cursor.mark(block)
             return inner
         rendered = inner[:raw_start] + rendered_raw + inner[raw_start + len(raw) :]
 
@@ -1020,16 +1212,15 @@ def _replace_table(inner: str, cursor: _TranslationCursor) -> str:
             source_caption, _caption_end = _read_braced(rendered, caption_match.end() - 1)
         except LatexParseError:
             _table_mapping_warning(cursor, block, "caption")
-            cursor.mark(block)
             return inner
         caption = _table_caption_to_latex(list(translated.caption), cursor, source_caption)
         if caption is None:
             _table_mapping_warning(cursor, block, "caption")
-            cursor.mark(block)
             return inner
         rendered_caption, end = _replace_braced_command_arg(rendered, caption_match, caption)
         rendered = rendered[: caption_match.start()] + rendered_caption + rendered[end:]
 
+    rendered = _constrain_source_tabular_width(rendered)
     cursor.mark(block)
     return rendered
 
@@ -1192,8 +1383,8 @@ def _trailing_layout(chunk: str) -> str:
     return match.group("suffix") if match else ""
 
 
-def _split_verbatim_segments(text: str) -> list[tuple[bool, str]]:
-    """verbatim 系環境を丸ごと不透明な断片として切り出す。
+def _split_opaque_paragraph_segments(text: str) -> list[tuple[bool, str]]:
+    """Split verbatim and display-math fragments out of paragraph matching.
 
     内部に空行があっても後続の段落分割(_PARAGRAPH_SEPARATOR_RE)の対象にしない。
     figure/table に包まれた minted は _replace_caption 側でキャプション以外を
@@ -1204,7 +1395,7 @@ def _split_verbatim_segments(text: str) -> list[tuple[bool, str]]:
 
     segments: list[tuple[bool, str]] = []
     pos = 0
-    for match in _VERBATIM_ENV_RE.finditer(text):
+    for match in _OPAQUE_PARAGRAPH_SEGMENT_RE.finditer(text):
         if match.start() > pos:
             segments.append((False, text[pos : match.start()]))
         segments.append((True, match.group(0)))
@@ -1220,7 +1411,7 @@ def _replace_paragraphs(
     *,
     strip_leading_options: bool = False,
 ) -> str:
-    segments = _split_verbatim_segments(text)
+    segments = _split_opaque_paragraph_segments(text)
     if not any(is_verbatim for is_verbatim, _segment in segments):
         return _replace_paragraphs_segment(
             text, cursor, strip_leading_options=strip_leading_options
@@ -1353,13 +1544,28 @@ def _transform_env(
     return inner
 
 
+def _find_standalone_paragraph_command(text: str, position: int) -> re.Match[str] | None:
+    """Find the next newline-delimited ``\\paragraph`` title, skipping run-ins."""
+
+    for match in _STANDALONE_PARAGRAPH_CMD_RE.finditer(text, position):
+        try:
+            _title, end = _read_braced(text, match.end() - 1)
+        except LatexParseError:
+            continue
+        if end < len(text) and text[end] == "\n":
+            return match
+    return None
+
+
 def _transform_latex_text(text: str, cursor: _TranslationCursor, abstract_ja: str | None) -> str:
     out: list[str] = []
     i = 0
     while i < len(text):
         m_sec = _SECTION_CMD_RE.search(text, i)
+        m_paragraph = _find_standalone_paragraph_command(text, i)
+        m_frontmatter = _FRONTMATTER_TRANSLATABLE_CMD_RE.search(text, i)
         m_env = _BEGIN_RE.search(text, i)
-        matches = [m for m in (m_sec, m_env) if m is not None]
+        matches = [m for m in (m_sec, m_paragraph, m_frontmatter, m_env) if m is not None]
         if not matches:
             out.append(_replace_paragraphs(text[i:], cursor))
             break
@@ -1369,6 +1575,31 @@ def _transform_latex_text(text: str, cursor: _TranslationCursor, abstract_ja: st
             source_title, source_end = _read_braced(text, match.end() - 1)
             block, unit = cursor.take("heading", match_text=source_title)
             replacement = _unit_to_latex(unit, cursor, source_latex=source_title)
+            repl, end = _replace_braced_command_arg(text, match, replacement)
+            if replacement is not None:
+                cursor.mark(block)
+            out.append(repl)
+            i = max(end, source_end)
+            continue
+        if match is m_paragraph:
+            source_title, source_end = _read_braced(text, match.end() - 1)
+            block, unit = cursor.take("paragraph", match_text=source_title)
+            replacement = _unit_to_latex(unit, cursor, source_latex=source_title)
+            repl, end = _replace_braced_command_arg(text, match, replacement)
+            if replacement is not None:
+                cursor.mark(block)
+            out.append(repl)
+            i = max(end, source_end)
+            continue
+        if match is m_frontmatter:
+            source_body, source_end = _read_braced(text, match.end() - 1)
+            name = match.group("name")
+            match_text = source_body if name == "contribution" else f"Correspondence: {source_body}"
+            block, unit = cursor.take("paragraph", match_text=match_text)
+            replacement = _unit_to_latex(unit, cursor, source_latex=source_body)
+            if replacement is not None and name == "correspondence" and cursor.is_fairmeta:
+                body = re.sub(r"^\s*(?:連絡先|Correspondence)\s*[:：]\s*", "", replacement)
+                replacement = rf"\metadata[連絡先]{{{body}}}"
             repl, end = _replace_braced_command_arg(text, match, replacement)
             if replacement is not None:
                 cursor.mark(block)
@@ -1484,7 +1715,7 @@ def _expand_project_includes(
         return text
 
     def replace(match: re.Match[str]) -> str:
-        name = match.group("name").strip()
+        name = (match.group("braced_name") or match.group("bare_name") or "").strip()
         candidates = [name] if name.endswith(".tex") else [name, f"{name}.tex"]
         selected = next(
             (
@@ -1530,7 +1761,12 @@ def render_translated_latex_source(
     expanded = _expand_project_includes(main_tex, protected_files, {main_name})
     expanded = _resolve_pdf_bibliography(expanded, protected_files)
     expanded = _replace_abstract_command(expanded, abstract_ja)
-    cursor = _TranslationCursor(content, units)
+    cursor = _TranslationCursor(
+        content,
+        units,
+        zero_argument_commands=_zero_argument_command_bodies(expanded),
+        is_fairmeta=bool(re.search(r"\\documentclass(?:\s*\[[^\]]*\])?\s*\{fairmeta\}", expanded)),
+    )
     document_match = re.search(r"\\begin\{document\}", expanded)
     if document_match is None:
         raise LatexPdfBuildError("invalid_latex", "main TeX has no \\begin{document}")
@@ -1715,11 +1951,36 @@ def _block_signature(content: DocumentContent) -> list[tuple[str, str]]:
     ]
 
 
+def _normalize_unresolved_refs_for_revision_match(parsed: Any) -> None:
+    """Apply the ingest-time unresolved-reference normalization before comparison."""
+
+    labels = {block.label for block in parsed.blocks if block.label}
+    element_kinds = {"equation", "figure", "table", "theorem", "algorithm"}
+
+    def normalize(inlines: list[Any]) -> None:
+        for inline in inlines:
+            if (
+                inline.t == "ref"
+                and inline.kind in element_kinds
+                and (inline.ref or "") not in labels
+            ):
+                inline.t = "text"
+                inline.v = inline.v or ""
+            elif inline.t == "emphasis" and getattr(inline, "children", None):
+                normalize(inline.children)
+
+    for block in parsed.blocks:
+        normalize(block.inlines)
+        normalize(block.caption)
+
+
 def _validate_source_revision_match(archive: LatexArchive, content: DocumentContent) -> None:
     """Refuse positional replacement when the source and stored IR diverge."""
 
     main_name, _main_tex = select_main_tex(archive.text_files)
-    parsed = parse_latex_source(main_name, archive.text_files).to_document_content()
+    parsed_document = parse_latex_source(main_name, archive.text_files)
+    _normalize_unresolved_refs_for_revision_match(parsed_document)
+    parsed = parsed_document.to_document_content()
     source_signature = _block_signature(parsed)
     revision_signature = _block_signature(content)
     if source_signature == revision_signature:
@@ -1756,7 +2017,7 @@ def _validate_source_revision_match(archive: LatexArchive, content: DocumentCont
 # 90% 以上のブロックが実際に原文へ書き戻せていれば、原文レイアウトを維持し
 # 残りは原文(英語)のまま表示する。閾値未満は正規化の不一致では説明できない
 # 本当のマッピング破綻とみなし、従来通り例外を投げて汎用レイアウトへ後退する。
-_SOURCE_RENDER_MIN_COVERAGE = 0.9
+_SOURCE_RENDER_MIN_COVERAGE = 1.0
 
 
 def _validate_render_coverage(
@@ -1788,16 +2049,6 @@ def _validate_render_coverage(
                 "warnings": rendered.warnings[:10],
             },
         )
-    # 閾値以上のカバレッジは原文レイアウトを維持したまま後退させない。未マッピングの
-    # ブロックは原文(英語)のまま残るため、その件数と内訳を warnings に残し、
-    # joblog(tasks/translate.py の fallback-warning 経路)で運用が把握できるようにする。
-    missing_desc = ", ".join(
-        f"{block_id}:{by_id.get(block_id, 'unknown')}" for block_id in missing[:20]
-    )
-    rendered.warnings.append(
-        "一部の翻訳ブロックをLaTeX原文へ書き戻せなかったため原文(英語)のまま残しました: "
-        f"{replaced}/{len(expected)} 件を置換 (未反映: {missing_desc})"
-    )
 
 
 def _validate_render_manifest(manifest: PdfRenderManifest) -> None:
@@ -2064,6 +2315,7 @@ async def build_translation_pdfs_if_ready(
     settings: CoreSettings,
     *,
     set_id: str,
+    force: bool = False,
 ) -> LatexPdfBuildOutcome:
     """Build and persist a validated Japanese PDF for every supported source format."""
 
@@ -2105,6 +2357,8 @@ async def build_translation_pdfs_if_ready(
         stats_record_key
     ) or {}
     if (
+        not force
+        and
         existing_translated is not None
         and existing_record.get("build_version") == PDF_BUILD_VERSION
         and existing_record.get("translation_set_id") == set_id

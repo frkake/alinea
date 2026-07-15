@@ -135,6 +135,37 @@ def test_latex_grid_preserves_structural_wrappers_and_body_offsets() -> None:
     assert grid.rows[2][1].translatable is False
 
 
+def test_latex_grid_preserves_macro_only_multicolumn_row() -> None:
+    """Unknown source macros still occupy a physical cell for PDF overlays."""
+    raw = r"""\begin{tabular}{ll}
+\multicolumn{2}{l}{\textbf{\PEvideo}} \\
+Model & Score \\
+\end{tabular}"""
+
+    grid = parse_table_grid(raw)
+
+    assert grid.supported is True
+    assert [[cell.id for cell in row] for row in grid.rows] == [
+        ["r0c0"],
+        ["r1c0", "r1c1"],
+    ]
+    macro_cell = grid.rows[0][0]
+    assert macro_cell.source == ""
+    assert macro_cell.latex_wrappers == ["multicolumn"]
+    assert raw[macro_cell.latex_body_start : macro_cell.latex_body_end] == r"\textbf{\PEvideo}"
+
+
+def test_latex_grid_ignores_comment_after_final_row_separator() -> None:
+    raw = r"""\begin{tabular}{ll}
+Model & Score \\ %__ALINEA_COMMENT_16__
+\end{tabular}"""
+
+    grid = parse_table_grid(raw)
+
+    assert grid.supported is True
+    assert [[cell.id for cell in row] for row in grid.rows] == [["r0c0", "r0c1"]]
+
+
 def test_latex_tabular_star_preserves_width_and_optional_position_structure() -> None:
     raw = (
         r"\begin{tabular*}{\linewidth}[t]{@{\extracolsep{\fill}}ll}"

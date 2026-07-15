@@ -44,7 +44,10 @@ from alinea_core.arxiv.limits import (
     MAX_ARXIV_HTML_BYTES,
     MAX_ARXIV_PDF_BYTES,
     HttpSourceTooLargeError,
+    RangedDownloadFailedError,
+    RangedDownloadUnsupportedError,
     read_bounded_http_body,
+    read_bounded_http_body_ranged,
 )
 from alinea_core.arxiv.metadata import ArxivMeta, fetch_metadata
 from alinea_core.db.models import (
@@ -506,6 +509,13 @@ _RETRYABLE_CANDIDATE_CODES = frozenset(
 _RETRYABLE_OPERATIONAL_SUFFIXES = ("_crashed", "_lifecycle", "_timeout")
 _LATEX_FETCH_MAX_ATTEMPTS = 3
 _LATEX_FETCH_RETRYABLE_CODES = frozenset({"network_error", "rate_limited", "upstream_5xx"})
+_LATEX_FETCH_RETRY_BACKOFF_S = 20
+# arXiv rate-limits the e-print download per egress IP (a shared proxy makes this
+# common); ``429`` is explicitly recoverable and usually clears within minutes, so
+# it gets a longer, backoff-capped budget than transient network errors.  Losing
+# the LaTeX candidate here silently degrades the document to HTML/PDF.
+_LATEX_FETCH_RATE_LIMIT_MAX_ATTEMPTS = 8
+_LATEX_FETCH_RATE_LIMIT_BACKOFF_CAP_S = 60
 _DETERMINISTIC_OCR_CANDIDATE_CODES = frozenset(
     {
         "ocr_engine_unavailable",
@@ -1141,6 +1151,13 @@ class IngestRun:
                 await self._load_pdf_upload_bytes()
                 return
 
+            if fetch_ck.get("pdf_too_large"):
+                # The original PDF was skipped as oversized on the first pass;
+                # do not re-acquire it (it would fail again).  Evidence stays
+                # empty and the LaTeX/HTML candidates carry the document.
+                self._pdf_bytes = b""
+                return
+
             # arXiv の再開時も原本 PDF 不変条件を再確認する。資産行が stale でも
             # canonical key、最後に network の順で回復する。
             assert self.ref is not None
@@ -1151,6 +1168,10 @@ class IngestRun:
                 http = make_arxiv_client(self.deps.settings)
             try:
                 await self._acquire_original_pdf(http)
+            except FetchError as exc:
+                if exc.kind != "source_too_large":
+                    raise
+                self._pdf_bytes = b""
             finally:
                 if owns_http:
                     await http.aclose()
@@ -1169,6 +1190,7 @@ class IngestRun:
             http = make_arxiv_client(self.deps.settings)
         assert self.ref is not None
         source_bytes = b""
+        pdf_too_large = False
         try:
             meta = await fetch_metadata(self.ref, http=http, settings=self.deps.settings)
             paper = await self._get_paper()
@@ -1178,21 +1200,42 @@ class IngestRun:
             )
             self.ref = self._resolved_source_ref()
             await self.session.commit()
-            source_bytes = await self._acquire_original_pdf(http)
+            try:
+                source_bytes = await self._acquire_original_pdf(http)
+            except FetchError as exc:
+                # An oversized original PDF must not abort the whole ingest: the
+                # LaTeX/HTML candidates in the parsing stage may still succeed
+                # (P3 — degrade, don't fail closed).  Retaining the original PDF
+                # is best-effort; PDF-text evidence simply becomes empty.
+                if exc.kind != "source_too_large":
+                    raise
+                pdf_too_large = True
+                self._pdf_bytes = b""
         finally:
             if owns_http:
                 await http.aclose()
 
-        await self._log(
-            "fetching",
-            "info",
-            "原文 PDF を取得しました",
-            detail={"format": "pdf", "bytes": len(source_bytes)},
-        )
+        if pdf_too_large:
+            await self._log(
+                "fetching",
+                "warning",
+                "原文 PDF が上限を超えるため保持をスキップしました",
+                detail={"format": "pdf"},
+            )
+        else:
+            await self._log(
+                "fetching",
+                "info",
+                "原文 PDF を取得しました",
+                detail={"format": "pdf", "bytes": len(source_bytes)},
+            )
+        checkpoint: dict[str, Any] = {"source_version": self.source_version}
+        if pdf_too_large:
+            checkpoint["pdf_too_large"] = True
         await self.store.checkpoint(
             self.job_id,
             "fetching",
-            {"source_version": self.source_version},
+            checkpoint,
             progress=10,
         )
 
@@ -1452,22 +1495,31 @@ class IngestRun:
         paper.latest_version = meta.latest_version
 
     async def _fetch_latex_candidate_bytes(self, http: httpx.AsyncClient) -> bytes:
-        for attempt in range(1, _LATEX_FETCH_MAX_ATTEMPTS + 1):
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 return await self._fetch_latex_candidate_bytes_once(http)
             except CandidateUnavailable as exc:
-                if (
-                    exc.code not in _LATEX_FETCH_RETRYABLE_CODES
-                    or attempt >= _LATEX_FETCH_MAX_ATTEMPTS
-                ):
+                # ``rate_limited`` (429) gets a longer, backoff-capped budget: it
+                # is explicitly recoverable and typically clears within minutes.
+                max_attempts = (
+                    _LATEX_FETCH_RATE_LIMIT_MAX_ATTEMPTS
+                    if exc.code == "rate_limited"
+                    else _LATEX_FETCH_MAX_ATTEMPTS
+                )
+                if exc.code not in _LATEX_FETCH_RETRYABLE_CODES or attempt >= max_attempts:
                     raise
                 log.info(
                     "latex_candidate_fetch_retry",
                     attempt=attempt,
-                    max_attempts=_LATEX_FETCH_MAX_ATTEMPTS,
+                    max_attempts=max_attempts,
                     code=exc.code,
                 )
-        raise AssertionError("unreachable")
+                backoff = _LATEX_FETCH_RETRY_BACKOFF_S * attempt
+                if exc.code == "rate_limited":
+                    backoff = min(backoff, _LATEX_FETCH_RATE_LIMIT_BACKOFF_CAP_S)
+                await asyncio.sleep(max(backoff, exc.retry_after_s or 0))
 
     async def _fetch_latex_candidate_bytes_once(self, http: httpx.AsyncClient) -> bytes:
         assert self.ref is not None
@@ -1489,8 +1541,15 @@ class IngestRun:
                         "latex", "network_error", "arxiv e-print request timed out"
                     )
                 if resp.status_code == 429:
+                    retry_after = resp.headers.get("retry-after", "").strip()
+                    retry_after_s = (
+                        min(max(int(retry_after), 1), 600) if retry_after.isdecimal() else None
+                    )
                     raise CandidateUnavailable(
-                        "latex", "rate_limited", "arxiv e-print request was rate limited"
+                        "latex",
+                        "rate_limited",
+                        "arxiv e-print request was rate limited",
+                        retry_after_s=retry_after_s,
                     )
                 if resp.status_code == 404:
                     raise CandidateUnavailable(
@@ -1517,9 +1576,53 @@ class IngestRun:
                         "latex", "source_too_large", "arxiv e-print exceeds size limit"
                     ) from exc
         except httpx.HTTPError as exc:
+            # A proxy that truncates large bodies closes the stream early
+            # (RemoteProtocolError).  Recover the full archive with bounded
+            # Range requests before giving up on the LaTeX candidate.
+            recovered = await self._fetch_latex_candidate_bytes_ranged(http)
+            if recovered is not None:
+                return recovered
             raise CandidateUnavailable(
                 "latex", "network_error", "arxiv e-print request failed"
             ) from exc
+
+    async def _fetch_latex_candidate_bytes_ranged(
+        self, http: httpx.AsyncClient
+    ) -> bytes | None:
+        assert self.ref is not None
+        url = eprint_url(self.ref, self.deps.settings.alinea_arxiv_base_url or None)
+        data: bytes | None = None
+        for attempt in range(1, _LATEX_FETCH_MAX_ATTEMPTS + 1):
+            try:
+                data = await read_bounded_http_body_ranged(
+                    http,
+                    url,
+                    max_bytes=MAX_ARXIV_EPRINT_BYTES,
+                    throttle=self._throttle,
+                )
+                break
+            except HttpSourceTooLargeError as exc:
+                raise CandidateUnavailable(
+                    "latex", "source_too_large", "arxiv e-print exceeds size limit"
+                ) from exc
+            except RangedDownloadUnsupportedError:
+                return None
+            except RangedDownloadFailedError:
+                if attempt >= _LATEX_FETCH_MAX_ATTEMPTS:
+                    return None
+                log.info(
+                    "latex_candidate_ranged_retry",
+                    attempt=attempt,
+                    max_attempts=_LATEX_FETCH_MAX_ATTEMPTS,
+                )
+                await asyncio.sleep(_LATEX_FETCH_RETRY_BACKOFF_S)
+        if data is None:
+            return None
+        if b"pdf" in data[:5].lower():
+            # A PDF-only submission still resolves via ranges; treat as no LaTeX.
+            return None
+        log.info("latex_candidate_ranged_recovery", byte_size=len(data))
+        return data
 
     async def _fetch_html_candidate_bytes(self, http: httpx.AsyncClient) -> bytes:
         assert self.ref is not None
@@ -4478,8 +4581,15 @@ class IngestRun:
             source_version=self.source_version,
             appendix_untranslated=appendix_untranslated,
         )
-        if completed:
+        # Reingest can reuse an already-complete translation set.  In that
+        # case ``completed`` is false, but a newer PDF renderer must still be
+        # allowed to rebuild the Japanese PDF through the same UI action.
+        # Initial ingest waits for the section jobs to finish and lets the
+        # completion path build once, avoiding a premature "not complete"
+        # build attempt.
+        if completed or self.payload.mode == "reingest":
             await self._build_latex_translation_pdf()
+        if completed:
             # 完了ナッジ(§21.2)。job_events は job_id 一致のイベントを受けて DB の
             # 最終状態(succeeded)を再確認し done フレームを組む(routers/jobs.py 参照)ため、
             # ここでの data 自体は any でよいが InfoPanel の onProgress と同形に揃える。
@@ -4494,6 +4604,7 @@ class IngestRun:
                 self.deps.s3,
                 self.deps.settings,
                 set_id=self.set_id,
+                force=self.payload.mode == "reingest",
             )
         except LatexPdfBuildError as exc:
             await self._log(

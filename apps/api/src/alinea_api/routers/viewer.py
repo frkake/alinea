@@ -932,6 +932,12 @@ async def get_viewer(item_id: str, user: CurrentUser, db: DbDep) -> ViewerInit:
     )
 
     stats = revision.stats or {}
+    translated_pdf = stats.get("translated_pdf") if isinstance(stats, dict) else None
+    translated_pdf_record = (
+        translated_pdf.get(style)
+        if isinstance(translated_pdf, dict) and isinstance(translated_pdf.get(style), dict)
+        else {}
+    )
     figure_count = sum(1 for _s, b in content.iter_blocks() if b.type == "figure")
     table_count = sum(1 for _s, b in content.iter_blocks() if b.type == "table")
 
@@ -962,12 +968,15 @@ async def get_viewer(item_id: str, user: CurrentUser, db: DbDep) -> ViewerInit:
         revision=RevisionInfo(
             id=str(revision.id),
             quality_level=revision.quality_level,
+            source_format=revision.source_format,
             source_version=revision.source_version,
             parser_version=revision.parser_version,
             page_count=stats.get("pages") if isinstance(stats, dict) else None,
             figure_count=figure_count,
             table_count=table_count,
             created_at=_iso(revision.created_at) or "",
+            translated_pdf_renderer=translated_pdf_record.get("renderer"),
+            translated_pdf_fallback_reason=translated_pdf_record.get("fallback_reason"),
         ),
         newer_revision=None,
         toc=toc,

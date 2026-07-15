@@ -1736,7 +1736,7 @@ async def test_ingest_prefers_latex_source_when_available(
         .one()
     )
     assert rev.source_format == "latex"
-    assert rev.parser_version == "latex-1.3.5"
+    assert rev.parser_version == "latex-1.3.7"
     assert rev.quality_level == "A"
     assert rev.stats["candidate_failures"] == []
     assert rev.stats["completeness"]["accepted"] is True
@@ -1965,9 +1965,9 @@ async def test_legacy_revision_without_figure_identity_rolls_to_new_parser_revis
     revision_list = revisions.all()
     assert {item.parser_version for item in revision_list} == {
         "latex-1.2.0",
-        "latex-1.3.5",
+        "latex-1.3.7",
     }
-    current = next(item for item in revision_list if item.parser_version == "latex-1.3.5")
+    current = next(item for item in revision_list if item.parser_version == "latex-1.3.7")
     assert current.stats["figure_materialization_version"] == (
         worker_pipeline.FIGURE_MATERIALIZATION_VERSION
     )
@@ -5735,14 +5735,19 @@ async def test_arxiv_source_download_bounds_declared_and_actual_lengths_without_
     assert completed is not None
     storage = S3Storage()
     if source == "pdf":
-        assert completed.status == "failed"
-        assert json.loads(completed.error or "{}")["code"] == "source_too_large"
-        revisions = (
-            await db_session.execute(
-                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+        # An oversized original PDF must not fail the whole ingest: retention is
+        # skipped and the document falls back to the HTML candidate (P3).
+        assert completed.status == "succeeded", completed.error
+        revision = (
+            (
+                await db_session.execute(
+                    select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+                )
             )
-        ).scalars()
-        assert revisions.all() == []
+            .scalars()
+            .one()
+        )
+        assert revision.source_format == "arxiv_html"
         oversized_key = StorageKeys.original_pdf(ids["paper_id"], "v1")
         oversized_kind = "pdf"
     else:
