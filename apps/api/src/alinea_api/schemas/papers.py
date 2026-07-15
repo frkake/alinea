@@ -11,6 +11,24 @@ class PapersReingestResponse(BaseModel):
     job_id: str
 
 
+class FigureMaterializeResponse(BaseModel):
+    """未読込(deferred)図のオンデマンド素材化の応答。
+
+    ``job_id`` が None のときは既に素材化済み(何もしない)。素材化を要するときは
+    図数上限を引き上げた再取り込みジョブを起こし ``job_id`` を返す。
+    """
+
+    job_id: str | None = None
+    already_materialized: bool = False
+    figure_limit: int | None = None
+
+
+class FigureMaterializeBatchRequest(BaseModel):
+    """未読込図をまとめて素材化する要求(先頭から ``count`` 件を対象に上限拡張)。"""
+
+    count: int = 1
+
+
 class PapersIngestLogEntry(BaseModel):
     """§4.3 の処理ログ 1 行(joblog.project_ingest_log の射影と同型)。"""
 

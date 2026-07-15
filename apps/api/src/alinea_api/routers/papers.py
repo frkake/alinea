@@ -34,6 +34,8 @@ from alinea_api.routers.library_items import _summary_for
 from alinea_api.routers.viewer import resolve_owned_library_item
 from alinea_api.schemas.common import LibraryItemSummary
 from alinea_api.schemas.papers import (
+    FigureMaterializeBatchRequest,
+    FigureMaterializeResponse,
     PapersIngestLogEntry,
     PapersIngestLogResponse,
     PapersReingestResponse,
@@ -136,6 +138,146 @@ async def reingest(
 
     await wakeup(job_id)
     return PapersReingestResponse(job_id=job_id)
+
+
+# --- 未読込図のオンデマンド素材化 (§figure-limit block degradation) --------------------
+
+
+def _deferred_figure_ids(revision: DocumentRevision | None) -> list[str]:
+    """図数上限を超えて縮退した未読込図の block_id を、本文順に返す。"""
+
+    if revision is None or not isinstance(revision.stats, dict):
+        return []
+    failures = revision.stats.get("figure_asset_failures")
+    if not isinstance(failures, list):
+        return []
+    return [
+        str(item["figure_id"])
+        for item in failures
+        if isinstance(item, dict)
+        and item.get("code") == "figure_deferred"
+        and "figure_id" in item
+    ]
+
+
+def _materialized_figure_count(revision: DocumentRevision | None) -> int:
+    """既に素材化済みの図数(figure_asset_manifest の要素数)。"""
+
+    if revision is None or not isinstance(revision.stats, dict):
+        return 0
+    manifest = revision.stats.get("figure_asset_manifest")
+    return len(manifest) if isinstance(manifest, list) else 0
+
+
+async def _enqueue_figure_expansion(
+    db: DbDep,
+    wakeup: JobWakeupDep,
+    *,
+    paper: Paper,
+    library_item_id: str | None,
+    user_id: str,
+    figure_limit: int,
+) -> str:
+    """図数上限を引き上げた再取り込みジョブを起こし job_id を返す。"""
+
+    if await _active_ingest_job(db, str(paper.id)) is not None:
+        raise ProblemException("conflict", detail="同一 Paper の取り込みが実行中です")
+    store = JobStore(db)
+    try:
+        job_id = await store.enqueue(
+            kind="ingest",
+            payload={
+                "mode": "reingest",
+                "source": "arxiv",
+                "arxiv_id": paper.arxiv_id,
+                "url": None,
+                "library_item_id": library_item_id,
+                "figure_limit": figure_limit,
+            },
+            priority="bulk",
+            user_id=user_id,
+            paper_id=str(paper.id),
+            library_item_id=library_item_id,
+        )
+    except IntegrityError:
+        await db.rollback()
+        raise ProblemException("conflict", detail="同一 Paper の取り込みが実行中です") from None
+    await wakeup(job_id)
+    return job_id
+
+
+@router.post(
+    "/api/library-items/{library_item_id}/figures/{block_id}/materialize",
+    response_model=FigureMaterializeResponse,
+    status_code=202,
+    operation_id="figures_materialize_deferred",
+)
+async def materialize_deferred_figure(
+    library_item_id: str,
+    block_id: str,
+    user: CurrentUser,
+    db: DbDep,
+    wakeup: JobWakeupDep,
+) -> FigureMaterializeResponse:
+    """未読込(deferred)の1図をオンデマンドで素材化する(図数上限を必要分だけ拡張)。"""
+
+    item = await resolve_owned_library_item(db, library_item_id, user)
+    paper = await db.get(Paper, str(item.paper_id))
+    if paper is None:
+        raise ProblemException("not_found")
+    revision = await get_latest_paper_revision(db, paper)
+    deferred = _deferred_figure_ids(revision)
+    if block_id not in deferred:
+        # 既に素材化済み、または deferred でない block → 何もしない(冪等)。
+        return FigureMaterializeResponse(job_id=None, already_materialized=True)
+    # 対象図を含む位置まで上限を広げる。deferred は本文順なので index+1 分を追加する。
+    include_through = deferred.index(block_id) + 1
+    figure_limit = _materialized_figure_count(revision) + include_through
+    job_id = await _enqueue_figure_expansion(
+        db,
+        wakeup,
+        paper=paper,
+        library_item_id=str(item.id),
+        user_id=str(user.id),
+        figure_limit=figure_limit,
+    )
+    return FigureMaterializeResponse(job_id=job_id, figure_limit=figure_limit)
+
+
+@router.post(
+    "/api/library-items/{library_item_id}/figures/materialize-batch",
+    response_model=FigureMaterializeResponse,
+    status_code=202,
+    operation_id="figures_materialize_batch",
+)
+async def materialize_deferred_figures_batch(
+    library_item_id: str,
+    body: FigureMaterializeBatchRequest,
+    user: CurrentUser,
+    db: DbDep,
+    wakeup: JobWakeupDep,
+) -> FigureMaterializeResponse:
+    """未読込図を本文順に ``count`` 件、まとめて素材化する(段階的な上限拡張)。"""
+
+    item = await resolve_owned_library_item(db, library_item_id, user)
+    paper = await db.get(Paper, str(item.paper_id))
+    if paper is None:
+        raise ProblemException("not_found")
+    revision = await get_latest_paper_revision(db, paper)
+    deferred = _deferred_figure_ids(revision)
+    if not deferred:
+        return FigureMaterializeResponse(job_id=None, already_materialized=True)
+    count = max(1, min(body.count, len(deferred)))
+    figure_limit = _materialized_figure_count(revision) + count
+    job_id = await _enqueue_figure_expansion(
+        db,
+        wakeup,
+        paper=paper,
+        library_item_id=str(item.id),
+        user_id=str(user.id),
+        figure_limit=figure_limit,
+    )
+    return FigureMaterializeResponse(job_id=job_id, figure_limit=figure_limit)
 
 
 # --- GET /api/papers/{paper_id}/ingest-log -----------------------------------------

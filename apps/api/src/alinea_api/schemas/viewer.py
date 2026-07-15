@@ -170,6 +170,9 @@ class FigureItem(BaseModel):
     caption_ja: str | None
     image_url: str | None
     position: FigurePosition
+    # True when the figure was deferred past the per-document budget and can be
+    # loaded on demand (image_url is None until it is materialized).
+    deferred: bool = False
 
 
 class FiguresResponse(BaseModel):

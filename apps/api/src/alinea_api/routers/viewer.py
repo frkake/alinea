@@ -501,10 +501,27 @@ def _decorate_inlines(
     return out
 
 
+def _deferred_figure_ids(revision: DocumentRevision) -> set[str]:
+    """図数上限を超えて縮退した未読込図の block_id 集合(オンデマンド読込対象)。"""
+
+    stats = revision.stats if isinstance(revision.stats, dict) else {}
+    failures = stats.get("figure_asset_failures")
+    if not isinstance(failures, list):
+        return set()
+    return {
+        str(item["figure_id"])
+        for item in failures
+        if isinstance(item, dict)
+        and item.get("code") == "figure_deferred"
+        and "figure_id" in item
+    }
+
+
 def _block_wire(
     block: Block,
     citation_labels: dict[str, str] | None = None,
     ref_labels: dict[str, str] | None = None,
+    deferred_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     data = block.model_dump(mode="json", exclude_none=True)
     citation_labels = citation_labels or {}
@@ -523,6 +540,10 @@ def _block_wire(
             data["source_grid"] = source_grid.model_dump(mode="json")
     if block.type in ("figure", "table", "equation") and block.asset_key:
         data["asset_url"] = asset_url(block.asset_key)
+    # A figure/table whose asset was deferred past the per-document budget can be
+    # loaded on demand; the viewer renders a "load image" affordance for it.
+    if deferred_ids and not block.asset_key and block.id in deferred_ids:
+        data["deferred"] = True
     return data
 
 
@@ -530,10 +551,16 @@ def _section_wire(
     section: Section,
     citation_labels: dict[str, str] | None = None,
     ref_labels: dict[str, str] | None = None,
+    deferred_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     data = section.model_dump(mode="json", exclude_none=True, exclude={"blocks", "sections"})
-    data["blocks"] = [_block_wire(block, citation_labels, ref_labels) for block in section.blocks]
-    data["sections"] = [_section_wire(sub, citation_labels, ref_labels) for sub in section.sections]
+    data["blocks"] = [
+        _block_wire(block, citation_labels, ref_labels, deferred_ids) for block in section.blocks
+    ]
+    data["sections"] = [
+        _section_wire(sub, citation_labels, ref_labels, deferred_ids)
+        for sub in section.sections
+    ]
     return data
 
 
@@ -1079,13 +1106,18 @@ async def get_document(
     reference_records = _reference_records(content)
     citation_labels = _citation_label_map(reference_records)
     ref_labels = _xref_label_map(content)
+    deferred_ids = _deferred_figure_ids(revision)
     if section_id is not None:
         section = _find_section(content, section_id)
         if section is None:
             raise ProblemException("not_found")
-        sections: list[dict[str, Any]] = [_section_wire(section, citation_labels, ref_labels)]
+        sections: list[dict[str, Any]] = [
+            _section_wire(section, citation_labels, ref_labels, deferred_ids)
+        ]
     else:
-        sections = [_section_wire(s, citation_labels, ref_labels) for s in content.sections]
+        sections = [
+            _section_wire(s, citation_labels, ref_labels, deferred_ids) for s in content.sections
+        ]
     body: dict[str, Any] = {
         "revision_id": str(revision.id),
         "quality_level": revision.quality_level,
@@ -1156,6 +1188,7 @@ async def list_figures(revision_id: str, user: CurrentUser, db: DbDep) -> Figure
     content = _as_content(revision)
     style = await _resolve_style(db, user)
     units = await resolve_display_units(db, str(revision.id), style, str(user.id))
+    deferred_ids = _deferred_figure_ids(revision)
 
     items: list[FigureItem] = []
     for section, blk in content.iter_blocks():
@@ -1190,6 +1223,7 @@ async def list_figures(revision_id: str, user: CurrentUser, db: DbDep) -> Figure
                 caption_ja=caption_ja,
                 image_url=asset_url(blk.asset_key),
                 position=FigurePosition(section_display=_section_display(section), page=blk.page),
+                deferred=not blk.asset_key and blk.id in deferred_ids,
             )
         )
     return FiguresResponse(items=items)

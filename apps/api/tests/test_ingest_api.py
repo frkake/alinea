@@ -929,6 +929,115 @@ async def test_reingest_missing_paper_404(
 
 
 # ---------------------------------------------------------------------------
+# POST /api/library-items/{id}/figures/{block}/materialize (deferred figures)
+# ---------------------------------------------------------------------------
+async def _seed_deferred_revision(
+    db: AsyncSession,
+    user: User,
+    created_papers: list[str],
+) -> tuple[Paper, LibraryItem, DocumentRevision]:
+    paper = Paper(arxiv_id=_rand_arxiv(), title="Deferred Figure Paper", visibility="public")
+    db.add(paper)
+    await db.flush()
+    created_papers.append(paper.id)
+    item = LibraryItem(user_id=user.id, paper_id=paper.id, status="reading")
+    db.add(item)
+    revision = DocumentRevision(
+        paper_id=paper.id,
+        source_version="v1",
+        parser_version="latex-1.3.7",
+        quality_level="A",
+        source_format="latex",
+        content={
+            "quality_level": "A",
+            "sections": [
+                {
+                    "id": "sec-1",
+                    "blocks": [
+                        {"id": "fig-1", "type": "figure", "asset_key": "figures/x/y/fig-1.png"},
+                        {"id": "fig-2", "type": "figure"},
+                        {"id": "fig-3", "type": "figure"},
+                    ],
+                }
+            ],
+        },
+        stats={
+            "figure_asset_manifest": [{"block_id": "fig-1", "key": "figures/x/y/fig-1.png"}],
+            "figure_asset_failures": [
+                {"code": "figure_deferred", "figure_id": "fig-2", "source": "latex"},
+                {"code": "figure_deferred", "figure_id": "fig-3", "source": "latex"},
+            ],
+        },
+    )
+    db.add(revision)
+    await db.flush()
+    paper.latest_revision_id = revision.id
+    await db.commit()
+    return paper, item, revision
+
+
+async def test_materialize_deferred_figure_enqueues_expansion(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+) -> None:
+    user = await _login(client, db_session, redis_client, unique_email)
+    _paper, item, _rev = await _seed_deferred_revision(db_session, user, created_papers)
+
+    # Materializing the second deferred figure raises the budget to include it:
+    # 1 already-materialized + 2 deferred through fig-3 == 3.
+    r = await client.post(f"/api/library-items/{item.id}/figures/fig-3/materialize")
+    assert r.status_code == 202
+    body = r.json()
+    assert body["figure_limit"] == 3
+    job = await db_session.get(Job, body["job_id"])
+    assert job is not None
+    assert job.kind == "ingest"
+    assert job.payload["mode"] == "reingest"
+    assert job.payload["figure_limit"] == 3
+
+
+async def test_materialize_already_materialized_figure_is_noop(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+) -> None:
+    user = await _login(client, db_session, redis_client, unique_email)
+    _paper, item, _rev = await _seed_deferred_revision(db_session, user, created_papers)
+
+    r = await client.post(f"/api/library-items/{item.id}/figures/fig-1/materialize")
+    assert r.status_code == 202
+    body = r.json()
+    assert body["job_id"] is None
+    assert body["already_materialized"] is True
+
+
+async def test_materialize_batch_expands_by_count(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+) -> None:
+    user = await _login(client, db_session, redis_client, unique_email)
+    _paper, item, _rev = await _seed_deferred_revision(db_session, user, created_papers)
+
+    r = await client.post(
+        f"/api/library-items/{item.id}/figures/materialize-batch", json={"count": 1}
+    )
+    assert r.status_code == 202
+    body = r.json()
+    # 1 materialized + 1 requested == budget of 2.
+    assert body["figure_limit"] == 2
+    job = await db_session.get(Job, body["job_id"])
+    assert job is not None and job.payload["figure_limit"] == 2
+
+
+# ---------------------------------------------------------------------------
 # GET /api/papers/{id}/pdf(200)
 # ---------------------------------------------------------------------------
 async def test_paper_pdf_streams_extension_capture_bytes(
