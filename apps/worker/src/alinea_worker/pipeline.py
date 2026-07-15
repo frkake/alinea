@@ -2914,7 +2914,10 @@ class IngestRun:
         assert key is not None
         self._candidate_storage_key = key
         self._candidate_sha256 = hashlib.sha256(retained_bytes).hexdigest()
-        existing = await self._find_revision()
+        # A raised figure budget must re-materialize the document (more figures),
+        # so an existing revision is not reused as-is; `_structure` updates its
+        # row in place instead.
+        existing = None if self._figure_limit_raised else await self._find_revision()
         existing_revision_id: str | None = None
         if existing is not None:
             self._validate_revision_candidate_provenance(existing)
@@ -3401,16 +3404,26 @@ class IngestRun:
                 "graphicspaths": list(self.latex_graphicspaths),
                 "build_version": "latex-ja-pdf-1.0.0",
             }
-        revision = DocumentRevision(
-            paper_id=self.paper_id,
-            source_version=self.source_version,
-            parser_version=self.parser_version,
-            quality_level=self.parsed.quality_level,
-            source_format=self.parsed.source_format,
-            content=content.model_dump(),
-            stats=stats,
-        )
-        self.session.add(revision)
+        # A raised figure budget re-materializes an already-ingested revision:
+        # reuse its row (preserving id, translations, and the latest pointer)
+        # instead of inserting a colliding (paper, version, parser) row.
+        revision = await self._find_revision() if self._figure_limit_raised else None
+        if revision is not None:
+            revision.quality_level = self.parsed.quality_level
+            revision.source_format = self.parsed.source_format
+            revision.content = content.model_dump()
+            revision.stats = stats
+        else:
+            revision = DocumentRevision(
+                paper_id=self.paper_id,
+                source_version=self.source_version,
+                parser_version=self.parser_version,
+                quality_level=self.parsed.quality_level,
+                source_format=self.parsed.source_format,
+                content=content.model_dump(),
+                stats=stats,
+            )
+            self.session.add(revision)
         await self.session.flush()
         self.revision_id = str(revision.id)
         self.content = content

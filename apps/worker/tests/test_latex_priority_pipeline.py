@@ -1858,6 +1858,56 @@ async def test_ingest_degrades_over_limit_figures_and_still_succeeds(
     assert len(deferred_blocks) == 1
     assert deferred_blocks[0].id == deferred[0]["figure_id"]
 
+    # Reingest the same paper with a raised figure_limit: the deferred figure is
+    # materialized in place, reusing the revision row (id preserved) so existing
+    # translations and the latest pointer survive.
+    original_revision_id = str(rev.id)
+    reingest_id = await store.enqueue(
+        kind="ingest",
+        payload={
+            "mode": "reingest",
+            "source": "arxiv",
+            "arxiv_id": arxiv_id,
+            "library_item_id": ids["library_item_id"],
+            "figure_limit": 3,
+        },
+        priority="bulk",
+        user_id=ids["user_id"],
+        paper_id=ids["paper_id"],
+        library_item_id=ids["library_item_id"],
+    )
+    transport2 = httpx.ASGITransport(app=_make_latex_arxiv_stub(archive))
+    async with httpx.AsyncClient(transport=transport2, base_url="http://arxiv.test") as http2:
+        ctx2 = {**latex_worker_ctx, "arxiv_http": http2}
+        reingest_job = await store.claim(reingest_id)
+        assert reingest_job is not None
+        await ingest_paper(ctx2, store, reingest_job)
+
+    reingest_job = await store.get(reingest_id)
+    assert reingest_job is not None
+    assert reingest_job.status == "succeeded", reingest_job.error
+    revisions = (
+        (
+            await db_session.execute(
+                select(DocumentRevision).where(DocumentRevision.paper_id == ids["paper_id"])
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(revisions) == 1  # row reused, not duplicated
+    rev2 = revisions[0]
+    assert str(rev2.id) == original_revision_id
+    content2 = DocumentContent.model_validate(rev2.content)
+    figures2 = [block for _sec, block in content2.iter_blocks() if block.type == "figure"]
+    assert len(figures2) == 3
+    assert all(block.asset_key for block in figures2)
+    assert [
+        item
+        for item in rev2.stats["figure_asset_failures"]
+        if item.get("code") == "figure_deferred"
+    ] == []
+
 
 async def test_raised_figure_limit_materializes_all_figures(
     db_session: AsyncSession,
