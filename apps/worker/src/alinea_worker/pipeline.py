@@ -929,15 +929,6 @@ class IngestRun:
         self.user_id: str | None = str(job.user_id) if job.user_id else None
         self.payload = IngestJobPayload.model_validate(job.payload or {})
         self.ckpt = JobStore.get_checkpoint(job)
-        # Per-job figure budget: a deferred-figure reingest may raise it above the
-        # default so more figures materialize.  Clamp to the default floor.
-        self._figure_limit = max(
-            MAX_FIGURES_PER_DOCUMENT, self.payload.figure_limit or MAX_FIGURES_PER_DOCUMENT
-        )
-        # A raised figure budget is an explicit request to re-materialize more
-        # figures, so an existing revision (built at the lower budget) must not
-        # be reused — a fresh revision is always produced.
-        self._figure_limit_raised = self._figure_limit > MAX_FIGURES_PER_DOCUMENT
         self.is_pdf_upload = self.payload.source == "pdf_upload"
         # pdf_upload には arxiv_id/url が無い(plans/05 §9.1)。arXiv 系のみ ID 正規化する。
         self.ref: ArxivId | None = (
@@ -1109,6 +1100,23 @@ class IngestRun:
     async def _throttle(self) -> None:
         if self.deps.redis is not None:
             await self.deps.throttle(self.deps.redis)
+
+    @property
+    def _figure_limit(self) -> int:
+        """Per-job figure budget, clamped to the MAX_FIGURES_PER_DOCUMENT floor.
+
+        A deferred-figure reingest raises ``payload.figure_limit`` so more figures
+        materialize.  Read as a property (not an ``__init__`` attribute) so units
+        that construct ``IngestRun`` without ``__init__`` keep the default.
+        """
+
+        payload = getattr(self, "payload", None)
+        requested = getattr(payload, "figure_limit", None) if payload is not None else None
+        return max(MAX_FIGURES_PER_DOCUMENT, requested or MAX_FIGURES_PER_DOCUMENT)
+
+    @property
+    def _figure_limit_raised(self) -> bool:
+        return self._figure_limit > MAX_FIGURES_PER_DOCUMENT
 
     # -- 状態機械 ---------------------------------------------------------
 
