@@ -683,4 +683,55 @@ describe("FigureTableBlock", () => {
     expect(screen.getByText("Metric")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "この表を翻訳" })).not.toBeInTheDocument();
   });
+
+  test("renders a load-on-demand button for a deferred figure", () => {
+    const start = vi.fn();
+    const block: DocBlock = {
+      id: "blk-deferred",
+      type: "figure",
+      number: "9",
+      deferred: true,
+      caption: [{ t: "text", v: "Deferred overview." }],
+    };
+    render(
+      <FigureTableBlock
+        block={block}
+        figureMaterialization={{ status: "idle", start, retry: vi.fn(), error: null }}
+      />,
+    );
+    expect(screen.getByText("図が多いため未読込です")).toBeInTheDocument();
+    const button = screen.getByRole("button", { name: "画像を読み込む" });
+    fireEvent.click(button);
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  test("shows loading state while a deferred figure materializes", () => {
+    const block: DocBlock = { id: "blk-deferred", type: "figure", deferred: true };
+    render(
+      <FigureTableBlock
+        block={block}
+        figureMaterialization={{ status: "pending", start: vi.fn(), retry: vi.fn(), error: null }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "画像を読み込み中…" })).toBeDisabled();
+  });
+
+  test("offers retry when a deferred figure load fails", () => {
+    const retry = vi.fn();
+    const block: DocBlock = { id: "blk-deferred", type: "figure", deferred: true };
+    render(
+      <FigureTableBlock
+        block={block}
+        figureMaterialization={{
+          status: "error",
+          start: vi.fn(),
+          retry,
+          error: "画像の読み込みに失敗しました",
+        }}
+      />,
+    );
+    expect(screen.getByText("画像の読み込みに失敗しました")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "再試行" }));
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
 });

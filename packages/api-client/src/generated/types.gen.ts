@@ -1299,6 +1299,10 @@ export type FigureItem = {
      */
     image_url: string | null;
     position: FigurePosition;
+    /**
+     * Deferred
+     */
+    deferred?: boolean;
 };
 
 /**
@@ -1323,6 +1327,39 @@ export type FigureLinkCardOut = {
      * Message
      */
     message: string;
+};
+
+/**
+ * FigureMaterializeBatchRequest
+ * 未読込図をまとめて素材化する要求(先頭から ``count`` 件を対象に上限拡張)。
+ */
+export type FigureMaterializeBatchRequest = {
+    /**
+     * Count
+     */
+    count?: number;
+};
+
+/**
+ * FigureMaterializeResponse
+ * 未読込(deferred)図のオンデマンド素材化の応答。
+ *
+ * ``job_id`` が None のときは既に素材化済み(何もしない)。素材化を要するときは
+ * 図数上限を引き上げた再取り込みジョブを起こし ``job_id`` を返す。
+ */
+export type FigureMaterializeResponse = {
+    /**
+     * Job Id
+     */
+    job_id?: string | null;
+    /**
+     * Already Materialized
+     */
+    already_materialized?: boolean;
+    /**
+     * Figure Limit
+     */
+    figure_limit?: number | null;
 };
 
 /**
@@ -3144,6 +3181,10 @@ export type RevisionInfo = {
      */
     quality_level: string;
     /**
+     * Source Format
+     */
+    source_format: string;
+    /**
      * Source Version
      */
     source_version: string | null;
@@ -3167,6 +3208,14 @@ export type RevisionInfo = {
      * Created At
      */
     created_at: string;
+    /**
+     * Translated Pdf Renderer
+     */
+    translated_pdf_renderer?: string | null;
+    /**
+     * Translated Pdf Fallback Reason
+     */
+    translated_pdf_fallback_reason?: string | null;
 };
 
 /**
@@ -5058,6 +5107,70 @@ export type PapersReingestResponses = {
 };
 
 export type PapersReingestResponse2 = PapersReingestResponses[keyof PapersReingestResponses];
+
+export type FiguresMaterializeDeferredData = {
+    body?: never;
+    path: {
+        /**
+         * Library Item Id
+         */
+        library_item_id: string;
+        /**
+         * Block Id
+         */
+        block_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{library_item_id}/figures/{block_id}/materialize';
+};
+
+export type FiguresMaterializeDeferredErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type FiguresMaterializeDeferredError = FiguresMaterializeDeferredErrors[keyof FiguresMaterializeDeferredErrors];
+
+export type FiguresMaterializeDeferredResponses = {
+    /**
+     * Successful Response
+     */
+    202: FigureMaterializeResponse;
+};
+
+export type FiguresMaterializeDeferredResponse = FiguresMaterializeDeferredResponses[keyof FiguresMaterializeDeferredResponses];
+
+export type FiguresMaterializeBatchData = {
+    body: FigureMaterializeBatchRequest;
+    path: {
+        /**
+         * Library Item Id
+         */
+        library_item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{library_item_id}/figures/materialize-batch';
+};
+
+export type FiguresMaterializeBatchErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type FiguresMaterializeBatchError = FiguresMaterializeBatchErrors[keyof FiguresMaterializeBatchErrors];
+
+export type FiguresMaterializeBatchResponses = {
+    /**
+     * Successful Response
+     */
+    202: FigureMaterializeResponse;
+};
+
+export type FiguresMaterializeBatchResponse = FiguresMaterializeBatchResponses[keyof FiguresMaterializeBatchResponses];
 
 export type PapersIngestLogData = {
     body?: never;

@@ -98,6 +98,7 @@ function makeViewer(overrides: Partial<ViewerInit> = {}): ViewerInit {
       id: "rev_1",
       quality_level: "A",
       source_version: null,
+      source_format: "latex",
       parser_version: "1.0",
       page_count: 8,
       figure_count: 0,

@@ -20,6 +20,7 @@ import { useToast } from "@/components/ui/Toast";
 import type { HighlightColor } from "@/components/ui/HighlightMark";
 import { useIsMobile } from "@/hooks/useMediaQuery";
 import { useTableTranslation } from "@/hooks/use-table-translation";
+import { useFigureMaterialization } from "@/hooks/use-figure-materialization";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
 import { FigureTableBlock } from "@/components/viewer/FigureTableBlock";
@@ -962,11 +963,17 @@ function TranslatableFigureTableBlock({
     sectionId,
     blockId: block.id,
   });
+  const figureMaterialization = useFigureMaterialization({
+    itemId,
+    revisionId,
+    blockId: block.id,
+  });
   return (
     <FigureTableBlock
       block={block}
       unit={unit}
       tableTranslation={block.type === "table" ? tableTranslation : null}
+      figureMaterialization={block.deferred ? figureMaterialization : null}
       onCitationClick={onCitationClick}
       onRefClick={onRefClick}
     />

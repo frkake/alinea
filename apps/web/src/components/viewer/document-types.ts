@@ -82,6 +82,8 @@ export interface DocBlock {
   page?: number | null;
   /** [x0,y0,x1,y1] pt。PyMuPDF 既定の上原点・下方向 y 増加(2a pdf/geometry.ts が変換)。 */
   bbox?: [number, number, number, number] | null;
+  /** 図数上限を超えて未素材化(deferred)の図/表。true のときオンデマンド読込を提示する。 */
+  deferred?: boolean | null;
 }
 
 export interface DocSectionHeading {

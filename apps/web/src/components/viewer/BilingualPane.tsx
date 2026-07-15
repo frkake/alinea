@@ -14,6 +14,7 @@ import type { HighlightColor } from "@/components/ui/HighlightMark";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import { useViewerChatStore } from "@/stores/viewer-chat-store";
 import { useTableTranslation } from "@/hooks/use-table-translation";
+import { useFigureMaterialization } from "@/hooks/use-figure-materialization";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
 import { FigureTableBlock } from "@/components/viewer/FigureTableBlock";
 import {
@@ -790,11 +791,17 @@ function TranslatableFigureTableBlock({
     sectionId,
     blockId: block.id,
   });
+  const figureMaterialization = useFigureMaterialization({
+    itemId,
+    revisionId,
+    blockId: block.id,
+  });
   return (
     <FigureTableBlock
       block={block}
       unit={unit}
       tableTranslation={block.type === "table" ? tableTranslation : null}
+      figureMaterialization={block.deferred ? figureMaterialization : null}
       onCitationClick={onCitationClick}
       onRefClick={onRefClick}
     />

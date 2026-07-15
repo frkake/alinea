@@ -27,8 +27,17 @@ export interface FigureTableBlockProps {
   unit?: TranslationUnitItem | null;
   showTranslatedCaption?: boolean;
   tableTranslation?: TableTranslationAction | null;
+  /** Deferred-figure load-on-demand action (図数上限超過分の後読み). */
+  figureMaterialization?: FigureMaterializationAction | null;
   onCitationClick?: (refId: string) => void;
   onRefClick?: (ref: string, kind?: string | null) => void;
+}
+
+export interface FigureMaterializationAction {
+  status: "idle" | "pending" | "succeeded" | "error";
+  start: () => void;
+  retry: () => void;
+  error: string | null;
 }
 
 export interface TableTranslationAction {
@@ -670,6 +679,7 @@ export function FigureTableBlock({
   unit = null,
   showTranslatedCaption = true,
   tableTranslation = null,
+  figureMaterialization = null,
   onCitationClick,
   onRefClick,
 }: FigureTableBlockProps) {
@@ -721,6 +731,66 @@ export function FigureTableBlock({
         />
       ) : null}
       {rows ? <TableView rows={rows} /> : null}
+      {block.deferred && !block.asset_url ? (
+        <div
+          role="group"
+          aria-label="未読込の図"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 8,
+            padding: "20px 12px",
+            margin: "0 auto 10px",
+            border: "1px dashed var(--pr-border-card)",
+            borderRadius: 8,
+            background: "var(--pr-bg-muted)",
+            color: "var(--pr-text-muted)",
+            fontSize: 12.5,
+          }}
+        >
+          <span>図が多いため未読込です</span>
+          {figureMaterialization ? (
+            figureMaterialization.status === "error" ? (
+              <>
+                <span style={{ color: "var(--pr-warn)" }}>
+                  {figureMaterialization.error ?? "画像の読み込みに失敗しました"}
+                </span>
+                <button
+                  type="button"
+                  onClick={figureMaterialization.retry}
+                  style={actionButtonStyle}
+                >
+                  再試行
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={figureMaterialization.start}
+                disabled={
+                  figureMaterialization.status === "pending" ||
+                  figureMaterialization.status === "succeeded"
+                }
+                style={{
+                  ...actionButtonStyle,
+                  opacity:
+                    figureMaterialization.status === "pending" ||
+                    figureMaterialization.status === "succeeded"
+                      ? 0.65
+                      : 1,
+                }}
+              >
+                {figureMaterialization.status === "pending"
+                  ? "画像を読み込み中…"
+                  : figureMaterialization.status === "succeeded"
+                    ? "まもなく表示されます…"
+                    : "画像を読み込む"}
+              </button>
+            )
+          ) : null}
+        </div>
+      ) : null}
       <figcaption style={{ fontSize: 12.5, lineHeight: 1.75, overflowWrap: "anywhere" }}>
         {hasTranslation ? (
           <div style={{ color: "var(--pr-text-body)", fontFamily: "var(--pr-jp)" }}>
