@@ -958,6 +958,7 @@ class IngestRun:
         self._candidate_sha256: str | None = None
         self._candidate_provenance_validation_required = False
         self._candidate_materialized_figures: dict[str, FigureAssetPayload] = {}
+        self._candidate_deferred_figures: dict[str, str] = {}
         self._candidate_figure_failures: list[dict[str, str]] = []
         self._candidate_materialization_validated = False
         self._candidate_parsed_content_sha256: str | None = None
@@ -1846,41 +1847,64 @@ class IngestRun:
 
         materialized: dict[str, FigureAssetPayload] = {}
         blocks, missing_block_ids, invalid_type_ids = self._candidate_asset_blocks(candidate)
-        declared_ids = sorted(
-            [*(block.id for block in blocks), *missing_block_ids, *invalid_type_ids]
+        failures: list[dict[str, str]] = [
+            {
+                "code": "missing_figure_block",
+                "figure_id": block_id,
+                "source": candidate.source_format,
+            }
+            for block_id in missing_block_ids
+        ]
+        failures.extend(
+            {
+                "code": "invalid_figure_block_type",
+                "figure_id": block_id,
+                "source": candidate.source_format,
+            }
+            for block_id in invalid_type_ids
         )
-        if len(declared_ids) > MAX_FIGURES_PER_DOCUMENT:
-            failures: list[dict[str, str]] = [
-                {
-                    "code": "figure_limit_exceeded",
-                    "figure_id": declared_ids[MAX_FIGURES_PER_DOCUMENT],
-                    "source": candidate.source_format,
-                }
-            ]
-            blocks = []
-        else:
-            failures = [
-                {
-                    "code": "missing_figure_block",
-                    "figure_id": block_id,
-                    "source": candidate.source_format,
-                }
-                for block_id in missing_block_ids
-            ]
-            failures.extend(
-                {
-                    "code": "invalid_figure_block_type",
-                    "figure_id": block_id,
-                    "source": candidate.source_format,
-                }
-                for block_id in invalid_type_ids
-            )
+        # Documents with more figures than the per-document budget are not
+        # rejected wholesale.  The first MAX_FIGURES_PER_DOCUMENT asset blocks
+        # are materialized now; excess *figure/table* blocks are marked
+        # `figure_deferred` (block-level, degradable) so the document is still
+        # accepted and they can be materialized on demand from the retained
+        # source (P3).  Excess blocks that are neither figure nor table (e.g.
+        # equation display assets) cannot be deferred, so they keep the
+        # structural `figure_limit_exceeded` code that rejects the candidate.
+        deferred_blocks: list[Block] = []
+        if len(blocks) > MAX_FIGURES_PER_DOCUMENT:
+            excess = blocks[MAX_FIGURES_PER_DOCUMENT:]
+            non_deferrable = [b for b in excess if b.type not in ("figure", "table")]
+            if non_deferrable:
+                # Excess includes structural display assets (e.g. equations)
+                # that cannot be loaded on demand — reject the candidate
+                # without materializing anything, as before.
+                failures.append(
+                    {
+                        "code": "figure_limit_exceeded",
+                        "figure_id": non_deferrable[0].id,
+                        "source": candidate.source_format,
+                    }
+                )
+                blocks = []
+            else:
+                deferred_blocks = excess
+                blocks = blocks[:MAX_FIGURES_PER_DOCUMENT]
+                failures.extend(
+                    {
+                        "code": "figure_deferred",
+                        "figure_id": block.id,
+                        "source": candidate.source_format,
+                    }
+                    for block in deferred_blocks
+                )
+        self._candidate_deferred_figures = {
+            block.id: (block.asset_key or "").strip() for block in deferred_blocks
+        }
         materialized_bytes = 0
-        for figure_index, block in enumerate(blocks):
+        for _figure_index, block in enumerate(blocks):
             try:
                 deadline.remaining()
-                if figure_index >= MAX_FIGURES_PER_DOCUMENT:
-                    raise FigureAssetError("figure_limit_exceeded", "document has too many figures")
                 materialized_budget = MAX_TOTAL_FIGURE_MATERIALIZED_BYTES - materialized_bytes
                 if materialized_budget <= 0:
                     raise FigureAssetError(
@@ -2024,7 +2048,9 @@ class IngestRun:
         # 落とすのは、B 側の表が改善するわけでもなく原文レイアウトと構造を失うだけで
         # 厳密に劣化である)。
         degradable_block_ids = {
-            block.id for block in blocks if block.type in ("figure", "table")
+            block.id
+            for block in (*blocks, *deferred_blocks)
+            if block.type in ("figure", "table")
         }
         if any(
             failure.get("figure_id") not in degradable_block_ids

@@ -2557,6 +2557,56 @@ async def test_latex_mixed_figure_and_table_failures_both_degrade() -> None:
     ]
 
 
+async def test_figure_count_over_limit_degrades_block_wise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A document with more figures than the per-document budget is accepted:
+
+    the first MAX_FIGURES_PER_DOCUMENT are materialized and the remainder are
+    marked ``figure_deferred`` so they can be loaded on demand (P3 — degrade,
+    don't fail closed).
+    """
+    monkeypatch.setattr(worker_pipeline, "MAX_FIGURES_PER_DOCUMENT", 2)
+    png = _raster_bytes("PNG")
+    figures = [
+        Block(id=f"fig-{index}", type="figure", asset_key=f"fig-{index}.png")
+        for index in range(4)
+    ]
+    content = DocumentContent(
+        quality_level="A",
+        sections=[Section(id="sec-1", blocks=[*_two_paragraph_blocks(), *figures])],
+    )
+    candidate = SourceCandidate(
+        source_format="latex",
+        content=content,
+        parsed=SimpleNamespace(),
+        report=DocumentCompleteness(True, None, 0, 70, 2, 0),
+        source_bytes=b"tex synthetic",
+        diagnostics=[],
+        latex_binary_files={f"fig-{index}.png": png for index in range(4)},
+    )
+    run = object.__new__(IngestRun)
+
+    await run._materialize_candidate_figures(
+        candidate,
+        http=None,
+        deadline=worker_pipeline.MaterializationDeadline.start(timeout_s=30.0),
+    )
+
+    assert candidate.report.accepted is True
+    assert candidate.report.code == "figure_assets_degraded"
+    # First two figures materialized; the remaining two are deferred.
+    assert set(candidate.materialized_figures) == {"fig-0", "fig-1"}
+    assert candidate.figure_asset_failures == [
+        {"code": "figure_deferred", "figure_id": "fig-2", "source": "latex"},
+        {"code": "figure_deferred", "figure_id": "fig-3", "source": "latex"},
+    ]
+    assert run._candidate_deferred_figures == {
+        "fig-2": "fig-2.png",
+        "fig-3": "fig-3.png",
+    }
+
+
 async def test_pdf_candidate_rejects_orphan_extracted_asset_before_persistence() -> None:
     content = DocumentContent(
         quality_level="B",
