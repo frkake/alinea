@@ -1170,6 +1170,63 @@ async def test_figures(auth_client: AsyncClient, seeded: Seeded) -> None:
     fig = next(i for i in items if i["kind"] == "figure")
     assert fig["display"].startswith("図")
     assert fig["image_url"] is not None and fig["image_url"].startswith("/api/assets/")
+    assert fig["deferred"] is False
+
+
+async def test_deferred_figure_is_flagged_in_document_and_list(
+    auth_client: AsyncClient, seeded: Seeded, db_session: AsyncSession
+) -> None:
+    # Mark a seeded figure as deferred (asset cleared + figure_deferred failure)
+    # and confirm the viewer surfaces the load-on-demand flag.
+    revision = await db_session.get(DocumentRevision, seeded.revision_id)
+    assert revision is not None
+    content = copy.deepcopy(dict(revision.content))
+    target_id: str | None = None
+
+    def _clear(sections: list[dict[str, object]]) -> None:
+        nonlocal target_id
+        for section in sections:
+            for block in section.get("blocks", []):
+                if target_id is None and block.get("type") == "figure":
+                    target_id = str(block["id"])
+                    block.pop("asset_key", None)
+            _clear(section.get("sections", []))  # type: ignore[arg-type]
+
+    _clear(content["sections"])
+    assert target_id is not None
+    revision.content = content
+    flag_modified(revision, "content")
+    revision.stats = {
+        **(revision.stats or {}),
+        "figure_asset_failures": [
+            {"code": "figure_deferred", "figure_id": target_id, "source": "latex"}
+        ],
+    }
+    await db_session.commit()
+
+    doc = await auth_client.get(f"/api/revisions/{seeded.revision_id}/document")
+    assert doc.status_code == 200, doc.text
+
+    def _find(sections: list[dict[str, object]]) -> dict[str, object] | None:
+        for section in sections:
+            for block in section.get("blocks", []):  # type: ignore[union-attr]
+                if block.get("id") == target_id:
+                    return block  # type: ignore[return-value]
+            found = _find(section.get("sections", []))  # type: ignore[arg-type]
+            if found is not None:
+                return found
+        return None
+
+    block = _find(doc.json()["sections"])
+    assert block is not None
+    assert block.get("deferred") is True
+    assert "asset_url" not in block
+
+    figs = await auth_client.get(f"/api/revisions/{seeded.revision_id}/figures")
+    assert figs.status_code == 200, figs.text
+    target = next(i for i in figs.json()["items"] if i["block_id"] == target_id)
+    assert target["deferred"] is True
+    assert target["image_url"] is None
 
 
 async def test_figures_uses_only_strict_typed_table_caption(
