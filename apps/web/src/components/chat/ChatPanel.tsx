@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  chatCreateThread,
   chatListMessages,
   chatListThreads,
   notesCreate,
@@ -357,6 +358,32 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
     );
   }, [activeThreadId, summarizing, itemId, qc, toast, setPanel]);
 
+  const [creatingThread, setCreatingThread] = useState(false);
+  const createConversation = useCallback(() => {
+    if (creatingThread) return;
+    setCreatingThread(true);
+    const now = new Date();
+    const title = `会話 ${now.getMonth() + 1}/${now.getDate()} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    void chatCreateThread({ path: { item_id: itemId }, body: { title } }).then(
+      async (res) => {
+        setCreatingThread(false);
+        const id = res.data?.id;
+        if (!id) {
+          toast({ kind: "error", message: "新しい会話を作成できませんでした" });
+          return;
+        }
+        setActiveThreadId(id);
+        setLocalUser(null);
+        setLocalAssistant(null);
+        await qc.invalidateQueries({ queryKey: ["chat-threads", itemId] });
+      },
+      () => {
+        setCreatingThread(false);
+        toast({ kind: "error", message: "新しい会話を作成できませんでした" });
+      },
+    );
+  }, [creatingThread, itemId, qc, toast]);
+
   const activeThread = (threadsQuery.data?.items ?? []).find((t) => t.id === activeThreadId);
   const displayMessages = mergeDisplayMessages(history, localUser, localAssistant);
   const isEmpty = displayMessages.length === 0;
@@ -398,6 +425,24 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
         <span style={chipStyle}>コンテキスト: この論文</span>
         {readOnly ? null : (
           <>
+            <button
+              type="button"
+              aria-label="新しい会話"
+              onClick={createConversation}
+              disabled={creatingThread || streaming}
+              style={{
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                color: "var(--pr-text-sub)",
+                fontFamily: "inherit",
+                fontSize: 11,
+                padding: "0 4px",
+                opacity: creatingThread || streaming ? 0.5 : 1,
+              }}
+            >
+              ＋ 新しい会話
+            </button>
             <button
               ref={threadMenuAnchor}
               type="button"

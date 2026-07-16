@@ -4,6 +4,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
+  chatCreateThread,
   chatListMessages,
   chatListThreads,
   type AnchorRef,
@@ -23,6 +24,7 @@ vi.mock("@alinea/api-client", async (importOriginal) => {
     ...actual,
     chatListThreads: vi.fn(),
     chatListMessages: vi.fn(),
+    chatCreateThread: vi.fn(),
   };
 });
 
@@ -371,5 +373,41 @@ describe("ChatPanel deep link (M1 統合ポリッシュ)", () => {
   test("falls back to the main thread when there is no deep-link target", async () => {
     renderWithClient(<ChatPanel itemId="li_1" />);
     expect(await screen.findByText("メイン")).toBeInTheDocument();
+  });
+});
+
+describe("ChatPanel new conversation (clear)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useViewerStore.setState({ pendingChatThreadId: null, pendingChatMessageId: null });
+    vi.mocked(chatListThreads).mockResolvedValue({
+      data: { items: [{ id: "th-main", title: "メイン", is_main: true, message_count: 3, last_message_at: "2026-07-10T00:00:00Z" }] },
+    } as never);
+    vi.mocked(chatListMessages).mockImplementation(async ({ path }) => {
+      if (path.thread_id === "th-main") {
+        return {
+          data: {
+            items: [
+              { id: "m1", role: "user", blocks: [{ type: "markdown", text: "旧会話の質問", evidence: [] }], context_anchors: [], quick_action: null, status: "complete", error: null, created_at: "2026-07-10T00:00:00Z" },
+            ],
+          },
+        } as never;
+      }
+      return { data: { items: [] } } as never; // new empty thread
+    });
+    vi.mocked(chatCreateThread).mockResolvedValue({
+      data: { id: "th-new", title: "会話", is_main: false, message_count: 0, last_message_at: null },
+    } as never);
+  });
+
+  test("clicking 新しい会話 creates a thread, switches to it, and clears the message view", async () => {
+    renderWithClient(<ChatPanel itemId="li_1" />);
+    expect(await screen.findByText("旧会話の質問")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "新しい会話" }));
+    await waitFor(() => expect(chatCreateThread).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { item_id: "li_1" } }),
+    ));
+    await waitFor(() => expect(screen.queryByText("旧会話の質問")).not.toBeInTheDocument());
+    expect(screen.getByText("まだ会話がありません")).toBeInTheDocument();
   });
 });
