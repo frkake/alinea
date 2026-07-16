@@ -878,7 +878,7 @@ async def build_export_archive(
         for logical_bucket, key in collect_asset_keys(payload):
             try:
                 data = await storage.get(bucket_map[logical_bucket], key)
-            except Exception:  # noqa: BLE001 — 欠落アセットは skip(P3)
+            except Exception:  # noqa: S112 — 欠落アセットは skip(P3)
                 continue
             zf.writestr(f"assets/{key}", data)
             assets_meta.append({

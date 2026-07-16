@@ -816,8 +816,10 @@ async def run_import_full_job(ctx: dict[str, Any], store: JobStore, job: Any) ->
     # 1. zip ダウンロード
     try:
         archive = await storage.get(storage.assets_bucket, upload_key)
-    except Exception as exc:  # noqa: BLE001
-        await store.fail_with_retry(str(job.id), {"code": "import_download_failed", "detail": str(exc)})
+    except Exception as exc:
+        await store.fail_with_retry(
+            str(job.id), {"code": "import_download_failed", "detail": str(exc)}
+        )
         return
 
     # 2. zip 展開・検証・復元

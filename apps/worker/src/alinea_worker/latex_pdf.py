@@ -575,11 +575,11 @@ def _unit_is_displayable(unit: TranslationUnit) -> bool:
 
 def _unit_is_displayable_for_block(unit: TranslationUnit, block: Block) -> bool:
     # Captions are the only visible source text for a figure.  The translation
-    # pipeline records a synthetic ``（図）`` unit for image-only figures so the
+    # pipeline records a synthetic "(figure)" unit for image-only figures so the
     # viewer can represent the block, but there is no TeX text to replace in a
     # source-preserving PDF.  Treating it as required would incorrectly force a
     # structured-PDF fallback for multi-panel figures.
-    if block.type == "figure" and not block.caption and unit.text_ja.strip() in {"（図）", "(図)"}:
+    if block.type == "figure" and not block.caption and unit.text_ja.strip() in {"（図）", "(図)"}:  # noqa: RUF001 - 全角/半角の図プレースホルダを両方許容
         return False
     typed_table = (
         block.type == "table"
@@ -1598,7 +1598,7 @@ def _transform_latex_text(text: str, cursor: _TranslationCursor, abstract_ja: st
             block, unit = cursor.take("paragraph", match_text=match_text)
             replacement = _unit_to_latex(unit, cursor, source_latex=source_body)
             if replacement is not None and name == "correspondence" and cursor.is_fairmeta:
-                body = re.sub(r"^\s*(?:連絡先|Correspondence)\s*[:：]\s*", "", replacement)
+                body = re.sub(r"^\s*(?:連絡先|Correspondence)\s*[:：]\s*", "", replacement)  # noqa: RUF001 - 全角/半角コロンを両方マッチ
                 replacement = rf"\metadata[連絡先]{{{body}}}"
             repl, end = _replace_braced_command_arg(text, match, replacement)
             if replacement is not None:

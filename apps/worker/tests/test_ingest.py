@@ -17,6 +17,7 @@ import uuid
 from typing import Any
 from unittest.mock import AsyncMock, call
 
+import alinea_worker.pipeline as worker_pipeline
 import pytest
 from _summary_contract import assert_summary_lines_contract
 from alinea_core.db.models import (
@@ -53,7 +54,6 @@ from alinea_core.translation.placeholder import encode_block
 from alinea_llm.errors import ProviderChainExhausted
 from alinea_llm.router import LLMRouter
 from alinea_llm.testing.fake_provider import FakeLLMProvider
-import alinea_worker.pipeline as worker_pipeline
 from alinea_worker.pipeline import IngestRun, deps_from_ctx
 from alinea_worker.source_candidates import CandidateUnavailable
 from alinea_worker.tasks.ingest import ingest_paper
