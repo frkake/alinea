@@ -12,6 +12,8 @@ from typing import Protocol, runtime_checkable
 from pydantic import BaseModel
 
 from alinea_llm.types import (
+    EmbeddingRequest,
+    EmbeddingResult,
     ImageRequest,
     ImageResult,
     LLMRequest,
@@ -52,6 +54,22 @@ class ImageProvider(Protocol):
 
     async def generate_image(self, req: ImageRequest) -> ImageResult:
         """1枚生成して PNG バイト列+メタを返す。失敗は ProviderError を送出。"""
+        ...
+
+
+@runtime_checkable
+class EmbeddingProvider(Protocol):
+    """埋め込み生成プロバイダ(S12 セマンティック検索。docs/10 §5)。
+
+    テキスト生成(:class:`LLMProvider`)とは別系統の独立プロトコル。埋め込み非対応の
+    プロバイダ(Anthropic 等)を壊さないため ``LLMProvider`` に ``embed`` を足さない。
+    実装候補: OpenAI(text-embedding-3-*) / Google(gemini-embedding-001)。
+    """
+
+    name: str  # "openai" | "google" | ...
+
+    async def embed(self, req: EmbeddingRequest) -> EmbeddingResult:
+        """バッチをまとめて埋め込む。失敗は ProviderError を送出。"""
         ...
 
 
