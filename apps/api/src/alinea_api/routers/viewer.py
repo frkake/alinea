@@ -28,10 +28,15 @@ from alinea_core.db.models import (
     TranslationUnit,
     User,
 )
-from alinea_core.db.revisions import get_latest_paper_revision, normalize_uuid
+from alinea_core.db.revisions import (
+    get_latest_paper_revision,
+    get_paper_revision,
+    normalize_uuid,
+)
 from alinea_core.document.blocks import Block, DocumentContent, Section
 from alinea_core.document.plaintext import inline_to_plain
 from alinea_core.ingest import joblog
+from alinea_core.parsing.version_diff import diff_revisions
 from alinea_core.translation import (
     content_to_text_ja,
     is_reference_section,
@@ -73,6 +78,9 @@ from alinea_api.schemas.viewer import (
     ReferenceInLibrary,
     ReferenceItem,
     ReferencesResponse,
+    RevisionDiffBlock,
+    RevisionDiffResponse,
+    RevisionDiffStatsDto,
     RevisionInfo,
     RevisionListItem,
     RevisionListResponse,
@@ -1045,6 +1053,58 @@ async def list_revisions(paper_id: str, user: CurrentUser, db: DbDep) -> Revisio
             )
             for r in rows
         ]
+    )
+
+
+# --- S10 バージョン差分(docs/02 §6・docs/10 M3) -----------------------------------
+
+
+@router.get(
+    "/api/papers/{paper_id}/revisions/diff",
+    response_model=RevisionDiffResponse,
+    operation_id="viewer_revision_diff",
+)
+async def revision_diff(
+    paper_id: str,
+    user: CurrentUser,
+    db: DbDep,
+    from_: str = Query(alias="from"),
+    to: str = Query(),
+) -> RevisionDiffResponse:
+    """2 リビジョン間のブロック単位差分(追加/削除/変更)を決定的に返す(LLM 不使用)。
+
+    carryover が引き継いだブロック ID の一致関係を再利用して版間ブロックを整列する
+    (parsing/version_diff.py)。切替はしない(読み取り専用。P6: 版切替は adopt-revision)。
+    """
+    paper = await db.get(Paper, paper_id)
+    if paper is None or not await _paper_accessible(db, paper, user):
+        raise ProblemException("not_found")
+    old_rev = await get_paper_revision(db, paper_id=paper_id, revision_id=from_)
+    new_rev = await get_paper_revision(db, paper_id=paper_id, revision_id=to)
+    if old_rev is None or new_rev is None:
+        raise ProblemException("not_found")
+
+    diff = diff_revisions(_as_content(old_rev), _as_content(new_rev))
+    return RevisionDiffResponse(
+        from_revision_id=str(old_rev.id),
+        to_revision_id=str(new_rev.id),
+        stats=RevisionDiffStatsDto(
+            added=diff.stats.added,
+            removed=diff.stats.removed,
+            changed=diff.stats.changed,
+            unchanged=diff.stats.unchanged,
+        ),
+        changes=[
+            RevisionDiffBlock(
+                status=c.status,
+                block_id=c.block_id,
+                block_type=c.block_type,
+                section_id=c.section_id,
+                old_text=c.old_text,
+                new_text=c.new_text,
+            )
+            for c in diff.changes
+        ],
     )
 
 
