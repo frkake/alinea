@@ -10,9 +10,11 @@ export interface VocabHeaderProps {
   onSearchChange: (v: string) => void;
   onStartReview: () => void;
   reviewLoading: boolean;
+  /** Anki TSV エクスポートトリガ(S9)。 */
+  onAnkiExport: () => void;
 }
 
-/** 見出し行(4d §4.2.3)。「語彙帳」「{n} 語 — 読んだ論文の文脈から」+ 検索 + 復習をはじめる。 */
+/** 見出し行(4d §4.2.3)。「語彙帳」「{n} 語 — 読んだ論文の文脈から」+ 検索 + 復習をはじめる + Anki エクスポート。 */
 export function VocabHeader({
   total,
   dueCount,
@@ -21,6 +23,7 @@ export function VocabHeader({
   onSearchChange,
   onStartReview,
   reviewLoading,
+  onAnkiExport,
 }: VocabHeaderProps) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -30,6 +33,28 @@ export function VocabHeader({
       </span>
       <span style={{ flex: 1 }} />
       <VocabSearchBox value={searchValue} onChange={onSearchChange} fetching={searchFetching} />
+      <button
+        type="button"
+        onClick={onAnkiExport}
+        title="現在のフィルタ結果を Anki へ書き出す"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 7,
+          height: 28,
+          padding: "0 13px",
+          borderRadius: 6,
+          border: "1px solid var(--pr-border)",
+          background: "var(--pr-bg-panel)",
+          color: "var(--pr-text-mid)",
+          fontSize: 11.5,
+          fontWeight: 600,
+          fontFamily: "inherit",
+          cursor: "pointer",
+        }}
+      >
+        Ankiへ書き出す
+      </button>
       <button
         type="button"
         onClick={onStartReview}
