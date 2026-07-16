@@ -481,6 +481,7 @@ async def test_glossary_changes_do_not_affect_vocab(
 def test_render_anki_tsv_fields() -> None:
     """_render_anki_tsv() が Front/Back/tags 列を正しく組み立てる。"""
     from alinea_api.routers.vocab import _render_anki_tsv
+    from alinea_api.schemas.chat import AnchorRef
     from alinea_api.schemas.vocab import (
         VocabAi,
         VocabEntryDetail,
@@ -489,7 +490,6 @@ def test_render_anki_tsv_fields() -> None:
         VocabSource,
         VocabSrs,
     )
-    from alinea_api.schemas.chat import AnchorRef
 
     entry = VocabEntryDetail(
         id="test-id",
@@ -504,7 +504,7 @@ def test_render_anki_tsv_fields() -> None:
         added_at="2026-01-01",
         generation="done",
         pos_label="noun",
-        ipa="/ˈriːfloʊ/",
+        ipa="/ˈriːfloʊ/",  # noqa: RUF001 - intentional IPA (stress mark / length mark)
         anchor=AnchorRef(revision_id="rev-id", block_id="blk", display="§2.1"),
         context_sentence="The reflow procedure straightens paths.",
         highlight=VocabHighlight(start=4, end=10),
@@ -534,7 +534,7 @@ def test_render_anki_tsv_fields() -> None:
     # Front
     assert "reflow" in front
     assert "noun" in front
-    assert "/ˈriːfloʊ/" in front
+    assert "/ˈriːfloʊ/" in front  # noqa: RUF001 - intentional IPA (stress mark / length mark)
 
     # Back
     assert "リフロー" in back
