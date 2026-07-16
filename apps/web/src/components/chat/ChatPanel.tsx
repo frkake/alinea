@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   chatCreateThread,
+  chatDeleteThread,
   chatListMessages,
   chatListThreads,
   notesCreate,
@@ -11,9 +12,12 @@ import {
   type AnchorRef,
   type AsideBlock,
   type ChatMessage as ChatMessageData,
+  type ChatThread,
   type EvidenceRef,
   type MarkdownBlock,
 } from "@alinea/api-client";
+import { ChatThreadHistoryPopover } from "@/components/chat/ChatThreadHistoryPopover";
+import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Popover } from "@/components/ui/Popover";
@@ -358,6 +362,27 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
     );
   }, [activeThreadId, summarizing, itemId, qc, toast, setPanel]);
 
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<ChatThread | null>(null);
+  const historyAnchor = useRef<HTMLButtonElement>(null);
+
+  const confirmDelete = useCallback(() => {
+    const target = pendingDelete;
+    if (!target) return;
+    setPendingDelete(null);
+    void chatDeleteThread({ path: { thread_id: target.id } }).then(
+      async () => {
+        if (activeThreadId === target.id) {
+          const main = (threadsQuery.data?.items ?? []).find((t) => t.is_main);
+          setActiveThreadId(main?.id ?? null);
+        }
+        await qc.invalidateQueries({ queryKey: ["chat-threads", itemId] });
+        toast({ kind: "success", message: "会話を削除しました" });
+      },
+      () => toast({ kind: "error", message: "会話を削除できませんでした" }),
+    );
+  }, [pendingDelete, activeThreadId, threadsQuery.data, qc, itemId, toast]);
+
   const [creatingThread, setCreatingThread] = useState(false);
   const createConversation = useCallback(() => {
     if (creatingThread) return;
@@ -493,6 +518,41 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
                 {summarizing ? "まとめてメモ化 中…" : "まとめてメモ化"}
               </button>
             </Popover>
+            <button
+              ref={historyAnchor}
+              type="button"
+              aria-label="会話履歴"
+              aria-haspopup="menu"
+              aria-expanded={historyOpen}
+              onClick={() => setHistoryOpen((v) => !v)}
+              style={{
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                color: "var(--pr-text-sub)",
+                fontFamily: "inherit",
+                fontSize: 11,
+                padding: "0 4px",
+              }}
+            >
+              履歴
+            </button>
+            <ChatThreadHistoryPopover
+              open={historyOpen}
+              onClose={() => setHistoryOpen(false)}
+              anchorRef={historyAnchor}
+              threads={threadsQuery.data?.items ?? []}
+              activeThreadId={activeThreadId}
+              onSelect={(id) => {
+                setActiveThreadId(id);
+                setLocalUser(null);
+                setLocalAssistant(null);
+              }}
+              onRequestDelete={(t) => {
+                setHistoryOpen(false);
+                setPendingDelete(t);
+              }}
+            />
           </>
         )}
       </div>
@@ -567,6 +627,37 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
           />
         </div>
       )}
+      <Modal
+        open={pendingDelete !== null}
+        onClose={() => setPendingDelete(null)}
+        labelledBy="delete-thread-title"
+        width={380}
+      >
+        <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
+          <div id="delete-thread-title" style={{ fontSize: 14, fontWeight: 600, color: "var(--pr-text)" }}>
+            この会話を削除しますか?
+          </div>
+          <div style={{ fontSize: 12, color: "var(--pr-text-sub)" }}>
+            「{pendingDelete?.title}」を削除します。この操作は取り消せません。
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => setPendingDelete(null)}
+              style={{ border: "1px solid var(--pr-border-control)", background: "transparent", cursor: "pointer", fontFamily: "inherit", fontSize: 12, borderRadius: 6, padding: "6px 12px", color: "var(--pr-text-mid)" }}
+            >
+              キャンセル
+            </button>
+            <button
+              type="button"
+              onClick={confirmDelete}
+              style={{ border: "none", background: "var(--pr-warn)", color: "#FFFFFF", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600, borderRadius: 6, padding: "6px 14px" }}
+            >
+              削除する
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
