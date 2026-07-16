@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { cookies } from "next/headers";
 import type { ReactNode } from "react";
 import { Providers } from "@/app/providers";
+import { ServiceWorkerRegistration } from "@/components/pwa/ServiceWorkerRegistration";
 import "@/styles/globals.css";
 import {
   ACCENT_COOKIE,
@@ -19,6 +20,12 @@ import {
 export const metadata: Metadata = {
   title: "Alinea",
   description: "英語論文を日本語で深く読むための研究者向けワークベンチ。",
+  // PWA(S13 / M3): マニフェストは app/manifest.ts が /manifest.webmanifest として
+  // 自動リンクする。ここでは iOS ホーム画面用の apple-touch-icon のみ明示する。
+  appleWebApp: { capable: true, title: "Alinea", statusBarStyle: "default" },
+  icons: {
+    apple: [{ url: "/icons/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
 };
 
 export const viewport: Viewport = {
@@ -67,6 +74,7 @@ export default async function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
       <body>
+        <ServiceWorkerRegistration />
         <Providers theme={theme} accent={accent} bodyFont={bodyFont}>
           {children}
         </Providers>
