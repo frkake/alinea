@@ -557,6 +557,16 @@ export type BlockTranslation = {
 };
 
 /**
+ * Body_import_full_start
+ */
+export type BodyImportFullStart = {
+    /**
+     * File
+     */
+    file: Blob | File;
+};
+
+/**
  * Body_ingest_pdf
  */
 export type BodyIngestPdf = {
@@ -1313,6 +1323,10 @@ export type FigureItem = {
      */
     image_url: string | null;
     position: FigurePosition;
+    /**
+     * Deferred
+     */
+    deferred?: boolean;
 };
 
 /**
@@ -1337,6 +1351,39 @@ export type FigureLinkCardOut = {
      * Message
      */
     message: string;
+};
+
+/**
+ * FigureMaterializeBatchRequest
+ * 未読込図をまとめて素材化する要求(先頭から ``count`` 件を対象に上限拡張)。
+ */
+export type FigureMaterializeBatchRequest = {
+    /**
+     * Count
+     */
+    count?: number;
+};
+
+/**
+ * FigureMaterializeResponse
+ * 未読込(deferred)図のオンデマンド素材化の応答。
+ *
+ * ``job_id`` が None のときは既に素材化済み(何もしない)。素材化を要するときは
+ * 図数上限を引き上げた再取り込みジョブを起こし ``job_id`` を返す。
+ */
+export type FigureMaterializeResponse = {
+    /**
+     * Job Id
+     */
+    job_id?: string | null;
+    /**
+     * Already Materialized
+     */
+    already_materialized?: boolean;
+    /**
+     * Figure Limit
+     */
+    figure_limit?: number | null;
 };
 
 /**
@@ -1508,6 +1555,29 @@ export type HeadingContentOut = {
      * Text
      */
     text: string;
+};
+
+/**
+ * ImportFullStartResponse
+ */
+export type ImportFullStartResponse = {
+    /**
+     * Job Id
+     */
+    job_id: string;
+};
+
+/**
+ * ImportFullStatusResponse
+ */
+export type ImportFullStatusResponse = {
+    job: JobOut;
+    /**
+     * Summary
+     */
+    summary: {
+        [key: string]: unknown;
+    } | null;
 };
 
 /**
@@ -3146,6 +3216,77 @@ export type RetryFailedTranslationsResponse = {
 };
 
 /**
+ * RevisionDiffBlock
+ */
+export type RevisionDiffBlock = {
+    /**
+     * Status
+     */
+    status: string;
+    /**
+     * Block Id
+     */
+    block_id: string;
+    /**
+     * Block Type
+     */
+    block_type: string;
+    /**
+     * Section Id
+     */
+    section_id: string;
+    /**
+     * Old Text
+     */
+    old_text: string | null;
+    /**
+     * New Text
+     */
+    new_text: string | null;
+};
+
+/**
+ * RevisionDiffResponse
+ */
+export type RevisionDiffResponse = {
+    /**
+     * From Revision Id
+     */
+    from_revision_id: string;
+    /**
+     * To Revision Id
+     */
+    to_revision_id: string;
+    stats: RevisionDiffStatsDto;
+    /**
+     * Changes
+     */
+    changes: Array<RevisionDiffBlock>;
+};
+
+/**
+ * RevisionDiffStatsDto
+ */
+export type RevisionDiffStatsDto = {
+    /**
+     * Added
+     */
+    added: number;
+    /**
+     * Removed
+     */
+    removed: number;
+    /**
+     * Changed
+     */
+    changed: number;
+    /**
+     * Unchanged
+     */
+    unchanged: number;
+};
+
+/**
  * RevisionInfo
  */
 export type RevisionInfo = {
@@ -3157,6 +3298,10 @@ export type RevisionInfo = {
      * Quality Level
      */
     quality_level: string;
+    /**
+     * Source Format
+     */
+    source_format: string;
     /**
      * Source Version
      */
@@ -3181,6 +3326,14 @@ export type RevisionInfo = {
      * Created At
      */
     created_at: string;
+    /**
+     * Translated Pdf Renderer
+     */
+    translated_pdf_renderer?: string | null;
+    /**
+     * Translated Pdf Fallback Reason
+     */
+    translated_pdf_fallback_reason?: string | null;
 };
 
 /**
@@ -5183,6 +5336,70 @@ export type PapersReingestResponses = {
 
 export type PapersReingestResponse2 = PapersReingestResponses[keyof PapersReingestResponses];
 
+export type FiguresMaterializeDeferredData = {
+    body?: never;
+    path: {
+        /**
+         * Library Item Id
+         */
+        library_item_id: string;
+        /**
+         * Block Id
+         */
+        block_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{library_item_id}/figures/{block_id}/materialize';
+};
+
+export type FiguresMaterializeDeferredErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type FiguresMaterializeDeferredError = FiguresMaterializeDeferredErrors[keyof FiguresMaterializeDeferredErrors];
+
+export type FiguresMaterializeDeferredResponses = {
+    /**
+     * Successful Response
+     */
+    202: FigureMaterializeResponse;
+};
+
+export type FiguresMaterializeDeferredResponse = FiguresMaterializeDeferredResponses[keyof FiguresMaterializeDeferredResponses];
+
+export type FiguresMaterializeBatchData = {
+    body: FigureMaterializeBatchRequest;
+    path: {
+        /**
+         * Library Item Id
+         */
+        library_item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{library_item_id}/figures/materialize-batch';
+};
+
+export type FiguresMaterializeBatchErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type FiguresMaterializeBatchError = FiguresMaterializeBatchErrors[keyof FiguresMaterializeBatchErrors];
+
+export type FiguresMaterializeBatchResponses = {
+    /**
+     * Successful Response
+     */
+    202: FigureMaterializeResponse;
+};
+
+export type FiguresMaterializeBatchResponse = FiguresMaterializeBatchResponses[keyof FiguresMaterializeBatchResponses];
+
 export type PapersIngestLogData = {
     body?: never;
     path: {
@@ -5372,6 +5589,45 @@ export type ViewerListRevisionsResponses = {
 };
 
 export type ViewerListRevisionsResponse = ViewerListRevisionsResponses[keyof ViewerListRevisionsResponses];
+
+export type ViewerRevisionDiffData = {
+    body?: never;
+    path: {
+        /**
+         * Paper Id
+         */
+        paper_id: string;
+    };
+    query: {
+        /**
+         * From
+         */
+        from: string;
+        /**
+         * To
+         */
+        to: string;
+    };
+    url: '/api/papers/{paper_id}/revisions/diff';
+};
+
+export type ViewerRevisionDiffErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ViewerRevisionDiffError = ViewerRevisionDiffErrors[keyof ViewerRevisionDiffErrors];
+
+export type ViewerRevisionDiffResponses = {
+    /**
+     * Successful Response
+     */
+    200: RevisionDiffResponse;
+};
+
+export type ViewerRevisionDiffResponse = ViewerRevisionDiffResponses[keyof ViewerRevisionDiffResponses];
 
 export type ViewerGetDocumentData = {
     body?: never;
@@ -7570,6 +7826,61 @@ export type ExportFullStatusResponses = {
 };
 
 export type ExportFullStatusResponse2 = ExportFullStatusResponses[keyof ExportFullStatusResponses];
+
+export type ImportFullStartData = {
+    body: BodyImportFullStart;
+    path?: never;
+    query?: never;
+    url: '/api/import/full';
+};
+
+export type ImportFullStartErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ImportFullStartError = ImportFullStartErrors[keyof ImportFullStartErrors];
+
+export type ImportFullStartResponses = {
+    /**
+     * Successful Response
+     */
+    202: ImportFullStartResponse;
+};
+
+export type ImportFullStartResponse2 = ImportFullStartResponses[keyof ImportFullStartResponses];
+
+export type ImportFullStatusData = {
+    body?: never;
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/import/full/{job_id}';
+};
+
+export type ImportFullStatusErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ImportFullStatusError = ImportFullStatusErrors[keyof ImportFullStatusErrors];
+
+export type ImportFullStatusResponses = {
+    /**
+     * Successful Response
+     */
+    200: ImportFullStatusResponse;
+};
+
+export type ImportFullStatusResponse2 = ImportFullStatusResponses[keyof ImportFullStatusResponses];
 
 export type ExportStandaloneAvailabilityData = {
     body?: never;
