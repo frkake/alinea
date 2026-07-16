@@ -32,11 +32,23 @@ from alinea_core.db.models import (
     ChatThread,
     Collection,
     CollectionEntry,
+    CollectionShareToken,
+    DocumentRevision,
+    ExplainerFigure,
+    Glossary,
+    GlossaryTerm,
     Job,
     LibraryItem,
     Note,
+    Notification,
+    OverviewFigure,
     Paper,
+    ReadingSession,
     ResourceLink,
+    SavedFilter,
+    SourceAsset,
+    TranslationSet,
+    TranslationUnit,
     User,
     VocabEntry,
 )
@@ -47,6 +59,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 _EXPORT_URL_TTL_SECONDS = 24 * 60 * 60  # 有効 24 時間(plans/03 §18)
 _ZIP_ENTRY_NAME = "alinea-export.json"
+EXPORT_SCHEMA_VERSION = 2
 
 
 def _iso(value: dt.date | dt.datetime | None) -> str | None:
@@ -364,12 +377,411 @@ async def _serialize_collections(session: AsyncSession, user_id: str) -> list[di
     return out
 
 
+async def _serialize_document_revisions(
+    session: AsyncSession, paper_ids: list[str]
+) -> list[dict[str, Any]]:
+    if not paper_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(DocumentRevision)
+                .where(DocumentRevision.paper_id.in_(paper_ids))
+                .order_by(DocumentRevision.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "paper_id": str(r.paper_id),
+            "source_version": r.source_version,
+            "parser_version": r.parser_version,
+            "quality_level": r.quality_level,
+            "source_format": r.source_format,
+            "content": r.content,
+            "stats": r.stats,
+            "created_at": _iso(r.created_at),
+        }
+        for r in rows
+    ]
+
+
+async def _serialize_translation_sets(
+    session: AsyncSession, user_id: str
+) -> list[dict[str, Any]]:
+    rows = (
+        (
+            await session.execute(
+                select(TranslationSet)
+                .where(TranslationSet.user_id == user_id)
+                .order_by(TranslationSet.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "revision_id": str(r.revision_id),
+            "style": r.style,
+            "scope": r.scope,
+            "user_id": str(r.user_id) if r.user_id else None,
+            "base_set_id": str(r.base_set_id) if r.base_set_id else None,
+            "glossary_snapshot": r.glossary_snapshot,
+            "plan": r.plan,
+            "prompt_version": r.prompt_version,
+            "status": r.status,
+            "created_at": _iso(r.created_at),
+            "updated_at": _iso(r.updated_at),
+        }
+        for r in rows
+    ]
+
+
+async def _serialize_translation_units(
+    session: AsyncSession, set_ids: list[str]
+) -> list[dict[str, Any]]:
+    if not set_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(TranslationUnit)
+                .where(TranslationUnit.set_id.in_(set_ids))
+                .order_by(TranslationUnit.id.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "set_id": str(r.set_id),
+            "block_id": r.block_id,
+            "source_hash": r.source_hash,
+            "content_ja": r.content_ja,
+            "text_ja": r.text_ja,
+            "state": r.state,
+            "quality_flags": list(r.quality_flags or []),
+            "proposal": r.proposal,
+            "model": r.model,
+            "created_at": _iso(r.created_at),
+            "updated_at": _iso(r.updated_at),
+        }
+        for r in rows
+    ]
+
+
+async def _serialize_glossaries(
+    session: AsyncSession, user_id: str
+) -> list[dict[str, Any]]:
+    rows = (
+        (
+            await session.execute(
+                select(Glossary)
+                .where(Glossary.user_id == user_id)
+                .order_by(Glossary.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "scope": r.scope,
+            "user_id": str(r.user_id) if r.user_id else None,
+            "library_item_id": str(r.library_item_id) if r.library_item_id else None,
+            "name": r.name,
+            "created_at": _iso(r.created_at),
+            "updated_at": _iso(r.updated_at),
+        }
+        for r in rows
+    ]
+
+
+async def _serialize_glossary_terms(
+    session: AsyncSession, glossary_ids: list[str]
+) -> list[dict[str, Any]]:
+    if not glossary_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(GlossaryTerm)
+                .where(GlossaryTerm.glossary_id.in_(glossary_ids))
+                .order_by(GlossaryTerm.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "glossary_id": str(r.glossary_id),
+            "source_term": r.source_term,
+            "target_term": r.target_term,
+            "pos_label": r.pos_label,
+            "policy": r.policy,
+            "auto_extracted": r.auto_extracted,
+            "created_at": _iso(r.created_at),
+            "updated_at": _iso(r.updated_at),
+        }
+        for r in rows
+    ]
+
+
+async def _serialize_saved_filters(
+    session: AsyncSession, user_id: str
+) -> list[dict[str, Any]]:
+    rows = (
+        (
+            await session.execute(
+                select(SavedFilter)
+                .where(SavedFilter.user_id == user_id)
+                .order_by(SavedFilter.position.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "user_id": str(r.user_id),
+            "name": r.name,
+            "conditions": r.conditions,
+            "sort": r.sort,
+            "position": r.position,
+            "created_at": _iso(r.created_at),
+            "updated_at": _iso(r.updated_at),
+        }
+        for r in rows
+    ]
+
+
+async def _serialize_reading_sessions(
+    session: AsyncSession, library_item_ids: list[str]
+) -> list[dict[str, Any]]:
+    if not library_item_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(ReadingSession)
+                .where(ReadingSession.library_item_id.in_(library_item_ids))
+                .order_by(ReadingSession.id.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "library_item_id": str(r.library_item_id),
+            "started_at": _iso(r.started_at),
+            "ended_at": _iso(r.ended_at),
+            "active_seconds": r.active_seconds,
+            "view_mode": r.view_mode,
+            "created_at": _iso(r.created_at),
+        }
+        for r in rows
+    ]
+
+
+async def _serialize_notifications(
+    session: AsyncSession, user_id: str
+) -> list[dict[str, Any]]:
+    rows = (
+        (
+            await session.execute(
+                select(Notification)
+                .where(Notification.user_id == user_id)
+                .order_by(Notification.id.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "user_id": str(r.user_id),
+            "kind": r.kind,
+            "payload": r.payload,
+            "read": r.read,
+            "created_at": _iso(r.created_at),
+        }
+        for r in rows
+    ]
+
+
+async def _serialize_overview_figures(
+    session: AsyncSession, article_ids: list[str]
+) -> list[dict[str, Any]]:
+    if not article_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(OverviewFigure)
+                .where(OverviewFigure.article_id.in_(article_ids))
+                .order_by(OverviewFigure.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "article_id": str(r.article_id),
+            "version": r.version,
+            "is_current": r.is_current,
+            "render_mode": r.render_mode,
+            "dsl": r.dsl,
+            "svg_storage_key": r.svg_storage_key,
+            "image_storage_key": r.image_storage_key,
+            "provider": r.provider,
+            "model": r.model,
+            "prompt": r.prompt,
+            "instruction": r.instruction,
+            "evidence_anchors": r.evidence_anchors,
+            "generated_at": _iso(r.generated_at),
+            "created_at": _iso(r.created_at),
+        }
+        for r in rows
+    ]
+
+
+async def _serialize_explainer_figures(
+    session: AsyncSession, article_ids: list[str]
+) -> list[dict[str, Any]]:
+    if not article_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(ExplainerFigure)
+                .where(ExplainerFigure.article_id.in_(article_ids))
+                .order_by(ExplainerFigure.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "article_id": str(r.article_id),
+            "slot": r.slot,
+            "version": r.version,
+            "is_current": r.is_current,
+            "provider": r.provider,
+            "model": r.model,
+            "prompt": r.prompt,
+            "image_storage_key": r.image_storage_key,
+            "caption": r.caption,
+            "evidence_anchors": r.evidence_anchors,
+            "generated_at": _iso(r.generated_at),
+            "created_at": _iso(r.created_at),
+        }
+        for r in rows
+    ]
+
+
+async def _serialize_source_assets(
+    session: AsyncSession, paper_ids: list[str]
+) -> list[dict[str, Any]]:
+    if not paper_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(SourceAsset)
+                .where(SourceAsset.paper_id.in_(paper_ids))
+                .order_by(SourceAsset.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "paper_id": str(r.paper_id),
+            "kind": r.kind,
+            "source_url": r.source_url,
+            "source_version": r.source_version,
+            "storage_key": r.storage_key,
+            "content_type": r.content_type,
+            "byte_size": r.byte_size,
+            "sha256": r.sha256,
+            "fetched_at": _iso(r.fetched_at),
+            "created_at": _iso(r.created_at),
+        }
+        for r in rows
+    ]
+
+
+async def _serialize_share_tokens(
+    session: AsyncSession, collection_ids: list[str]
+) -> list[dict[str, Any]]:
+    if not collection_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(CollectionShareToken)
+                .where(CollectionShareToken.collection_id.in_(collection_ids))
+                .order_by(CollectionShareToken.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "collection_id": str(r.collection_id),
+            "token": r.token,
+            "status": r.status,
+            "include_notes": r.include_notes,
+            "created_at": _iso(r.created_at),
+            "revoked_at": _iso(r.revoked_at),
+        }
+        for r in rows
+    ]
+
+
 async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str, Any]:
     """全量 JSON の本体(docs/00 P5 の全カテゴリの全キー存在。PY-EXP-04)。"""
     user = await session.get(User, user_id)
     library = await _serialize_library(session, user_id)
     library_item_ids = [str(row["library_item_id"]) for row in library]
+    paper_ids = [str(row["paper_id"]) for row in library]
+
+    translation_sets = await _serialize_translation_sets(session, user_id)
+    set_ids = [ts["id"] for ts in translation_sets]
+
+    glossaries = await _serialize_glossaries(session, user_id)
+    glossary_ids = [g["id"] for g in glossaries]
+
+    articles = await _serialize_articles(session, library_item_ids)
+    article_ids = [a["article_id"] for a in articles]
+
+    collections = await _serialize_collections(session, user_id)
+    collection_ids = [c["id"] for c in collections]
+
     return {
+        "schema_version": EXPORT_SCHEMA_VERSION,
         "exported_at": dt.datetime.now(dt.UTC).isoformat(),
         "user": {
             "id": user_id,
@@ -382,9 +794,21 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
         "chat_threads": await _serialize_chat_threads(session, library_item_ids),
         "vocab": await _serialize_vocab(session, user_id),
         "resources": await _serialize_resources(session, library_item_ids),
-        "articles": await _serialize_articles(session, library_item_ids),
-        "collections": await _serialize_collections(session, user_id),
+        "articles": articles,
+        "collections": collections,
         "settings": user.settings if user is not None and isinstance(user.settings, dict) else {},
+        "document_revisions": await _serialize_document_revisions(session, paper_ids),
+        "translation_sets": translation_sets,
+        "translation_units": await _serialize_translation_units(session, set_ids),
+        "glossaries": glossaries,
+        "glossary_terms": await _serialize_glossary_terms(session, glossary_ids),
+        "saved_filters": await _serialize_saved_filters(session, user_id),
+        "reading_sessions": await _serialize_reading_sessions(session, library_item_ids),
+        "notifications": await _serialize_notifications(session, user_id),
+        "overview_figures": await _serialize_overview_figures(session, article_ids),
+        "explainer_figures": await _serialize_explainer_figures(session, article_ids),
+        "source_assets": await _serialize_source_assets(session, paper_ids),
+        "share_tokens": await _serialize_share_tokens(session, collection_ids),
     }
 
 
