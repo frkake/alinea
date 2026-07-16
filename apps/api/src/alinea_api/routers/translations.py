@@ -57,7 +57,7 @@ from alinea_core.translation.pipeline import (
 )
 from alinea_core.translation.placeholder import encode_block
 from fastapi import APIRouter, Depends, Response, status
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import and_, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -102,6 +102,7 @@ _ACTIVE_WORK_STATUSES = ("queued", "running", "waiting_quota")
 
 _WORK_REASON_BY_KIND = {
     "literal": "literal",
+    "easy": "easy",
     "full": "on_demand",
     "table": "table",
     "retry": "retry_failed",
@@ -237,6 +238,8 @@ def _legacy_work_kind(payload: Mapping[str, Any]) -> str | None:
     reason = payload.get("reason")
     if reason == "literal":
         return "literal"
+    if reason == "easy":
+        return "easy"
     if reason == "table" and payload.get("table_block_id"):
         return "table"
     if reason == "on_demand" and payload.get("table_block_id") is None:
@@ -840,8 +843,8 @@ async def list_units(
     user: CurrentUser,
     db: DbDep,
 ) -> UnitsResponse:
-    if style not in ("natural", "literal"):
-        raise ProblemException("validation_error", detail="style は natural / literal のみ")
+    if style not in ("natural", "literal", "easy"):
+        raise ProblemException("validation_error", detail="style は natural / literal / easy のみ")
     revision, _paper = await resolve_accessible_revision(db, revision_id, user)
     tset = await _effective_set_id(db, revision_id, style, str(user.id))
     if tset is None:
@@ -937,6 +940,66 @@ async def _create_literal_set(
     return tset
 
 
+# --- §7.3b やさしい訳のオンデマンド生成開始(S11 M3) ----------------------------
+
+
+class EasyTranslationRequest(BaseModel):
+    style: Literal["easy"]
+    priority_section_id: str | None = None
+
+
+class EasyTranslationResponse(BaseModel):
+    set_id: str
+    job_id: str | None
+
+
+async def _create_easy_set(
+    db: AsyncSession,
+    revision: DocumentRevision,
+    paper: Paper,
+    user: User,
+    plan: TranslationPlan,
+) -> TranslationSet:
+    """style='easy' の TranslationSet を未commitで確保する。
+
+    _create_literal_set と同一ロジック。style 文字列のみ異なる。
+    """
+    revision_id = str(revision.id)
+    library_item_id = await _user_library_item_id(db, user, str(paper.id))
+    shared = paper.visibility == "public"
+    snapshot, _ghash = await glossary_core.build_snapshot(
+        db, user_id=str(user.id), library_item_id=library_item_id, shared=shared
+    )
+    tset = TranslationSet(
+        revision_id=revision_id,
+        style="easy",
+        scope="shared" if shared else "personal",
+        user_id=None if shared else str(user.id),
+        glossary_snapshot=snapshot,
+        status="pending",
+        plan=plan.model_dump(mode="json"),
+    )
+    try:
+        async with db.begin_nested():
+            db.add(tset)
+            await db.flush()
+    except IntegrityError:
+        existing = await _effective_set_id(db, revision_id, "easy", str(user.id))
+        if existing is None:
+            raise
+        return existing
+    return tset
+
+
+# FastAPI は同一 path+method に複数ルートを登録できないため、literal / easy を単一エンドポイントで
+# 受け取り body.style で内部ディスパッチする。Pydantic v2 の discriminated union を使い、
+# style フィールド値により自動選択する。
+_OnDemandTranslationRequest = Annotated[
+    LiteralTranslationRequest | EasyTranslationRequest,
+    Field(discriminator="style"),
+]
+
+
 @router.post(
     "/api/revisions/{revision_id}/translations",
     response_model=LiteralTranslationResponse,
@@ -945,12 +1008,13 @@ async def _create_literal_set(
 )
 async def start_literal_translation(
     revision_id: str,
-    body: LiteralTranslationRequest,
+    body: _OnDemandTranslationRequest,
     user: CurrentUser,
     db: DbDep,
     response: Response,
     wakeup: TranslationsJobWakeupDep,
 ) -> LiteralTranslationResponse:
+    style = body.style  # "literal" or "easy"
     revision, paper = await resolve_accessible_revision(db, revision_id, user)
     content = _as_content(revision)
     raw_pages = (revision.stats or {}).get("pages")
@@ -961,9 +1025,12 @@ async def start_literal_translation(
         pages=pages,
     )
 
-    tset = await _effective_set_id(db, revision_id, "literal", str(user.id))
+    tset = await _effective_set_id(db, revision_id, style, str(user.id))
     if tset is None:
-        tset = await _create_literal_set(db, revision, paper, user, requested_plan)
+        if style == "easy":
+            tset = await _create_easy_set(db, revision, paper, user, requested_plan)
+        else:
+            tset = await _create_literal_set(db, revision, paper, user, requested_plan)
 
     # public の shared set は異なるユーザーから同時に再利用される。既存対象を失わないよう
     # 行ロック下で単調に統合し、対象が増えた complete set だけを再開する。
@@ -1013,7 +1080,7 @@ async def start_literal_translation(
                 tset=tset,
                 content=content,
                 section_id=section_id,
-                work_kind="literal",
+                work_kind=style,
                 block_ids=block_ids,
                 require_table_cells=merged_plan.translate_table_cells,
                 priority=priority,
@@ -1024,7 +1091,7 @@ async def start_literal_translation(
                     "set_id": str(tset.id),
                     "section_id": section_id,
                     "block_ids": block_ids,
-                    "reason": "literal",
+                    "reason": style,
                     "table_block_id": None,
                 },
             )
