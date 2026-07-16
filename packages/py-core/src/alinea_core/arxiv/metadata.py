@@ -30,6 +30,14 @@ _VENUE = re.compile(
     r"CoRL|RSS|ICRA|IROS|INTERSPEECH|ICASSP)\s*[',]?\s*((?:19|20)\d{2})\b"
 )
 
+# S4: 公式実装 GitHub URL 抽出(docs/12-resources.md §5)
+# github.com/{owner}/{repo} のうち最初の2パスセグメントを取り出す。
+# Gist (owner=="gist")・'.' 始まり owner/repo・スキームなし/あり の両方に対応する。
+# サブドメイン(gist.github.com 等)は除外するため (?<![.\w]) で先行に単語文字・'.' がないことを確認。
+_GITHUB_RE = re.compile(
+    r"(?<![.\w])(?:https?://)?github\.com/([A-Za-z0-9_][A-Za-z0-9_./-]*)"
+)
+
 
 class ArxivMeta(BaseModel):
     """papers に投入する正規化済みメタデータ(§3.2 の対応表と同型)。"""
@@ -46,10 +54,54 @@ class ArxivMeta(BaseModel):
     venue: str | None
     latest_version: str
     license: LicenseId
+    # S4: 公式実装 GitHub URL(docs/12-resources.md §5)。取り込み時に自動検出。
+    official_repo_url: str | None = None
 
 
 def _clean(text: str | None) -> str:
     return _WS.sub(" ", text).strip() if text else ""
+
+
+def _extract_official_repo(
+    comment: str | None,
+    abstract: str | None,
+) -> str | None:
+    """arXiv Atom comment / abstract から公式 GitHub リポジトリ URL を抽出する(S4)。
+
+    docs/12-resources.md §5 の検出ロジック準拠:
+    - comment → abstract の優先順で最初に見つかった候補を返す。
+    - github.com/gist/... は Gist のためスキップ。
+    - owner が '.' 始まりは不正パスとしてスキップ。
+    - 深いパスは owner/repo の2セグメントに正規化。
+    - .git サフィックスを除去。
+    - 正規化 URL は https://github.com/{owner}/{repo} 形式。
+    """
+    for source in (comment, abstract):
+        if not source:
+            continue
+        for m in _GITHUB_RE.finditer(source):
+            path = m.group(1)
+            # パスセグメントに分解(空要素・末尾スラッシュを除去)
+            segments = [s for s in path.split("/") if s]
+            if len(segments) < 2:
+                # owner のみ(リポジトリ名なし)
+                continue
+            owner, repo = segments[0], segments[1]
+            # Gist はスキップ
+            if owner == "gist":
+                continue
+            # '.' 始まりの owner/repo はスキップ
+            if owner.startswith(".") or repo.startswith("."):
+                continue
+            # .git サフィックスを除去
+            if repo.endswith(".git"):
+                repo = repo[:-4]
+            # 末尾の句読点(URL 末尾に文章の . , ; ) が付着する場合)を除去
+            repo = repo.rstrip(".,;:)")
+            if not repo:
+                continue
+            return f"https://github.com/{owner}/{repo}"
+    return None
 
 
 def _child_text(el: ET.Element, tag: str) -> str | None:
@@ -95,6 +147,8 @@ def _parse_atom(xml_text: str, ref: ArxivId) -> ArxivMeta:
     if entry is None:
         raise FetchError("source_not_found", f"arxiv metadata not found: {ref.versioned}")
     published = _child_text(entry, f"{_ATOM}published")
+    comment = _child_text(entry, f"{_ARXIV}comment")
+    abstract = _clean(_child_text(entry, f"{_ATOM}summary"))
     return ArxivMeta(
         arxiv_id=ref.id,
         title=_clean(_child_text(entry, f"{_ATOM}title")),
@@ -103,13 +157,14 @@ def _parse_atom(xml_text: str, ref: ArxivId) -> ArxivMeta:
             for name in entry.findall(f"{_ATOM}author/{_ATOM}name")
             if name.text
         ],
-        abstract=_clean(_child_text(entry, f"{_ATOM}summary")),
+        abstract=abstract,
         published_on=published.split("T")[0] if published else None,
         arxiv_categories=_extract_categories(entry),
         doi=_child_text(entry, f"{_ARXIV}doi"),
         venue=_extract_venue(entry),
         latest_version=_extract_latest_version(entry),
         license="unknown",
+        official_repo_url=_extract_official_repo(comment=comment, abstract=abstract),
     )
 
 
