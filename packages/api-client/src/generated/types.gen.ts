@@ -8556,6 +8556,50 @@ export type VocabExportMarkdownResponses = {
     200: unknown;
 };
 
+export type VocabExportAnkiData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Kind
+         */
+        kind?: Array<string> | null;
+        /**
+         * Due
+         */
+        due?: boolean | null;
+        /**
+         * Q
+         */
+        q?: string | null;
+        /**
+         * Library Item Id
+         */
+        library_item_id?: string | null;
+        /**
+         * Sort
+         */
+        sort?: string;
+    };
+    url: '/api/vocab/export/anki';
+};
+
+export type VocabExportAnkiErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabExportAnkiError = VocabExportAnkiErrors[keyof VocabExportAnkiErrors];
+
+export type VocabExportAnkiResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
 export type VocabDeleteData = {
     body?: never;
     path: {
