@@ -1,10 +1,13 @@
-"""``import_user_data.import_data_json`` のテスト(完全データ移行 Task 3)。
+"""``import_user_data.import_data_json`` / ``run_import_full_job`` のテスト
+(完全データ移行 Task 3・Task 4)。
 
 export 側の seed を再利用して payload を作り、別ユーザーへ冪等マージ復元することを検証する。
 - 元データを削除して「別 PC」を模し、1 回目は created、2 回目は全 skip(冪等)。
 - 無損失復元: note.anchors / chat message の content・evidence_anchors / vocab.context_anchor。
 - document_revisions 復元後に block_search_index が再構築される。
-DB は実 PostgreSQL(worker conftest の db_session)。S3 は使わない(メタのみ復元)。
+- Task 4: zip ラウンドトリップでアセット(sha256 照合)も復元される。
+DB は実 PostgreSQL(worker conftest の db_session)。
+S3 は Task 4 のラウンドトリップテストのみ実 MinIO を使う(S3Storage() で直接生成)。
 """
 
 from __future__ import annotations
@@ -23,8 +26,10 @@ from alinea_core.db.models import (
     User,
     VocabEntry,
 )
-from alinea_worker.tasks.export_user_data import build_export_payload
-from alinea_worker.tasks.import_user_data import import_data_json
+from alinea_core.jobs.store import JobStore
+from alinea_core.storage.s3 import S3Storage
+from alinea_worker.tasks.export_user_data import build_export_archive, build_export_payload
+from alinea_worker.tasks.import_user_data import import_data_json, run_import_full_job
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from test_export_bulk import _seed_user_data
@@ -177,3 +182,91 @@ async def test_import_is_lossless_for_anchors_and_content(db_session: AsyncSessi
     )
     assert vocab is not None
     assert vocab.context_anchor == payload["vocab"][0]["context_anchor"]
+
+
+# ---------------------------------------------------------------------------
+# Task 4: インポートジョブハンドラ — zip ラウンドトリップ + アセット復元
+# ---------------------------------------------------------------------------
+
+async def test_import_job_roundtrip_restores_assets(db_session: AsyncSession) -> None:
+    """エクスポート zip を S3 に置き、import Job がアセット sha256 照合で復元することを検証。"""
+    storage = S3Storage()
+
+    src = await _seed_user_data(db_session)
+    # source_asset が指す storage_key に実バイナリを置く
+    await storage.put(
+        storage.sources_bucket,
+        src["asset_key"],
+        b"%PDF-1.7 fake",
+        content_type="application/pdf",
+    )
+    # アーカイブを生成(manifest + data.json + assets/...)
+    archive = await build_export_archive(db_session, src["user_id"], storage)
+
+    # 一時 key に zip を保存
+    upload_key = f"imports/{uuid.uuid4()}.zip"
+    await storage.put(
+        storage.assets_bucket, upload_key, archive, content_type="application/zip"
+    )
+
+    # 別ユーザーを作成して import Job を作る
+    target = await _make_user(db_session)
+    store = JobStore(db_session)
+    job_id = await store.enqueue(
+        kind="import",
+        priority="bulk",
+        user_id=target["user_id"],
+        payload={"upload_key": upload_key},
+    )
+    job = await store.claim(job_id)
+    assert job is not None
+
+    await run_import_full_job({"s3": storage}, store, job)
+
+    done = await store.get(job_id)
+    assert done is not None
+    assert done.status == "succeeded", f"job failed: {done.result}"
+    assert done.result["summary"]["created"]["library"] >= 1
+
+    # アセットが復元されている(同じ key に同じバイト列が入っている)
+    restored = await storage.get(storage.sources_bucket, src["asset_key"])
+    assert restored == b"%PDF-1.7 fake"
+
+
+async def test_import_job_rejects_invalid_schema_version(db_session: AsyncSession) -> None:
+    """schema_version が 2 でない zip は fail_with_retry で拒否される。"""
+    import io
+    import json
+    import zipfile
+
+    storage = S3Storage()
+
+    # 不正な schema_version を持つ manifest を作る
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"schema_version": 99, "assets": []}))
+        zf.writestr("data.json", json.dumps({"library": [], "user": {}}))
+    archive = buf.getvalue()
+
+    upload_key = f"imports/{uuid.uuid4()}.zip"
+    await storage.put(
+        storage.assets_bucket, upload_key, archive, content_type="application/zip"
+    )
+
+    target = await _make_user(db_session)
+    store = JobStore(db_session)
+    job_id = await store.enqueue(
+        kind="import",
+        priority="bulk",
+        user_id=target["user_id"],
+        payload={"upload_key": upload_key},
+    )
+    job = await store.claim(job_id)
+    assert job is not None
+
+    await run_import_full_job({"s3": storage}, store, job)
+
+    done = await store.get(job_id)
+    assert done is not None
+    # schema_version 不一致は fail_with_retry → attempt<max → status='queued' or 'failed'
+    assert done.status in ("queued", "failed"), f"unexpected status: {done.status}"
