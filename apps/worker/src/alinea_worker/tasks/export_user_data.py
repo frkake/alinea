@@ -19,6 +19,7 @@ followups と同方針)::
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import io
 import json
 import zipfile
@@ -820,14 +821,79 @@ def _zip_payload(payload: dict[str, Any]) -> bytes:
     return buf.getvalue()
 
 
+def collect_asset_keys(payload: dict[str, Any]) -> list[tuple[str, str]]:
+    """payload から到達可能な (logical_bucket, storage_key) を集約(重複排除・決定的順序)。
+
+    logical_bucket ∈ {"sources", "assets"}.
+    """
+    keys: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(bucket: str, key: str | None) -> None:
+        if key and (bucket, key) not in seen:
+            seen.add((bucket, key))
+            keys.append((bucket, key))
+
+    # source_assets(sources バケット)
+    for a in payload.get("source_assets", []):
+        add("sources", a.get("storage_key"))
+
+    # overview figures: svg と raster 画像の両方(いずれも None の場合あり)
+    for f in payload.get("overview_figures", []):
+        add("assets", f.get("svg_storage_key"))
+        add("assets", f.get("image_storage_key"))
+
+    # explainer figures: raster 画像
+    for f in payload.get("explainer_figures", []):
+        add("assets", f.get("image_storage_key"))
+
+    return keys
+
+
+async def build_export_archive(
+    session: AsyncSession, user_id: str, storage: S3Storage
+) -> bytes:
+    """manifest.json + data.json + assets/<storage_key> を含む zip バイト列を返す。"""
+    payload = await build_export_payload(session, user_id)
+    buf = io.BytesIO()
+    assets_meta: list[dict[str, Any]] = []
+
+    bucket_map = {"sources": storage.sources_bucket, "assets": storage.assets_bucket}
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("data.json", json.dumps(payload, ensure_ascii=False, indent=2))
+
+        for logical_bucket, key in collect_asset_keys(payload):
+            try:
+                data = await storage.get(bucket_map[logical_bucket], key)
+            except Exception:  # noqa: BLE001 — 欠落アセットは skip(P3)
+                continue
+            zf.writestr(f"assets/{key}", data)
+            assets_meta.append({
+                "storage_key": key,
+                "bucket": logical_bucket,
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "byte_size": len(data),
+            })
+
+        manifest = {
+            "schema_version": EXPORT_SCHEMA_VERSION,
+            "exported_at": payload["exported_at"],
+            "assets": assets_meta,
+        }
+        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+
+    return buf.getvalue()
+
+
 async def run_export_full_job(ctx: dict[str, Any], store: JobStore, job: Job) -> None:
     """``kind='export'`` ハンドラ。全量 JSON を zip 化して S3 へ保存し署名 URL を返す。"""
     session = store.session
     user_id = str(job.user_id)
-    payload = await build_export_payload(session, user_id)
-    archive = _zip_payload(payload)
 
     storage: S3Storage = ctx.get("s3") or S3Storage(ctx.get("settings"))
+    archive = await build_export_archive(session, user_id, storage)
+
     key = StorageKeys.export(user_id, str(job.id))
     await storage.put(storage.assets_bucket, key, archive, content_type="application/zip")
     url = await storage.presign_get(storage.assets_bucket, key, expires_in=_EXPORT_URL_TTL_SECONDS)

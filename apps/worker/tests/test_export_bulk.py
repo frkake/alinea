@@ -40,7 +40,11 @@ from alinea_core.db.models import (
 )
 from alinea_core.jobs.store import JobStore
 from alinea_core.storage.s3 import S3Storage, StorageKeys
-from alinea_worker.tasks.export_user_data import build_export_payload, run_export_full_job
+from alinea_worker.tasks.export_user_data import (
+    build_export_archive,
+    build_export_payload,
+    run_export_full_job,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -247,7 +251,11 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
     )
 
     await db.commit()
-    return {"user_id": str(user.id), "library_item_id": str(item.id)}
+    return {
+        "user_id": str(user.id),
+        "library_item_id": str(item.id),
+        "asset_key": f"assets/papers/{paper.id}/paper.pdf",
+    }
 
 
 async def _run_export_job(db: AsyncSession, user_id: str) -> Any:
@@ -310,9 +318,10 @@ async def test_run_export_full_job_uploads_zip_and_sets_download_url(
     key = StorageKeys.export(ids["user_id"], str(job.id))
     archive = await storage.get(storage.assets_bucket, key)
     with zipfile.ZipFile(BytesIO(archive)) as zf:
-        names = zf.namelist()
-        assert names == ["alinea-export.json"]
-        payload = json.loads(zf.read("alinea-export.json"))
+        names = set(zf.namelist())
+        assert "manifest.json" in names
+        assert "data.json" in names
+        payload = json.loads(zf.read("data.json"))
     assert payload["user"]["id"] == ids["user_id"]
     assert len(payload["library"]) == 1
 
@@ -345,3 +354,22 @@ async def test_export_payload_includes_generated_content(db_session: AsyncSessio
         assert key in payload, key
     # source_asset メタは storage_key/sha256/byte_size を持つ
     assert payload["source_assets"][0]["storage_key"]
+
+
+async def test_export_archive_bundles_assets_and_manifest(db_session: AsyncSession) -> None:
+    ids = await _seed_user_data(db_session)
+    storage = S3Storage()
+    # source_asset が指す storage_key に実バイナリを置く
+    await storage.put(storage.sources_bucket, ids["asset_key"], b"%PDF-1.7 fake",
+                      content_type="application/pdf")
+    archive = await build_export_archive(db_session, ids["user_id"], storage)
+    with zipfile.ZipFile(BytesIO(archive)) as zf:
+        names = set(zf.namelist())
+        assert "manifest.json" in names
+        assert "data.json" in names
+        assert f"assets/{ids['asset_key']}" in names
+        manifest = json.loads(zf.read("manifest.json"))
+        assert manifest["schema_version"] == 2
+        entry = next(a for a in manifest["assets"] if a["storage_key"] == ids["asset_key"])
+        assert entry["sha256"]
+        assert zf.read(f"assets/{ids['asset_key']}") == b"%PDF-1.7 fake"
