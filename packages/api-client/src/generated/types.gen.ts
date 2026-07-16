@@ -557,16 +557,6 @@ export type BlockTranslation = {
 };
 
 /**
- * Body_import_full_start
- */
-export type BodyImportFullStart = {
-    /**
-     * File
-     */
-    file: Blob | File;
-};
-
-/**
  * Body_ingest_pdf
  */
 export type BodyIngestPdf = {
@@ -1309,10 +1299,6 @@ export type FigureItem = {
      */
     image_url: string | null;
     position: FigurePosition;
-    /**
-     * Deferred
-     */
-    deferred?: boolean;
 };
 
 /**
@@ -1337,39 +1323,6 @@ export type FigureLinkCardOut = {
      * Message
      */
     message: string;
-};
-
-/**
- * FigureMaterializeBatchRequest
- * 未読込図をまとめて素材化する要求(先頭から ``count`` 件を対象に上限拡張)。
- */
-export type FigureMaterializeBatchRequest = {
-    /**
-     * Count
-     */
-    count?: number;
-};
-
-/**
- * FigureMaterializeResponse
- * 未読込(deferred)図のオンデマンド素材化の応答。
- *
- * ``job_id`` が None のときは既に素材化済み(何もしない)。素材化を要するときは
- * 図数上限を引き上げた再取り込みジョブを起こし ``job_id`` を返す。
- */
-export type FigureMaterializeResponse = {
-    /**
-     * Job Id
-     */
-    job_id?: string | null;
-    /**
-     * Already Materialized
-     */
-    already_materialized?: boolean;
-    /**
-     * Figure Limit
-     */
-    figure_limit?: number | null;
 };
 
 /**
@@ -1541,29 +1494,6 @@ export type HeadingContentOut = {
      * Text
      */
     text: string;
-};
-
-/**
- * ImportFullStartResponse
- */
-export type ImportFullStartResponse = {
-    /**
-     * Job Id
-     */
-    job_id: string;
-};
-
-/**
- * ImportFullStatusResponse
- */
-export type ImportFullStatusResponse = {
-    job: JobOut;
-    /**
-     * Summary
-     */
-    summary: {
-        [key: string]: unknown;
-    } | null;
 };
 
 /**
@@ -3214,10 +3144,6 @@ export type RevisionInfo = {
      */
     quality_level: string;
     /**
-     * Source Format
-     */
-    source_format: string;
-    /**
      * Source Version
      */
     source_version: string | null;
@@ -3241,14 +3167,6 @@ export type RevisionInfo = {
      * Created At
      */
     created_at: string;
-    /**
-     * Translated Pdf Renderer
-     */
-    translated_pdf_renderer?: string | null;
-    /**
-     * Translated Pdf Fallback Reason
-     */
-    translated_pdf_fallback_reason?: string | null;
 };
 
 /**
@@ -3885,6 +3803,41 @@ export type SharePatchBody = {
      * Include Notes
      */
     include_notes: boolean;
+};
+
+/**
+ * StandaloneAvailability
+ * 成果物ごとの生成有無(UI の選択可否判定に使う。最新リビジョン基準)。
+ */
+export type StandaloneAvailability = {
+    /**
+     * Source Html
+     */
+    source_html: boolean;
+    /**
+     * Translation Html
+     */
+    translation_html: boolean;
+    /**
+     * Bilingual Html
+     */
+    bilingual_html: boolean;
+    /**
+     * Article Html
+     */
+    article_html: boolean;
+    /**
+     * Pdf Original
+     */
+    pdf_original: boolean;
+    /**
+     * Pdf Translated
+     */
+    pdf_translated: boolean;
+    /**
+     * Pdf Bilingual
+     */
+    pdf_bilingual: boolean;
 };
 
 /**
@@ -5140,70 +5093,6 @@ export type PapersReingestResponses = {
 };
 
 export type PapersReingestResponse2 = PapersReingestResponses[keyof PapersReingestResponses];
-
-export type FiguresMaterializeDeferredData = {
-    body?: never;
-    path: {
-        /**
-         * Library Item Id
-         */
-        library_item_id: string;
-        /**
-         * Block Id
-         */
-        block_id: string;
-    };
-    query?: never;
-    url: '/api/library-items/{library_item_id}/figures/{block_id}/materialize';
-};
-
-export type FiguresMaterializeDeferredErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type FiguresMaterializeDeferredError = FiguresMaterializeDeferredErrors[keyof FiguresMaterializeDeferredErrors];
-
-export type FiguresMaterializeDeferredResponses = {
-    /**
-     * Successful Response
-     */
-    202: FigureMaterializeResponse;
-};
-
-export type FiguresMaterializeDeferredResponse = FiguresMaterializeDeferredResponses[keyof FiguresMaterializeDeferredResponses];
-
-export type FiguresMaterializeBatchData = {
-    body: FigureMaterializeBatchRequest;
-    path: {
-        /**
-         * Library Item Id
-         */
-        library_item_id: string;
-    };
-    query?: never;
-    url: '/api/library-items/{library_item_id}/figures/materialize-batch';
-};
-
-export type FiguresMaterializeBatchErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type FiguresMaterializeBatchError = FiguresMaterializeBatchErrors[keyof FiguresMaterializeBatchErrors];
-
-export type FiguresMaterializeBatchResponses = {
-    /**
-     * Successful Response
-     */
-    202: FigureMaterializeResponse;
-};
-
-export type FiguresMaterializeBatchResponse = FiguresMaterializeBatchResponses[keyof FiguresMaterializeBatchResponses];
 
 export type PapersIngestLogData = {
     body?: never;
@@ -7586,60 +7475,147 @@ export type ExportFullStatusResponses = {
 
 export type ExportFullStatusResponse2 = ExportFullStatusResponses[keyof ExportFullStatusResponses];
 
-export type ImportFullStartData = {
-    body: BodyImportFullStart;
-    path?: never;
-    query?: never;
-    url: '/api/import/full';
-};
-
-export type ImportFullStartErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type ImportFullStartError = ImportFullStartErrors[keyof ImportFullStartErrors];
-
-export type ImportFullStartResponses = {
-    /**
-     * Successful Response
-     */
-    202: ImportFullStartResponse;
-};
-
-export type ImportFullStartResponse2 = ImportFullStartResponses[keyof ImportFullStartResponses];
-
-export type ImportFullStatusData = {
+export type ExportStandaloneAvailabilityData = {
     body?: never;
     path: {
         /**
-         * Job Id
+         * Item Id
          */
-        job_id: string;
+        item_id: string;
     };
     query?: never;
-    url: '/api/import/full/{job_id}';
+    url: '/api/library-items/{item_id}/export/standalone/availability';
 };
 
-export type ImportFullStatusErrors = {
+export type ExportStandaloneAvailabilityErrors = {
     /**
      * Validation Error
      */
     422: HttpValidationError;
 };
 
-export type ImportFullStatusError = ImportFullStatusErrors[keyof ImportFullStatusErrors];
+export type ExportStandaloneAvailabilityError = ExportStandaloneAvailabilityErrors[keyof ExportStandaloneAvailabilityErrors];
 
-export type ImportFullStatusResponses = {
+export type ExportStandaloneAvailabilityResponses = {
     /**
      * Successful Response
      */
-    200: ImportFullStatusResponse;
+    200: StandaloneAvailability;
 };
 
-export type ImportFullStatusResponse2 = ImportFullStatusResponses[keyof ImportFullStatusResponses];
+export type ExportStandaloneAvailabilityResponse = ExportStandaloneAvailabilityResponses[keyof ExportStandaloneAvailabilityResponses];
+
+export type ExportStandaloneSourceHtmlData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/source.html';
+};
+
+export type ExportStandaloneSourceHtmlErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneSourceHtmlError = ExportStandaloneSourceHtmlErrors[keyof ExportStandaloneSourceHtmlErrors];
+
+export type ExportStandaloneSourceHtmlResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type ExportStandaloneTranslationHtmlData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/translation.html';
+};
+
+export type ExportStandaloneTranslationHtmlErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneTranslationHtmlError = ExportStandaloneTranslationHtmlErrors[keyof ExportStandaloneTranslationHtmlErrors];
+
+export type ExportStandaloneTranslationHtmlResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type ExportStandaloneBilingualHtmlData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/bilingual.html';
+};
+
+export type ExportStandaloneBilingualHtmlErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneBilingualHtmlError = ExportStandaloneBilingualHtmlErrors[keyof ExportStandaloneBilingualHtmlErrors];
+
+export type ExportStandaloneBilingualHtmlResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type ExportStandaloneArticleHtmlData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/article.html';
+};
+
+export type ExportStandaloneArticleHtmlErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneArticleHtmlError = ExportStandaloneArticleHtmlErrors[keyof ExportStandaloneArticleHtmlErrors];
+
+export type ExportStandaloneArticleHtmlResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
 
 export type ArticlesGetData = {
     body?: never;
