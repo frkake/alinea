@@ -13,6 +13,7 @@ import { VocabReviewModal } from "@/components/vocab/VocabReviewModal";
 import { useVocabReviewStore } from "@/components/vocab/review-store";
 import { vocabCountsQueryKey, vocabListQueryKey } from "@/components/vocab/queryKeys";
 import type { VocabKind } from "@/components/vocab/types";
+import { triggerDownload } from "@/components/settings/download";
 
 const EMPTY_COUNTS = { all: 0, word: 0, collocation: 0, idiom: 0, due: 0 };
 
@@ -230,6 +231,16 @@ export default function VocabPage() {
         onSearchChange={(v) => replaceTo(vocabIdParam, { q: v })}
         onStartReview={() => startReviewMutation.mutate()}
         reviewLoading={startReviewMutation.isPending}
+        onExportMarkdown={() => {
+          const sp = new URLSearchParams();
+          if (kind) sp.set("kind", kind);
+          if (dueOnly) sp.set("due", "true");
+          if (q) sp.set("q", q);
+          if (sort !== "added_at") sp.set("sort", sort);
+          triggerDownload(
+            `/api/vocab/export/markdown${sp.size ? `?${sp.toString()}` : ""}`,
+          );
+        }}
       />
       <VocabFilterRow
         counts={counts}
