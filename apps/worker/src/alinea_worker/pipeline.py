@@ -1515,6 +1515,10 @@ class IngestRun:
         paper.venue = meta.venue
         paper.license = meta.license
         paper.latest_version = meta.latest_version
+        # S4: 公式実装 GitHub URL(docs/12-resources.md §5)。
+        # meta.official_repo_url が None の場合は書き込まない(手動設定値を保護)。
+        if meta.official_repo_url is not None:
+            paper.official_repo_url = meta.official_repo_url
 
     async def _fetch_latex_candidate_bytes(self, http: httpx.AsyncClient) -> bytes:
         attempt = 0
