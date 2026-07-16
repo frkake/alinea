@@ -233,6 +233,94 @@ async def test_import_job_roundtrip_restores_assets(db_session: AsyncSession) ->
     assert restored == b"%PDF-1.7 fake"
 
 
+# ---------------------------------------------------------------------------
+# Task 7: ラウンドトリップ E2E — BYOK 除外 + 検索索引再構築
+# ---------------------------------------------------------------------------
+
+async def _seed_user_data_with_byok(db: AsyncSession) -> dict[str, str]:
+    """_seed_user_data に byok_api_keys を 1 行追加したシード。"""
+    from alinea_core.db.models import ByokApiKey
+
+    ids = await _seed_user_data(db)
+    db.add(
+        ByokApiKey(
+            user_id=ids["user_id"],
+            provider="anthropic",
+            encrypted_key=b"sk-ant-secret-key-fake",
+            key_hint="sk-ant-...fake",
+        )
+    )
+    await db.commit()
+    return ids
+
+
+async def test_export_excludes_byok_and_import_rebuilds_search(db_session: AsyncSession) -> None:
+    """エクスポート zip に byok_api_keys が含まれないことと、
+    インポート後に block_search_index が再構築されることを検証する。
+    """
+    import io
+    import json
+    import zipfile
+
+    storage = S3Storage()
+
+    src = await _seed_user_data_with_byok(db_session)
+
+    # アーカイブ生成(source_asset のバイナリも S3 に置く)
+    await storage.put(
+        storage.sources_bucket,
+        src["asset_key"],
+        b"%PDF-1.7 byok-test",
+        content_type="application/pdf",
+    )
+    archive = await build_export_archive(db_session, src["user_id"], storage)
+
+    # data.json に byok が含まれないことを確認
+    with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+        blob = zf.read("data.json").decode("utf-8")
+        assert "byok" not in blob.lower(), "byok keys must not appear in export"
+        assert "sk-ant-secret" not in blob, "byok plaintext must not appear in export"
+        data = json.loads(blob)
+
+    # インポート後、block_search_index が再構築される
+    target = await _make_user(db_session)
+
+    # document_revision に索引対象ブロックを注入してから import
+    for rev in data.get("document_revisions", []):
+        rev["content"] = {
+            "quality_level": "A",
+            "sections": [
+                {
+                    "id": "s1",
+                    "heading": {"number": "1", "title": "Introduction"},
+                    "blocks": [
+                        {
+                            "id": "blk-1",
+                            "type": "paragraph",
+                            "inlines": [{"t": "text", "v": "byok exclusion test block"}],
+                        }
+                    ],
+                }
+            ],
+        }
+
+    from alinea_core.db.models import BlockSearchIndex
+
+    summary = await import_data_json(db_session, target["user_id"], data)
+    assert summary["failed"] == [], summary["failed"]
+    assert summary["created"]["library"] >= 1
+
+    # block_search_index が再構築されている
+    from sqlalchemy import func, select
+
+    idx_count = (
+        await db_session.execute(
+            select(func.count()).select_from(BlockSearchIndex)
+        )
+    ).scalar_one()
+    assert idx_count > 0, "block_search_index should be rebuilt after import"
+
+
 async def test_import_job_rejects_invalid_schema_version(db_session: AsyncSession) -> None:
     """schema_version が 2 でない zip は fail_with_retry で拒否される。"""
     import io
