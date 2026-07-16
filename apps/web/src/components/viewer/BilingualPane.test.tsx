@@ -415,7 +415,8 @@ describe("BilingualPane annotation creation", () => {
     // Select the whole source cell text.
     const range = document.createRange();
     range.selectNodeContents(sourceText);
-    const sel = window.getSelection()!;
+    const sel = window.getSelection();
+    if (!sel) throw new Error("no selection");
     sel.removeAllRanges();
     sel.addRange(range);
     fireEvent.pointerUp(sourceText);
