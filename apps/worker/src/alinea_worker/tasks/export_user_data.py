@@ -130,6 +130,10 @@ async def _serialize_notes(
             "library_item_id": str(n.library_item_id),
             "title": n.title,
             "body_md": n.body_md,
+            # メモの本文アンカー(復元でメモ位置を保つ。無損失復元に必須)。
+            "anchors": n.anchors,
+            # 由来チャットメッセージ(int PK。復元時に old→new でリマップ or NULL)。
+            "source_chat_message_id": n.source_chat_message_id,
             "created_at": _iso(n.created_at),
             "updated_at": _iso(n.updated_at),
         }
@@ -161,8 +165,10 @@ async def _serialize_annotations(
             "color": a.color,
             "body": a.body,
             "anchor": a.anchor,
+            # quote は GENERATED 列(anchor->>'quote')なので出力しない(復元時に自動再生成)。
             "orphaned": a.orphaned,
             "created_at": _iso(a.created_at),
+            "updated_at": _iso(a.updated_at),
         }
         for a in rows
     ]
@@ -206,7 +212,14 @@ async def _serialize_chat_threads(
                 "messages": [
                     {
                         "role": m.role,
+                        # text は平文(text_plain へマップ)。content は構造化セグメント(無損失必須)。
                         "text": m.text_plain,
+                        "content": m.content,
+                        "context_anchors": m.context_anchors,
+                        "evidence_anchors": m.evidence_anchors,
+                        "provider": m.provider,
+                        "model": m.model,
+                        "error": m.error,
                         "status": m.status,
                         "created_at": _iso(m.created_at),
                     }
@@ -237,6 +250,10 @@ async def _serialize_vocab(session: AsyncSession, user_id: str) -> list[dict[str
             "term": v.term,
             "pos_label": v.pos_label,
             "ipa": v.ipa,
+            # 「原文で見る」ジャンプのアンカーとハイライト範囲(無損失に必須)。
+            "context_anchor": v.context_anchor,
+            "context_hl_start": v.context_hl_start,
+            "context_hl_end": v.context_hl_end,
             "context_sentence": v.context_sentence,
             "meaning_short": v.meaning_short,
             "meaning_long": v.meaning_long,
@@ -244,6 +261,10 @@ async def _serialize_vocab(session: AsyncSession, user_id: str) -> list[dict[str
             "etymology": v.etymology,
             "mnemonic": v.mnemonic,
             "related_forms": v.related_forms,
+            # 手編集フィールド・生成状態(無損失に必須)。
+            "edited_fields": list(v.edited_fields or []),
+            "generation_status": v.generation_status,
+            "generation_error": v.generation_error,
             # SRS 状態(docs/00 P5「語彙(SRS 含む)」)。
             "srs": {
                 "stage": v.srs_stage,
