@@ -34,7 +34,8 @@ from alinea_core.db.models import (
 from alinea_core.db.models import Note as NoteModel
 from alinea_core.db.revisions import get_paper_revisions, reading_position_revision_id
 from alinea_core.jobs.store import JobStore
-from fastapi import APIRouter, Depends, Query, Response, status
+from alinea_core.storage.s3 import S3Storage, StorageKeys
+from fastapi import APIRouter, Depends, Query, Response, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -456,3 +457,85 @@ async def get_export_full(job_id: str, user: CurrentUser, db: DbDep) -> ExportFu
         raise ProblemException("not_found")
     download_url = job.result.get("download_url") if isinstance(job.result, dict) else None
     return ExportFullStatusResponse(job=job_to_out(job), download_url=download_url)
+
+
+# ============================================================================
+# インポート API(完全データ移行 Task 5)
+# POST /api/import/full   — multipart zip → S3 一時 key → import Job 作成
+# GET  /api/import/full/{job_id} — import Job の進捗確認
+# ============================================================================
+
+
+class ImportFullStartResponse(BaseModel):
+    job_id: str
+
+
+class ImportFullStatusResponse(BaseModel):
+    job: JobOut
+    summary: dict | None
+
+
+def get_import_job_wakeup(settings: SettingsDep) -> JobWakeup:
+    """import Job の arq 起床通知(export と同一 bulk キューを使う)。"""
+
+    async def wakeup(job_id: str) -> None:
+        try:
+            await _default_export_wakeup(settings.redis_url, job_id)
+        except Exception:
+            await log.awarning("import_wakeup_failed", job_id=job_id)
+
+    return wakeup
+
+
+ImportJobWakeupDep = Annotated[JobWakeup, Depends(get_import_job_wakeup)]
+
+
+@router.post(
+    "/api/import/full",
+    response_model=ImportFullStartResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="import_full_start",
+)
+async def start_import_full(
+    user: CurrentUser,
+    db: DbDep,
+    settings: SettingsDep,
+    wakeup: ImportJobWakeupDep,
+    file: UploadFile,
+) -> ImportFullStartResponse:
+    """multipart zip を受け取り S3 一時 key に保存して import Job を作成する。"""
+    data = await file.read()
+    upload_id = str(uuid.uuid4())
+    upload_key = StorageKeys.import_upload(str(user.id), upload_id)
+
+    storage = S3Storage(settings)
+    await storage.put(
+        storage.assets_bucket, upload_key, data, content_type="application/zip"
+    )
+
+    store = JobStore(db)
+    job_id = await store.enqueue(
+        kind="import",
+        priority="bulk",
+        user_id=str(user.id),
+        payload={"upload_key": upload_key},
+    )
+    await wakeup(job_id)
+    return ImportFullStartResponse(job_id=job_id)
+
+
+@router.get(
+    "/api/import/full/{job_id}",
+    response_model=ImportFullStatusResponse,
+    operation_id="import_full_status",
+)
+async def get_import_full(
+    job_id: str, user: CurrentUser, db: DbDep
+) -> ImportFullStatusResponse:
+    if not _valid_uuid(job_id):
+        raise ProblemException("not_found")
+    job = await db.get(Job, job_id)
+    if job is None or str(job.user_id) != str(user.id):
+        raise ProblemException("not_found")
+    summary = job.result.get("summary") if isinstance(job.result, dict) else None
+    return ImportFullStatusResponse(job=job_to_out(job), summary=summary)

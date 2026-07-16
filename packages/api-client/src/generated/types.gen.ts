@@ -557,6 +557,16 @@ export type BlockTranslation = {
 };
 
 /**
+ * Body_import_full_start
+ */
+export type BodyImportFullStart = {
+    /**
+     * File
+     */
+    file: Blob | File;
+};
+
+/**
  * Body_ingest_pdf
  */
 export type BodyIngestPdf = {
@@ -1494,6 +1504,29 @@ export type HeadingContentOut = {
      * Text
      */
     text: string;
+};
+
+/**
+ * ImportFullStartResponse
+ */
+export type ImportFullStartResponse = {
+    /**
+     * Job Id
+     */
+    job_id: string;
+};
+
+/**
+ * ImportFullStatusResponse
+ */
+export type ImportFullStatusResponse = {
+    job: JobOut;
+    /**
+     * Summary
+     */
+    summary: {
+        [key: string]: unknown;
+    } | null;
 };
 
 /**
@@ -7439,6 +7472,61 @@ export type ExportFullStatusResponses = {
 };
 
 export type ExportFullStatusResponse2 = ExportFullStatusResponses[keyof ExportFullStatusResponses];
+
+export type ImportFullStartData = {
+    body: BodyImportFullStart;
+    path?: never;
+    query?: never;
+    url: '/api/import/full';
+};
+
+export type ImportFullStartErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ImportFullStartError = ImportFullStartErrors[keyof ImportFullStartErrors];
+
+export type ImportFullStartResponses = {
+    /**
+     * Successful Response
+     */
+    202: ImportFullStartResponse;
+};
+
+export type ImportFullStartResponse2 = ImportFullStartResponses[keyof ImportFullStartResponses];
+
+export type ImportFullStatusData = {
+    body?: never;
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/import/full/{job_id}';
+};
+
+export type ImportFullStatusErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ImportFullStatusError = ImportFullStatusErrors[keyof ImportFullStatusErrors];
+
+export type ImportFullStatusResponses = {
+    /**
+     * Successful Response
+     */
+    200: ImportFullStatusResponse;
+};
+
+export type ImportFullStatusResponse2 = ImportFullStatusResponses[keyof ImportFullStatusResponses];
 
 export type ArticlesGetData = {
     body?: never;
