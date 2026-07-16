@@ -4,8 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  authDeleteAccount,
+  authLogout,
+  authMe,
   settingsDeleteApiKey,
   settingsGet,
+  settingsGetQuota,
   settingsListApiKeys,
   settingsPutApiKey,
   settingsUpdate,
@@ -34,6 +38,7 @@ import {
   type SettingsCategory,
   type SettingsData,
   type StatusTransition,
+  type ThemePrefValue,
   type TranslationStyle,
 } from "@/components/settings/types";
 
@@ -65,7 +70,7 @@ export function SettingsClient({ category }: { category: SettingsCategory }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const router = useRouter();
-  const { setAccent, setBodyFont } = useTheme();
+  const { setTheme, setAccent, setBodyFont } = useTheme();
   const contentRef = useRef<HTMLDivElement>(null);
   const isMobile = useIsMobile();
 
@@ -86,6 +91,39 @@ export function SettingsClient({ category }: { category: SettingsCategory }) {
     queryFn: async () => (await settingsListApiKeys({ throwOnError: true })).data.items,
     staleTime: 60_000,
     enabled: category === "account",
+  });
+
+  // アカウントカテゴリの identity・クォータ残量(S1 #4・09-nonfunctional §3.5「常時表示」)。
+  const meQuery = useQuery({
+    queryKey: ["settings", "me"],
+    queryFn: async () => (await authMe({ throwOnError: true })).data,
+    staleTime: 60_000,
+    enabled: category === "account",
+  });
+  const quotaQuery = useQuery({
+    queryKey: ["settings", "quota"],
+    queryFn: async () => (await settingsGetQuota({ throwOnError: true })).data,
+    staleTime: 60_000,
+    enabled: category === "account",
+  });
+
+  const logoutMutation = useMutation({
+    mutationFn: async () => authLogout({ throwOnError: true }),
+    onSuccess: () => {
+      router.replace("/login");
+    },
+    onError: () => {
+      toast({ kind: "error", message: "ログアウトできませんでした。もう一度お試しください" });
+    },
+  });
+  const deleteAccountMutation = useMutation({
+    mutationFn: async () => authDeleteAccount({ body: { confirm: "delete" }, throwOnError: true }),
+    onSuccess: () => {
+      router.replace("/login");
+    },
+    onError: () => {
+      toast({ kind: "error", message: "アカウントを削除できませんでした。もう一度お試しください" });
+    },
   });
 
   const patchMutation = useMutation({
@@ -185,6 +223,18 @@ export function SettingsClient({ category }: { category: SettingsCategory }) {
   };
 
   // --- 表示(4f §4.7.5・即時反映は §5.6 の ThemeProvider 流儀) ---
+  const onThemeChange = (theme: ThemePrefValue) => {
+    const prev = settings?.display.theme;
+    setTheme(theme);
+    patchMutation.mutate(
+      { display: { theme } },
+      {
+        onError: () => {
+          if (prev) setTheme(prev);
+        },
+      },
+    );
+  };
   const onAccentChange = (hex: AccentHex) => {
     const prevHex = settings?.display.accent;
     setAccent(accentKeyForHex(hex));
@@ -274,17 +324,26 @@ export function SettingsClient({ category }: { category: SettingsCategory }) {
             <AccountSettings
               settings={settings}
               apiKeys={apiKeysQuery.data ?? []}
+              me={meQuery.data}
+              quota={quotaQuery.data}
               onRouteChange={onRouteChange}
               onRasterChange={onRasterChange}
               onSaveKey={(provider, apiKey) => saveKeyMutation.mutateAsync({ provider, apiKey })}
               onDeleteKey={(provider) => {
                 deleteKeyMutation.mutate(provider);
               }}
+              onLogout={() => {
+                logoutMutation.mutate();
+              }}
+              onDeleteAccount={() => {
+                deleteAccountMutation.mutate();
+              }}
               readOnly={isMobile}
             />
           ) : category === "display" ? (
             <DisplaySettings
               settings={settings}
+              onThemeChange={onThemeChange}
               onAccentChange={onAccentChange}
               onBodyFontChange={onBodyFontChange}
               onFontSizeChange={onFontSizeChange}
