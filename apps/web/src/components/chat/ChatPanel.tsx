@@ -362,6 +362,13 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
     );
   }, [activeThreadId, summarizing, itemId, qc, toast, setPanel]);
 
+  // スレッド切替・アクティブスレッド削除でストリーミングを打ち切る(切替先で入力欄が
+  // 無効化されたままになるのを防ぐ)。
+  const abortActiveStream = useCallback(() => {
+    abortRef.current?.abort();
+    setStreaming(false);
+  }, []);
+
   const [historyOpen, setHistoryOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ChatThread | null>(null);
   const historyAnchor = useRef<HTMLButtonElement>(null);
@@ -373,6 +380,7 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
     void chatDeleteThread({ path: { thread_id: target.id } }).then(
       async () => {
         if (activeThreadId === target.id) {
+          abortActiveStream();
           const main = (threadsQuery.data?.items ?? []).find((t) => t.is_main);
           setActiveThreadId(main?.id ?? null);
         }
@@ -381,7 +389,7 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
       },
       () => toast({ kind: "error", message: "会話を削除できませんでした" }),
     );
-  }, [pendingDelete, activeThreadId, threadsQuery.data, qc, itemId, toast]);
+  }, [pendingDelete, activeThreadId, threadsQuery.data, qc, itemId, toast, abortActiveStream]);
 
   const [creatingThread, setCreatingThread] = useState(false);
   const createConversation = useCallback(() => {
@@ -544,6 +552,7 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
               threads={threadsQuery.data?.items ?? []}
               activeThreadId={activeThreadId}
               onSelect={(id) => {
+                abortActiveStream();
                 setActiveThreadId(id);
                 setLocalUser(null);
                 setLocalAssistant(null);

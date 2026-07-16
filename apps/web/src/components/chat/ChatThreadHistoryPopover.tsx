@@ -71,7 +71,7 @@ export function ChatThreadHistoryPopover({
                   }}
                 >
                   {t.title}
-                  {t.is_main ? "(メイン)" : ""}
+                  {t.id === activeThreadId ? "(現在)" : ""}
                 </div>
                 <div style={{ fontSize: 10, color: "var(--pr-text-muted)", display: "flex", gap: 6, alignItems: "center" }}>
                   <CountBadge count={t.message_count} variant="tab" />
@@ -88,6 +88,7 @@ export function ChatThreadHistoryPopover({
                     background: "transparent",
                     cursor: "pointer",
                     color: "var(--pr-text-sub)",
+                    fontFamily: "inherit",
                     fontSize: 13,
                     padding: "0 2px",
                   }}
