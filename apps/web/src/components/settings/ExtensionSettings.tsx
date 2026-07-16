@@ -17,10 +17,13 @@ export function ExtensionSettings({ settings, onToggle }: ExtensionSettingsProps
       <Card padding="none">
         <SettingToggleRow
           title="arXiv ページ内に「A 保存」ボタンを表示"
-          description="arxiv.org の論文ページ限定のオプトイン。既定はオフ"
+          description="この好み設定です。実際の有効化はブラウザ拡張のポップアップから行います(arxiv.org へのアクセス権限を拡張側で要求するため)"
           checked={settings.extension.arxiv_inline_button}
           onChange={onToggle}
         />
+        <div style={{ padding: "0 18px 12px", fontSize: 10, color: "var(--pr-text-muted)" }}>
+          拡張ポップアップの ⚙ 設定で「arXiv ページに保存ボタンを表示」をオンにすると有効になります。
+        </div>
       </Card>
     </SettingsSection>
   );

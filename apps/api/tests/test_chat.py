@@ -162,6 +162,74 @@ def test_context_token_estimate_treats_model_special_token_text_as_plain_input()
 
 
 # ---------------------------------------------------------------------------
+# S1 #2: 注釈・メモの文脈表現(plans/07 §2.2.5)
+# ---------------------------------------------------------------------------
+def test_render_annotations_context_formats_highlights_comments_and_notes() -> None:
+    from alinea_api.chat.context_builder import render_annotations_context
+
+    validator = _validator()  # blk-real(§2.1 式(5))・blk-para(§2.1 ¶4)
+    text = render_annotations_context(
+        annotations=[
+            {"kind": "highlight", "color": "question", "anchor": {"block_id": "blk-para"}},
+            {
+                "kind": "comment",
+                "color": "important",
+                "body": "batch size の記載が見当たらない",
+                "anchor": {"block_id": "blk-para", "quote": "linear interpolation"},
+            },
+        ],
+        notes=[{"title": "整流フロー", "body_md": "要点は輸送の直線化。"}],
+        validator=validator,
+    )
+    assert text.startswith("# ユーザーの注釈・メモ")
+    assert "ハイライト(疑問)" in text  # 色ラベルの日本語化
+    assert "§2.1 ¶4" in text  # 位置表記は validator から導出
+    assert "コメント" in text
+    assert "batch size の記載が見当たらない" in text
+    assert "メモ: (整流フロー)" in text
+
+
+def test_render_annotations_context_empty_is_empty_string() -> None:
+    from alinea_api.chat.context_builder import render_annotations_context
+
+    assert render_annotations_context(annotations=[], notes=[], validator=_validator()) == ""
+
+
+def test_build_chat_request_omits_annotations_when_disabled() -> None:
+    content = _make_document()
+    req = build_chat_request(
+        content=content,
+        revision_id="rev-1",
+        title="T",
+        authors_short="A",
+        venue_year="2023",
+        arxiv_id="1",
+        user_content="q",
+        include_annotations=False,
+        annotations_text="# ユーザーの注釈・メモ\n- x",
+    )
+    # system は [0]プリアンブル・[1]論文文脈のみ(注釈 system[2] は付かない)。
+    assert len(req.system) == 2
+
+
+def test_build_chat_request_includes_annotations_when_enabled() -> None:
+    content = _make_document()
+    req = build_chat_request(
+        content=content,
+        revision_id="rev-1",
+        title="T",
+        authors_short="A",
+        venue_year="2023",
+        arxiv_id="1",
+        user_content="q",
+        include_annotations=True,
+        annotations_text="# ユーザーの注釈・メモ\n- highlight",
+    )
+    assert len(req.system) == 3
+    assert "ユーザーの注釈・メモ" in (req.system[2].text or "")
+
+
+# ---------------------------------------------------------------------------
 # PY-CHAT-02: ストリーム変換
 # ---------------------------------------------------------------------------
 def test_stream_pipeline_transforms_markers_asides_and_drops_ghosts() -> None:

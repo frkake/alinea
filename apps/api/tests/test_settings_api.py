@@ -16,6 +16,7 @@ from alinea_api.services.session_service import create_session
 from alinea_api.services.user_service import purge_user, upsert_user_by_email
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -45,7 +46,9 @@ def _build_app() -> FastAPI:
 
 
 @pytest_asyncio.fixture
-async def auth(db_session: AsyncSession, redis_client: Any) -> AsyncIterator[AsyncClient]:
+async def authed(
+    db_session: AsyncSession, redis_client: Any
+) -> AsyncIterator[tuple[AsyncClient, str]]:
     email = f"set-{uuid.uuid4().hex}@example.com"
     user = await upsert_user_by_email(db_session, email, provider="email")
     uid = str(user.id)  # rollback 後に ORM 属性へ触れないよう先に確定させる
@@ -59,10 +62,20 @@ async def auth(db_session: AsyncSession, redis_client: Any) -> AsyncIterator[Asy
     ) as ac:
         ac.cookies.set("yk_session", token)
         try:
-            yield ac
+            yield ac, uid
         finally:
             await db_session.rollback()
             await purge_user(db_session, uid)
+
+
+@pytest_asyncio.fixture
+async def auth(authed: tuple[AsyncClient, str]) -> AsyncClient:
+    return authed[0]
+
+
+@pytest_asyncio.fixture
+async def seeded_user_id(authed: tuple[AsyncClient, str]) -> str:
+    return authed[1]
 
 
 # ---------------------------------------------------------------------------
@@ -125,13 +138,125 @@ async def test_patch_preserves_explicit_translation_opt_outs(auth: AsyncClient) 
 
 
 async def test_patch_nested_llm_routing_merge(auth: AsyncClient) -> None:
-    r = await auth.patch("/api/settings", json={"llm_routing": {"chat": {"model": "gpt-5.5"}}})
+    # model だけ変更(provider は既定 anthropic のまま)。overrides ブリッジの検証を通すため、
+    # 既定 provider と整合する別モデルを選ぶ(S1 #1 で provider/model 整合を要求)。
+    r = await auth.patch(
+        "/api/settings", json={"llm_routing": {"chat": {"model": "claude-haiku-4-5"}}}
+    )
     assert r.status_code == 200
     chat = r.json()["llm_routing"]["chat"]
-    assert chat["model"] == "gpt-5.5"
+    assert chat["model"] == "claude-haiku-4-5"
     assert chat["provider"] == "anthropic"  # provider は既定のまま
     # 他タスクは無傷。
     assert r.json()["llm_routing"]["vocab"]["model"] == "claude-haiku-4-5"
+
+
+# ---------------------------------------------------------------------------
+# S1 #1: settings.llm_routing → user_task_model_overrides ブリッジ
+# ---------------------------------------------------------------------------
+async def _override_model(db: AsyncSession, uid: str, task: str) -> str | None:
+    await db.rollback()  # コミット済み行を見るため新しいスナップショットで読む
+    return (
+        await db.execute(
+            text(
+                "SELECT model_id FROM user_task_model_overrides "
+                "WHERE user_id = CAST(:u AS uuid) AND task = :t"
+            ),
+            {"u": uid, "t": task},
+        )
+    ).scalar_one_or_none()
+
+
+async def test_patch_llm_routing_bridges_to_overrides(
+    auth: AsyncClient, db_session: AsyncSession, seeded_user_id: str
+) -> None:
+    # chat のモデルを変更 → overrides の task 'chat' に入る。
+    r = await auth.patch(
+        "/api/settings",
+        json={"llm_routing": {"chat": {"provider": "google", "model": "gemini-3.5-flash"}}},
+    )
+    assert r.status_code == 200
+    assert await _override_model(db_session, seeded_user_id, "chat") == "gemini-3.5-flash"
+
+
+async def test_patch_llm_routing_task_name_mapping(
+    auth: AsyncClient, db_session: AsyncSession, seeded_user_id: str
+) -> None:
+    # retranslation → task 'retranslation_escalation'、figure_dsl → 'overview_figure_dsl'。
+    r = await auth.patch(
+        "/api/settings",
+        json={
+            "llm_routing": {
+                "retranslation": {"provider": "openai", "model": "gpt-5.5"},
+                "figure_dsl": {"provider": "google", "model": "gemini-3.5-flash"},
+            }
+        },
+    )
+    assert r.status_code == 200
+    assert await _override_model(db_session, seeded_user_id, "retranslation_escalation") == "gpt-5.5"
+    assert (
+        await _override_model(db_session, seeded_user_id, "overview_figure_dsl")
+        == "gemini-3.5-flash"
+    )
+
+
+async def test_patch_llm_routing_model_only_still_upserts(
+    auth: AsyncClient, db_session: AsyncSession, seeded_user_id: str
+) -> None:
+    # provider は既定(anthropic)のまま model だけ変更。既定 provider と整合する別モデルを選ぶ。
+    r = await auth.patch(
+        "/api/settings", json={"llm_routing": {"chat": {"model": "claude-haiku-4-5"}}}
+    )
+    assert r.status_code == 200
+    assert await _override_model(db_session, seeded_user_id, "chat") == "claude-haiku-4-5"
+
+
+async def test_patch_llm_routing_upsert_is_idempotent(
+    auth: AsyncClient, db_session: AsyncSession, seeded_user_id: str
+) -> None:
+    for model in ("gpt-5.5", "gemini-3.5-flash"):
+        provider = "openai" if model.startswith("gpt") else "google"
+        r = await auth.patch(
+            "/api/settings", json={"llm_routing": {"chat": {"provider": provider, "model": model}}}
+        )
+        assert r.status_code == 200
+    assert await _override_model(db_session, seeded_user_id, "chat") == "gemini-3.5-flash"
+
+
+async def test_patch_unknown_model_is_422_and_no_override(
+    auth: AsyncClient, db_session: AsyncSession, seeded_user_id: str
+) -> None:
+    r = await auth.patch(
+        "/api/settings",
+        json={"llm_routing": {"chat": {"provider": "openai", "model": "gpt-nonexistent"}}},
+    )
+    assert r.status_code == 422
+    assert r.json()["code"] == "validation_error"
+    assert await _override_model(db_session, seeded_user_id, "chat") is None
+    # 設定本体も未変更(部分適用されない)。
+    assert (await auth.get("/api/settings")).json()["llm_routing"]["chat"]["model"] == (
+        "claude-opus-4-8"
+    )
+
+
+async def test_patch_provider_model_mismatch_is_422(
+    auth: AsyncClient, db_session: AsyncSession, seeded_user_id: str
+) -> None:
+    # provider=anthropic だが gemini-3.5-flash は google → 422。
+    r = await auth.patch(
+        "/api/settings",
+        json={"llm_routing": {"chat": {"provider": "anthropic", "model": "gemini-3.5-flash"}}},
+    )
+    assert r.status_code == 422
+    assert await _override_model(db_session, seeded_user_id, "chat") is None
+
+
+async def test_patch_non_routing_does_not_touch_overrides(
+    auth: AsyncClient, db_session: AsyncSession, seeded_user_id: str
+) -> None:
+    r = await auth.patch("/api/settings", json={"display": {"theme": "dark"}})
+    assert r.status_code == 200
+    assert await _override_model(db_session, seeded_user_id, "chat") is None
 
 
 async def test_patch_value_range_violations_are_422(auth: AsyncClient) -> None:

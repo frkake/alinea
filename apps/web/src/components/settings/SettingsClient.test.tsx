@@ -18,13 +18,50 @@ const settingsUpdate = vi.fn();
 const settingsListApiKeys = vi.fn();
 const settingsPutApiKey = vi.fn();
 const settingsDeleteApiKey = vi.fn();
+const settingsGetQuota = vi.fn();
+const authMe = vi.fn();
+const authLogout = vi.fn();
+const authDeleteAccount = vi.fn();
 vi.mock("@alinea/api-client", () => ({
   settingsGet: (...args: unknown[]) => settingsGet(...args),
   settingsUpdate: (...args: unknown[]) => settingsUpdate(...args),
   settingsListApiKeys: (...args: unknown[]) => settingsListApiKeys(...args),
   settingsPutApiKey: (...args: unknown[]) => settingsPutApiKey(...args),
   settingsDeleteApiKey: (...args: unknown[]) => settingsDeleteApiKey(...args),
+  settingsGetQuota: (...args: unknown[]) => settingsGetQuota(...args),
+  authMe: (...args: unknown[]) => authMe(...args),
+  authLogout: (...args: unknown[]) => authLogout(...args),
+  authDeleteAccount: (...args: unknown[]) => authDeleteAccount(...args),
 }));
+
+function quotaResponse() {
+  const counter = (used: number, limit: number) => ({ used, limit });
+  return {
+    period: "2026-07",
+    byok_active: { text: false, image: false },
+    usage: {
+      translation_papers: counter(3, 30),
+      chat_messages: counter(120, 500),
+      images: counter(1, 20),
+      article_generations: counter(0, 30),
+      vocab_generations: counter(10, 300),
+    },
+  };
+}
+
+function meResponse() {
+  return {
+    user: {
+      id: "u1",
+      email: "reader@example.com",
+      display_name: "Reader",
+      avatar_url: null,
+      providers: ["google"],
+      created_at: "2026-01-01T00:00:00Z",
+    },
+    unread_notifications: 0,
+  };
+}
 
 function fullSettings(overrides: Partial<SettingsData> = {}): SettingsData {
   const routeEntry = { provider: "anthropic", model: "claude-opus-4-8" };
@@ -75,6 +112,10 @@ function renderSettings(category: SettingsCategory, settings: SettingsData = ful
   settingsGet.mockResolvedValue({ data: settings });
   settingsListApiKeys.mockResolvedValue({ data: { items: [] } });
   settingsUpdate.mockResolvedValue({ data: settings });
+  settingsGetQuota.mockResolvedValue({ data: quotaResponse() });
+  authMe.mockResolvedValue({ data: meResponse() });
+  authLogout.mockResolvedValue({ data: undefined });
+  authDeleteAccount.mockResolvedValue({ data: { job_id: "j1" } });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
@@ -241,6 +282,55 @@ describe("SettingsClient (4f)", () => {
     renderSettings("chat");
     await screen.findByText("チャットモデル");
     expect(screen.getByText("注釈・メモを文脈に含める")).toBeInTheDocument();
+  });
+
+  // S1 #3: テーマ切替(display.theme を永続化しつつ data-theme を即時反映)。
+  test("display category theme control patches display.theme and applies data-theme", async () => {
+    const user = userEvent.setup();
+    renderSettings("display");
+    await screen.findByText("テーマ");
+
+    await user.click(screen.getByRole("radio", { name: "ダーク" }));
+    await waitFor(() =>
+      expect(settingsUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { display: { theme: "dark" } } }),
+      ),
+    );
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+  });
+
+  // S1 #4: アカウント設定(identity・クォータ残量・ログアウト・削除)。
+  test("account category shows signed-in identity and quota remaining", async () => {
+    renderSettings("account");
+    await screen.findByText("API キー(BYOK)");
+    expect(await screen.findByText("reader@example.com")).toBeInTheDocument();
+    // クォータ残量(チャットメッセージ used/limit)。
+    expect(await screen.findByText(/120\s*\/\s*500/)).toBeInTheDocument();
+  });
+
+  test("account category logout calls authLogout", async () => {
+    const user = userEvent.setup();
+    renderSettings("account");
+    await screen.findByText("API キー(BYOK)");
+    await user.click(await screen.findByRole("button", { name: "ログアウト" }));
+    await waitFor(() => expect(authLogout).toHaveBeenCalled());
+  });
+
+  test("account category delete requires the confirm word and calls authDeleteAccount", async () => {
+    const user = userEvent.setup();
+    renderSettings("account");
+    await screen.findByText("API キー(BYOK)");
+
+    await user.click(await screen.findByRole("button", { name: "アカウントを削除" }));
+    // モーダルが開き、合言葉入力が必要。
+    const input = await screen.findByPlaceholderText("delete");
+    await user.type(input, "delete");
+    await user.click(screen.getByRole("button", { name: "削除する" }));
+    await waitFor(() =>
+      expect(authDeleteAccount).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { confirm: "delete" } }),
+      ),
+    );
   });
 });
 

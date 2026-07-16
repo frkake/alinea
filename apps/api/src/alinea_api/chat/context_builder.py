@@ -24,9 +24,19 @@ from alinea_api.chat.prompts import format_system_preamble
 
 # トークン予算(plans/07 §2.2.1 確定値)。
 SYSTEM1_FULL_BUDGET = 60_000
+ANNOTATIONS_BUDGET = 4_000  # system[2] 注釈・メモ(§2.2.1)
 HISTORY_BUDGET = 12_000
 SURROUNDING_CONTEXT_BLOCKS = 2  # アンカー ±2 ブロック(§2.2.1)
 MAX_OUTPUT_TOKENS = 8_192
+
+# 注釈の色 → 日本語ラベル(annotations.color の値域・§2.2.5)。
+_ANNOTATION_COLOR_LABELS = {
+    "important": "重要",
+    "question": "疑問",
+    "idea": "アイデア",
+    "term": "用語",
+}
+_NOTE_BODY_PREVIEW = 500  # メモ本文の冒頭文字数(§2.2.5)
 
 
 @functools.lru_cache(maxsize=1)
@@ -149,6 +159,53 @@ def _select_history(history: Sequence[tuple[str, str]], budget: int) -> list[tup
     return selected
 
 
+def render_annotations_context(
+    *,
+    annotations: Sequence[Mapping[str, Any]],
+    notes: Sequence[Mapping[str, Any]],
+    validator: Any,
+) -> str:
+    """注釈(ハイライト/コメント)・メモを system[2] の平文へ整形する(plans/07 §2.2.5)。
+
+    ``validator`` は :class:`alinea_api.chat.evidence.EvidenceValidator`(``display_for``
+    で位置表記を導出する)。予算 ANNOTATIONS_BUDGET を超えたら末尾から切り詰める。
+    どちらも空なら空文字を返す(呼び出し側は system[2] を付けない)。
+    """
+    lines: list[str] = []
+
+    for ann in annotations:
+        anchor = ann.get("anchor") if isinstance(ann.get("anchor"), Mapping) else {}
+        block_id = str(anchor.get("block_id", "")) if isinstance(anchor, Mapping) else ""
+        position = validator.display_for(block_id) or ""
+        pos_tag = f"[{block_id}|{position}]" if block_id else ""
+        kind = ann.get("kind")
+        quote = ""
+        if isinstance(anchor, Mapping) and anchor.get("quote"):
+            quote = f' "{str(anchor["quote"]).strip()}"'
+        if kind == "comment":
+            body = str(ann.get("body") or "").strip()
+            comment = f"(コメント: {body})" if body else ""
+            lines.append(f"- コメント {pos_tag}{quote}{comment}".rstrip())
+        else:
+            color = str(ann.get("color") or "")
+            label = _ANNOTATION_COLOR_LABELS.get(color)
+            head = f"ハイライト({label})" if label else "ハイライト"
+            lines.append(f"- {head} {pos_tag}{quote}".rstrip())
+
+    for note in notes:
+        title = str(note.get("title") or "").strip()
+        body = str(note.get("body_md") or "").strip().replace("\n", " ")
+        preview = body[:_NOTE_BODY_PREVIEW]
+        ellipsis = "…" if len(body) > _NOTE_BODY_PREVIEW else ""
+        title_part = f"({title}) " if title else ""
+        lines.append(f"- メモ: {title_part}{preview}{ellipsis}".rstrip())
+
+    if not lines:
+        return ""
+    header = "# ユーザーの注釈・メモ(参考。回答の根拠は本文のみ)"
+    return _truncate_to_budget("\n".join([header, *lines]), ANNOTATIONS_BUDGET)
+
+
 def build_chat_request(
     *,
     content: DocumentContent,
@@ -201,9 +258,11 @@ def build_chat_request(
 
 
 __all__ = [
+    "ANNOTATIONS_BUDGET",
     "HISTORY_BUDGET",
     "SYSTEM1_FULL_BUDGET",
     "build_chat_request",
     "estimate_tokens",
+    "render_annotations_context",
     "render_document_context",
 ]
