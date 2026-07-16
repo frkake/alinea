@@ -547,3 +547,56 @@ def test_render_anki_tsv_fields() -> None:
     # Tags
     assert "alinea" in tags
     assert "word" in tags
+
+
+async def test_export_anki_tsv_structure(vocab_ctx: SimpleNamespace) -> None:
+    """PY-VOC-10a: エンドポイントが正しい TSV ヘッダと Content-Disposition を返す。"""
+    created = await vocab_ctx.client.post("/api/vocab", json=_create_payload(vocab_ctx))
+    assert created.status_code == 201
+
+    resp = await vocab_ctx.client.get("/api/vocab/export/anki")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert "attachment" in resp.headers["content-disposition"]
+    assert "alinea-vocab-" in resp.headers["content-disposition"]
+    assert resp.headers["content-disposition"].endswith('.txt"')
+
+    text = resp.text
+    lines = text.splitlines()
+    assert lines[0] == "#separator:tab"
+    assert lines[1] == "#html:true"
+    assert lines[2] == "#tags column:3"
+    # カード行が 1 行以上
+    assert len(lines) >= 4
+    # カード行はタブ 2 本(3 列)
+    assert lines[3].count("\t") == 2
+
+
+async def test_export_anki_contains_term_and_context(vocab_ctx: SimpleNamespace) -> None:
+    """PY-VOC-10b: カード内に term と context_sentence が含まれる。"""
+    created = await vocab_ctx.client.post("/api/vocab", json=_create_payload(vocab_ctx))
+    assert created.status_code == 201
+
+    resp = await vocab_ctx.client.get("/api/vocab/export/anki")
+    assert resp.status_code == 200
+
+    text = resp.text
+    assert "reflow" in text
+    assert "The reflow procedure straightens paths." in text
+    assert "alinea" in text
+
+
+async def test_export_anki_filter_kind(vocab_ctx: SimpleNamespace) -> None:
+    """PY-VOC-10c: kind=word フィルタで word のみ返す(word エントリのみ登録)。"""
+    # word エントリ追加
+    await vocab_ctx.client.post("/api/vocab", json=_create_payload(vocab_ctx))
+
+    # kind=word のみ要求
+    resp = await vocab_ctx.client.get("/api/vocab/export/anki?kind=word")
+    assert resp.status_code == 200
+
+    card_lines = [line for line in resp.text.splitlines() if not line.startswith("#")]
+    # word タグのみ
+    for line in card_lines:
+        tags = line.split("\t")[2]
+        assert "word" in tags

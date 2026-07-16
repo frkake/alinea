@@ -587,6 +587,48 @@ def _render_anki_tsv(entries: list[VocabEntryDetail]) -> str:
     return header + "\n" + "\n".join(card_lines)
 
 
+@router.get("/api/vocab/export/anki", operation_id="vocab_export_anki")
+async def export_vocab_anki(
+    user: CurrentUser,
+    db: DbDep,
+    kind: Annotated[list[str] | None, Query()] = None,
+    due: Annotated[bool | None, Query()] = None,
+    q: Annotated[str | None, Query()] = None,
+    library_item_id: Annotated[str | None, Query()] = None,
+    sort: Annotated[str, Query()] = "added_at",
+) -> Response:
+    """語彙帳を Anki テキストインポート形式(TSV)でエクスポートする(docs/11 §9・PY-VOC-10)。
+
+    フィルタは /api/vocab/export/markdown と同一。
+    """
+    _validate_kind(kind)
+    if sort not in _SORTS:
+        raise ProblemException("validation_error", detail="sort は added_at|term のみ有効です")
+
+    today = today_jst()
+    conds = _vocab_filters(
+        str(user.id), kind=kind, due=due, q=q, library_item_id=library_item_id, today=today
+    )
+    asc = sort == "term"
+    col = func.lower(VocabEntry.term) if asc else VocabEntry.created_at
+    stmt = (
+        select(VocabEntry)
+        .where(*conds)
+        .order_by(col.asc() if asc else col.desc(), VocabEntry.id.asc())
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+
+    cache = _SourceCache()
+    entries = [await _detail_out(db, e, cache) for e in rows]
+    content = _render_anki_tsv(entries)
+    filename = f"alinea-vocab-{today.strftime('%Y%m%d')}.txt"
+    return Response(
+        content=content,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ============================================================================
 # 作成(§11.2「語彙に追加」)
 # ============================================================================
