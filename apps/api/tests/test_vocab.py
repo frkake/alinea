@@ -473,3 +473,77 @@ async def test_glossary_changes_do_not_affect_vocab(
     await db_session.commit()
     after_delete = (await vocab_ctx.client.get("/api/vocab")).json()
     assert after_delete["counts"] == before["counts"]
+
+
+# ============================================================================
+# PY-VOC-10: Anki TSV エクスポート
+# ============================================================================
+def test_render_anki_tsv_fields() -> None:
+    """_render_anki_tsv() が Front/Back/tags 列を正しく組み立てる。"""
+    from alinea_api.routers.vocab import _render_anki_tsv
+    from alinea_api.schemas.vocab import (
+        VocabAi,
+        VocabEntryDetail,
+        VocabHighlight,
+        VocabMeaning,
+        VocabSource,
+        VocabSrs,
+    )
+    from alinea_api.schemas.chat import AnchorRef
+
+    entry = VocabEntryDetail(
+        id="test-id",
+        kind="word",
+        term="reflow",
+        meaning_short="リフロー",
+        source=VocabSource(
+            library_item_id="lib-id",
+            paper_title="Rectified Flow Paper",
+            display="Rectified Flow · §2.1",
+        ),
+        added_at="2026-01-01",
+        generation="done",
+        pos_label="noun",
+        ipa="/ˈriːfloʊ/",
+        anchor=AnchorRef(revision_id="rev-id", block_id="blk", display="§2.1"),
+        context_sentence="The reflow procedure straightens paths.",
+        highlight=VocabHighlight(start=4, end=10),
+        ai=VocabAi(
+            context_meaning=VocabMeaning(short="リフロー", long="パスを整列させる手順"),
+            interpretation="経路の整列手法",
+            etymology=None,
+            mnemonic="re + flow = 再び流す",
+        ),
+        srs=VocabSrs(stage=1, next_review_at="2026-01-02", review_count=0, history=[]),
+    )
+
+    tsv = _render_anki_tsv([entry])
+    lines = tsv.splitlines()
+
+    # ヘッダ行
+    assert lines[0] == "#separator:tab"
+    assert lines[1] == "#html:true"
+    assert lines[2] == "#tags column:3"
+
+    # カード行
+    assert len(lines) == 4
+    parts = lines[3].split("\t")
+    assert len(parts) == 3
+
+    front, back, tags = parts
+    # Front
+    assert "reflow" in front
+    assert "noun" in front
+    assert "/ˈriːfloʊ/" in front
+
+    # Back
+    assert "リフロー" in back
+    assert "パスを整列させる手順" in back
+    assert "The reflow procedure straightens paths." in back
+    assert "経路の整列手法" in back
+    assert "re + flow = 再び流す" in back
+    assert "Rectified Flow · §2.1" in back
+
+    # Tags
+    assert "alinea" in tags
+    assert "word" in tags

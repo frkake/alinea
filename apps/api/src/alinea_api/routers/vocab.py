@@ -524,6 +524,70 @@ async def export_vocab_markdown(
 
 
 # ============================================================================
+# Anki TSV エクスポート(§11.9。docs/11 §9・PY-VOC-10)
+# ============================================================================
+import re as _re  # noqa: E402
+
+
+def _paper_slug(title: str) -> str:
+    """論文タイトルから Anki タグ用 slug を生成する(ASCII + _ のみ・最大 30 文字)。"""
+    slug = _re.sub(r"[^A-Za-z0-9]+", "_", title)
+    slug = slug.strip("_")[:30].rstrip("_")
+    return slug or "paper"
+
+
+def _render_anki_tsv(entries: list[VocabEntryDetail]) -> str:
+    """VocabEntryDetail リストを Anki テキストインポート形式(TSV)に変換する。
+
+    仕様(docs/superpowers/specs/2026-07-16-anki-export-design.md):
+    - 1〜3 行目: Anki ヒント行(separator/html/tags)
+    - 4 行目以降: Front<TAB>Back<TAB>tags
+    - セル内改行は \\n(Anki は <br> として表示)
+    """
+    header = "#separator:tab\n#html:true\n#tags column:3"
+    card_lines: list[str] = []
+
+    for e in entries:
+        # --- Front ---
+        # html:true モードなので改行は <br> を使い、1 行に収める
+        front_parts = [e.term]
+        meta_parts: list[str] = []
+        if e.pos_label:
+            meta_parts.append(e.pos_label)
+        if e.ipa:
+            meta_parts.append(e.ipa)
+        if meta_parts:
+            front_parts.append("  ".join(meta_parts))
+        front = "<br>".join(front_parts)
+
+        # --- Back ---
+        back_parts: list[str] = []
+        if e.ai.context_meaning:
+            if e.ai.context_meaning.short:
+                back_parts.append(e.ai.context_meaning.short)
+            if e.ai.context_meaning.long:
+                back_parts.append(e.ai.context_meaning.long)
+        back_parts.append("---")
+        back_parts.append(f"文脈: {e.context_sentence}")
+        if e.ai.interpretation:
+            back_parts.append(f"解釈: {e.ai.interpretation}")
+        if e.ai.etymology:
+            back_parts.append(f"語源: {e.ai.etymology}")
+        if e.ai.mnemonic:
+            back_parts.append(f"覚えるコツ: {e.ai.mnemonic}")
+        back_parts.append(f"出典: {e.source.display}")
+        back = "<br>".join(back_parts)
+
+        # --- Tags ---
+        slug = _paper_slug(e.source.paper_title)
+        tags = f"alinea {e.kind} {slug}"
+
+        card_lines.append(f"{front}\t{back}\t{tags}")
+
+    return header + "\n" + "\n".join(card_lines)
+
+
+# ============================================================================
 # 作成(§11.2「語彙に追加」)
 # ============================================================================
 @router.post(
