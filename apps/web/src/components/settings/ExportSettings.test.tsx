@@ -51,6 +51,21 @@ function item(overrides: Partial<{ id: string; title: string; authors_short: str
   };
 }
 
+describe("ExportSettings (Task 6: データカテゴリ + 完全バックアップ + インポート)", () => {
+  test("データカテゴリに完全バックアップとインポートのカードが出る", () => {
+    renderWithClient(<ExportSettings />);
+    expect(screen.getByText("完全バックアップ")).toBeInTheDocument();
+    expect(screen.getByText("インポート(復元)")).toBeInTheDocument();
+    // BYOK は移行されない注記
+    expect(screen.getByText(/BYOK/)).toBeInTheDocument();
+  });
+
+  test("readOnly では実行系(zip選択ボタン)が非描画", () => {
+    renderWithClient(<ExportSettings readOnly />);
+    expect(screen.queryByText("zip を選択して復元")).not.toBeInTheDocument();
+  });
+});
+
 describe("ExportSettings (4f §4.6, M2-15: Markdown + BibTeX/CSV + JSON 一括)", () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -100,7 +100,7 @@ describe("SettingsClient (4f)", () => {
     renderSettings("account");
     await screen.findByText("API キー(BYOK)");
 
-    await user.click(screen.getByRole("button", { name: "エクスポート" }));
+    await user.click(screen.getByRole("button", { name: "データ" }));
     expect(replace).toHaveBeenCalledWith("/settings?category=export");
   });
 
@@ -261,10 +261,10 @@ describe("SettingsClient mobile reduction (mobile.md)", () => {
     await screen.findByText("API キー(BYOK)");
 
     // 常時展開の左ナビ(NavItem)は無く、代わりに現在カテゴリを表示するボタンがある。
-    expect(screen.queryByRole("button", { name: "エクスポート" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "データ" })).toBeNull();
     const trigger = screen.getByRole("button", { name: /カテゴリ: アカウント/ });
     await user.click(trigger);
-    await user.click(screen.getByRole("menuitemradio", { name: "エクスポート" }));
+    await user.click(screen.getByRole("menuitemradio", { name: "データ" }));
     expect(replace).toHaveBeenCalledWith("/settings?category=export");
   });
 
@@ -278,7 +278,7 @@ describe("SettingsClient mobile reduction (mobile.md)", () => {
   test("replaces export execution with a read-only note", async () => {
     mockMatchMedia(true);
     renderSettings("export");
-    await screen.findByText("エクスポート");
+    await screen.findByText("データ");
     expect(screen.queryByRole("button", { name: /Markdown/ })).toBeNull();
     expect(screen.getAllByText(/実行はデスクトップから行えます/).length).toBeGreaterThan(0);
   });
