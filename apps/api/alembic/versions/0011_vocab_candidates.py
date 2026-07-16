@@ -3,7 +3,12 @@
 Adds the ``vocab_candidates`` table and the ``vocab_extract`` job kind.
 
 Revision ID: 0010_vocab_candidates
-Revises: 0009_user_scoped_ingest
+Revises: 0010_import_job_kind
+
+Integration note: linearized after ``0010_import_job_kind`` (S2). At this point
+``ck_jobs_kind`` already allows ``import``; this migration unions ``vocab_extract``
+on top so the final constraint permits every base kind PLUS ``import`` PLUS
+``vocab_extract``. Downgrade restores the parent state (base kinds + ``import``).
 """
 
 from __future__ import annotations
@@ -13,7 +18,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "0010_vocab_candidates"
-down_revision: str | None = "0009_user_scoped_ingest"
+down_revision: str | None = "0010_import_job_kind"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -54,15 +59,18 @@ _TRIGGER = (
 )
 
 # ck_jobs_kind に 'vocab_extract' を追加する(既存の値域を保ったまま超集合にする)。
+# 統合後は 0010_import_job_kind が先行し 'import' を既に許可しているため、その上に
+# 'vocab_extract' を union する(final: base + import + vocab_extract)。
 _JOBS_KIND_WITH_EXTRACT = (
     "ALTER TABLE jobs ADD CONSTRAINT ck_jobs_kind CHECK (kind IN "
     "('ingest', 'translation', 'article', 'figure', 'vocab', 'vocab_extract', "
-    "'resource_meta', 'export', 'account_delete'))"
+    "'resource_meta', 'export', 'import', 'account_delete'))"
 )
+# downgrade 先(親 = 0010_import_job_kind 適用後の状態: base + import)。
 _JOBS_KIND_ORIGINAL = (
     "ALTER TABLE jobs ADD CONSTRAINT ck_jobs_kind CHECK (kind IN "
     "('ingest', 'translation', 'article', 'figure', 'vocab', "
-    "'resource_meta', 'export', 'account_delete'))"
+    "'resource_meta', 'export', 'import', 'account_delete'))"
 )
 
 
@@ -76,6 +84,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # 制約を狭める前に 'vocab_extract' の job 行を除去する(0012 の easy 除去と同方針)。
+    op.execute("DELETE FROM jobs WHERE kind = 'vocab_extract'")
     op.execute("ALTER TABLE jobs DROP CONSTRAINT IF EXISTS ck_jobs_kind")
     op.execute(_JOBS_KIND_ORIGINAL)
     op.execute("DROP TABLE IF EXISTS vocab_candidates CASCADE")

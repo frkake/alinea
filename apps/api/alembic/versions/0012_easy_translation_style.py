@@ -1,7 +1,11 @@
 """Add 'easy' as a valid translation set style.
 
 Revision ID: 0011_easy_translation_style
-Revises: 0009_user_scoped_ingest
+Revises: 0010_vocab_candidates
+
+Integration note: linearized to the end of the chain
+(0009 -> 0010_import_job_kind -> 0010_vocab_candidates -> 0011_easy_translation_style).
+The revision id is kept stable; only the file name (0012_) and down_revision changed.
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "0011_easy_translation_style"
-down_revision: str | None = "0009_user_scoped_ingest"
+down_revision: str | None = "0010_vocab_candidates"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

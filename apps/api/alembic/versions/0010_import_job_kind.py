@@ -26,6 +26,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # 制約を狭める前に 'import' の job 行を除去する(0011/0012 の同方針・可逆性の担保)。
+    op.execute("DELETE FROM jobs WHERE kind = 'import'")
     op.execute("ALTER TABLE jobs DROP CONSTRAINT IF EXISTS ck_jobs_kind")
     op.execute(
         "ALTER TABLE jobs ADD CONSTRAINT ck_jobs_kind CHECK (kind IN "
