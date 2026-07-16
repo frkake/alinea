@@ -3806,6 +3806,41 @@ export type SharePatchBody = {
 };
 
 /**
+ * StandaloneAvailability
+ * 成果物ごとの生成有無(UI の選択可否判定に使う。最新リビジョン基準)。
+ */
+export type StandaloneAvailability = {
+    /**
+     * Source Html
+     */
+    source_html: boolean;
+    /**
+     * Translation Html
+     */
+    translation_html: boolean;
+    /**
+     * Bilingual Html
+     */
+    bilingual_html: boolean;
+    /**
+     * Article Html
+     */
+    article_html: boolean;
+    /**
+     * Pdf Original
+     */
+    pdf_original: boolean;
+    /**
+     * Pdf Translated
+     */
+    pdf_translated: boolean;
+    /**
+     * Pdf Bilingual
+     */
+    pdf_bilingual: boolean;
+};
+
+/**
  * StatsSection
  * §5.12 ``stats``。直近 12 週(古→新)の読書時間棒グラフ+今週の読了本数(docs/06 §6.5)。
  */
@@ -7439,6 +7474,148 @@ export type ExportFullStatusResponses = {
 };
 
 export type ExportFullStatusResponse2 = ExportFullStatusResponses[keyof ExportFullStatusResponses];
+
+export type ExportStandaloneAvailabilityData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/availability';
+};
+
+export type ExportStandaloneAvailabilityErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneAvailabilityError = ExportStandaloneAvailabilityErrors[keyof ExportStandaloneAvailabilityErrors];
+
+export type ExportStandaloneAvailabilityResponses = {
+    /**
+     * Successful Response
+     */
+    200: StandaloneAvailability;
+};
+
+export type ExportStandaloneAvailabilityResponse = ExportStandaloneAvailabilityResponses[keyof ExportStandaloneAvailabilityResponses];
+
+export type ExportStandaloneSourceHtmlData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/source.html';
+};
+
+export type ExportStandaloneSourceHtmlErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneSourceHtmlError = ExportStandaloneSourceHtmlErrors[keyof ExportStandaloneSourceHtmlErrors];
+
+export type ExportStandaloneSourceHtmlResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type ExportStandaloneTranslationHtmlData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/translation.html';
+};
+
+export type ExportStandaloneTranslationHtmlErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneTranslationHtmlError = ExportStandaloneTranslationHtmlErrors[keyof ExportStandaloneTranslationHtmlErrors];
+
+export type ExportStandaloneTranslationHtmlResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type ExportStandaloneBilingualHtmlData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/bilingual.html';
+};
+
+export type ExportStandaloneBilingualHtmlErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneBilingualHtmlError = ExportStandaloneBilingualHtmlErrors[keyof ExportStandaloneBilingualHtmlErrors];
+
+export type ExportStandaloneBilingualHtmlResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type ExportStandaloneArticleHtmlData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/article.html';
+};
+
+export type ExportStandaloneArticleHtmlErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneArticleHtmlError = ExportStandaloneArticleHtmlErrors[keyof ExportStandaloneArticleHtmlErrors];
+
+export type ExportStandaloneArticleHtmlResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
 
 export type ArticlesGetData = {
     body?: never;
