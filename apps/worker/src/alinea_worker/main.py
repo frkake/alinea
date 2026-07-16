@@ -40,6 +40,7 @@ _JOB_QUEUE_BY_KIND = {
     "article": INTERACTIVE_QUEUE,
     "figure": INTERACTIVE_QUEUE,
     "vocab": INTERACTIVE_QUEUE,
+    "vocab_extract": INTERACTIVE_QUEUE,
     "resource_meta": INTERACTIVE_QUEUE,
     "ingest": BULK_QUEUE,
     "translation": BULK_QUEUE,

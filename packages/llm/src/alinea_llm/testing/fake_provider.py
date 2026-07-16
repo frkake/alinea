@@ -86,6 +86,18 @@ _DEFAULT_STRUCTURED: dict[str, dict[str, Any]] = {
         "mnemonic": "曲がった川を「まっすぐ(rectify)」に付け替えるイメージ。",
         "related_forms": "flow matching, straight-line transport",
     },
+    # AI 単語抽出(S7)。block_id は rectified-flow シードに存在するものを使う
+    # (ALINEA_FAKE_LLM=1 の E2E/開発でスキーマ検証を通すための決定的既定)。
+    "vocab_candidates_v1": {
+        "candidates": [
+            {
+                "term": "rectified flow",
+                "kind": "collocation",
+                "block_id": "blk-0001",
+                "reason": "論文の中心概念。",
+            }
+        ]
+    },
     "article_v1": {
         "title": "Rectified Flow を読む",
         "blocks": [
