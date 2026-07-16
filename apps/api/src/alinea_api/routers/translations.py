@@ -948,9 +948,8 @@ class EasyTranslationRequest(BaseModel):
     priority_section_id: str | None = None
 
 
-class EasyTranslationResponse(BaseModel):
-    set_id: str
-    job_id: str | None
+# easy / literal は単一エンドポイントを共有し、レスポンス形も同一(set_id / job_id)なので
+# ``LiteralTranslationResponse`` を両スタイルで再利用する(専用の easy 版は設けない)。
 
 
 async def _create_easy_set(

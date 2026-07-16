@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
@@ -16,8 +15,6 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from alinea_api.main import app
-from alinea_api.routers.translations import get_translations_job_wakeup
 from alinea_api.services.session_service import COOKIE_NAME, create_session
 from alinea_api.services.user_service import purge_user
 from alinea_core.db.models import DocumentRevision, Job, Paper, TranslationSet
@@ -25,14 +22,13 @@ from alinea_core.document.blocks import Block, DocumentContent, Section, Section
 from alinea_core.document.inlines import Inline
 from alinea_core.jobs.store import JobStore
 from alinea_core.search.rebuild import rebuild_block_search_index
-from alinea_core.translation.pipeline import TranslationPlan, resolve_translation_plan
 from factories import (
     make_paper,
     make_translation_set,
     make_translation_unit,
     make_user,
 )
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
