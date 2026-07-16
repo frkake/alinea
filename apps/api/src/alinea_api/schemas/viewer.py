@@ -138,6 +138,32 @@ class RevisionListResponse(BaseModel):
     items: list[RevisionListItem]
 
 
+# --- S10 バージョン差分(docs/02 §6・docs/10 M3) -----------------------------------
+
+
+class RevisionDiffBlock(BaseModel):
+    status: str  # "added" | "removed" | "changed"
+    block_id: str
+    block_type: str
+    section_id: str
+    old_text: str | None
+    new_text: str | None
+
+
+class RevisionDiffStatsDto(BaseModel):
+    added: int
+    removed: int
+    changed: int
+    unchanged: int
+
+
+class RevisionDiffResponse(BaseModel):
+    from_revision_id: str
+    to_revision_id: str
+    stats: RevisionDiffStatsDto
+    changes: list[RevisionDiffBlock]
+
+
 # --- §6.4 単一ブロック --------------------------------------------------------------
 
 
