@@ -15,6 +15,7 @@ import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import { useViewerChatStore } from "@/stores/viewer-chat-store";
 import { useTableTranslation } from "@/hooks/use-table-translation";
 import { useFigureMaterialization } from "@/hooks/use-figure-materialization";
+import { useAnnotationSelection } from "@/hooks/use-annotation-selection";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
 import { FigureTableBlock } from "@/components/viewer/FigureTableBlock";
 import {
@@ -132,6 +133,12 @@ export function BilingualPane({
   const requestAnnotationFocus = useViewerStore((s) => s.requestAnnotationFocus);
   const requestScroll = useViewerStore((s) => s.requestScroll);
   const chatEvidence = useViewerChatStore((s) => s.chatEvidence);
+
+  const { onPointerUp, selectionMenu } = useAnnotationSelection({
+    itemId,
+    revisionId,
+    defaultSide: "translation",
+  });
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pairSync, setPairSync] = useState(true);
@@ -359,6 +366,7 @@ export function BilingualPane({
         ref={scrollRef}
         data-pair-sync={pairSync ? "on" : "off"}
         style={{ flex: 1, overflowY: "auto", display: "flex", justifyContent: "center" }}
+        onPointerUp={onPointerUp}
       >
         <div style={{ width: "100%", maxWidth: 1120, padding: "18px 34px 120px" }}>
           <FailedTranslationRetryBanner
@@ -374,6 +382,7 @@ export function BilingualPane({
           <div style={{ paddingTop: 16 }}>{content}</div>
         </div>
       </div>
+      {selectionMenu}
     </div>
   );
 }
@@ -580,6 +589,7 @@ export function BilingualParagraph({
         />
       </div>
       <div
+        data-block-id={block.id}
         data-side="translation"
         style={{
           fontFamily: "var(--pr-jp)",

@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
   annotationsList,
+  annotationsCreate,
   translationsListUnits,
   viewerGetDocument,
   type TranslationUnitItem,
@@ -18,10 +19,16 @@ vi.mock("@alinea/api-client", async (importOriginal) => {
   return {
     ...actual,
     annotationsList: vi.fn(),
+    annotationsCreate: vi.fn(),
     translationsListUnits: vi.fn(),
     viewerGetDocument: vi.fn(),
   };
 });
+
+// useAnnotationSelection → useRouter (next/navigation App Router コンテキストはユニットテスト対象外)。
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }),
+}));
 
 vi.mock("@/hooks/use-table-translation", () => ({ useTableTranslation: vi.fn() }));
 
@@ -31,6 +38,10 @@ class FakeIntersectionObserver {
   disconnect() {}
 }
 vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+
+// jsdom does not implement Range.getBoundingClientRect; stub it so resolveSelectionAnchor works.
+Range.prototype.getBoundingClientRect = () =>
+  ({ top: 100, left: 50, bottom: 120, right: 200, width: 150, height: 20 }) as DOMRect;
 
 function renderWithClient(ui: ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -180,6 +191,31 @@ describe("BilingualParagraph hl parity (M1 統合ポリッシュ)", () => {
   });
 });
 
+describe("BilingualParagraph data-block-id parity", () => {
+  const block: DocBlock = {
+    id: "blk-p1",
+    type: "paragraph",
+    inlines: [{ t: "text", v: "The rectified flow is an ODE." }],
+  };
+  function unit(): TranslationUnitItem {
+    return {
+      unit_id: "u1",
+      block_id: "blk-p1",
+      text_ja: "整流フローは常微分方程式である。",
+      content_ja: null,
+      state: "machine",
+      quality_flags: [],
+      proposal: null,
+    };
+  }
+
+  test("translation cell carries data-block-id so selections resolve to a block", () => {
+    const { container } = render(<BilingualParagraph block={block} unit={unit()} />);
+    const translationCell = container.querySelector('[data-side="translation"]');
+    expect(translationCell).toHaveAttribute("data-block-id", "blk-p1");
+  });
+});
+
 describe("BilingualPane table translation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -322,5 +358,74 @@ describe("BilingualPane table translation", () => {
     expect(useTableTranslation).toHaveBeenCalledWith(
       expect.objectContaining({ sectionId: "section-1", blockId: "table-1" }),
     );
+  });
+});
+
+describe("BilingualPane annotation creation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(annotationsList).mockResolvedValue({
+      data: { items: [], counts: { all: 0, important: 0, question: 0, idea: 0, term: 0, with_comment: 0, unplaced: 0 } },
+    } as never);
+    vi.mocked(translationsListUnits).mockResolvedValue({
+      data: {
+        set_id: "set-1",
+        items: [
+          {
+            unit_id: "u1",
+            block_id: "blk-p1",
+            text_ja: "整流フローは常微分方程式である。",
+            content_ja: null,
+            state: "machine",
+            quality_flags: [],
+            proposal: null,
+          },
+        ],
+      },
+    } as never);
+    vi.mocked(viewerGetDocument).mockResolvedValue({
+      data: {
+        revision_id: "revision-1",
+        quality_level: "A",
+        sections: [
+          {
+            id: "section-1",
+            heading: { number: "1", title: "Intro" },
+            blocks: [{ id: "blk-p1", type: "paragraph", inlines: [{ t: "text", v: "The rectified flow is an ODE." }] }],
+          },
+        ],
+      },
+    } as never);
+    vi.mocked(annotationsCreate).mockResolvedValue({ data: {} } as never);
+  });
+
+  test("highlighting a source-cell selection creates a source-side annotation", async () => {
+    renderWithClient(
+      <BilingualPane
+        itemId="item-1"
+        revisionId="revision-1"
+        style="natural"
+        translationSetId="set-1"
+        translationStatus="complete"
+        toc={[]}
+        lastPosition={null}
+      />,
+    );
+    const sourceText = await screen.findByText("The rectified flow is an ODE.");
+    // Select the whole source cell text.
+    const range = document.createRange();
+    range.selectNodeContents(sourceText);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    fireEvent.pointerUp(sourceText);
+    // 4 color dots + comment; click the first color dot ("重要でハイライト").
+    fireEvent.click(await screen.findByLabelText("重要でハイライト"));
+    await waitFor(() => expect(annotationsCreate).toHaveBeenCalled());
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    expect(vi.mocked(annotationsCreate).mock.calls[0]![0]).toMatchObject({
+      path: { item_id: "item-1" },
+      body: { kind: "highlight", anchor: { side: "source", block_id: "blk-p1" } },
+    });
   });
 });
