@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  chatCreateThread,
+  chatDeleteThread,
   chatListMessages,
   chatListThreads,
   notesCreate,
@@ -10,9 +12,12 @@ import {
   type AnchorRef,
   type AsideBlock,
   type ChatMessage as ChatMessageData,
+  type ChatThread,
   type EvidenceRef,
   type MarkdownBlock,
 } from "@alinea/api-client";
+import { ChatThreadHistoryPopover } from "@/components/chat/ChatThreadHistoryPopover";
+import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Popover } from "@/components/ui/Popover";
@@ -357,6 +362,61 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
     );
   }, [activeThreadId, summarizing, itemId, qc, toast, setPanel]);
 
+  // スレッド切替・アクティブスレッド削除でストリーミングを打ち切る(切替先で入力欄が
+  // 無効化されたままになるのを防ぐ)。
+  const abortActiveStream = useCallback(() => {
+    abortRef.current?.abort();
+    setStreaming(false);
+  }, []);
+
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<ChatThread | null>(null);
+  const historyAnchor = useRef<HTMLButtonElement>(null);
+
+  const confirmDelete = useCallback(() => {
+    const target = pendingDelete;
+    if (!target) return;
+    setPendingDelete(null);
+    void chatDeleteThread({ path: { thread_id: target.id } }).then(
+      async () => {
+        if (activeThreadId === target.id) {
+          abortActiveStream();
+          const main = (threadsQuery.data?.items ?? []).find((t) => t.is_main);
+          setActiveThreadId(main?.id ?? null);
+        }
+        await qc.invalidateQueries({ queryKey: ["chat-threads", itemId] });
+        toast({ kind: "success", message: "会話を削除しました" });
+      },
+      () => toast({ kind: "error", message: "会話を削除できませんでした" }),
+    );
+  }, [pendingDelete, activeThreadId, threadsQuery.data, qc, itemId, toast, abortActiveStream]);
+
+  const [creatingThread, setCreatingThread] = useState(false);
+  const createConversation = useCallback(() => {
+    if (creatingThread) return;
+    setCreatingThread(true);
+    const now = new Date();
+    const title = `会話 ${now.getMonth() + 1}/${now.getDate()} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    void chatCreateThread({ path: { item_id: itemId }, body: { title } }).then(
+      async (res) => {
+        setCreatingThread(false);
+        const id = res.data?.id;
+        if (!id) {
+          toast({ kind: "error", message: "新しい会話を作成できませんでした" });
+          return;
+        }
+        setActiveThreadId(id);
+        setLocalUser(null);
+        setLocalAssistant(null);
+        await qc.invalidateQueries({ queryKey: ["chat-threads", itemId] });
+      },
+      () => {
+        setCreatingThread(false);
+        toast({ kind: "error", message: "新しい会話を作成できませんでした" });
+      },
+    );
+  }, [creatingThread, itemId, qc, toast]);
+
   const activeThread = (threadsQuery.data?.items ?? []).find((t) => t.id === activeThreadId);
   const displayMessages = mergeDisplayMessages(history, localUser, localAssistant);
   const isEmpty = displayMessages.length === 0;
@@ -380,6 +440,7 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
         style={{
           display: "flex",
           alignItems: "center",
+          flexWrap: "nowrap",
           gap: 6,
           padding: "7px 12px",
           borderBottom: "1px solid var(--pr-border-hair)",
@@ -388,16 +449,46 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
           flex: "none",
         }}
       >
-        <span>
+        {/* スレッド名は可変幅で省略(…)。右側のチップ/操作ボタンは縮まず 1 行を維持する。 */}
+        <span
+          style={{
+            flex: "1 1 auto",
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
           スレッド:{" "}
           <span style={{ color: "var(--pr-text-mid)", fontWeight: 600 }}>
             {activeThread?.title ?? "メイン"}
           </span>
         </span>
-        <span style={{ flex: 1 }} />
-        <span style={chipStyle}>コンテキスト: この論文</span>
+        <span style={{ ...chipStyle, flex: "none", whiteSpace: "nowrap" }}>
+          コンテキスト: この論文
+        </span>
         {readOnly ? null : (
           <>
+            <button
+              type="button"
+              aria-label="新しい会話"
+              onClick={createConversation}
+              disabled={creatingThread || streaming}
+              style={{
+                flex: "none",
+                whiteSpace: "nowrap",
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                color: "var(--pr-text-sub)",
+                fontFamily: "inherit",
+                fontSize: 11,
+                padding: "0 4px",
+                opacity: creatingThread || streaming ? 0.5 : 1,
+              }}
+            >
+              ＋ 新しい会話
+            </button>
             <button
               ref={threadMenuAnchor}
               type="button"
@@ -406,6 +497,7 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
               aria-expanded={threadMenuOpen}
               onClick={() => setThreadMenuOpen((v) => !v)}
               style={{
+                flex: "none",
                 border: "none",
                 background: "transparent",
                 cursor: "pointer",
@@ -448,6 +540,44 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
                 {summarizing ? "まとめてメモ化 中…" : "まとめてメモ化"}
               </button>
             </Popover>
+            <button
+              ref={historyAnchor}
+              type="button"
+              aria-label="会話履歴"
+              aria-haspopup="menu"
+              aria-expanded={historyOpen}
+              onClick={() => setHistoryOpen((v) => !v)}
+              style={{
+                flex: "none",
+                whiteSpace: "nowrap",
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                color: "var(--pr-text-sub)",
+                fontFamily: "inherit",
+                fontSize: 11,
+                padding: "0 4px",
+              }}
+            >
+              履歴
+            </button>
+            <ChatThreadHistoryPopover
+              open={historyOpen}
+              onClose={() => setHistoryOpen(false)}
+              anchorRef={historyAnchor}
+              threads={threadsQuery.data?.items ?? []}
+              activeThreadId={activeThreadId}
+              onSelect={(id) => {
+                abortActiveStream();
+                setActiveThreadId(id);
+                setLocalUser(null);
+                setLocalAssistant(null);
+              }}
+              onRequestDelete={(t) => {
+                setHistoryOpen(false);
+                setPendingDelete(t);
+              }}
+            />
           </>
         )}
       </div>
@@ -522,6 +652,37 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
           />
         </div>
       )}
+      <Modal
+        open={pendingDelete !== null}
+        onClose={() => setPendingDelete(null)}
+        labelledBy="delete-thread-title"
+        width={380}
+      >
+        <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
+          <div id="delete-thread-title" style={{ fontSize: 14, fontWeight: 600, color: "var(--pr-text)" }}>
+            この会話を削除しますか?
+          </div>
+          <div style={{ fontSize: 12, color: "var(--pr-text-sub)" }}>
+            「{pendingDelete?.title}」を削除します。この操作は取り消せません。
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => setPendingDelete(null)}
+              style={{ border: "1px solid var(--pr-border-control)", background: "transparent", cursor: "pointer", fontFamily: "inherit", fontSize: 12, borderRadius: 6, padding: "6px 12px", color: "var(--pr-text-mid)" }}
+            >
+              キャンセル
+            </button>
+            <button
+              type="button"
+              onClick={confirmDelete}
+              style={{ border: "none", background: "var(--pr-warn)", color: "#FFFFFF", cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600, borderRadius: 6, padding: "6px 14px" }}
+            >
+              削除する
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

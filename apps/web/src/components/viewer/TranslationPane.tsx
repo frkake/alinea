@@ -1,17 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   annotationsCreate,
   annotationsDelete,
   annotationsList,
   translationsListUnits,
-  vocabCreate,
   viewerGetDocument,
-  type Annotation,
-  type AnnotationListResponse,
   type LastPosition,
   type TocNode,
   type TranslationUnitItem,
@@ -21,6 +17,7 @@ import type { HighlightColor } from "@/components/ui/HighlightMark";
 import { useIsMobile } from "@/hooks/useMediaQuery";
 import { useTableTranslation } from "@/hooks/use-table-translation";
 import { useFigureMaterialization } from "@/hooks/use-figure-materialization";
+import { useAnnotationSelection } from "@/hooks/use-annotation-selection";
 import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import { EquationBlock } from "@/components/viewer/EquationBlock";
 import { FigureTableBlock } from "@/components/viewer/FigureTableBlock";
@@ -31,7 +28,6 @@ import {
 import { InlineRenderer } from "@/components/viewer/InlineRenderer";
 import { ResumeBanner } from "@/components/viewer/ResumeBanner";
 import { SectionHeading } from "@/components/viewer/SectionHeading";
-import { SelectionMenu } from "@/components/viewer/SelectionMenu";
 import { SummaryCard } from "@/components/viewer/SummaryCard";
 import { TranslatedParagraph, type PlacedHighlight } from "@/components/viewer/TranslatedParagraph";
 import {
@@ -40,14 +36,8 @@ import {
 } from "@/components/viewer/reference-targets";
 import { isLatexSetupNoiseBlock } from "@/components/viewer/latex-noise";
 import { sectionHeadingBlock } from "@/components/viewer/section-heading-block";
-import { SOURCE_TEXT_ATTR, textOffsetWithin } from "@/components/viewer/text-offset";
 import { TranslationInlineContent } from "@/components/viewer/translation-content";
-import { extractVocabContext } from "@/components/viewer/vocab-context";
 import type { DocBlock, DocSection, DocumentResponse } from "@/components/viewer/document-types";
-
-function tmpId(): string {
-  return `tmp_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : Date.now()}`;
-}
 
 export interface TranslationPaneProps {
   itemId: string;
@@ -126,7 +116,6 @@ export function TranslationPane({
 }: TranslationPaneProps) {
   // 読書位置保存は ViewerShell の useReadingPosition が担う(itemId は注釈・ブックマーク用)。
   const toast = useToast();
-  const router = useRouter();
   const qc = useQueryClient();
   const panelOpen = useViewerStore((s) => s.panelOpen);
   const activeTab = useViewerStore((s) => s.activeTab);
@@ -139,12 +128,16 @@ export function TranslationPane({
   const consumeScroll = useViewerStore((s) => s.consumeScroll);
   const pendingHighlightQuery = useViewerStore((s) => s.pendingHighlightQuery);
   const setPendingHighlightQuery = useViewerStore((s) => s.setPendingHighlightQuery);
-  const selection = useViewerStore((s) => s.selection);
-  const setSelection = useViewerStore((s) => s.setSelection);
   const setPanel = useViewerStore((s) => s.setPanel);
   const requestAnnotationFocus = useViewerStore((s) => s.requestAnnotationFocus);
   const requestScroll = useViewerStore((s) => s.requestScroll);
   const isMobile = useIsMobile();
+
+  const { onPointerUp, selectionMenu } = useAnnotationSelection({
+    itemId,
+    revisionId,
+    defaultSide: "translation",
+  });
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [openPopBlockId, setOpenPopBlockId] = useState<string | null>(null);
@@ -344,167 +337,6 @@ export function TranslationPane({
     }
   }, [pendingScroll, doc, consumeScroll, pendingHighlightQuery, setPendingHighlightQuery]);
 
-  // テキスト選択 → 選択メニュー(1b §5.5)。アンカーのブロック内文字オフセットも構築する。
-  const onPointerUp = useCallback(() => {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
-      setSelection(null);
-      return;
-    }
-    const text = sel.toString().trim();
-    if (!text) {
-      setSelection(null);
-      return;
-    }
-    const range = sel.getRangeAt(0);
-    let node: Node | null = range.commonAncestorContainer;
-    let blockEl: HTMLElement | null = null;
-    while (node) {
-      if (node instanceof HTMLElement && node.dataset.blockId) {
-        blockEl = node;
-        break;
-      }
-      node = node.parentNode;
-    }
-    if (!blockEl) {
-      setSelection(null);
-      return;
-    }
-    // 選択元の判定: 対訳ポップ内原文・未訳フォールバック原文([data-alinea-source-text])なら
-    // 'source'、それ以外(訳文段落)は 'translation'(1b §5.5)。
-    const ancestorEl =
-      range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
-        ? (range.commonAncestorContainer as Element)
-        : range.commonAncestorContainer.parentElement;
-    const sourceRoot = ancestorEl?.closest(`[${SOURCE_TEXT_ATTR}]`) ?? null;
-    const side: "source" | "translation" =
-      sourceRoot && blockEl.contains(sourceRoot) ? "source" : "translation";
-    const offsetRoot = side === "source" && sourceRoot ? sourceRoot : blockEl;
-    const start = textOffsetWithin(offsetRoot, range.startContainer, range.startOffset);
-    const end = start + text.length;
-    const rect = range.getBoundingClientRect();
-    setSelection({
-      blockId: blockEl.dataset.blockId ?? "",
-      side,
-      quote: text.slice(0, 500),
-      start,
-      end,
-      rect: { top: rect.top, left: rect.left, bottom: rect.bottom, right: rect.right },
-      // 「語彙に追加」の文脈センテンス抽出用(vocab-context.ts)。'source' のみ意味を持つ。
-      sourceFullText: side === "source" ? (sourceRoot?.textContent ?? undefined) : undefined,
-    });
-  }, [setSelection]);
-
-  // 「語彙に追加」(1b §5.5・M2-12/M2-17。SelectionMenu の onAddVocab は呼び出し側の責務)。
-  const addToVocab = useCallback(async () => {
-    const sel = selection;
-    if (!sel || sel.side !== "source" || sel.start == null || sel.end == null) return;
-    setSelection(null);
-    const { contextSentence, highlightStart, highlightEnd } = extractVocabContext(
-      sel.sourceFullText ?? sel.quote,
-      sel.start,
-      sel.end,
-    );
-    try {
-      const res = await vocabCreate({
-        body: {
-          library_item_id: itemId,
-          term: sel.quote,
-          anchor: {
-            revision_id: revisionId,
-            block_id: sel.blockId,
-            start: sel.start,
-            end: sel.end,
-            quote: sel.quote,
-            side: "source",
-          },
-          context_sentence: contextSentence,
-          highlight: { start: highlightStart, end: highlightEnd },
-        },
-      });
-      if (res.response.status === 409) {
-        const existingId = (res.error as { existing?: { vocab_id?: string } } | undefined)?.existing
-          ?.vocab_id;
-        toast({ kind: "info", message: "すでに語彙帳にあります" });
-        if (existingId) router.push(`/vocab/${existingId}`);
-        return;
-      }
-      if (!res.data) throw new Error("vocab create failed");
-      toast({ kind: "success", message: `「${sel.quote}」を語彙に追加しました` });
-      router.push(`/vocab/${res.data.entry.id}`);
-    } catch {
-      toast({ kind: "error", message: "語彙に追加できませんでした" });
-    }
-  }, [selection, itemId, revisionId, router, toast, setSelection]);
-
-  const copySelection = useCallback(
-    (format: "citation" | "plain") => {
-      const quote = selection?.quote ?? "";
-      const text = format === "plain" ? quote : `"${quote}"`;
-      void navigator.clipboard?.writeText(text).then(
-        () => toast({ kind: "success", message: "コピーしました" }),
-        () => toast({ kind: "error", message: "コピーできませんでした" }),
-      );
-      setSelection(null);
-    },
-    [selection, toast, setSelection],
-  );
-
-  // 選択メニューの色ドット/コメント保存 → 注釈作成(楽観的更新。1b §5.6)。
-  const createHighlight = useCallback(
-    (color: HighlightColor, comment: string | null) => {
-      const sel = selection;
-      if (!sel || !itemId) return;
-      setSelection(null);
-      const anchor = {
-        revision_id: revisionId,
-        block_id: sel.blockId,
-        start: sel.start,
-        end: sel.end,
-        quote: sel.quote,
-        side: sel.side,
-      };
-      const optimistic: Annotation = {
-        id: tmpId(),
-        kind: "highlight",
-        color,
-        anchor: { ...anchor, display: "" },
-        comment,
-        placed: true,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-      const prev = qc.getQueryData<AnnotationListResponse>(annotationsQueryKey);
-      qc.setQueryData<AnnotationListResponse>(annotationsQueryKey, (old) =>
-        old ? { ...old, items: [...old.items, optimistic] } : old,
-      );
-      void annotationsCreate({
-        path: { item_id: itemId },
-        body: {
-          kind: "highlight",
-          color,
-          anchor,
-          comment: comment && comment.length > 0 ? comment : null,
-        },
-      }).then(
-        () => {
-          void qc.invalidateQueries({ queryKey: annotationsQueryKey });
-          void qc.invalidateQueries({ queryKey: ["viewer", itemId] });
-        },
-        () => {
-          if (prev) qc.setQueryData(annotationsQueryKey, prev);
-          toast({
-            kind: "error",
-            message: "注釈を保存できませんでした",
-            action: { label: "再試行", onClick: () => createHighlight(color, comment) },
-          });
-        },
-      );
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selection, itemId, revisionId, qc, toast, setSelection],
-  );
-
   // ブックマーク切替(viewer-shell §10 キー `b`。1b §5.4 が実処理を担う)。
   const firstBookmarkSignal = useRef(bookmarkSignal);
   useEffect(() => {
@@ -661,23 +493,7 @@ export function TranslationPane({
       </div>
       {/* テキスト選択メニュー(mobile.md §4.4): モバイルでは注釈作成・AI質問・語彙追加が
           対象外のため表示しない(決定)。 */}
-      {selection && !isMobile ? (
-        <SelectionMenu
-          milestone="M2"
-          side={selection.side}
-          position={{ top: selection.rect.bottom + 8, left: selection.rect.left }}
-          onAskAI={() => {
-            onAskAI?.(selection.quote);
-            setSelection(null);
-          }}
-          onCopy={copySelection}
-          onHighlight={(color) => createHighlight(color, null)}
-          onComment={(color, comment) =>
-            createHighlight(color, comment.length > 0 ? comment : null)
-          }
-          onAddVocab={() => void addToVocab()}
-        />
-      ) : null}
+      {selectionMenu}
     </div>
   );
 }

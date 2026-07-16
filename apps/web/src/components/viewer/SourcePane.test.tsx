@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { annotationsList, viewerGetDocument } from "@alinea/api-client";
+import { annotationsList, annotationsCreate, viewerGetDocument } from "@alinea/api-client";
 import { SourcePane } from "@/components/viewer/SourcePane";
 import { useViewerStore } from "@/stores/viewer-store";
 
@@ -12,8 +12,18 @@ vi.mock("@alinea/api-client", async (importOriginal) => {
     ...actual,
     viewerGetDocument: vi.fn(),
     annotationsList: vi.fn(),
+    annotationsCreate: vi.fn(),
   };
 });
+
+// useAnnotationSelection → useRouter (next/navigation App Router コンテキストはユニットテスト対象外)。
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }),
+}));
+
+// jsdom does not implement Range.getBoundingClientRect; stub it so resolveSelectionAnchor works.
+Range.prototype.getBoundingClientRect = () =>
+  ({ top: 100, left: 50, bottom: 120, right: 200, width: 150, height: 20 }) as DOMRect;
 
 // jsdom は IntersectionObserver / scrollIntoView を実装しない。
 class FakeIntersectionObserver {
@@ -218,5 +228,50 @@ describe("SourcePane hl parity (M1 統合ポリッシュ)", () => {
     expect(screen.getByText(/Visible reference/)).toHaveTextContent(
       "Author. Visible reference. https://example.com.",
     );
+  });
+});
+
+describe("SourcePane annotation creation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(annotationsList).mockResolvedValue({
+      data: { items: [], counts: { all: 0, important: 0, question: 0, idea: 0, term: 0, with_comment: 0, unplaced: 0 } },
+    } as never);
+    vi.mocked(viewerGetDocument).mockResolvedValue({
+      data: {
+        revision_id: "revision-1",
+        quality_level: "A",
+        sections: [
+          {
+            id: "section-1",
+            heading: { number: "1", title: "Intro" },
+            blocks: [{ id: "blk-s1", type: "paragraph", inlines: [{ t: "text", v: "A source sentence." }] }],
+          },
+        ],
+      },
+    } as never);
+    vi.mocked(annotationsCreate).mockResolvedValue({ data: {} } as never);
+  });
+
+  test("highlighting creates a source-side annotation and 語彙に追加 is enabled", async () => {
+    renderWithClient(
+      <SourcePane itemId="item-1" revisionId="revision-1" toc={[]} lastPosition={null} />,
+    );
+    const text = await screen.findByText("A source sentence.");
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    const sel = window.getSelection();
+    if (!sel) throw new Error("no selection");
+    sel.removeAllRanges();
+    sel.addRange(range);
+    fireEvent.pointerUp(text);
+    // 語彙に追加 is enabled for source selections.
+    expect(await screen.findByRole("menuitem", { name: "語彙に追加" })).not.toBeDisabled();
+    fireEvent.click(screen.getByLabelText("重要でハイライト"));
+    await waitFor(() => expect(annotationsCreate).toHaveBeenCalled());
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    expect(vi.mocked(annotationsCreate).mock.calls[0]![0]).toMatchObject({
+      body: { kind: "highlight", anchor: { side: "source", block_id: "blk-s1" } },
+    });
   });
 });
