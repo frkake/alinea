@@ -1,7 +1,7 @@
 // apps/web/src/hooks/use-annotation-selection.tsx
 "use client";
 
-import { useCallback, type ReactNode } from "react";
+import { useCallback, useMemo, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -40,7 +40,7 @@ export function useAnnotationSelection({
   const setSelection = useViewerStore((s) => s.setSelection);
   const setPanel = useViewerStore((s) => s.setPanel);
   const addPendingAnchor = useViewerChatStore((s) => s.addPendingAnchor);
-  const annotationsQueryKey = ["annotations", itemId];
+  const annotationsQueryKey = useMemo(() => ["annotations", itemId] as const, [itemId]);
 
   const onPointerUp = useCallback(() => {
     const sel = window.getSelection();
@@ -107,8 +107,7 @@ export function useAnnotationSelection({
         },
       );
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selection, itemId, revisionId, qc, toast, setSelection],
+    [selection, itemId, revisionId, qc, toast, setSelection, annotationsQueryKey],
   );
 
   const addToVocab = useCallback(async () => {
