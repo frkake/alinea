@@ -161,6 +161,70 @@ def test_context_token_estimate_treats_model_special_token_text_as_plain_input()
     assert estimate_tokens("prefix <|endoftext|> suffix") > 0
 
 
+def _long_document(n_sections: int, words_per_section: int) -> DocumentContent:
+    """予算超過用の合成ドキュメント。各セクションに LEAD/TAIL 文 + パディングを持つ。"""
+    sections = []
+    for i in range(1, n_sections + 1):
+        text = (
+            f"LEAD_{i} sentence about topic {i}. "
+            f"TAIL_{i} unique_marker_{i} closes the section. "
+            + ("padding filler text " * words_per_section)
+        )
+        sections.append(
+            Section(
+                id=f"sec-{i}",
+                heading=SectionHeading(number=str(i), title=f"Topic {i}"),
+                blocks=[
+                    Block(
+                        id=f"blk-{i}-p1-{i:04d}",
+                        type="paragraph",
+                        inlines=[Inline(t="text", v=text)],
+                    )
+                ],
+            )
+        )
+    return DocumentContent(quality_level="A", sections=sections)
+
+
+def test_long_paper_uses_compression_instead_of_tail_truncation() -> None:
+    import tiktoken
+    from alinea_api.chat.context_builder import (
+        SYSTEM1_FULL_BUDGET,
+        render_document_context,
+    )
+
+    content = _long_document(n_sections=40, words_per_section=500)
+    full = render_document_context(content, "rev-long")
+    assert estimate_tokens(full) > SYSTEM1_FULL_BUDGET  # 予算超過(圧縮モードに入る)
+
+    # 旧挙動(末尾切詰め)は最終セクションを丸ごと落とす。
+    enc = tiktoken.get_encoding("o200k_base")
+    old = enc.decode(enc.encode(full, disallowed_special=())[:SYSTEM1_FULL_BUDGET])
+    assert "Topic 40" not in old
+
+    req = build_chat_request(
+        content=content,
+        revision_id="rev-long",
+        title="Long Paper",
+        authors_short="A, B",
+        venue_year="NeurIPS 2024",
+        arxiv_id="2400.00001",
+        user_content="How does the padding filler mechanism close TAIL_2?",
+        context_anchors=[{"block_id": "blk-2-p1-0002"}],
+    )
+    sys1 = req.system[1].text or ""
+
+    # 全セクションの見出しは残る(後方セクションが丸ごと落ちない)。
+    assert "[sec-40|§40]" in sys1
+    assert "Topic 40" in sys1
+
+    # アンカーのセクション(sec-2)は全文 → TAIL 文まで含む。
+    assert "TAIL_2 unique_marker_2" in sys1
+
+    # 予算内に収まる。
+    assert estimate_tokens(sys1) <= SYSTEM1_FULL_BUDGET
+
+
 # ---------------------------------------------------------------------------
 # PY-CHAT-02: ストリーム変換
 # ---------------------------------------------------------------------------
