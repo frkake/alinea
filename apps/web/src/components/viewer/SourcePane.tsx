@@ -28,6 +28,7 @@ import {
 } from "@/components/viewer/reference-targets";
 import { sectionHeadingBlock } from "@/components/viewer/section-heading-block";
 import type { DocBlock, DocSection, DocumentResponse } from "@/components/viewer/document-types";
+import { useAnnotationSelection } from "@/hooks/use-annotation-selection";
 
 export interface SourcePaneProps {
   itemId: string;
@@ -84,6 +85,12 @@ export function SourcePane({
   const setPanel = useViewerStore((s) => s.setPanel);
   const requestAnnotationFocus = useViewerStore((s) => s.requestAnnotationFocus);
   const requestScroll = useViewerStore((s) => s.requestScroll);
+
+  const { onPointerUp, selectionMenu } = useAnnotationSelection({
+    itemId,
+    revisionId,
+    defaultSide: "source",
+  });
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
@@ -262,6 +269,7 @@ export function SourcePane({
       <div
         ref={scrollRef}
         style={{ flex: 1, overflowY: "auto", display: "flex", justifyContent: "center" }}
+        onPointerUp={onPointerUp}
       >
         <div
           style={{
@@ -274,6 +282,7 @@ export function SourcePane({
           {content}
         </div>
       </div>
+      {selectionMenu}
     </div>
   );
 }
