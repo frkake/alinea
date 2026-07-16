@@ -15,6 +15,7 @@ from alinea_llm.errors import (
     SchemaValidationFailed,
 )
 from alinea_llm.protocols import (
+    EmbeddingProvider,
     ImageProvider,
     KeyStore,
     LLMProvider,
@@ -28,6 +29,8 @@ from alinea_llm.routing import TASKS, RouteResolver, RoutingConfig, TaskRoute
 from alinea_llm.types import (
     ContentPart,
     Effort,
+    EmbeddingRequest,
+    EmbeddingResult,
     ImageRequest,
     ImageResult,
     JsonSchemaSpec,
@@ -47,6 +50,9 @@ __all__ = [
     "Capabilities",
     "ContentPart",
     "Effort",
+    "EmbeddingProvider",
+    "EmbeddingRequest",
+    "EmbeddingResult",
     "ErrorKind",
     "ImageProvider",
     "ImageRequest",

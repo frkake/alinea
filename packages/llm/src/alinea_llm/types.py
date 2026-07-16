@@ -126,3 +126,30 @@ class ImageResult(BaseModel):
     request_id: str | None = None
     latency_ms: int = 0
     fallback_rank: int = 0
+
+
+class EmbeddingRequest(BaseModel):
+    """埋め込み生成リクエスト(S12 セマンティック検索。docs/10 §5)。
+
+    テキスト生成(LLMRequest)とは独立した最小の型。``inputs`` は 1 回でまとめて埋め込む
+    バッチ。``dimensions`` は OpenAI 系の次元短縮(未指定はモデル既定)。
+    """
+
+    model: str
+    inputs: list[str]
+    dimensions: int | None = None
+    timeout_s: float = 60.0
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+
+class EmbeddingResult(BaseModel):
+    """埋め込み生成結果。``vectors`` は ``inputs`` と同順・同数、各ベクトルは ``dim`` 次元。"""
+
+    vectors: list[list[float]]
+    dim: int = 0
+    provider: str = ""
+    model: str = ""
+    usage: Usage = Field(default_factory=Usage)
+    request_id: str | None = None
+    latency_ms: int = 0
+    fallback_rank: int = 0
