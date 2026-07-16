@@ -440,6 +440,7 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
         style={{
           display: "flex",
           alignItems: "center",
+          flexWrap: "nowrap",
           gap: 6,
           padding: "7px 12px",
           borderBottom: "1px solid var(--pr-border-hair)",
@@ -448,14 +449,24 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
           flex: "none",
         }}
       >
-        <span>
+        {/* スレッド名は可変幅で省略(…)。右側のチップ/操作ボタンは縮まず 1 行を維持する。 */}
+        <span
+          style={{
+            flex: "1 1 auto",
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
           スレッド:{" "}
           <span style={{ color: "var(--pr-text-mid)", fontWeight: 600 }}>
             {activeThread?.title ?? "メイン"}
           </span>
         </span>
-        <span style={{ flex: 1 }} />
-        <span style={chipStyle}>コンテキスト: この論文</span>
+        <span style={{ ...chipStyle, flex: "none", whiteSpace: "nowrap" }}>
+          コンテキスト: この論文
+        </span>
         {readOnly ? null : (
           <>
             <button
@@ -464,6 +475,8 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
               onClick={createConversation}
               disabled={creatingThread || streaming}
               style={{
+                flex: "none",
+                whiteSpace: "nowrap",
                 border: "none",
                 background: "transparent",
                 cursor: "pointer",
@@ -484,6 +497,7 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
               aria-expanded={threadMenuOpen}
               onClick={() => setThreadMenuOpen((v) => !v)}
               style={{
+                flex: "none",
                 border: "none",
                 background: "transparent",
                 cursor: "pointer",
@@ -534,6 +548,8 @@ export function ChatPanel({ itemId, readOnly = false }: ChatPanelProps) {
               aria-expanded={historyOpen}
               onClick={() => setHistoryOpen((v) => !v)}
               style={{
+                flex: "none",
+                whiteSpace: "nowrap",
                 border: "none",
                 background: "transparent",
                 cursor: "pointer",
