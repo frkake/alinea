@@ -61,7 +61,7 @@ const CATEGORIES: ReadonlyArray<{ id: SettingsCategory; label: string }> = [
   { id: "reading", label: "読書の計測と提案" },
   { id: "chat", label: "チャット" },
   { id: "notifications", label: "通知" },
-  { id: "export", label: "エクスポート" },
+  { id: "export", label: "データ" },
   { id: "extension", label: "ブラウザ拡張" },
 ];
 
