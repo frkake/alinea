@@ -4236,6 +4236,71 @@ export type VocabAi = {
 };
 
 /**
+ * VocabCandidateAcceptResponse
+ */
+export type VocabCandidateAcceptResponse = {
+    /**
+     * Vocab Id
+     */
+    vocab_id: string;
+    /**
+     * Generation Job Id
+     */
+    generation_job_id?: string | null;
+    /**
+     * Already Existed
+     */
+    already_existed?: boolean;
+};
+
+/**
+ * VocabCandidateListResponse
+ */
+export type VocabCandidateListResponse = {
+    /**
+     * Items
+     */
+    items: Array<VocabCandidateOut>;
+    /**
+     * Count
+     */
+    count: number;
+};
+
+/**
+ * VocabCandidateOut
+ */
+export type VocabCandidateOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Term
+     */
+    term: string;
+    /**
+     * Kind
+     */
+    kind: 'word' | 'collocation' | 'idiom';
+    /**
+     * Reason
+     */
+    reason?: string | null;
+    /**
+     * Context Sentence
+     */
+    context_sentence: string;
+    highlight: VocabHighlight;
+    anchor: AnchorRef;
+    source: VocabSource;
+    /**
+     * Created At
+     */
+    created_at: string;
+};
+
+/**
  * VocabCounts
  * plans/03 §11.1 counts(フィルタに関わらない語彙帳全体の総数)。
  */
@@ -4372,6 +4437,16 @@ export type VocabEntrySummary = {
      * Generation
      */
     generation: 'pending' | 'done' | 'failed';
+};
+
+/**
+ * VocabExtractResponse
+ */
+export type VocabExtractResponse = {
+    /**
+     * Job Id
+     */
+    job_id: string;
 };
 
 /**
@@ -8630,6 +8705,126 @@ export type VocabReviewResponses = {
 };
 
 export type VocabReviewResponse2 = VocabReviewResponses[keyof VocabReviewResponses];
+
+export type VocabCandidatesExtractData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/vocab-candidates/extract';
+};
+
+export type VocabCandidatesExtractErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabCandidatesExtractError = VocabCandidatesExtractErrors[keyof VocabCandidatesExtractErrors];
+
+export type VocabCandidatesExtractResponses = {
+    /**
+     * Successful Response
+     */
+    202: VocabExtractResponse;
+};
+
+export type VocabCandidatesExtractResponse = VocabCandidatesExtractResponses[keyof VocabCandidatesExtractResponses];
+
+export type VocabCandidatesListData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/vocab-candidates';
+};
+
+export type VocabCandidatesListErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabCandidatesListError = VocabCandidatesListErrors[keyof VocabCandidatesListErrors];
+
+export type VocabCandidatesListResponses = {
+    /**
+     * Successful Response
+     */
+    200: VocabCandidateListResponse;
+};
+
+export type VocabCandidatesListResponse = VocabCandidatesListResponses[keyof VocabCandidatesListResponses];
+
+export type VocabCandidatesAcceptData = {
+    body?: never;
+    path: {
+        /**
+         * Candidate Id
+         */
+        candidate_id: string;
+    };
+    query?: never;
+    url: '/api/vocab-candidates/{candidate_id}/accept';
+};
+
+export type VocabCandidatesAcceptErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabCandidatesAcceptError = VocabCandidatesAcceptErrors[keyof VocabCandidatesAcceptErrors];
+
+export type VocabCandidatesAcceptResponses = {
+    /**
+     * Successful Response
+     */
+    201: VocabCandidateAcceptResponse;
+};
+
+export type VocabCandidatesAcceptResponse = VocabCandidatesAcceptResponses[keyof VocabCandidatesAcceptResponses];
+
+export type VocabCandidatesDismissData = {
+    body?: never;
+    path: {
+        /**
+         * Candidate Id
+         */
+        candidate_id: string;
+    };
+    query?: never;
+    url: '/api/vocab-candidates/{candidate_id}/dismiss';
+};
+
+export type VocabCandidatesDismissErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabCandidatesDismissError = VocabCandidatesDismissErrors[keyof VocabCandidatesDismissErrors];
+
+export type VocabCandidatesDismissResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type VocabCandidatesDismissResponse = VocabCandidatesDismissResponses[keyof VocabCandidatesDismissResponses];
 
 export type ResourcesListData = {
     body?: never;

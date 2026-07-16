@@ -401,6 +401,38 @@ class VocabEntry(Base):
     updated_at: Mapped[dt.datetime] = _now()
 
 
+class VocabCandidate(Base):
+    """AI 単語抽出の候補(S7。docs/superpowers/specs/2026-07-16-ai-word-extraction-design.md)。
+
+    論文本文から AI が提案した語彙候補。ユーザーが accept すると本物の VocabEntry を作る
+    (``vocab_entry_id`` にリンク)。dismiss しても行は残し、同一語の再提案を防ぐ。
+    """
+
+    __tablename__ = "vocab_candidates"
+    id: Mapped[str] = _uuid_pk()
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    library_item_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("library_items.id", ondelete="CASCADE"), nullable=False
+    )
+    term: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False, server_default="word")
+    context_anchor: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    context_sentence: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    context_hl_start: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    context_hl_end: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    reason: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
+    vocab_entry_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("vocab_entries.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[dt.datetime] = _now()
+    updated_at: Mapped[dt.datetime] = _now()
+    # NB: uq_vocab_candidates_item_term は lower(term) の関数インデックスのためマイグレーション側
+    # のみで定義する(vocab_entries.uq_vocab_entries_user_term と同方針)。
+
+
 class ResourceLink(Base):
     __tablename__ = "resource_links"
     id: Mapped[str] = _uuid_pk()
