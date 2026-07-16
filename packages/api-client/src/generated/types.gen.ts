@@ -1036,6 +1036,20 @@ export type DuplicateResolutionResponse = {
 };
 
 /**
+ * EasyTranslationRequest
+ */
+export type EasyTranslationRequest = {
+    /**
+     * Style
+     */
+    style: 'easy';
+    /**
+     * Priority Section Id
+     */
+    priority_section_id?: string | null;
+};
+
+/**
  * EmailRequestBody
  */
 export type EmailRequestBody = {
@@ -5437,7 +5451,14 @@ export type TranslationsListSetsResponses = {
 export type TranslationsListSetsResponse = TranslationsListSetsResponses[keyof TranslationsListSetsResponses];
 
 export type TranslationsStartLiteralData = {
-    body: LiteralTranslationRequest;
+    /**
+     * Body
+     */
+    body: ({
+        style: 'literal';
+    } & LiteralTranslationRequest) | ({
+        style: 'easy';
+    } & EasyTranslationRequest);
     path: {
         /**
          * Revision Id
