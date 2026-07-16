@@ -59,7 +59,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 _EXPORT_URL_TTL_SECONDS = 24 * 60 * 60  # 有効 24 時間(plans/03 §18)
-_ZIP_ENTRY_NAME = "alinea-export.json"
 EXPORT_SCHEMA_VERSION = 2
 
 
@@ -832,14 +831,6 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
         "source_assets": await _serialize_source_assets(session, paper_ids),
         "share_tokens": await _serialize_share_tokens(session, collection_ids),
     }
-
-
-def _zip_payload(payload: dict[str, Any]) -> bytes:
-    data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(_ZIP_ENTRY_NAME, data)
-    return buf.getvalue()
 
 
 def collect_asset_keys(payload: dict[str, Any]) -> list[tuple[str, str]]:
