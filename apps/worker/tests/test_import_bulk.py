@@ -12,9 +12,12 @@ S3 は Task 4 のラウンドトリップテストのみ実 MinIO を使う(S3St
 
 from __future__ import annotations
 
+import io
 import json
 import uuid
+import zipfile
 
+import pytest
 from alinea_core.db.models import (
     Annotation,
     BlockSearchIndex,
@@ -28,6 +31,7 @@ from alinea_core.db.models import (
 )
 from alinea_core.jobs.store import JobStore
 from alinea_core.storage.s3 import S3Storage
+from alinea_worker.tasks import import_user_data
 from alinea_worker.tasks.export_user_data import build_export_archive, build_export_payload
 from alinea_worker.tasks.import_user_data import import_data_json, run_import_full_job
 from sqlalchemy import func, select
@@ -358,3 +362,15 @@ async def test_import_job_rejects_invalid_schema_version(db_session: AsyncSessio
     assert done is not None
     # schema_version 不一致は fail_with_retry → attempt<max → status='queued' or 'failed'
     assert done.status in ("queued", "failed"), f"unexpected status: {done.status}"
+
+
+def test_validated_members_rejects_member_over_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ZIP entry の展開後サイズが上限を超える場合は読む前に拒否する。"""
+    monkeypatch.setattr(import_user_data, "_MAX_ZIP_MEMBER_BYTES", 1)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("data.json", b"{}")
+
+    with zipfile.ZipFile(io.BytesIO(archive.getvalue())) as zf:
+        with pytest.raises(ValueError, match="zip_member_too_large"):
+            import_user_data._validated_members(zf)

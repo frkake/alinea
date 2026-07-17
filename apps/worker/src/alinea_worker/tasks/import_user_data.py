@@ -74,6 +74,36 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # インポート zip のスキーマバージョン(エクスポート側の EXPORT_SCHEMA_VERSION と一致する)。
 IMPORT_SCHEMA_VERSION = 2
+_MAX_ZIP_ENTRIES = 2_000
+_MAX_ZIP_MEMBER_BYTES = 100 * 1024 * 1024
+_MAX_ZIP_UNCOMPRESSED_BYTES = 500 * 1024 * 1024
+_MAX_ZIP_COMPRESSION_RATIO = 100
+
+
+def _validated_members(zf: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
+    """ZIP を展開する前にパスと展開リソースを検証する。"""
+    infos = zf.infolist()
+    if len(infos) > _MAX_ZIP_ENTRIES:
+        raise ValueError("too_many_zip_entries")
+    total = 0
+    members: dict[str, zipfile.ZipInfo] = {}
+    for info in infos:
+        parts = info.filename.split("/")
+        if info.is_dir() or info.filename.startswith("/") or ".." in parts:
+            raise ValueError("unsafe_zip_member")
+        if info.filename in members:
+            raise ValueError("duplicate_zip_member")
+        if info.file_size > _MAX_ZIP_MEMBER_BYTES:
+            raise ValueError("zip_member_too_large")
+        if info.compress_size and info.file_size / info.compress_size > _MAX_ZIP_COMPRESSION_RATIO:
+            raise ValueError("zip_compression_ratio_exceeded")
+        total += info.file_size
+        if total > _MAX_ZIP_UNCOMPRESSED_BYTES:
+            raise ValueError("zip_uncompressed_total_too_large")
+        members[info.filename] = info
+    if "manifest.json" not in members or "data.json" not in members:
+        raise ValueError("missing_required_zip_member")
+    return members
 
 
 def _dt(value: str | None) -> dt.datetime | None:
@@ -812,6 +842,9 @@ async def run_import_full_job(ctx: dict[str, Any], store: JobStore, job: Any) ->
     session = store.session
     storage: S3Storage = ctx.get("s3") or S3Storage(ctx.get("settings"))
     upload_key = (job.payload or {}).get("upload_key")
+    if not isinstance(upload_key, str) or not upload_key:
+        await store.fail_with_retry(str(job.id), {"code": "import_bad_payload"})
+        return
 
     # 1. zip ダウンロード
     try:
@@ -825,7 +858,10 @@ async def run_import_full_job(ctx: dict[str, Any], store: JobStore, job: Any) ->
     # 2. zip 展開・検証・復元
     try:
         with zipfile.ZipFile(io.BytesIO(archive)) as zf:
-            manifest = json.loads(zf.read("manifest.json"))
+            members = _validated_members(zf)
+            manifest = json.loads(zf.read(members["manifest.json"]))
+            if not isinstance(manifest, dict):
+                raise ValueError("invalid_manifest")
             if manifest.get("schema_version") != IMPORT_SCHEMA_VERSION:
                 await store.fail_with_retry(
                     str(job.id),
@@ -836,7 +872,9 @@ async def run_import_full_job(ctx: dict[str, Any], store: JobStore, job: Any) ->
                 )
                 return
 
-            data = json.loads(zf.read("data.json"))
+            data = json.loads(zf.read(members["data.json"]))
+            if not isinstance(data, dict):
+                raise ValueError("invalid_data")
             summary = await import_data_json(session, str(job.user_id), data)
 
             # 3. アセット復元(sha256 照合。未一致は skip してサマリへ記録)
@@ -846,17 +884,23 @@ async def run_import_full_job(ctx: dict[str, Any], store: JobStore, job: Any) ->
                 logical_bucket = a.get("bucket", "assets")
                 real_bucket = bucket_of.get(logical_bucket, storage.assets_bucket)
                 asset_path = f"assets/{key}"
-                if asset_path not in zf.namelist():
+                if asset_path not in members:
                     summary["failed"].append({"asset": key, "reason": "not_in_zip"})
                     continue
-                payload_bytes = zf.read(asset_path)
+                payload_bytes = zf.read(members[asset_path])
                 if hashlib.sha256(payload_bytes).hexdigest() != a.get("sha256", ""):
                     summary["failed"].append({"asset": key, "reason": "sha256_mismatch"})
                     continue
                 content_type = a.get("content_type", "application/octet-stream")
                 await storage.put(real_bucket, key, payload_bytes, content_type=content_type)
 
-    except (KeyError, zipfile.BadZipFile, json.JSONDecodeError, UnicodeDecodeError) as exc:
+    except (
+        KeyError,
+        ValueError,
+        zipfile.BadZipFile,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+    ) as exc:
         await store.fail_with_retry(
             str(job.id), {"code": "import_bad_archive", "detail": str(exc)}
         )
