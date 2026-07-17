@@ -56,7 +56,7 @@ from alinea_core.db.models import (
 )
 from alinea_core.jobs.store import JobStore
 from alinea_core.storage.s3 import S3Storage, StorageKeys
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 _EXPORT_URL_TTL_SECONDS = 24 * 60 * 60  # 有効 24 時間(plans/03 §18)
@@ -470,12 +470,25 @@ async def _serialize_document_revisions(
     ]
 
 
-async def _serialize_translation_sets(session: AsyncSession, user_id: str) -> list[dict[str, Any]]:
+async def _serialize_translation_sets(
+    session: AsyncSession, user_id: str, revision_ids: list[str]
+) -> list[dict[str, Any]]:
+    # 所有者(personal)に加え、エクスポート対象リビジョンから到達可能な共有翻訳
+    # (user_id IS NULL / scope='shared')も含める。完全バックアップは共有翻訳を落とさない。
+    predicate = TranslationSet.user_id == user_id
+    if revision_ids:
+        predicate = or_(
+            predicate,
+            and_(
+                TranslationSet.user_id.is_(None),
+                TranslationSet.revision_id.in_(revision_ids),
+            ),
+        )
     rows = (
         (
             await session.execute(
                 select(TranslationSet)
-                .where(TranslationSet.user_id == user_id)
+                .where(predicate)
                 .order_by(TranslationSet.created_at.asc())
             )
         )
@@ -536,12 +549,19 @@ async def _serialize_translation_units(
     ]
 
 
-async def _serialize_glossaries(session: AsyncSession, user_id: str) -> list[dict[str, Any]]:
+async def _serialize_glossaries(
+    session: AsyncSession, user_id: str, library_item_ids: list[str]
+) -> list[dict[str, Any]]:
+    # 所有者(scope='user')に加え、エクスポート対象ライブラリ項目に紐づく論文用用語集
+    # (user_id IS NULL / scope='paper')も含める。完全バックアップは論文用語集を落とさない。
+    predicate = Glossary.user_id == user_id
+    if library_item_ids:
+        predicate = or_(predicate, Glossary.library_item_id.in_(library_item_ids))
     rows = (
         (
             await session.execute(
                 select(Glossary)
-                .where(Glossary.user_id == user_id)
+                .where(predicate)
                 .order_by(Glossary.created_at.asc())
             )
         )
@@ -821,10 +841,13 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
     library_item_ids = [str(row["library_item_id"]) for row in library]
     paper_ids = [str(row["paper_id"]) for row in library]
 
-    translation_sets = await _serialize_translation_sets(session, user_id)
+    document_revisions = await _serialize_document_revisions(session, paper_ids)
+    revision_ids = [str(r["id"]) for r in document_revisions]
+
+    translation_sets = await _serialize_translation_sets(session, user_id, revision_ids)
     set_ids = [ts["id"] for ts in translation_sets]
 
-    glossaries = await _serialize_glossaries(session, user_id)
+    glossaries = await _serialize_glossaries(session, user_id, library_item_ids)
     glossary_ids = [g["id"] for g in glossaries]
 
     articles = await _serialize_articles(session, library_item_ids)
@@ -851,7 +874,7 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
         "articles": articles,
         "collections": collections,
         "settings": user.settings if user is not None and isinstance(user.settings, dict) else {},
-        "document_revisions": await _serialize_document_revisions(session, paper_ids),
+        "document_revisions": document_revisions,
         "translation_sets": translation_sets,
         "translation_units": await _serialize_translation_units(session, set_ids),
         "glossaries": glossaries,

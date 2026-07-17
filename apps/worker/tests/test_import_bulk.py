@@ -124,6 +124,91 @@ async def test_import_merges_idempotently(db_session: AsyncSession) -> None:
     assert summary2["skipped"]["document_revisions"] >= 1
 
 
+async def test_import_restores_shared_translation_and_paper_glossary(
+    db_session: AsyncSession,
+) -> None:
+    """共有翻訳(user_id IS NULL)と論文用用語集が別ユーザーへ無損失復元される。
+
+    共有行は移行先ユーザー専用行へ変換せず、user_id IS NULL のまま保つ。
+    """
+    from alinea_core.db.models import Glossary, GlossaryTerm, TranslationSet, TranslationUnit
+
+    src = await _seed_user_data(db_session)
+    payload = await _detached_payload(db_session, src["user_id"])
+
+    # ペイロードに共有翻訳と論文用用語集が含まれる(エクスポート側の前提)。
+    assert any(ts["scope"] == "shared" for ts in payload["translation_sets"])
+    assert any(g["scope"] == "paper" for g in payload["glossaries"])
+
+    await _delete_source_user(db_session, src["user_id"])
+    # 論文用用語集(user_id IS NULL)はユーザー削除の CASCADE で消えないため、
+    # 「別 PC の空環境」を模して明示的に除去する。
+    orphan = await db_session.get(Glossary, src["paper_glossary_id"])
+    if orphan is not None:
+        await db_session.delete(orphan)
+        await db_session.commit()
+        db_session.expunge_all()
+
+    target = await _make_user(db_session)
+    summary = await import_data_json(db_session, target["user_id"], payload)
+    assert summary["failed"] == [], summary["failed"]
+
+    # 共有翻訳セットが復元され、user_id IS NULL のまま(専用行へ変換されていない)。
+    shared_set = await db_session.get(TranslationSet, src["shared_set_id"])
+    assert shared_set is not None
+    assert shared_set.scope == "shared"
+    assert shared_set.user_id is None
+    assert shared_set.style == "literal"
+    assert str(shared_set.revision_id) == src["revision_id"]
+
+    # 共有セットの翻訳単位が復元される。
+    shared_units = (
+        (
+            await db_session.execute(
+                select(TranslationUnit).where(
+                    TranslationUnit.set_id == src["shared_set_id"]
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(shared_units) == 1
+    assert shared_units[0].text_ja == "共有フロー"
+
+    # 論文用用語集が復元され、user_id IS NULL のまま、library_item_id は移行先へ張り替え。
+    target_items = [
+        str(i.id)
+        for i in (
+            await db_session.execute(
+                select(LibraryItem).where(LibraryItem.user_id == target["user_id"])
+            )
+        )
+        .scalars()
+        .all()
+    ]
+    paper_glossary = await db_session.get(Glossary, src["paper_glossary_id"])
+    assert paper_glossary is not None
+    assert paper_glossary.scope == "paper"
+    assert paper_glossary.user_id is None
+    assert str(paper_glossary.library_item_id) in target_items
+
+    # 論文用用語集の用語が復元される。
+    paper_terms = (
+        (
+            await db_session.execute(
+                select(GlossaryTerm).where(
+                    GlossaryTerm.glossary_id == src["paper_glossary_id"]
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(paper_terms) == 1
+    assert paper_terms[0].source_term == "straight map"
+
+
 async def test_import_is_lossless_for_anchors_and_content(db_session: AsyncSession) -> None:
     src = await _seed_user_data(db_session)
     payload = await _detached_payload(db_session, src["user_id"])

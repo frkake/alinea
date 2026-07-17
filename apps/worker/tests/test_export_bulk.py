@@ -190,6 +190,29 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
         )
     )
 
+    # Shared TranslationSet + TranslationUnit (scope=shared requires user_id IS NULL)。
+    # 完全バックアップはこの共有翻訳をリビジョン到達で拾い、移行先へ無損失で復元する。
+    shared_set = TranslationSet(
+        id=str(uuid.uuid4()),
+        revision_id=revision.id,
+        style="literal",
+        scope="shared",
+        user_id=None,
+        status="complete",
+    )
+    db.add(shared_set)
+    await db.flush()
+    db.add(
+        TranslationUnit(
+            set_id=shared_set.id,
+            block_id="blk-1",
+            source_hash="shared123",
+            content_ja=[{"type": "text", "text": "共有フロー"}],
+            text_ja="共有フロー",
+            state="machine",
+        )
+    )
+
     # Glossary + GlossaryTerm
     glossary = Glossary(
         id=str(uuid.uuid4()),
@@ -205,6 +228,27 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
             glossary_id=glossary.id,
             source_term="rectified flow",
             target_term="整流フロー",
+            pos_label="noun",
+        )
+    )
+
+    # Paper-scoped Glossary + GlossaryTerm (scope=paper requires user_id IS NULL,
+    # library_item_id set)。論文単位の用語集も完全バックアップの復元対象に含める。
+    paper_glossary = Glossary(
+        id=str(uuid.uuid4()),
+        scope="paper",
+        user_id=None,
+        library_item_id=item.id,
+        name="論文用語集",
+    )
+    db.add(paper_glossary)
+    await db.flush()
+    db.add(
+        GlossaryTerm(
+            id=str(uuid.uuid4()),
+            glossary_id=paper_glossary.id,
+            source_term="straight map",
+            target_term="直線写像",
             pos_label="noun",
         )
     )
@@ -255,6 +299,9 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
         "user_id": str(user.id),
         "library_item_id": str(item.id),
         "asset_key": f"assets/papers/{paper.id}/paper.pdf",
+        "revision_id": str(revision.id),
+        "shared_set_id": str(shared_set.id),
+        "paper_glossary_id": str(paper_glossary.id),
     }
 
 
@@ -354,6 +401,42 @@ async def test_export_payload_includes_generated_content(db_session: AsyncSessio
         assert key in payload, key
     # source_asset メタは storage_key/sha256/byte_size を持つ
     assert payload["source_assets"][0]["storage_key"]
+
+
+async def test_export_includes_shared_translation_and_paper_glossary(
+    db_session: AsyncSession,
+) -> None:
+    """完全バックアップは共有翻訳(user_id IS NULL)と論文用用語集を復元対象に含める。"""
+    ids = await _seed_user_data(db_session)
+    payload = await build_export_payload(db_session, ids["user_id"])
+
+    # 共有翻訳セット(user_id IS NULL / scope='shared')がエクスポートに含まれる。
+    shared_sets = [ts for ts in payload["translation_sets"] if ts["scope"] == "shared"]
+    assert len(shared_sets) == 1, payload["translation_sets"]
+    assert shared_sets[0]["id"] == ids["shared_set_id"]
+    assert shared_sets[0]["user_id"] is None
+    assert shared_sets[0]["revision_id"] == ids["revision_id"]
+
+    # 共有セットの翻訳単位も追随する。
+    shared_units = [
+        u for u in payload["translation_units"] if u["set_id"] == ids["shared_set_id"]
+    ]
+    assert len(shared_units) == 1
+    assert shared_units[0]["text_ja"] == "共有フロー"
+
+    # 論文用用語集(user_id IS NULL / scope='paper')がエクスポートに含まれる。
+    paper_glossaries = [g for g in payload["glossaries"] if g["scope"] == "paper"]
+    assert len(paper_glossaries) == 1, payload["glossaries"]
+    assert paper_glossaries[0]["id"] == ids["paper_glossary_id"]
+    assert paper_glossaries[0]["user_id"] is None
+    assert paper_glossaries[0]["library_item_id"] == ids["library_item_id"]
+
+    # 論文用用語集の用語も追随する。
+    paper_terms = [
+        t for t in payload["glossary_terms"] if t["glossary_id"] == ids["paper_glossary_id"]
+    ]
+    assert len(paper_terms) == 1
+    assert paper_terms[0]["source_term"] == "straight map"
 
 
 async def test_export_archive_bundles_assets_and_manifest(db_session: AsyncSession) -> None:
