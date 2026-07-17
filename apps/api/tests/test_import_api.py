@@ -17,7 +17,9 @@ import zipfile
 from collections.abc import AsyncIterator
 from typing import Any
 
+import pytest
 import pytest_asyncio
+from alinea_api.routers import export as export_router
 from alinea_api.routers.export import get_export_job_wakeup, get_import_job_wakeup
 from alinea_api.services.session_service import create_session
 from alinea_api.services.user_service import purge_user, upsert_user_by_email
@@ -84,6 +86,21 @@ def _make_fake_zip() -> bytes:
         zf.writestr("manifest.json", json.dumps({"schema_version": 2, "assets": []}))
         zf.writestr("data.json", json.dumps({"library": [], "user": {}}))
     return buf.getvalue()
+
+
+async def test_import_full_rejects_upload_larger_than_limit(
+    auth: tuple[AsyncClient, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """上限超過はS3保存・ジョブ作成前に 413 で拒否する。"""
+    monkeypatch.setattr(export_router, "_MAX_IMPORT_ARCHIVE_BYTES", 8)
+    client, _ = auth
+
+    response = await client.post(
+        "/api/import/full",
+        files={"file": ("too-large.zip", b"012345678", "application/zip")},
+    )
+
+    assert response.status_code == 413
 
 
 # ---------------------------------------------------------------------------
