@@ -6,9 +6,7 @@
 
 from __future__ import annotations
 
-import pytest
 from alinea_core.arxiv.metadata import _extract_official_repo
-
 
 # --------------------------------------------------------------------------- #
 # Positive cases
