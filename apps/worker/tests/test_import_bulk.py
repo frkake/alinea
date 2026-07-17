@@ -374,3 +374,19 @@ def test_validated_members_rejects_member_over_limit(monkeypatch: pytest.MonkeyP
     with zipfile.ZipFile(io.BytesIO(archive.getvalue())) as zf:
         with pytest.raises(ValueError, match="zip_member_too_large"):
             import_user_data._validated_members(zf)
+
+
+def test_prepare_asset_destinations_rekeys_untrusted_storage_key() -> None:
+    """manifestが指定した既存S3キーを移行先の書込み先に使わない。"""
+    data = {
+        "source_assets": [
+            {"id": str(uuid.uuid4()), "storage_key": "sources/foreign/private/original.pdf"}
+        ]
+    }
+
+    destinations = import_user_data._prepare_asset_destinations(data, "target-user")
+
+    destination = destinations["sources/foreign/private/original.pdf"]
+    assert destination[0] == "sources"
+    assert destination[1] != "sources/foreign/private/original.pdf"
+    assert data["source_assets"][0]["storage_key"] == destination[1]

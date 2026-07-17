@@ -38,6 +38,7 @@ import json
 import uuid
 import zipfile
 from collections import defaultdict
+from pathlib import Path
 from typing import Any
 
 from alinea_core.db.base import Base
@@ -51,11 +52,13 @@ from alinea_core.db.models import (
     CollectionEntry,
     CollectionShareToken,
     DocumentRevision,
+    ExplainerFigure,
     Glossary,
     GlossaryTerm,
     LibraryItem,
     Note,
     Notification,
+    OverviewFigure,
     Paper,
     ReadingSession,
     ResourceLink,
@@ -63,6 +66,8 @@ from alinea_core.db.models import (
     SourceAsset,
     TranslationSet,
     TranslationUnit,
+    User,
+    VocabCandidate,
     VocabEntry,
 )
 from alinea_core.document.blocks import DocumentContent
@@ -112,6 +117,37 @@ def _dt(value: str | None) -> dt.datetime | None:
 
 def _date(value: str | None) -> dt.date | None:
     return dt.date.fromisoformat(value) if value else None
+
+
+def _restored_asset_key(user_id: str, kind: str, entity_id: str, source_key: str) -> str:
+    suffix = Path(source_key).suffix.lower()
+    safe_suffix = suffix if len(suffix) <= 12 else ""
+    return f"imports/restored/{user_id}/{kind}/{entity_id}{safe_suffix}"
+
+
+def _prepare_asset_destinations(data: dict[str, Any], user_id: str) -> dict[str, tuple[str, str]]:
+    """アーカイブ由来のキーを、移行先専用キーへ置換して許可表を返す。"""
+    destinations: dict[str, tuple[str, str]] = {}
+
+    def register(row: dict[str, Any], field: str, bucket: str, kind: str) -> None:
+        old_key = row.get(field)
+        if not isinstance(old_key, str) or not old_key or old_key in destinations:
+            return
+        new_key = _restored_asset_key(user_id, kind, str(row["id"]), old_key)
+        destinations[old_key] = (bucket, new_key)
+        row[field] = new_key
+
+    for row in data.get("source_assets") or []:
+        if isinstance(row, dict):
+            register(row, "storage_key", "sources", "source-assets")
+    for row in data.get("overview_figures") or []:
+        if isinstance(row, dict):
+            register(row, "svg_storage_key", "assets", "overview-svg")
+            register(row, "image_storage_key", "assets", "overview-image")
+    for row in data.get("explainer_figures") or []:
+        if isinstance(row, dict):
+            register(row, "image_storage_key", "assets", "explainer-image")
+    return destinations
 
 
 class _Importer:
@@ -770,6 +806,122 @@ class _Importer:
                 None,
             )
 
+    async def restore_user_settings(self, settings: object) -> None:
+        if not isinstance(settings, dict):
+            return
+        user = await self.session.get(User, self.uid)
+        if user is not None:
+            user.settings = settings
+
+    async def restore_overview_figures(self, rows: list[dict[str, Any]]) -> None:
+        for row in rows:
+            figure_id = str(row["id"])
+            if await self.session.get(OverviewFigure, figure_id) is not None:
+                self.skipped["overview_figures"] += 1
+                continue
+            await self._insert(
+                "overview_figures",
+                OverviewFigure(
+                    id=figure_id,
+                    article_id=str(row["article_id"]),
+                    version=row["version"],
+                    is_current=bool(row.get("is_current")),
+                    render_mode=row.get("render_mode") or "svg",
+                    dsl=row.get("dsl") or {},
+                    svg_storage_key=row.get("svg_storage_key"),
+                    image_storage_key=row.get("image_storage_key"),
+                    provider=row.get("provider") or "",
+                    model=row.get("model") or "",
+                    prompt=row.get("prompt") or "",
+                    instruction=row.get("instruction") or "",
+                    evidence_anchors=row.get("evidence_anchors") or [],
+                    generated_at=_dt(row.get("generated_at")),
+                    created_at=_dt(row.get("created_at")),
+                ),
+                figure_id,
+            )
+
+    async def restore_explainer_figures(self, rows: list[dict[str, Any]]) -> None:
+        for row in rows:
+            figure_id = str(row["id"])
+            if await self.session.get(ExplainerFigure, figure_id) is not None:
+                self.skipped["explainer_figures"] += 1
+                continue
+            await self._insert(
+                "explainer_figures",
+                ExplainerFigure(
+                    id=figure_id,
+                    article_id=str(row["article_id"]),
+                    slot=row.get("slot", 0),
+                    version=row.get("version", 1),
+                    is_current=bool(row.get("is_current")),
+                    provider=row.get("provider") or "",
+                    model=row.get("model") or "",
+                    prompt=row.get("prompt") or "",
+                    image_storage_key=row["image_storage_key"],
+                    caption=row.get("caption") or "",
+                    evidence_anchors=row.get("evidence_anchors") or [],
+                    generated_at=_dt(row.get("generated_at")),
+                    created_at=_dt(row.get("created_at")),
+                ),
+                figure_id,
+            )
+
+    async def restore_vocab_candidates(self, rows: list[dict[str, Any]]) -> None:
+        for row in rows:
+            candidate_id = str(row["id"])
+            if await self.session.get(VocabCandidate, candidate_id) is not None:
+                self.skipped["vocab_candidates"] += 1
+                continue
+            library_item_id = self.item_map.get(str(row["library_item_id"]))
+            if library_item_id is None:
+                self.failed.append(
+                    {
+                        "table": "vocab_candidates",
+                        "id": candidate_id,
+                        "error": "unmapped library_item_id",
+                    }
+                )
+                continue
+            vocab_entry_id = row.get("vocab_entry_id")
+            if vocab_entry_id and await self.session.get(VocabEntry, str(vocab_entry_id)) is None:
+                vocab_entry_id = None
+            await self._insert(
+                "vocab_candidates",
+                VocabCandidate(
+                    id=candidate_id,
+                    user_id=self.uid,
+                    library_item_id=library_item_id,
+                    term=row["term"],
+                    kind=row.get("kind") or "word",
+                    context_anchor=row.get("context_anchor") or {},
+                    context_sentence=row.get("context_sentence") or "",
+                    context_hl_start=row.get("context_hl_start") or 0,
+                    context_hl_end=row.get("context_hl_end") or 0,
+                    reason=row.get("reason") or "",
+                    status=row.get("status") or "pending",
+                    vocab_entry_id=str(vocab_entry_id) if vocab_entry_id else None,
+                    created_at=_dt(row.get("created_at")),
+                    updated_at=_dt(row.get("updated_at")),
+                ),
+                candidate_id,
+            )
+
+    async def restore_latest_revisions(self, library: list[dict[str, Any]]) -> None:
+        for entry in library:
+            revision_id = entry.get("latest_revision_id")
+            paper_id = self.paper_map.get(str(entry["paper_id"]))
+            if not revision_id or paper_id is None:
+                continue
+            revision = await self.session.get(DocumentRevision, str(revision_id))
+            paper = await self.session.get(Paper, paper_id)
+            if (
+                revision is not None
+                and paper is not None
+                and str(revision.paper_id) == str(paper.id)
+            ):
+                paper.latest_revision_id = str(revision.id)
+
     async def rebuild_indexes(self) -> None:
         for rev_id, content in self._pending_index:
             try:
@@ -817,6 +969,11 @@ async def import_data_json(
     await imp.restore_saved_filters(data.get("saved_filters") or [])
     await imp.restore_reading_sessions(data.get("reading_sessions") or [])
     await imp.restore_notifications(data.get("notifications") or [])
+    await imp.restore_user_settings(data.get("settings"))
+    await imp.restore_overview_figures(data.get("overview_figures") or [])
+    await imp.restore_explainer_figures(data.get("explainer_figures") or [])
+    await imp.restore_vocab_candidates(data.get("vocab_candidates") or [])
+    await imp.restore_latest_revisions(library)
 
     # 新規 document_revision について block_search_index を再構築(索引はエクスポートしない)。
     await imp.rebuild_indexes()
@@ -875,14 +1032,20 @@ async def run_import_full_job(ctx: dict[str, Any], store: JobStore, job: Any) ->
             data = json.loads(zf.read(members["data.json"]))
             if not isinstance(data, dict):
                 raise ValueError("invalid_data")
+            asset_destinations = _prepare_asset_destinations(data, str(job.user_id))
             summary = await import_data_json(session, str(job.user_id), data)
 
             # 3. アセット復元(sha256 照合。未一致は skip してサマリへ記録)
-            bucket_of = {"sources": storage.sources_bucket, "assets": storage.assets_bucket}
             for a in manifest.get("assets", []):
                 key = a["storage_key"]
-                logical_bucket = a.get("bucket", "assets")
-                real_bucket = bucket_of.get(logical_bucket, storage.assets_bucket)
+                destination = asset_destinations.get(key)
+                if destination is None:
+                    summary["failed"].append({"asset": key, "reason": "not_referenced"})
+                    continue
+                logical_bucket, destination_key = destination
+                real_bucket = (
+                    storage.sources_bucket if logical_bucket == "sources" else storage.assets_bucket
+                )
                 asset_path = f"assets/{key}"
                 if asset_path not in members:
                     summary["failed"].append({"asset": key, "reason": "not_in_zip"})
@@ -892,7 +1055,9 @@ async def run_import_full_job(ctx: dict[str, Any], store: JobStore, job: Any) ->
                     summary["failed"].append({"asset": key, "reason": "sha256_mismatch"})
                     continue
                 content_type = a.get("content_type", "application/octet-stream")
-                await storage.put(real_bucket, key, payload_bytes, content_type=content_type)
+                await storage.put(
+                    real_bucket, destination_key, payload_bytes, content_type=content_type
+                )
 
     except (
         KeyError,
@@ -901,9 +1066,7 @@ async def run_import_full_job(ctx: dict[str, Any], store: JobStore, job: Any) ->
         json.JSONDecodeError,
         UnicodeDecodeError,
     ) as exc:
-        await store.fail_with_retry(
-            str(job.id), {"code": "import_bad_archive", "detail": str(exc)}
-        )
+        await store.fail_with_retry(str(job.id), {"code": "import_bad_archive", "detail": str(exc)})
         return
 
     await store.succeed(str(job.id), {"summary": summary})
