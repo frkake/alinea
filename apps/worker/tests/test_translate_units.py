@@ -19,7 +19,7 @@ import re
 import uuid
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import alinea_worker.tasks.translate as translate_tasks
 import pytest
@@ -158,7 +158,7 @@ async def test_completed_reingest_forces_pdf_rebuild(monkeypatch: pytest.MonkeyP
 
     await translate_tasks._build_latex_translation_pdf_after_complete(
         {"settings": object(), "s3": object()},
-        SimpleNamespace(session=Session()),
+        cast(JobStore, SimpleNamespace(session=Session())),
         "reingest-job",
         "translation-set",
     )

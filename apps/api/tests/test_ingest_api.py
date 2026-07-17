@@ -499,6 +499,7 @@ async def test_arxiv_pdf_placeholder_aligns_with_reused_asset_resolved_version(
     )
     await db_session.commit()
 
+    assert paper.arxiv_id is not None
     ref = ArxivId(paper.arxiv_id)
     await _ensure_arxiv_pdf_available(
         db_session, paper, ref, "latest", _FakeGateway(), fake_storage, get_api_settings()

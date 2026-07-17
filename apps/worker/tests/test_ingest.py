@@ -14,7 +14,7 @@ import json
 import random
 import time
 import uuid
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, call
 
 import alinea_worker.pipeline as worker_pipeline
@@ -103,9 +103,9 @@ async def test_latex_eprint_rate_limit_uses_exponential_backoff(
 
     sleep = AsyncMock()
     monkeypatch.setattr(run, "_fetch_latex_candidate_bytes_once", fetch_once)
-    monkeypatch.setattr(worker_pipeline.asyncio, "sleep", sleep)
+    monkeypatch.setattr(cast(Any, worker_pipeline).asyncio, "sleep", sleep)
 
-    assert await run._fetch_latex_candidate_bytes(object()) == b"latex archive"
+    assert await run._fetch_latex_candidate_bytes(cast(Any, object())) == b"latex archive"
     assert sleep.await_args_list == [call(20), call(40)]
 
 
@@ -126,9 +126,9 @@ async def test_latex_eprint_rate_limit_honors_retry_after(
 
     sleep = AsyncMock()
     monkeypatch.setattr(run, "_fetch_latex_candidate_bytes_once", fetch_once)
-    monkeypatch.setattr(worker_pipeline.asyncio, "sleep", sleep)
+    monkeypatch.setattr(cast(Any, worker_pipeline).asyncio, "sleep", sleep)
 
-    assert await run._fetch_latex_candidate_bytes(object()) == b"latex archive"
+    assert await run._fetch_latex_candidate_bytes(cast(Any, object())) == b"latex archive"
     assert sleep.await_args_list == [call(120), call(120)]
 
 
@@ -149,9 +149,9 @@ async def test_latex_eprint_rate_limit_retries_beyond_network_budget(
 
     sleep = AsyncMock()
     monkeypatch.setattr(run, "_fetch_latex_candidate_bytes_once", fetch_once)
-    monkeypatch.setattr(worker_pipeline.asyncio, "sleep", sleep)
+    monkeypatch.setattr(cast(Any, worker_pipeline).asyncio, "sleep", sleep)
 
-    assert await run._fetch_latex_candidate_bytes(object()) == b"latex archive"
+    assert await run._fetch_latex_candidate_bytes(cast(Any, object())) == b"latex archive"
     # 5 backoffs before the 6th success, each capped at 60s.
     assert sleep.await_count == 5
     assert all(delay <= 60 for ((delay,), _kwargs) in sleep.await_args_list)
@@ -170,10 +170,10 @@ async def test_latex_eprint_network_error_keeps_short_retry_budget(
 
     sleep = AsyncMock()
     monkeypatch.setattr(run, "_fetch_latex_candidate_bytes_once", fetch_once)
-    monkeypatch.setattr(worker_pipeline.asyncio, "sleep", sleep)
+    monkeypatch.setattr(cast(Any, worker_pipeline).asyncio, "sleep", sleep)
 
     with pytest.raises(CandidateUnavailable):
-        await run._fetch_latex_candidate_bytes(object())
+        await run._fetch_latex_candidate_bytes(cast(Any, object()))
     assert attempts == worker_pipeline._LATEX_FETCH_MAX_ATTEMPTS
 
 

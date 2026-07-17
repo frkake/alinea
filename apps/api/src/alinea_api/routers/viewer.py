@@ -968,11 +968,11 @@ async def get_viewer(item_id: str, user: CurrentUser, db: DbDep) -> ViewerInit:
 
     stats = revision.stats or {}
     translated_pdf = stats.get("translated_pdf") if isinstance(stats, dict) else None
-    translated_pdf_record = (
-        translated_pdf.get(style)
-        if isinstance(translated_pdf, dict) and isinstance(translated_pdf.get(style), dict)
-        else {}
-    )
+    translated_pdf_record: dict[str, Any] = {}
+    if isinstance(translated_pdf, dict):
+        candidate = translated_pdf.get(style)
+        if isinstance(candidate, dict):
+            translated_pdf_record = candidate
     figure_count = sum(1 for _s, b in content.iter_blocks() if b.type == "figure")
     table_count = sum(1 for _s, b in content.iter_blocks() if b.type == "table")
 

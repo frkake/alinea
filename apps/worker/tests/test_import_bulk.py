@@ -16,6 +16,7 @@ import io
 import json
 import uuid
 import zipfile
+from typing import Any, cast
 
 import pytest
 from alinea_core.db.models import (
@@ -47,9 +48,9 @@ async def _make_user(db: AsyncSession) -> dict[str, str]:
     return {"user_id": str(user.id)}
 
 
-async def _detached_payload(db: AsyncSession, user_id: str) -> dict:
+async def _detached_payload(db: AsyncSession, user_id: str) -> dict[str, Any]:
     """payload を JSON 往復で完全にデタッチし、本文に索引対象ブロックを1つ注入する。"""
-    payload = json.loads(json.dumps(await build_export_payload(db, user_id)))
+    payload = cast(dict[str, Any], json.loads(json.dumps(await build_export_payload(db, user_id))))
     # 空ブロックの revision だと block_search_index が0件になるため、段落を1つ注入。
     for rev in payload["document_revisions"]:
         rev["content"] = {
