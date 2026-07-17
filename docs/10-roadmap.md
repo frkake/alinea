@@ -70,7 +70,8 @@ M0 に含めない主なもの: 注釈・メモ(M1)、通知(M1)、PDF(M1)、記
 
 **DoD: 「arXiv 以外の主要ソースの論文も同じ体験で読め、学習・再読のループがツールの外(Anki・オフライン)まで届く。」**
 
-- **他サイトアダプタ**: OpenReview / ACL Anthology / PubMed。拡張からの認証ページ送信。→ [02-ingest.md](02-ingest.md)、[08-extension.md](08-extension.md)
+- **他サイトアダプタ**: OpenReview / ACL Anthology / PubMed / PMC。Hugging Face Paper PageはarXiv同定とGitHub／project／Model／Dataset／Space候補の収集に使う。→ [02-ingest.md](02-ingest.md)、[12-resources.md](12-resources.md)、[08-extension.md](08-extension.md)
+- **GitHubコード対応解析**: 論文blockと公開リポジトリのfile／symbol／行範囲を対応付ける。`off` / `on_demand` / `automatic`、月額予算、実行前見積もりでAPI費用を制御する。→ [12-resources.md](12-resources.md)
 - **OCR**: スキャン PDF への対応検討。品質レベルは新設せず B の内部拡張として扱う(A/B の 2 段階は維持)。
 - **arXiv バージョン差分表示**: v1→v2 の変更点提示とリアンカー。
 - **Anki エクスポート**: 語彙帳からのカード書き出し。→ [11-vocabulary.md](11-vocabulary.md)

@@ -12,7 +12,7 @@
 |---|---|---|
 | 拡張: arXiv URL 送信 | 現在タブの arXiv abs ページ URL | 「arXiv 論文を検出」バッジ。**URL のみをサーバーへ送信し、取得・解析はサーバーで実行**(ページ内容は送らない)。書誌は保存前に自動抽出してプレビュー |
 | 拡張: タブ内 PDF 直接送信 | 現在タブで表示中の PDF バイト列 | **明示操作のみ**(「このタブの PDF を送信」ボタン。自動送信はしない)。サーバーから取得できない学内ネットワーク等を想定。「private 論文として保存され、共有されません」。書誌はローカル推定(「書誌は推定」バッジ) |
-| (将来)対応サイトアダプタ | OpenReview / ACL Anthology / PubMed 等の URL | サイト別アダプタで拡張の検出対象を広げる。§8 |
+| 対応サイトアダプタ | OpenReview / ACL Anthology / PubMed / PMC / Hugging Face の URL | サイト別アダプタで検出対象を広げる。Hugging FaceはarXiv同定と関連ソース収集に使う。§8 |
 
 拡張ポップアップの UI 詳細・4状態(保存前/保存直後/既存/一般 PDF)は [08-extension.md](08-extension.md)。
 
@@ -132,7 +132,11 @@
 
 ## 8. 将来の対応サイト(アダプタ方針)
 
-サイトごとに「検出+メタデータ取得+本文取得」のアダプタを追加し、拡張の自動検出対象(現在は arXiv abs ページのみ)を広げる構成とする。優先順: OpenReview(ICLR/NeurIPS レビュー付き)→ ACL Anthology → PubMed/PMC → 出版社ページ(IEEE/ACM)。
+サイトごとに「検出+メタデータ取得+本文取得」のアダプタを追加し、拡張の自動検出対象を広げる構成とする。優先順: ACL Anthology → OpenReview(ICLR/NeurIPS レビュー付き)→ PubMed/PMC → Hugging Face関連ソース → 出版社ページ(IEEE/ACM)。
+
+- Hugging Face Paper URLはarXiv IDを解決し、本文取得と翻訳は既存arXivパイプラインへ委譲する。
+- Hugging Face Paper APIのGitHub、project、Model、Dataset、Spaceは本文候補ではなくResources候補へ保存する([12-resources.md](12-resources.md))。
+- 採用したGitHub実装は、ユーザー設定に応じて論文blockとcode file／symbol／行範囲の対応解析へ渡せる。
 
 - 認証が必要なページ・サーバーから取得できないページは、現行どおり拡張の**タブ内 PDF 直接送信**(明示操作・private)で受ける(§1)。
 - 出版社コンテンツは private 扱いとし共有機能を無効化する([09-nonfunctional.md](09-nonfunctional.md))。
