@@ -110,9 +110,9 @@ ViewerHeader「✦ ツール」
 
 ### ppt-master 実行境界
 
-- `vendor/ppt-master` を Git submodule の固定コミットとして管理する。
+- `vendor/ppt-master` を Git submoduleで管理し、v2.8.0のcommit `0c0bdaf0dd953afc2c00322e92f26dc02fc1c51f`へ固定する。
 - 上流スクリプトは専用仮想環境からサブプロセス実行する。Alinea の Python 依存と混在させない。
-- Alinea 側の `PresentationRunner` が上流のプロジェクト契約へ変換し、`project_manager.py`、`svg_quality_checker.py`、`finalize_svg.py`、`svg_to_pptx.py` を呼ぶ。
+- Alinea 側の `PresentationRunner` が上流のプロジェクト契約へ変換し、`project_manager.py`、`svg_quality_checker.py`、`total_md_split.py`、`finalize_svg.py`、`svg_to_pptx.py` を順番に呼ぶ。
 - LLM が返した SVG は、外部 URL、スクリプト、イベント属性、危険な XML 構造を拒否する既存の SVG 安全性検証を通してから上流変換へ渡す。
 - 作業領域はジョブ固有の一時ディレクトリに作り、成功・失敗・中断後に削除する。
 
