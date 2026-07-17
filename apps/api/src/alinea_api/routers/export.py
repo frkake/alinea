@@ -22,7 +22,7 @@ import mimetypes
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Any
 
 import structlog
 from alinea_core.db.models import (
@@ -500,7 +500,7 @@ class ImportFullStartResponse(BaseModel):
 
 class ImportFullStatusResponse(BaseModel):
     job: JobOut
-    summary: dict | None
+    summary: dict[str, Any] | None
 
 
 def get_import_job_wakeup(settings: SettingsDep) -> JobWakeup:
