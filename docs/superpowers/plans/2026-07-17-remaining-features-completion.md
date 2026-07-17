@@ -2221,6 +2221,8 @@ git commit -m "docs: align product contracts with completed features"
 
 - Modify: `apps/api/tests/conftest.py`
 - Modify: `apps/worker/tests/conftest.py`
+- Create: `apps/api/scripts/seed_user_acceptance.py`
+- Create: `apps/api/tests/test_seed_user_acceptance.py`
 - Modify: `apps/web/e2e/specs/pw-05-viewer-modes.spec.ts`
 - Modify: `apps/web/e2e/specs/pw-12-pdf-mode.spec.ts`
 - Modify: `apps/web/e2e/specs/pw-14-search.spec.ts`
@@ -2228,6 +2230,7 @@ git commit -m "docs: align product contracts with completed features"
 - Modify: `apps/web/e2e/specs/pw-18-finish-reading.spec.ts`
 - Modify: `apps/web/e2e/specs/pw-presentation.spec.ts`
 - Modify: `apps/extension/e2e/xt.spec.ts`
+- Modify: `docs/superpowers/plans/2026-07-17-user-acceptance-fixtures.json`
 - Modify: `docs/superpowers/plans/2026-07-16-all-features-integration-report.md`
 
 - [ ] **Step 1: API／WorkerのテストDBをworker IDごとに分離する**
@@ -2235,18 +2238,31 @@ git commit -m "docs: align product contracts with completed features"
 テストsession単位でschemaまたはdatabase名を生成し、各suite終了時にdropする。
 seed testと通常testを順序逆転しても同じ結果になることを検査する。
 
-- [ ] **Step 2: stale fixmeを実検査へ置き換える**
+- [ ] **Step 2: 再現可能なユーザー受け入れ環境を作るseedを実装する**
+
+`seed_user_acceptance.py --reset --output <path>` はreview環境だけで実行でき、予約済みのUAT-AとUAT-Bだけを初期化する。
+UAT-AへOpenAI、UAT-BへAnthropicのpresentation routeを設定し、両者のcode analysis予算を5.00 USDにする。
+passwordは実行時に生成し、mode 0600の指定ファイルへだけ書き、ログとリポジトリへ残さない。
+
+固定URLと期待値は[受け入れ確認用データ](./2026-07-17-user-acceptance-fixtures.json)から読み、schema version、source ID重複、URL形式、期待識別子を検証する。
+外部論文はseed時に取り込まず、確認者がチェックリストどおりに入力する。
+
+Run: `uv run pytest apps/api/tests/test_seed_user_acceptance.py -q`
+
+Expected: PASS、review以外の環境では実行拒否、予約済み以外のユーザー変更0件。
+
+- [ ] **Step 3: stale fixmeを実検査へ置き換える**
 
 PDF bbox同期、FigureRefPopover、appendix TOC、記事検索、読了操作、拡張inline pillを実際のUI操作とassertionへ変更する。
 外部YouTube通信だけはnetwork fixtureを使い、実サイトには接続しない。
 
-- [ ] **Step 3: Pythonの全対象suiteを通す**
+- [ ] **Step 4: Pythonの全対象suiteを通す**
 
 Run: `uv run pytest packages apps/api apps/worker -q`
 
 Expected: PASS、順序依存失敗0件、live LLM通信0件。
 
-- [ ] **Step 4: TypeScriptの全対象suiteを通す**
+- [ ] **Step 5: TypeScriptの全対象suiteを通す**
 
 Run: `pnpm -r typecheck`
 
@@ -2256,7 +2272,7 @@ Run: `pnpm --filter @alinea/web build`
 
 Expected: すべてexit 0。
 
-- [ ] **Step 5: ブラウザE2Eを通す**
+- [ ] **Step 6: ブラウザE2Eを通す**
 
 Run: `pnpm --filter @alinea/web e2e`
 
@@ -2264,7 +2280,7 @@ Run: `pnpm --filter @alinea/extension e2e`
 
 Expected: 環境依存の明示的skipを除きPASS。今回対象のfixmeは0件。
 
-- [ ] **Step 6: ppt-master固定fixtureを再検証する**
+- [ ] **Step 7: ppt-master固定fixtureを再検証する**
 
 Run: `pnpm ppt-master:smoke`
 
@@ -2272,7 +2288,7 @@ Run: `test "$(git -C vendor/ppt-master rev-parse HEAD)" = "0c0bdaf0dd953afc2c003
 
 Expected: PPTXパッケージ検査がPASSし、submoduleが承認済みcommitと一致する。
 
-- [ ] **Step 7: マイグレーションを往復検証する**
+- [ ] **Step 8: マイグレーションを往復検証する**
 
 Run: `(cd apps/api && uv run alembic upgrade head)`
 
@@ -2282,19 +2298,19 @@ Run: `(cd apps/api && uv run alembic upgrade head)`
 
 Expected: 三コマンドともexit 0、既存データを保持する。
 
-- [ ] **Step 8: 最終レポートを実測値で更新する**
+- [ ] **Step 9: 最終レポートを実測値で更新する**
 
 各コマンド、テスト件数、skip理由、既知制約をintegration reportへ記録する。
 ユーザー受け入れ確認前であるため、この時点では「自動検証完了、ユーザー受け入れ待ち」と記載する。
 
-- [ ] **Step 9: リリース候補となる最終変更をコミットする**
+- [ ] **Step 10: リリース候補となる最終変更をコミットする**
 
 ```bash
-git add apps/api/tests/conftest.py apps/worker/tests/conftest.py apps/web/e2e/specs/pw-05-viewer-modes.spec.ts apps/web/e2e/specs/pw-12-pdf-mode.spec.ts apps/web/e2e/specs/pw-14-search.spec.ts apps/web/e2e/specs/pw-17-settings.spec.ts apps/web/e2e/specs/pw-18-finish-reading.spec.ts apps/web/e2e/specs/pw-presentation.spec.ts apps/extension/e2e/xt.spec.ts docs/superpowers/plans/2026-07-16-all-features-integration-report.md
+git add apps/api/tests/conftest.py apps/worker/tests/conftest.py apps/api/scripts/seed_user_acceptance.py apps/api/tests/test_seed_user_acceptance.py apps/web/e2e/specs/pw-05-viewer-modes.spec.ts apps/web/e2e/specs/pw-12-pdf-mode.spec.ts apps/web/e2e/specs/pw-14-search.spec.ts apps/web/e2e/specs/pw-17-settings.spec.ts apps/web/e2e/specs/pw-18-finish-reading.spec.ts apps/web/e2e/specs/pw-presentation.spec.ts apps/extension/e2e/xt.spec.ts docs/superpowers/plans/2026-07-17-user-acceptance-fixtures.json docs/superpowers/plans/2026-07-16-all-features-integration-report.md
 git commit -m "test: close remaining integration coverage gaps"
 ```
 
-- [ ] **Step 10: 最終コミットからリリース候補を用意する**
+- [ ] **Step 11: 最終コミットからリリース候補を用意する**
 
 Run: `git status --short`
 
@@ -2305,20 +2321,24 @@ Run: `git rev-parse HEAD`
 Expected: リリース候補へデプロイする40文字のコミットSHA。
 
 このSHAからリリース候補をビルドしてデプロイする。
-一般ユーザー二件、公開者一件、外部サイト別のサンプルURL、バックアップ用論文、GitHubコード対応の正解例、スライド内容を人手照合できる図表付き論文を確認環境へ用意する。
+Run: `uv run python apps/api/scripts/seed_user_acceptance.py --reset --output /tmp/alinea-uat-accounts.json`
 
-- [ ] **Step 11: ユーザー受け入れ確認を依頼する**
+Expected: UAT-AとUAT-BのURL、one-time password、model routeを含むmode 0600のJSONが作られる。
+
+外部サイト別のサンプルURL、バックアップ用論文、GitHubコード対応の正解例、スライド内容を人手照合できる図表付き論文はチェックリストの固定データを使う。
+
+- [ ] **Step 12: ユーザー受け入れ確認を依頼する**
 
 [最終ユーザー受け入れチェックリスト](./2026-07-17-user-acceptance-checklist.md)を作業用文書またはIssueへ複製し、コミットSHA、環境URL、自動テスト結果、既知制約を記録する。
 リポジトリ内のチェックリスト原本は変更しない。
 原本を変更すると確認対象のコミットSHAが変わるためである。
 
-- [ ] **Step 12: 判定結果に応じて処理する**
+- [ ] **Step 13: 判定結果に応じて処理する**
 
 `FAIL` または `BLOCKED` の場合はmainへマージせず、該当タスクへ戻って修正、対象テスト、Task 32の全検証、最終コミット、リリース候補作成を繰り返す。
 `GO` の場合は、確認後にコード、設定、生成物、文書を変更しない。
 
-- [ ] **Step 13: 確認済みコミットだけをmainへ統合する**
+- [ ] **Step 14: 確認済みコミットだけをmainへ統合する**
 
 Run: `git rev-parse HEAD`
 

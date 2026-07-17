@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "verified_on": "2026-07-17",
+  "comparison_policy": {
+    "titles": "case_insensitive_whitespace_normalized",
+    "authors": "first_author_must_match",
+    "volatile_fields": [
+      "downloads",
+      "likes",
+      "stars",
+      "upvotes",
+      "linked_resource_counts"
+    ]
+  },
+  "sources": [
+    {
+      "id": "ARXIV-ATTENTION",
+      "input_url": "https://arxiv.org/abs/1706.03762",
+      "expected": {
+        "title": "Attention Is All You Need",
+        "first_author": "Ashish Vaswani",
+        "arxiv_id": "1706.03762",
+        "first_version": 1,
+        "latest_version_at_verification": 7
+      }
+    },
+    {
+      "id": "ACL-BERT",
+      "input_url": "https://aclanthology.org/N19-1423/",
+      "expected": {
+        "title": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding",
+        "first_author": "Jacob Devlin",
+        "anthology_id": "N19-1423",
+        "venue": "NAACL",
+        "year": 2019,
+        "doi": "10.18653/v1/N19-1423"
+      }
+    },
+    {
+      "id": "OPENREVIEW-VIT",
+      "input_url": "https://openreview.net/forum?id=YicbFdNTTy",
+      "expected": {
+        "title": "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale",
+        "first_author": "Alexey Dosovitskiy",
+        "forum_id": "YicbFdNTTy",
+        "venue": "ICLR",
+        "year": 2021
+      }
+    },
+    {
+      "id": "PUBMED-HEALTHCARE-TRANSFORMERS",
+      "input_url": "https://pubmed.ncbi.nlm.nih.gov/38878555/",
+      "expected": {
+        "title": "Transformers and large language models in healthcare: A review",
+        "first_author": "Subhash Nerella",
+        "pmid": "38878555",
+        "pmcid": "PMC11638972",
+        "doi": "10.1016/j.artmed.2024.102900",
+        "year": 2024
+      }
+    },
+    {
+      "id": "PMC-HEALTHCARE-TRANSFORMERS",
+      "input_url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC11638972/",
+      "expected": {
+        "title": "Transformers and large language models in healthcare: A review",
+        "first_author": "Subhash Nerella",
+        "pmid": "38878555",
+        "pmcid": "PMC11638972",
+        "doi": "10.1016/j.artmed.2024.102900",
+        "minimum_figure_count": 9
+      }
+    },
+    {
+      "id": "HF-LLAMA2",
+      "input_url": "https://huggingface.co/papers/2307.09288",
+      "expected": {
+        "title": "Llama 2: Open Foundation and Fine-Tuned Chat Models",
+        "first_author": "Hugo Touvron",
+        "arxiv_id": "2307.09288",
+        "github_url": "https://github.com/facebookresearch/llama",
+        "model_id": "meta-llama/Llama-2-7b-chat-hf",
+        "dataset_id": "elyza/ELYZA-tasks-100",
+        "space_id": "mteb/leaderboard"
+      }
+    },
+    {
+      "id": "HF-PAPER-CIRCLE",
+      "input_url": "https://huggingface.co/papers/2604.06170",
+      "expected": {
+        "title": "Paper Circle: An Open-source Multi-agent Research Discovery and Analysis Framework",
+        "first_author": "Komal Kumar",
+        "arxiv_id": "2604.06170",
+        "project_url": "https://papercircle.vercel.app/",
+        "github_url": "https://github.com/MAXNORM8650/papercircle",
+        "dataset_id": "ItsMaxNorm/pc-benchmark",
+        "space_id": "ItsMaxNorm/papercircle-papers-api"
+      }
+    },
+    {
+      "id": "ARXIV-LORA",
+      "input_url": "https://arxiv.org/abs/2106.09685",
+      "expected": {
+        "title": "LoRA: Low-Rank Adaptation of Large Language Models",
+        "first_author": "Edward J. Hu",
+        "arxiv_id": "2106.09685",
+        "github_url": "https://github.com/microsoft/LoRA"
+      }
+    },
+    {
+      "id": "GITHUB-LORA",
+      "input_url": "https://github.com/microsoft/LoRA",
+      "verified_commit": "c4593f060e6a368d7bb5af5273b8e42810cdef90",
+      "expected_mappings": [
+        {
+          "paper_claim": "LoRA freezes pretrained weights and adds trainable low-rank matrices",
+          "path": "loralib/layers.py",
+          "symbol": "Linear",
+          "verified_lines": "90-149"
+        },
+        {
+          "paper_claim": "Only LoRA parameters are marked trainable",
+          "path": "loralib/utils.py",
+          "symbol": "mark_only_lora_as_trainable",
+          "verified_lines": "13-30"
+        },
+        {
+          "paper_claim": "A state dictionary containing LoRA parameters can be saved separately",
+          "path": "loralib/utils.py",
+          "symbol": "lora_state_dict",
+          "verified_lines": "33-"
+        }
+      ]
+    },
+    {
+      "id": "INVALID-NON-PAPER",
+      "input_url": "https://example.com/not-a-paper",
+      "expected": {
+        "error_class": "unsupported_source"
+      }
+    }
+  ],
+  "semantic_queries": [
+    {
+      "query": "再帰や畳み込みを使わず、注意機構だけで系列変換を行う",
+      "expected_source_id": "ARXIV-ATTENTION",
+      "maximum_rank": 3
+    },
+    {
+      "query": "双方向の文脈を使うマスク言語モデルで事前学習する",
+      "expected_source_id": "ACL-BERT",
+      "maximum_rank": 3
+    },
+    {
+      "query": "画像を固定サイズのパッチ列としてTransformerへ入力する",
+      "expected_source_id": "OPENREVIEW-VIT",
+      "maximum_rank": 3
+    },
+    {
+      "query": "大規模言語モデルを低ランク行列だけで効率よく適応する",
+      "expected_source_id": "ARXIV-LORA",
+      "maximum_rank": 3
+    },
+    {
+      "query": "医療データにおけるTransformerと大規模言語モデルの応用を概観する",
+      "expected_source_id": "PMC-HEALTHCARE-TRANSFORMERS",
+      "maximum_rank": 3
+    }
+  ]
+}
