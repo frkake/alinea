@@ -51,6 +51,7 @@ from alinea_core.db.models import (
     TranslationSet,
     TranslationUnit,
     User,
+    VocabCandidate,
     VocabEntry,
 )
 from alinea_core.jobs.store import JobStore
@@ -92,6 +93,9 @@ async def _serialize_library(session: AsyncSession, user_id: str) -> list[dict[s
             "year": paper.published_on.year if paper.published_on else None,
             "arxiv_id": paper.arxiv_id,
             "doi": paper.doi,
+            "latest_revision_id": str(paper.latest_revision_id)
+            if paper.latest_revision_id
+            else None,
             "status": item.status,
             "priority": item.priority,
             "deadline": _iso(item.deadline),
@@ -278,6 +282,42 @@ async def _serialize_vocab(session: AsyncSession, user_id: str) -> list[dict[str
     ]
 
 
+async def _serialize_vocab_candidates(
+    session: AsyncSession, library_item_ids: list[str]
+) -> list[dict[str, Any]]:
+    if not library_item_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(VocabCandidate)
+                .where(VocabCandidate.library_item_id.in_(library_item_ids))
+                .order_by(VocabCandidate.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(row.id),
+            "library_item_id": str(row.library_item_id),
+            "term": row.term,
+            "kind": row.kind,
+            "context_anchor": row.context_anchor,
+            "context_sentence": row.context_sentence,
+            "context_hl_start": row.context_hl_start,
+            "context_hl_end": row.context_hl_end,
+            "reason": row.reason,
+            "status": row.status,
+            "vocab_entry_id": str(row.vocab_entry_id) if row.vocab_entry_id else None,
+            "created_at": _iso(row.created_at),
+            "updated_at": _iso(row.updated_at),
+        }
+        for row in rows
+    ]
+
+
 async def _serialize_resources(
     session: AsyncSession, library_item_ids: list[str]
 ) -> list[dict[str, Any]]:
@@ -430,9 +470,7 @@ async def _serialize_document_revisions(
     ]
 
 
-async def _serialize_translation_sets(
-    session: AsyncSession, user_id: str
-) -> list[dict[str, Any]]:
+async def _serialize_translation_sets(session: AsyncSession, user_id: str) -> list[dict[str, Any]]:
     rows = (
         (
             await session.execute(
@@ -498,9 +536,7 @@ async def _serialize_translation_units(
     ]
 
 
-async def _serialize_glossaries(
-    session: AsyncSession, user_id: str
-) -> list[dict[str, Any]]:
+async def _serialize_glossaries(session: AsyncSession, user_id: str) -> list[dict[str, Any]]:
     rows = (
         (
             await session.execute(
@@ -558,9 +594,7 @@ async def _serialize_glossary_terms(
     ]
 
 
-async def _serialize_saved_filters(
-    session: AsyncSession, user_id: str
-) -> list[dict[str, Any]]:
+async def _serialize_saved_filters(session: AsyncSession, user_id: str) -> list[dict[str, Any]]:
     rows = (
         (
             await session.execute(
@@ -617,9 +651,7 @@ async def _serialize_reading_sessions(
     ]
 
 
-async def _serialize_notifications(
-    session: AsyncSession, user_id: str
-) -> list[dict[str, Any]]:
+async def _serialize_notifications(session: AsyncSession, user_id: str) -> list[dict[str, Any]]:
     rows = (
         (
             await session.execute(
@@ -814,6 +846,7 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
         "annotations": await _serialize_annotations(session, library_item_ids),
         "chat_threads": await _serialize_chat_threads(session, library_item_ids),
         "vocab": await _serialize_vocab(session, user_id),
+        "vocab_candidates": await _serialize_vocab_candidates(session, library_item_ids),
         "resources": await _serialize_resources(session, library_item_ids),
         "articles": articles,
         "collections": collections,
@@ -862,9 +895,7 @@ def collect_asset_keys(payload: dict[str, Any]) -> list[tuple[str, str]]:
     return keys
 
 
-async def build_export_archive(
-    session: AsyncSession, user_id: str, storage: S3Storage
-) -> bytes:
+async def build_export_archive(session: AsyncSession, user_id: str, storage: S3Storage) -> bytes:
     """manifest.json + data.json + assets/<storage_key> を含む zip バイト列を返す。"""
     payload = await build_export_payload(session, user_id)
     buf = io.BytesIO()
@@ -881,12 +912,14 @@ async def build_export_archive(
             except Exception:  # noqa: S112 — 欠落アセットは skip(P3)
                 continue
             zf.writestr(f"assets/{key}", data)
-            assets_meta.append({
-                "storage_key": key,
-                "bucket": logical_bucket,
-                "sha256": hashlib.sha256(data).hexdigest(),
-                "byte_size": len(data),
-            })
+            assets_meta.append(
+                {
+                    "storage_key": key,
+                    "bucket": logical_bucket,
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                    "byte_size": len(data),
+                }
+            )
 
         manifest = {
             "schema_version": EXPORT_SCHEMA_VERSION,

@@ -49,5 +49,17 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    files: ["apps/web/public/sw.js"],
+    languageOptions: {
+      globals: { self: "readonly", caches: "readonly", fetch: "readonly", URL: "readonly" },
+    },
+  },
+  {
+    files: ["apps/web/scripts/**/*.mjs"],
+    languageOptions: {
+      globals: { console: "readonly", process: "readonly" },
+    },
+  },
   prettier,
 );

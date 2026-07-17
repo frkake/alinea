@@ -14,6 +14,7 @@ import copy
 import uuid
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -41,6 +42,10 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
+
+
+def _section_rows(value: object) -> list[dict[str, Any]]:
+    return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
 
 
 class Seeded:
@@ -1183,14 +1188,14 @@ async def test_deferred_figure_is_flagged_in_document_and_list(
     content = copy.deepcopy(dict(revision.content))
     target_id: str | None = None
 
-    def _clear(sections: list[dict[str, object]]) -> None:
+    def _clear(sections: list[dict[str, Any]]) -> None:
         nonlocal target_id
         for section in sections:
-            for block in section.get("blocks", []):
+            for block in _section_rows(section.get("blocks")):
                 if target_id is None and block.get("type") == "figure":
                     target_id = str(block["id"])
                     block.pop("asset_key", None)
-            _clear(section.get("sections", []))  # type: ignore[arg-type]
+            _clear(_section_rows(section.get("sections")))
 
     _clear(content["sections"])
     assert target_id is not None
@@ -1207,12 +1212,12 @@ async def test_deferred_figure_is_flagged_in_document_and_list(
     doc = await auth_client.get(f"/api/revisions/{seeded.revision_id}/document")
     assert doc.status_code == 200, doc.text
 
-    def _find(sections: list[dict[str, object]]) -> dict[str, object] | None:
+    def _find(sections: list[dict[str, Any]]) -> dict[str, Any] | None:
         for section in sections:
-            for block in section.get("blocks", []):  # type: ignore[union-attr]
+            for block in _section_rows(section.get("blocks")):
                 if block.get("id") == target_id:
-                    return block  # type: ignore[return-value]
-            found = _find(section.get("sections", []))  # type: ignore[arg-type]
+                    return block
+            found = _find(_section_rows(section.get("sections")))
             if found is not None:
                 return found
         return None

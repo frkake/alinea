@@ -22,7 +22,7 @@ import mimetypes
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Any
 
 import structlog
 from alinea_core.db.models import (
@@ -92,6 +92,8 @@ _CSV_MEDIA_TYPE = "text/csv; charset=utf-8"
 # plans/01 §4.3(apps/worker/settings.BULK_QUEUE と同値。apps 間 import 禁止のため定数で持つ。
 # routers/ingest.py・articles.py 等の既存 wakeup ヘルパと同方針)。
 _BULK_QUEUE = "alinea:bulk"
+_MAX_IMPORT_ARCHIVE_BYTES = 100 * 1024 * 1024
+_IMPORT_READ_CHUNK_BYTES = 1024 * 1024
 
 
 def _valid_uuid(value: str) -> bool:
@@ -498,7 +500,7 @@ class ImportFullStartResponse(BaseModel):
 
 class ImportFullStatusResponse(BaseModel):
     job: JobOut
-    summary: dict | None
+    summary: dict[str, Any] | None
 
 
 def get_import_job_wakeup(settings: SettingsDep) -> JobWakeup:
@@ -516,6 +518,18 @@ def get_import_job_wakeup(settings: SettingsDep) -> JobWakeup:
 ImportJobWakeupDep = Annotated[JobWakeup, Depends(get_import_job_wakeup)]
 
 
+async def _read_limited_import_upload(file: UploadFile) -> bytes:
+    """インポートアーカイブを上限付きで読み込む。"""
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(_IMPORT_READ_CHUNK_BYTES):
+        total += len(chunk)
+        if total > _MAX_IMPORT_ARCHIVE_BYTES:
+            raise ProblemException("payload_too_large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.post(
     "/api/import/full",
     response_model=ImportFullStartResponse,
@@ -530,7 +544,7 @@ async def start_import_full(
     file: UploadFile,
 ) -> ImportFullStartResponse:
     """multipart zip を受け取り S3 一時 key に保存して import Job を作成する。"""
-    data = await file.read()
+    data = await _read_limited_import_upload(file)
     upload_id = str(uuid.uuid4())
     upload_key = StorageKeys.import_upload(str(user.id), upload_id)
 

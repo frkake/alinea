@@ -12,9 +12,13 @@ S3 は Task 4 のラウンドトリップテストのみ実 MinIO を使う(S3St
 
 from __future__ import annotations
 
+import io
 import json
 import uuid
+import zipfile
+from typing import Any, cast
 
+import pytest
 from alinea_core.db.models import (
     Annotation,
     BlockSearchIndex,
@@ -28,6 +32,7 @@ from alinea_core.db.models import (
 )
 from alinea_core.jobs.store import JobStore
 from alinea_core.storage.s3 import S3Storage
+from alinea_worker.tasks import import_user_data
 from alinea_worker.tasks.export_user_data import build_export_archive, build_export_payload
 from alinea_worker.tasks.import_user_data import import_data_json, run_import_full_job
 from sqlalchemy import func, select
@@ -43,9 +48,9 @@ async def _make_user(db: AsyncSession) -> dict[str, str]:
     return {"user_id": str(user.id)}
 
 
-async def _detached_payload(db: AsyncSession, user_id: str) -> dict:
+async def _detached_payload(db: AsyncSession, user_id: str) -> dict[str, Any]:
     """payload を JSON 往復で完全にデタッチし、本文に索引対象ブロックを1つ注入する。"""
-    payload = json.loads(json.dumps(await build_export_payload(db, user_id)))
+    payload = cast(dict[str, Any], json.loads(json.dumps(await build_export_payload(db, user_id))))
     # 空ブロックの revision だと block_search_index が0件になるため、段落を1つ注入。
     for rev in payload["document_revisions"]:
         rev["content"] = {
@@ -358,3 +363,31 @@ async def test_import_job_rejects_invalid_schema_version(db_session: AsyncSessio
     assert done is not None
     # schema_version 不一致は fail_with_retry → attempt<max → status='queued' or 'failed'
     assert done.status in ("queued", "failed"), f"unexpected status: {done.status}"
+
+
+def test_validated_members_rejects_member_over_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ZIP entry の展開後サイズが上限を超える場合は読む前に拒否する。"""
+    monkeypatch.setattr(import_user_data, "_MAX_ZIP_MEMBER_BYTES", 1)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("data.json", b"{}")
+
+    with zipfile.ZipFile(io.BytesIO(archive.getvalue())) as zf:
+        with pytest.raises(ValueError, match="zip_member_too_large"):
+            import_user_data._validated_members(zf)
+
+
+def test_prepare_asset_destinations_rekeys_untrusted_storage_key() -> None:
+    """manifestが指定した既存S3キーを移行先の書込み先に使わない。"""
+    data = {
+        "source_assets": [
+            {"id": str(uuid.uuid4()), "storage_key": "sources/foreign/private/original.pdf"}
+        ]
+    }
+
+    destinations = import_user_data._prepare_asset_destinations(data, "target-user")
+
+    destination = destinations["sources/foreign/private/original.pdf"]
+    assert destination[0] == "sources"
+    assert destination[1] != "sources/foreign/private/original.pdf"
+    assert data["source_assets"][0]["storage_key"] == destination[1]

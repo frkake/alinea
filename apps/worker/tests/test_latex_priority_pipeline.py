@@ -2590,6 +2590,7 @@ async def test_candidate_with_missing_second_panel_degrades_without_fallback(
     unresolved = [fig for fig in figures if fig.asset_key is None]
     assert len(resolved) == 1
     assert len(unresolved) == 1
+    assert resolved[0].asset_key is not None
     assert resolved[0].asset_key.startswith(f"figures/{ids['paper_id']}/{revision.id}/")
     assert unresolved[0].id == figure_failures[0]["figure_id"]
 
@@ -2652,6 +2653,7 @@ async def test_candidate_with_missing_image_backed_table_asset_degrades_without_
     unresolved = [table for table in tables if table.asset_key is None]
     assert len(resolved) == 1
     assert len(unresolved) == 1
+    assert resolved[0].asset_key is not None
     assert resolved[0].asset_key.startswith(f"figures/{ids['paper_id']}/{revision.id}/")
     assert unresolved[0].id == figure_failures[0]["figure_id"]
 

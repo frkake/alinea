@@ -1,6 +1,7 @@
 """Test that build_system_preamble returns the correct style section for easy."""
 from alinea_core.translation.prompts.templates import build_system_preamble
 
+
 def test_easy_preamble_contains_easy_style_section():
     preamble = build_system_preamble("easy")
     assert "やさしい訳" in preamble
