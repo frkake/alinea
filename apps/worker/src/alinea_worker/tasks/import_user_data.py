@@ -131,7 +131,13 @@ def _prepare_asset_destinations(data: dict[str, Any], user_id: str) -> dict[str,
 
     def register(row: dict[str, Any], field: str, bucket: str, kind: str) -> None:
         old_key = row.get(field)
-        if not isinstance(old_key, str) or not old_key or old_key in destinations:
+        if not isinstance(old_key, str) or not old_key:
+            return
+        existing = destinations.get(old_key)
+        if existing is not None:
+            if existing[0] != bucket:
+                raise ValueError("conflicting_asset_reference")
+            row[field] = existing[1]
             return
         new_key = _restored_asset_key(user_id, kind, str(row["id"]), old_key)
         destinations[old_key] = (bucket, new_key)
@@ -150,6 +156,18 @@ def _prepare_asset_destinations(data: dict[str, Any], user_id: str) -> dict[str,
     return destinations
 
 
+def _validated_manifest_assets(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    assets = manifest.get("assets", [])
+    if not isinstance(assets, list):
+        raise ValueError("invalid_manifest_assets")
+    for asset in assets:
+        if not isinstance(asset, dict) or not isinstance(asset.get("storage_key"), str):
+            raise ValueError("invalid_manifest_asset")
+        if not isinstance(asset.get("sha256"), str):
+            raise ValueError("invalid_manifest_asset")
+    return assets
+
+
 class _Importer:
     """1 回の import 呼び出しの状態(id マップ・件数集計)を保持する。"""
 
@@ -161,6 +179,7 @@ class _Importer:
         self.failed: list[dict[str, Any]] = []
         # 外部キー張り替え用の old→new マップ(UUID を新規採番するのは 2 種のみ)。
         self.paper_map: dict[str, str] = {}
+        self.created_paper_ids: set[str] = set()
         self.item_map: dict[str, str] = {}
         # 「今回新規作成された」親の元 id 集合(INT-PK 子の挿入可否を決める)。
         self.item_created: set[str] = set()
@@ -221,6 +240,7 @@ class _Importer:
             )
             if await self._insert("papers", paper, old_id):
                 self.paper_map[old_id] = new_id
+                self.created_paper_ids.add(new_id)
 
     async def restore_source_assets(self, rows: list[dict[str, Any]]) -> None:
         for r in rows:
@@ -816,6 +836,11 @@ class _Importer:
     async def restore_overview_figures(self, rows: list[dict[str, Any]]) -> None:
         for row in rows:
             figure_id = str(row["id"])
+            if str(row["article_id"]) not in self.article_created:
+                self.failed.append(
+                    {"table": "overview_figures", "id": figure_id, "error": "unmapped article_id"}
+                )
+                continue
             if await self.session.get(OverviewFigure, figure_id) is not None:
                 self.skipped["overview_figures"] += 1
                 continue
@@ -844,6 +869,11 @@ class _Importer:
     async def restore_explainer_figures(self, rows: list[dict[str, Any]]) -> None:
         for row in rows:
             figure_id = str(row["id"])
+            if str(row["article_id"]) not in self.article_created:
+                self.failed.append(
+                    {"table": "explainer_figures", "id": figure_id, "error": "unmapped article_id"}
+                )
+                continue
             if await self.session.get(ExplainerFigure, figure_id) is not None:
                 self.skipped["explainer_figures"] += 1
                 continue
@@ -912,6 +942,8 @@ class _Importer:
             revision_id = entry.get("latest_revision_id")
             paper_id = self.paper_map.get(str(entry["paper_id"]))
             if not revision_id or paper_id is None:
+                continue
+            if paper_id not in self.created_paper_ids:
                 continue
             revision = await self.session.get(DocumentRevision, str(revision_id))
             paper = await self.session.get(Paper, paper_id)
@@ -1028,6 +1060,7 @@ async def run_import_full_job(ctx: dict[str, Any], store: JobStore, job: Any) ->
                     },
                 )
                 return
+            manifest_assets = _validated_manifest_assets(manifest)
 
             data = json.loads(zf.read(members["data.json"]))
             if not isinstance(data, dict):
@@ -1036,7 +1069,7 @@ async def run_import_full_job(ctx: dict[str, Any], store: JobStore, job: Any) ->
             summary = await import_data_json(session, str(job.user_id), data)
 
             # 3. アセット復元(sha256 照合。未一致は skip してサマリへ記録)
-            for a in manifest.get("assets", []):
+            for a in manifest_assets:
                 key = a["storage_key"]
                 destination = asset_destinations.get(key)
                 if destination is None:
