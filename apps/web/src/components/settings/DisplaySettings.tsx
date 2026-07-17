@@ -5,18 +5,31 @@ import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { SettingsSection } from "@/components/settings/SettingsSection";
 import { SettingsControlRow } from "@/components/settings/SettingsControlRow";
 import { Stepper } from "@/components/settings/Stepper";
-import { ACCENT_SWATCHES, type AccentHex, type BodyFontValue, type SettingsData } from "@/components/settings/types";
+import {
+  ACCENT_SWATCHES,
+  type AccentHex,
+  type BodyFontValue,
+  type SettingsData,
+  type ThemePrefValue,
+} from "@/components/settings/types";
 
 /**
- * 表示カテゴリ(4f §4.7.5)。M1-17 スコープ: アクセント 4 色・本文書体・本文サイズの 3 行
- * (テーマ・行間・本文幅は既定値を保持したまま本画面では非描画=M1-17 タスク表のスコープ外)。
+ * 表示カテゴリ(4f §4.7.5)。テーマ(light/dark/system)・アクセント 4 色・本文書体・本文サイズ。
+ * テーマは ThemeProvider(data-theme + cookie)で即時反映しつつ settings に永続化する(S1 #3)。
  */
 export interface DisplaySettingsProps {
   settings: SettingsData;
+  onThemeChange: (theme: ThemePrefValue) => void;
   onAccentChange: (hex: AccentHex) => void;
   onBodyFontChange: (font: BodyFontValue) => void;
   onFontSizeChange: (px: number) => void;
 }
+
+const THEME_OPTIONS: ReadonlyArray<{ value: ThemePrefValue; label: string }> = [
+  { value: "light", label: "ライト" },
+  { value: "dark", label: "ダーク" },
+  { value: "system", label: "システム" },
+];
 
 const BODY_FONT_OPTIONS: ReadonlyArray<{ value: BodyFontValue; label: string }> = [
   { value: "serif", label: "明朝" },
@@ -25,6 +38,7 @@ const BODY_FONT_OPTIONS: ReadonlyArray<{ value: BodyFontValue; label: string }> 
 
 export function DisplaySettings({
   settings,
+  onThemeChange,
   onAccentChange,
   onBodyFontChange,
   onFontSizeChange,
@@ -33,6 +47,20 @@ export function DisplaySettings({
   return (
     <SettingsSection title="表示">
       <Card padding="none">
+        <SettingsControlRow
+          title="テーマ"
+          description="ライト / ダーク / システム(OS 設定に追従)"
+          divider
+        >
+          <SegmentedControl
+            options={THEME_OPTIONS}
+            value={d.theme}
+            onChange={onThemeChange}
+            size="lg"
+            ariaLabel="テーマ"
+          />
+        </SettingsControlRow>
+
         <SettingsControlRow
           title="アクセントカラー"
           description="リンク・選択・ハイライトの基調色"

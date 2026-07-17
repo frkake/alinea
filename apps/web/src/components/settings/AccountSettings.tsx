@@ -1,8 +1,11 @@
 "use client";
 
-import type { ApiKeyItem } from "@alinea/api-client";
+import { useRef, useState } from "react";
+import type { ApiKeyItem, MeResponse, QuotaResponse } from "@alinea/api-client";
 import { Card } from "@/components/ui/Card";
+import { Modal } from "@/components/ui/Modal";
 import { SettingsSection } from "@/components/settings/SettingsSection";
+import { SettingsControlRow } from "@/components/settings/SettingsControlRow";
 import { SettingToggleRow } from "@/components/settings/SettingToggleRow";
 import { ModelRoutingRow } from "@/components/settings/ModelRoutingRow";
 import { ApiKeyRow } from "@/components/settings/ApiKeyRow";
@@ -14,15 +17,19 @@ import {
   type SettingsData,
 } from "@/components/settings/types";
 
-/** アカウントカテゴリ(M0): BYOK 登録 + モデルルーティング(詳細)。 */
+/** アカウントカテゴリ(M0 + S1 #4): identity・クォータ残量・BYOK・モデルルーティング・危険操作。 */
 export interface AccountSettingsProps {
   settings: SettingsData;
   apiKeys: ApiKeyItem[];
+  me?: MeResponse;
+  quota?: QuotaResponse;
   onRouteChange: (useCase: LlmUseCase, entry: RouteEntry) => void;
   onRasterChange: (next: boolean) => void;
   onSaveKey: (provider: ByokProvider, apiKey: string) => Promise<unknown>;
   onDeleteKey: (provider: ByokProvider) => void;
-  /** モバイル縮退(mobile.md §1.2-7)。API キーの設定/削除(変更系)を非描画にする。参照は可。 */
+  onLogout: () => void;
+  onDeleteAccount: () => void;
+  /** モバイル縮退(mobile.md §1.2-7)。API キーの設定/削除・危険操作(変更系)を非描画にする。参照は可。 */
   readOnly?: boolean;
 }
 
@@ -34,19 +41,108 @@ const ACCOUNT_ROUTES: ReadonlyArray<{ useCase: LlmUseCase; label: string; descri
   { useCase: "figure_image", label: "解説図画像", description: "解説図のラスター画像生成に使用" },
 ];
 
+/** クォータ 5 カウンタの表示ラベル(plans/07 §9.2)。 */
+const QUOTA_ROWS: ReadonlyArray<{ key: keyof QuotaResponse["usage"]; label: string }> = [
+  { key: "translation_papers", label: "全文翻訳(本)" },
+  { key: "chat_messages", label: "チャット(メッセージ)" },
+  { key: "images", label: "画像生成(枚)" },
+  { key: "article_generations", label: "記事生成(回)" },
+  { key: "vocab_generations", label: "語彙生成(語)" },
+];
+
+const PROVIDER_LOGIN_LABEL: Record<string, string> = {
+  google: "Google",
+  github: "GitHub",
+  email: "メールリンク",
+};
+
+const secondaryButtonStyle = {
+  height: 28,
+  padding: "0 12px",
+  borderRadius: 7,
+  border: "1px solid var(--pr-border-control)",
+  background: "var(--pr-bg-control)",
+  color: "var(--pr-text)",
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: "pointer",
+  fontFamily: "inherit",
+} as const;
+
 export function AccountSettings({
   settings,
   apiKeys,
+  me,
+  quota,
   onRouteChange,
   onRasterChange,
   onSaveKey,
   onDeleteKey,
+  onLogout,
+  onDeleteAccount,
   readOnly = false,
 }: AccountSettingsProps) {
   const byProvider = new Map(apiKeys.map((k) => [k.provider, k]));
 
   return (
     <>
+      <SettingsSection title="アカウント">
+        <Card padding="none">
+          <SettingsControlRow
+            title="サインイン中"
+            description={
+              me
+                ? `${me.user.providers.map((p) => PROVIDER_LOGIN_LABEL[p] ?? p).join(" / ")} で認証`
+                : "読み込み中…"
+            }
+            divider={!readOnly}
+          >
+            <span style={{ fontSize: 12, color: "var(--pr-text-mid)" }}>{me?.user.email ?? ""}</span>
+          </SettingsControlRow>
+          {!readOnly ? (
+            <SettingsControlRow title="ログアウト" description="このデバイスのセッションを終了します">
+              <button type="button" onClick={onLogout} style={secondaryButtonStyle}>
+                ログアウト
+              </button>
+            </SettingsControlRow>
+          ) : null}
+        </Card>
+      </SettingsSection>
+
+      <SettingsSection
+        title="今月の利用状況"
+        titleNote={quota ? `${quota.period} · 上限到達時は BYOK 登録で解除` : undefined}
+      >
+        <Card padding="none">
+          {QUOTA_ROWS.map((row, index) => {
+            const counter = quota?.usage[row.key];
+            const isImage = row.key === "images";
+            const byokActive = isImage ? quota?.byok_active.image : quota?.byok_active.text;
+            return (
+              <SettingsControlRow
+                key={row.key}
+                title={row.label}
+                divider={index < QUOTA_ROWS.length - 1}
+              >
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: "var(--pr-text-mid)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {counter
+                    ? byokActive
+                      ? "無制限(BYOK)"
+                      : `${counter.used} / ${counter.limit}`
+                    : "—"}
+                </span>
+              </SettingsControlRow>
+            );
+          })}
+        </Card>
+      </SettingsSection>
+
       <SettingsSection title="API キー(BYOK)" titleNote="設定するとクォータを消費しません">
         <Card>
           {BYOK_PROVIDERS.map((provider: ByokProvider, index) => {
@@ -96,6 +192,94 @@ export function AccountSettings({
           />
         </Card>
       </SettingsSection>
+
+      {!readOnly ? (
+        <SettingsSection title="アカウントの削除">
+          <Card padding="none">
+            <SettingsControlRow
+              title="アカウントを完全に削除"
+              description="ライブラリ・注釈・メモ・チャットを含む全データを削除します。取り消せません"
+            >
+              <DeleteAccountButton onConfirm={onDeleteAccount} />
+            </SettingsControlRow>
+          </Card>
+        </SettingsSection>
+      ) : null}
+    </>
+  );
+}
+
+/** アカウント削除の合言葉確認モーダル(auth §2: confirm='delete' のみ受理)。 */
+function DeleteAccountButton({ onConfirm }: { onConfirm: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [confirm, setConfirm] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        style={{ ...secondaryButtonStyle, color: "var(--pr-warn)", borderColor: "var(--pr-warn)" }}
+      >
+        アカウントを削除
+      </button>
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        labelledBy="delete-account-title"
+        initialFocusRef={inputRef}
+        width={420}
+      >
+        <div style={{ padding: 22, display: "flex", flexDirection: "column", gap: 12 }}>
+          <h2 id="delete-account-title" style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>
+            アカウントを削除しますか?
+          </h2>
+          <p style={{ fontSize: 12, color: "var(--pr-text-sub)", margin: 0, lineHeight: 1.7 }}>
+            全データが削除され、取り消せません。続けるには下の欄に delete と入力してください。
+          </p>
+          <input
+            ref={inputRef}
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            placeholder="delete"
+            aria-label="削除の確認"
+            style={{
+              height: 34,
+              padding: "0 10px",
+              borderRadius: 8,
+              border: "1px solid var(--pr-border-control)",
+              background: "var(--pr-bg-control)",
+              color: "var(--pr-text)",
+              fontSize: 13,
+              fontFamily: "inherit",
+            }}
+          />
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <button type="button" onClick={() => setOpen(false)} style={secondaryButtonStyle}>
+              キャンセル
+            </button>
+            <button
+              type="button"
+              disabled={confirm !== "delete"}
+              onClick={() => {
+                setOpen(false);
+                onConfirm();
+              }}
+              style={{
+                ...secondaryButtonStyle,
+                background: "var(--pr-warn)",
+                color: "#FFFFFF",
+                borderColor: "var(--pr-warn)",
+                opacity: confirm !== "delete" ? 0.5 : 1,
+                cursor: confirm !== "delete" ? "default" : "pointer",
+              }}
+            >
+              削除する
+            </button>
+          </div>
+        </div>
+      </Modal>
     </>
   );
 }

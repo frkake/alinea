@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -22,6 +23,8 @@ from alinea_llm.errors import ErrorKind, ProviderError
 from alinea_llm.structured import attach_parsed
 from alinea_llm.testing._assets import png_bytes
 from alinea_llm.types import (
+    EmbeddingRequest,
+    EmbeddingResult,
     ImageRequest,
     ImageResult,
     LLMRequest,
@@ -85,6 +88,18 @@ _DEFAULT_STRUCTURED: dict[str, dict[str, Any]] = {
         "etymology": "rectify(まっすぐにする)+ flow(流れ)。",
         "mnemonic": "曲がった川を「まっすぐ(rectify)」に付け替えるイメージ。",
         "related_forms": "flow matching, straight-line transport",
+    },
+    # AI 単語抽出(S7)。block_id は rectified-flow シードに存在するものを使う
+    # (ALINEA_FAKE_LLM=1 の E2E/開発でスキーマ検証を通すための決定的既定)。
+    "vocab_candidates_v1": {
+        "candidates": [
+            {
+                "term": "rectified flow",
+                "kind": "collocation",
+                "block_id": "blk-0001",
+                "reason": "論文の中心概念。",
+            }
+        ]
     },
     "article_v1": {
         "title": "Rectified Flow を読む",
@@ -328,4 +343,63 @@ class FakeImageProvider:
             model=req.model,
             revised_prompt=req.prompt,
             request_id=f"fake-img-{self.calls}",
+        )
+
+
+_TOKEN = re.compile(r"[0-9a-z]+")
+
+
+class FakeEmbeddingProvider:
+    """決定的な埋め込み Fake(EmbeddingProvider 準拠。S12 セマンティック検索)。
+
+    決定規則(ネットワーク不要・プロセス間で安定):
+    - 入力を小文字化し ``[0-9a-z]+`` でトークン化する。
+    - 各トークンを ``sha256`` でハッシュし、次元 ``h % dim`` に符号つき ``±1`` を加算した
+      bag-of-words ベクトルを作る(``hash()`` は salt でプロセス毎に変わるため使わない)。
+    - 最後に L2 正規化する。空文字は零ベクトル(縮退ケース)。
+    共有トークンが多いほどコサインが上がるため、融合ロジックのテストに使える。実プロバイダの
+    多言語意味論は模さない(それは実装側の責務)。
+    """
+
+    def __init__(
+        self,
+        *,
+        dim: int = 8,
+        name: str = "fake",
+        fail: bool = False,
+        error_kind: ErrorKind = ErrorKind.MODEL_NOT_FOUND,
+    ) -> None:
+        if dim <= 0:
+            raise ValueError("dim must be positive")
+        self.name = name
+        self._dim = dim
+        self._fail = fail
+        self._error_kind = error_kind
+        self.calls = 0
+
+    def _vector(self, text: str) -> list[float]:
+        vec = [0.0] * self._dim
+        for token in _TOKEN.findall(text.lower()):
+            digest = hashlib.sha256(token.encode("utf-8")).digest()
+            index = int.from_bytes(digest[:4], "big") % self._dim
+            sign = 1.0 if digest[4] & 1 else -1.0
+            vec[index] += sign
+        norm = math.sqrt(sum(x * x for x in vec))
+        if norm == 0.0:
+            return vec
+        return [x / norm for x in vec]
+
+    async def embed(self, req: EmbeddingRequest) -> EmbeddingResult:
+        self.calls += 1
+        if self._fail:
+            raise ProviderError(self._error_kind, self.name, req.model, "injected failure")
+        vectors = [self._vector(text) for text in req.inputs]
+        chars = sum(len(text) for text in req.inputs)
+        return EmbeddingResult(
+            vectors=vectors,
+            dim=self._dim,
+            provider=self.name,
+            model=req.model,
+            usage=Usage(input_tokens=max(1, _tokens(chars))),
+            request_id=f"fake-embed-{self.calls}",
         )

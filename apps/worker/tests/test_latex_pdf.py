@@ -39,7 +39,6 @@ from alinea_worker.latex_pdf import (
     _find_overfull_boxes,
     _find_pdf_page_bound_violations,
     _rewrite_minted_frozencache_package,
-    _source_render_manifest,
     _translation_units_digest,
     _validate_render_coverage,
     _validate_render_manifest,
@@ -87,7 +86,7 @@ def _typed_table_unit(
     )
 
 
-@pytest.mark.parametrize("placeholder", ["（図）", "(図)"])
+@pytest.mark.parametrize("placeholder", ["（図）", "(図)"])  # noqa: RUF001 - 全角/半角の図プレースホルダを両方検証
 def test_image_only_figure_placeholder_is_not_required_for_source_rendering(
     placeholder: str,
 ) -> None:

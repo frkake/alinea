@@ -33,10 +33,17 @@ from alinea_core.parsing.pdf_sync import (
     PdfWord,
     sync_block_positions,
 )
+from alinea_core.parsing.version_diff import (
+    BlockChange,
+    RevisionDiff,
+    RevisionDiffStats,
+    diff_revisions,
+)
 
 __all__ = [
     "LATEX_PARSER_VERSION",
     "PARSER_VERSION",
+    "BlockChange",
     "BlockPosition",
     "CarryOverStats",
     "LatexArchive",
@@ -44,10 +51,13 @@ __all__ = [
     "ParsedDocument",
     "PdfSyncResult",
     "PdfWord",
+    "RevisionDiff",
+    "RevisionDiffStats",
     "assign_block_ids",
     "block_source_hash",
     "carry_over_ids",
     "content_basis",
+    "diff_revisions",
     "extract_latex_archive",
     "flatten_blocks",
     "normalize_for_hash",

@@ -14,7 +14,14 @@ import re
 from collections.abc import AsyncIterator, Sequence
 from typing import Annotated, Any
 
-from alinea_core.db.models import ChatMessage, ChatThread, LibraryItem, Paper
+from alinea_core.db.models import (
+    Annotation,
+    ChatMessage,
+    ChatThread,
+    LibraryItem,
+    Note,
+    Paper,
+)
 from alinea_core.db.revisions import get_latest_paper_revision
 from alinea_core.document.blocks import DocumentContent
 from alinea_core.document.plaintext import strip_markdown
@@ -24,7 +31,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 
-from alinea_api.chat.context_builder import build_chat_request
+from alinea_api.chat.context_builder import build_chat_request, render_annotations_context
 from alinea_api.chat.evidence import EvidenceValidator, load_validator
 from alinea_api.chat.prompts import resolve_user_content
 from alinea_api.chat.stream_pipeline import (
@@ -167,6 +174,45 @@ async def _load_paper_context(
         "arxiv_id": paper.arxiv_id or "",
     }
     return content, str(rev.id), bib
+
+
+async def _annotations_context(
+    db: DbDep, item: LibraryItem, validator: EvidenceValidator
+) -> str:
+    """設定 chat.include_annotations_and_notes=true 時の system[2] 文脈(plans/07 §2.2.5)。
+
+    highlight/comment 注釈(bookmark は quote を持たないため除外)と メモを整形する。
+    """
+    ann_rows = (
+        (
+            await db.execute(
+                select(Annotation)
+                .where(
+                    Annotation.library_item_id == item.id,
+                    Annotation.kind != "bookmark",
+                )
+                .order_by(Annotation.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    note_rows = (
+        (
+            await db.execute(
+                select(Note)
+                .where(Note.library_item_id == item.id)
+                .order_by(Note.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    annotations = [
+        {"kind": a.kind, "color": a.color, "body": a.body, "anchor": a.anchor} for a in ann_rows
+    ]
+    notes = [{"title": n.title, "body_md": n.body_md} for n in note_rows]
+    return render_annotations_context(annotations=annotations, notes=notes, validator=validator)
 
 
 async def _validator_for_item(db: DbDep, item: LibraryItem) -> EvidenceValidator:
@@ -367,6 +413,16 @@ def _finish_reason(stop_reason: str | None) -> str:
     return "stop" if (stop_reason is None or stop_reason == "end") else stop_reason
 
 
+def _include_annotations(user: Any) -> bool:
+    """設定 chat.include_annotations_and_notes(既定 True・plans/07 §2.2.1)。"""
+    settings = getattr(user, "settings", None)
+    if isinstance(settings, dict):
+        chat_settings = settings.get("chat")
+        if isinstance(chat_settings, dict) and "include_annotations_and_notes" in chat_settings:
+            return bool(chat_settings["include_annotations_and_notes"])
+    return True
+
+
 def _sse(event: str, data: dict[str, Any]) -> str:
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     return f"event: {event}\ndata: {payload}\n\n"
@@ -401,6 +457,7 @@ async def _prepare_turn(
     quick_action: str | None,
     context_anchors: list[dict[str, Any]],
     history_before_id: int | None,
+    include_annotations: bool,
     reuse_user_msg_id: int | None = None,
 ) -> tuple[Any, Any, EvidenceValidator, int, int, str]:
     """user/assistant メッセージを挿入し、LLMRequest と Router を用意する。
@@ -433,6 +490,9 @@ async def _prepare_turn(
 
     before_id = history_before_id if history_before_id is not None else user_msg_id
     history = await _load_history(db, str(thread.id), before_id=before_id)
+    annotations_text = (
+        await _annotations_context(db, item, validator) if include_annotations else None
+    )
     request = build_chat_request(
         content=content,
         revision_id=revision_id,
@@ -443,6 +503,8 @@ async def _prepare_turn(
         user_content=user_text,
         history=history,
         context_anchors=ctx_anchors,
+        include_annotations=include_annotations,
+        annotations_text=annotations_text,
     )
     llm_router = await build_router_for_user(
         db, user_id, "chat", settings=settings, cache=r, provider_factory=factory
@@ -595,6 +657,7 @@ async def send_message(
         quick_action=body.quick_action,
         context_anchors=context_anchors,
         history_before_id=None,
+        include_annotations=_include_annotations(user),
     )
     return StreamingResponse(
         _stream_answer(
@@ -691,6 +754,7 @@ async def regenerate(
         quick_action=quick_action,
         context_anchors=context_anchors,
         history_before_id=history_before,
+        include_annotations=_include_annotations(user),
         reuse_user_msg_id=reuse_user_msg_id,
     )
     return StreamingResponse(

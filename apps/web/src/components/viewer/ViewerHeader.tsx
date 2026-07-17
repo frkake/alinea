@@ -25,6 +25,7 @@ export const MODE_OPTIONS = [
 const STYLE_LABELS: Record<TranslationStyle, string> = {
   natural: "自然訳",
   literal: "直訳",
+  easy: "やさしい訳",
 };
 
 export interface ViewerHeaderProps {
@@ -66,6 +67,8 @@ export function ViewerHeader({
   const setStyle = useViewerStore((s) => s.setStyle);
   const literalStatus = useViewerStore((s) => s.literalStatus);
   const setLiteralGeneration = useViewerStore((s) => s.setLiteralGeneration);
+  const easyStatus = useViewerStore((s) => s.easyStatus);
+  const setEasyGeneration = useViewerStore((s) => s.setEasyGeneration);
   const revisionId = useViewerStore((s) => s.revisionId);
   const activeSectionId = useViewerStore((s) => s.activeSectionId);
   const panelOpen = useViewerStore((s) => s.panelOpen);
@@ -128,6 +131,59 @@ export function ViewerHeader({
       }
     })();
   }, [revisionId, activeSectionId, literalStatus, setLiteralGeneration, queryClient, toast]);
+
+  const ensureEasyGenerated = useCallback(() => {
+    if (!revisionId || easyStatus !== "unknown") return;
+    let closed = false;
+    let source: EventSource | null = null;
+
+    const finish = (status: "ready" | "unknown") => {
+      closed = true;
+      source?.close();
+      setEasyGeneration({ status, jobId: null });
+    };
+
+    (async () => {
+      try {
+        const res = await fetch(`/api/revisions/${revisionId}/translations`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            style: "easy",
+            ...(activeSectionId ? { priority_section_id: activeSectionId } : {}),
+          }),
+        });
+        if (!res.ok) throw new Error(`easy generation failed: ${res.status}`);
+        const body = (await res.json()) as { set_id: string; job_id: string | null };
+        if (closed) return;
+
+        if (!body.job_id) {
+          setEasyGeneration({ status: "ready", jobId: null, setId: body.set_id });
+          return;
+        }
+
+        setEasyGeneration({ status: "generating", jobId: body.job_id, setId: body.set_id });
+        if (typeof EventSource === "undefined") {
+          finish("ready");
+          return;
+        }
+        source = new EventSource(`/api/jobs/${body.job_id}/events`, { withCredentials: true });
+        source.addEventListener("done", () => {
+          void queryClient.invalidateQueries({ queryKey: ["units", revisionId, "easy"] });
+          finish("ready");
+        });
+        source.addEventListener("error", () => {
+          finish("unknown");
+        });
+      } catch {
+        if (!closed) {
+          setEasyGeneration({ status: "unknown", jobId: null });
+          toast({ kind: "error", message: "やさしい訳の生成を開始できませんでした" });
+        }
+      }
+    })();
+  }, [revisionId, activeSectionId, easyStatus, setEasyGeneration, queryClient, toast]);
 
   const styleAnchor = useRef<HTMLButtonElement>(null);
   const overflowAnchor = useRef<HTMLButtonElement>(null);
@@ -326,12 +382,12 @@ export function ViewerHeader({
             type="button"
             aria-haspopup="menu"
             aria-expanded={styleOpen}
-            title={`スタイル: ${STYLE_LABELS[style]}${style === "literal" && literalStatus === "generating" ? "(生成中…)" : ""}`}
+            title={`スタイル: ${STYLE_LABELS[style]}${(style === "literal" && literalStatus === "generating") || (style === "easy" && easyStatus === "generating") ? "(生成中…)" : ""}`}
             style={{ ...controlBtn, maxWidth: 190, flex: "0 1 auto" }}
             onClick={() => setStyleOpen((v) => !v)}
           >
             スタイル: {STYLE_LABELS[style]}
-            {style === "literal" && literalStatus === "generating" ? "(生成中…)" : ""}
+            {(style === "literal" && literalStatus === "generating") || (style === "easy" && easyStatus === "generating") ? "(生成中…)" : ""}
             <span style={{ color: "var(--pr-text-muted)", fontSize: 9 }}>▾</span>
           </button>
           <Popover
@@ -342,7 +398,7 @@ export function ViewerHeader({
             placement="bottom-end"
             caret={false}
           >
-            {(["natural", "literal"] as TranslationStyle[]).map((s) => (
+            {(["natural", "literal", "easy"] as TranslationStyle[]).map((s) => (
               <button
                 key={s}
                 type="button"
@@ -352,6 +408,7 @@ export function ViewerHeader({
                   setStyleOpen(false);
                   // 「直訳」選択で TranslationSet 未生成なら生成開始(1b §4.2-7・plans/06 §10.2)。
                   if (s === "literal") ensureLiteralGenerated();
+                  if (s === "easy") ensureEasyGenerated();
                 }}
                 style={{
                   display: "block",

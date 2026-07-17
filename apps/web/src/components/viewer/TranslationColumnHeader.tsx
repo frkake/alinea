@@ -5,6 +5,7 @@ import type { TranslationStyle } from "@/stores/viewer-store";
 const STYLE_LABELS: Record<TranslationStyle, string> = {
   natural: "自然訳",
   literal: "直訳",
+  easy: "やさしい訳",
 };
 
 export interface TranslationColumnHeaderProps {

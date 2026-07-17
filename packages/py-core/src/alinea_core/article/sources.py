@@ -29,6 +29,10 @@ from alinea_core.db.models import (
     User,
 )
 from alinea_core.document.blocks import DocumentContent, Section
+from alinea_core.document.context_compaction import (
+    RenderedSection,
+    compact_document_context,
+)
 from alinea_core.document.plaintext import block_to_plain, inline_to_plain
 from alinea_core.licenses import LicensePolicy, classify_license
 from alinea_core.search.rebuild import BlockIndexRow, compute_index_rows
@@ -67,13 +71,11 @@ def estimate_tokens(text: str) -> int:
     return len(_encoder().encode(text, disallowed_special=()))
 
 
-def _truncate_tail_to_budget(text: str, budget: int) -> str:
-    """予算を超える場合は末尾(後方セクション相当)を切り詰める(§2.2.3 圧縮モード未実装の代替)。"""
-    enc = _encoder()
-    ids = enc.encode(text, disallowed_special=())
-    if len(ids) <= budget:
-        return text
-    return enc.decode(ids[:budget]) + "\n…(以降は文字数上限のため省略しました)"
+# 本文が予算超過時にモデルへ伝える注記(docs/05 §3 圧縮モード)。
+_COMPRESSION_NOTE = (
+    "(注記: 本文が長いため、関連の低いセクションは各セクションの要約に圧縮しています。"
+    "全文はセクションごとに残っており、後方セクションも脱落しません。)"
+)
 
 
 def _truncate_head_to_budget(lines: list[str], budget: int, *, joiner: str = "\n") -> str:
@@ -209,20 +211,24 @@ def _summary_text(paper: Paper) -> str:
     return "# ✦3行要約\n" + "\n".join(f"- {line}" for line in lines)
 
 
-def _render_translated_body(
+def _render_translated_sections(
     content: DocumentContent,
     units: dict[str, TranslationUnit],
     *,
     include_math: bool,
-) -> tuple[str, dict[str, str]]:
-    """訳文本文(§4.2)。未翻訳ブロックは原文で補う。figure/table は本文に含めない(別素材)。"""
+) -> tuple[list[RenderedSection], dict[str, str]]:
+    """訳文本文を節ノード単位の展開済みセクション列へ(§4.2)。
+
+    未翻訳ブロックは原文で補う。figure/table は本文に含めない(別素材)。``block_source_text``
+    は figure/table/reference_entry を含む全ブロックについて維持する(圧縮の有無に依存しない)。
+    """
     rows_by_id = {r.block_id: r for r in compute_index_rows(content)}
-    lines: list[str] = []
+    sections: list[RenderedSection] = []
     block_source_text: dict[str, str] = {}
 
     def walk(sec: Section) -> None:
         header = f"## [{sec.id}|{_section_label(sec)}] {sec.heading.title or ''}".rstrip()
-        lines.append(header)
+        body_lines: list[str] = []
         for blk in sec.blocks:
             block_source_text[blk.id] = block_to_plain(blk)
             if blk.type in ("figure", "table", "reference_entry"):
@@ -248,13 +254,16 @@ def _render_translated_body(
                 continue
             row = rows_by_id.get(blk.id)
             position = _display_position(row, _section_label(sec))
-            lines.append(f"[{blk.id}|{position}] {text}")
+            body_lines.append(f"[{blk.id}|{position}] {text}")
+        sections.append(
+            RenderedSection(section_id=sec.id, header=header, body_lines=tuple(body_lines))
+        )
         for sub in sec.sections:
             walk(sub)
 
     for s in content.sections:
         walk(s)
-    return "\n".join(lines), block_source_text
+    return sections, block_source_text
 
 
 def _figures(
@@ -525,10 +534,16 @@ async def collect_article_sources(
     units = await resolve_display_units(session, str(revision.id), style, str(user.id))
     policy = classify_license(paper.license)
 
-    body_text, block_source_text = _render_translated_body(
+    body_sections, block_source_text = _render_translated_sections(
         content, dict(units), include_math=include_math
     )
-    body_text = _truncate_tail_to_budget(body_text, BODY_BUDGET)
+    # 予算超過時は末尾切詰めではなく「全セクション要約 + 関連セクション全文」で圧縮する(§3)。
+    body_text = compact_document_context(
+        body_sections,
+        budget=BODY_BUDGET,
+        preamble="",
+        note=_COMPRESSION_NOTE,
+    )
 
     rows = compute_index_rows(content)
     rows_by_id = {r.block_id: r for r in rows}

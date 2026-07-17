@@ -94,6 +94,12 @@ class CoreSettings(BaseSettings):
     alinea_latex_build_timeout_s: int = 360
     alinea_pdf_ocr_max_concurrency: int = Field(default=1, ge=1, le=4)
 
+    # S12 セマンティック検索(docs/10 §5)のフィーチャーフラグ。既定 off。
+    # off の間は横断検索(apps/api search.py)は現行の PGroonga 全文検索のみで、埋め込み経路に
+    # 一切入らない。埋め込みプロバイダ・pgvector・インデクシングジョブが整うまで on にしない
+    # (設計 docs/superpowers/specs/2026-07-16-semantic-search-design.md §6.1)。
+    semantic_search_enabled: bool = False
+
     @property
     def sync_database_url(self) -> str:
         """Alembic 等の同期ドライバ向け URL(+asyncpg を外す)。"""

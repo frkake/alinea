@@ -161,6 +161,138 @@ def test_context_token_estimate_treats_model_special_token_text_as_plain_input()
     assert estimate_tokens("prefix <|endoftext|> suffix") > 0
 
 
+def _long_document(n_sections: int, words_per_section: int) -> DocumentContent:
+    """予算超過用の合成ドキュメント。各セクションに LEAD/TAIL 文 + パディングを持つ。"""
+    sections = []
+    for i in range(1, n_sections + 1):
+        text = (
+            f"LEAD_{i} sentence about topic {i}. "
+            f"TAIL_{i} unique_marker_{i} closes the section. "
+            + ("padding filler text " * words_per_section)
+        )
+        sections.append(
+            Section(
+                id=f"sec-{i}",
+                heading=SectionHeading(number=str(i), title=f"Topic {i}"),
+                blocks=[
+                    Block(
+                        id=f"blk-{i}-p1-{i:04d}",
+                        type="paragraph",
+                        inlines=[Inline(t="text", v=text)],
+                    )
+                ],
+            )
+        )
+    return DocumentContent(quality_level="A", sections=sections)
+
+
+def test_long_paper_uses_compression_instead_of_tail_truncation() -> None:
+    import tiktoken
+    from alinea_api.chat.context_builder import (
+        SYSTEM1_FULL_BUDGET,
+        render_document_context,
+    )
+
+    content = _long_document(n_sections=40, words_per_section=500)
+    full = render_document_context(content, "rev-long")
+    assert estimate_tokens(full) > SYSTEM1_FULL_BUDGET  # 予算超過(圧縮モードに入る)
+
+    # 旧挙動(末尾切詰め)は最終セクションを丸ごと落とす。
+    enc = tiktoken.get_encoding("o200k_base")
+    old = enc.decode(enc.encode(full, disallowed_special=())[:SYSTEM1_FULL_BUDGET])
+    assert "Topic 40" not in old
+
+    req = build_chat_request(
+        content=content,
+        revision_id="rev-long",
+        title="Long Paper",
+        authors_short="A, B",
+        venue_year="NeurIPS 2024",
+        arxiv_id="2400.00001",
+        user_content="How does the padding filler mechanism close TAIL_2?",
+        context_anchors=[{"block_id": "blk-2-p1-0002"}],
+    )
+    sys1 = req.system[1].text or ""
+
+    # 全セクションの見出しは残る(後方セクションが丸ごと落ちない)。
+    assert "[sec-40|§40]" in sys1
+    assert "Topic 40" in sys1
+
+    # アンカーのセクション(sec-2)は全文 → TAIL 文まで含む。
+    assert "TAIL_2 unique_marker_2" in sys1
+
+    # 予算内に収まる。
+    assert estimate_tokens(sys1) <= SYSTEM1_FULL_BUDGET
+
+
+# ---------------------------------------------------------------------------
+# S1 #2: 注釈・メモの文脈表現(plans/07 §2.2.5)
+# ---------------------------------------------------------------------------
+def test_render_annotations_context_formats_highlights_comments_and_notes() -> None:
+    from alinea_api.chat.context_builder import render_annotations_context
+
+    validator = _validator()  # blk-real(§2.1 式(5))・blk-para(§2.1 ¶4)
+    text = render_annotations_context(
+        annotations=[
+            {"kind": "highlight", "color": "question", "anchor": {"block_id": "blk-para"}},
+            {
+                "kind": "comment",
+                "color": "important",
+                "body": "batch size の記載が見当たらない",
+                "anchor": {"block_id": "blk-para", "quote": "linear interpolation"},
+            },
+        ],
+        notes=[{"title": "整流フロー", "body_md": "要点は輸送の直線化。"}],
+        validator=validator,
+    )
+    assert text.startswith("# ユーザーの注釈・メモ")
+    assert "ハイライト(疑問)" in text  # 色ラベルの日本語化
+    assert "§2.1 ¶4" in text  # 位置表記は validator から導出
+    assert "コメント" in text
+    assert "batch size の記載が見当たらない" in text
+    assert "メモ: (整流フロー)" in text
+
+
+def test_render_annotations_context_empty_is_empty_string() -> None:
+    from alinea_api.chat.context_builder import render_annotations_context
+
+    assert render_annotations_context(annotations=[], notes=[], validator=_validator()) == ""
+
+
+def test_build_chat_request_omits_annotations_when_disabled() -> None:
+    content = _make_document()
+    req = build_chat_request(
+        content=content,
+        revision_id="rev-1",
+        title="T",
+        authors_short="A",
+        venue_year="2023",
+        arxiv_id="1",
+        user_content="q",
+        include_annotations=False,
+        annotations_text="# ユーザーの注釈・メモ\n- x",
+    )
+    # system は [0]プリアンブル・[1]論文文脈のみ(注釈 system[2] は付かない)。
+    assert len(req.system) == 2
+
+
+def test_build_chat_request_includes_annotations_when_enabled() -> None:
+    content = _make_document()
+    req = build_chat_request(
+        content=content,
+        revision_id="rev-1",
+        title="T",
+        authors_short="A",
+        venue_year="2023",
+        arxiv_id="1",
+        user_content="q",
+        include_annotations=True,
+        annotations_text="# ユーザーの注釈・メモ\n- highlight",
+    )
+    assert len(req.system) == 3
+    assert "ユーザーの注釈・メモ" in (req.system[2].text or "")
+
+
 # ---------------------------------------------------------------------------
 # PY-CHAT-02: ストリーム変換
 # ---------------------------------------------------------------------------

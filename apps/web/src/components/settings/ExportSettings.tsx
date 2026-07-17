@@ -23,15 +23,23 @@ interface ExportFullStatus {
   download_url: string | null;
 }
 
+interface ImportFullStatus {
+  job: { status: string };
+  summary: Record<string, unknown> | null;
+}
+
 /**
- * エクスポートカテゴリ(4f §4.6)。3 カード: 論文単位 Markdown / BibTeX・CSV / JSON 一括
- * (CSV・JSON 一括は M2-15 で有効化。M1-17 は Markdown・BibTeX のみだった)。
+ * データカテゴリ(4f §4.6 + 完全データ移行 Task 6)。
+ * 3 エクスポートカード + 完全バックアップカード + インポートカード。
  */
 export function ExportSettings({ readOnly = false }: ExportSettingsProps = {}) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [formatOpen, setFormatOpen] = useState(false);
   const formatAnchor = useRef<HTMLDivElement>(null);
   const [jsonJobId, setJsonJobId] = useState<string | null>(null);
+  const [backupJobId, setBackupJobId] = useState<string | null>(null);
+  const [importJobId, setImportJobId] = useState<string | null>(null);
+  const importFileRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
 
   const jsonJobQuery = useQuery({
@@ -69,9 +77,90 @@ export function ExportSettings({ readOnly = false }: ExportSettingsProps = {}) {
     }
   }
 
+  // 完全バックアップジョブポーリング(JSON 一括と独立した job id を使う)
+  const backupJobQuery = useQuery({
+    queryKey: ["export", "backup", backupJobId],
+    queryFn: async (): Promise<ExportFullStatus> => {
+      const res = await fetch(`/api/export/full/${backupJobId}`, { credentials: "include" });
+      if (!res.ok) throw new Error("export_full backup status request failed");
+      return (await res.json()) as ExportFullStatus;
+    },
+    enabled: backupJobId !== null,
+    refetchInterval: (query) => (query.state.data?.download_url ? false : EXPORT_JOB_POLL_MS),
+  });
+
+  useEffect(() => {
+    const data = backupJobQuery.data;
+    if (!data || backupJobId === null) return;
+    if (data.download_url) {
+      triggerDownload(data.download_url);
+      setBackupJobId(null);
+    } else if (data.job.status === "failed") {
+      toast({ kind: "error", message: "完全バックアップの準備に失敗しました。もう一度お試しください" });
+      setBackupJobId(null);
+    }
+  }, [backupJobQuery.data, backupJobId, toast]);
+
+  async function startBackupExport(): Promise<void> {
+    try {
+      const res = await fetch("/api/export/full", { method: "POST", credentials: "include" });
+      if (!res.ok) throw new Error("export_full backup start failed");
+      const body = (await res.json()) as { job_id: string };
+      setBackupJobId(body.job_id);
+    } catch {
+      toast({ kind: "error", message: "完全バックアップの準備に失敗しました。もう一度お試しください" });
+    }
+  }
+
+  // インポートジョブポーリング
+  const importJobQuery = useQuery({
+    queryKey: ["import", "full", importJobId],
+    queryFn: async (): Promise<ImportFullStatus> => {
+      const res = await fetch(`/api/import/full/${importJobId}`, { credentials: "include" });
+      if (!res.ok) throw new Error("import_full status request failed");
+      return (await res.json()) as ImportFullStatus;
+    },
+    enabled: importJobId !== null,
+    refetchInterval: (query) =>
+      query.state.data?.job.status === "succeeded" ||
+      query.state.data?.job.status === "failed"
+        ? false
+        : EXPORT_JOB_POLL_MS,
+  });
+
+  // インポート完了 or 失敗のトースト
+  useEffect(() => {
+    const data = importJobQuery.data;
+    if (!data || importJobId === null) return;
+    if (data.job.status === "succeeded") {
+      toast({ kind: "success", message: "インポートが完了しました" });
+      setImportJobId(null);
+    } else if (data.job.status === "failed") {
+      toast({ kind: "error", message: "インポートに失敗しました。もう一度お試しください" });
+      setImportJobId(null);
+    }
+  }, [importJobQuery.data, importJobId, toast]);
+
+  async function handleImportFile(file: File): Promise<void> {
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch("/api/import/full", {
+        method: "POST",
+        body: form,
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("import_full start failed");
+      const body = (await res.json()) as { job_id: string };
+      setImportJobId(body.job_id);
+    } catch {
+      toast({ kind: "error", message: "インポートの開始に失敗しました。もう一度お試しください" });
+    }
+  }
+
   if (readOnly) {
     return (
-      <SettingsSection title="エクスポート" titleNote="データはいつでも持ち出せます(P5)">
+      <SettingsSection title="データ" titleNote="データはいつでも持ち出せます(P5)">
         <Card padding="md" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <span style={{ fontSize: 11.5, fontWeight: 600 }}>論文単位 Markdown</span>
           <span style={{ fontSize: 10.5, color: "var(--pr-text-muted)" }}>
@@ -81,9 +170,13 @@ export function ExportSettings({ readOnly = false }: ExportSettingsProps = {}) {
           <span style={{ fontSize: 10.5, color: "var(--pr-text-muted)" }}>
             書誌+ステータス+タグ+日付。実行はデスクトップから行えます
           </span>
-          <span style={{ fontSize: 11.5, fontWeight: 600, marginTop: 6 }}>JSON 一括</span>
+          <span style={{ fontSize: 11.5, fontWeight: 600, marginTop: 6 }}>完全バックアップ</span>
           <span style={{ fontSize: 10.5, color: "var(--pr-text-muted)" }}>
-            全データの一括エクスポート。実行はデスクトップから行えます
+            全データ(論文本文・翻訳・PDF・図・メモ等)を 1 つの zip に。実行はデスクトップから行えます
+          </span>
+          <span style={{ fontSize: 11.5, fontWeight: 600, marginTop: 6 }}>インポート(復元)</span>
+          <span style={{ fontSize: 10.5, color: "var(--pr-text-muted)" }}>
+            zip を読み込んでデータを復元。実行はデスクトップから行えます
           </span>
         </Card>
       </SettingsSection>
@@ -91,7 +184,7 @@ export function ExportSettings({ readOnly = false }: ExportSettingsProps = {}) {
   }
 
   return (
-    <SettingsSection title="エクスポート" titleNote="データはいつでも持ち出せます(P5)">
+    <SettingsSection title="データ" titleNote="データはいつでも持ち出せます(P5)">
       <Card padding="md" style={{ display: "flex", gap: 10 }}>
         <ExportFormatCard
           title="論文単位 Markdown"
@@ -172,6 +265,58 @@ export function ExportSettings({ readOnly = false }: ExportSettingsProps = {}) {
             void startJsonExport();
           }}
         />
+      </Card>
+      <Card padding="md" style={{ display: "flex", gap: 10 }}>
+        <ExportFormatCard
+          title="完全バックアップ"
+          description="全データ(論文本文・翻訳・PDF・図・メモ等)を 1 つの zip に。別 PC への移行に使えます"
+          busyLabel={backupJobId !== null ? "準備中…" : null}
+          onExport={() => {
+            void startBackupExport();
+          }}
+        />
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+          <span style={{ fontSize: 11.5, fontWeight: 600 }}>インポート(復元)</span>
+          <span style={{ fontSize: 10.5, color: "var(--pr-text-muted)" }}>
+            既存データはマージされ上書きされません。
+            BYOK(API キー)は移行されないため復元後に再登録してください。
+          </span>
+          {importJobId === null ? (
+            <button
+              type="button"
+              style={{
+                alignSelf: "flex-start",
+                marginTop: 4,
+                padding: "4px 12px",
+                border: "1px solid var(--pr-border-mid)",
+                borderRadius: 4,
+                background: "transparent",
+                cursor: "pointer",
+                fontFamily: "inherit",
+                fontSize: 11.5,
+                color: "var(--pr-text-mid)",
+              }}
+              onClick={() => importFileRef.current?.click()}
+            >
+              zip を選択して復元
+            </button>
+          ) : (
+            <span style={{ fontSize: 11, color: "var(--pr-text-muted)", marginTop: 4 }}>
+              復元中…
+            </span>
+          )}
+          <input
+            ref={importFileRef}
+            type="file"
+            accept=".zip"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void handleImportFile(file);
+              e.target.value = "";
+            }}
+          />
+        </div>
       </Card>
       <ExportPaperPickerModal
         open={pickerOpen}

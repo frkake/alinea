@@ -557,6 +557,16 @@ export type BlockTranslation = {
 };
 
 /**
+ * Body_import_full_start
+ */
+export type BodyImportFullStart = {
+    /**
+     * File
+     */
+    file: Blob | File;
+};
+
+/**
  * Body_ingest_pdf
  */
 export type BodyIngestPdf = {
@@ -1033,6 +1043,20 @@ export type DuplicateResolutionBody = {
  */
 export type DuplicateResolutionResponse = {
     library_item: LibraryItemSummary;
+};
+
+/**
+ * EasyTranslationRequest
+ */
+export type EasyTranslationRequest = {
+    /**
+     * Style
+     */
+    style: 'easy';
+    /**
+     * Priority Section Id
+     */
+    priority_section_id?: string | null;
 };
 
 /**
@@ -1531,6 +1555,29 @@ export type HeadingContentOut = {
      * Text
      */
     text: string;
+};
+
+/**
+ * ImportFullStartResponse
+ */
+export type ImportFullStartResponse = {
+    /**
+     * Job Id
+     */
+    job_id: string;
+};
+
+/**
+ * ImportFullStatusResponse
+ */
+export type ImportFullStatusResponse = {
+    job: JobOut;
+    /**
+     * Summary
+     */
+    summary: {
+        [key: string]: unknown;
+    } | null;
 };
 
 /**
@@ -3169,6 +3216,77 @@ export type RetryFailedTranslationsResponse = {
 };
 
 /**
+ * RevisionDiffBlock
+ */
+export type RevisionDiffBlock = {
+    /**
+     * Status
+     */
+    status: string;
+    /**
+     * Block Id
+     */
+    block_id: string;
+    /**
+     * Block Type
+     */
+    block_type: string;
+    /**
+     * Section Id
+     */
+    section_id: string;
+    /**
+     * Old Text
+     */
+    old_text: string | null;
+    /**
+     * New Text
+     */
+    new_text: string | null;
+};
+
+/**
+ * RevisionDiffResponse
+ */
+export type RevisionDiffResponse = {
+    /**
+     * From Revision Id
+     */
+    from_revision_id: string;
+    /**
+     * To Revision Id
+     */
+    to_revision_id: string;
+    stats: RevisionDiffStatsDto;
+    /**
+     * Changes
+     */
+    changes: Array<RevisionDiffBlock>;
+};
+
+/**
+ * RevisionDiffStatsDto
+ */
+export type RevisionDiffStatsDto = {
+    /**
+     * Added
+     */
+    added: number;
+    /**
+     * Removed
+     */
+    removed: number;
+    /**
+     * Changed
+     */
+    changed: number;
+    /**
+     * Unchanged
+     */
+    unchanged: number;
+};
+
+/**
  * RevisionInfo
  */
 export type RevisionInfo = {
@@ -3855,6 +3973,41 @@ export type SharePatchBody = {
 };
 
 /**
+ * StandaloneAvailability
+ * 成果物ごとの生成有無(UI の選択可否判定に使う。最新リビジョン基準)。
+ */
+export type StandaloneAvailability = {
+    /**
+     * Source Html
+     */
+    source_html: boolean;
+    /**
+     * Translation Html
+     */
+    translation_html: boolean;
+    /**
+     * Bilingual Html
+     */
+    bilingual_html: boolean;
+    /**
+     * Article Html
+     */
+    article_html: boolean;
+    /**
+     * Pdf Original
+     */
+    pdf_original: boolean;
+    /**
+     * Pdf Translated
+     */
+    pdf_translated: boolean;
+    /**
+     * Pdf Bilingual
+     */
+    pdf_bilingual: boolean;
+};
+
+/**
  * StatsSection
  * §5.12 ``stats``。直近 12 週(古→新)の読書時間棒グラフ+今週の読了本数(docs/06 §6.5)。
  */
@@ -4250,6 +4403,71 @@ export type VocabAi = {
 };
 
 /**
+ * VocabCandidateAcceptResponse
+ */
+export type VocabCandidateAcceptResponse = {
+    /**
+     * Vocab Id
+     */
+    vocab_id: string;
+    /**
+     * Generation Job Id
+     */
+    generation_job_id?: string | null;
+    /**
+     * Already Existed
+     */
+    already_existed?: boolean;
+};
+
+/**
+ * VocabCandidateListResponse
+ */
+export type VocabCandidateListResponse = {
+    /**
+     * Items
+     */
+    items: Array<VocabCandidateOut>;
+    /**
+     * Count
+     */
+    count: number;
+};
+
+/**
+ * VocabCandidateOut
+ */
+export type VocabCandidateOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Term
+     */
+    term: string;
+    /**
+     * Kind
+     */
+    kind: 'word' | 'collocation' | 'idiom';
+    /**
+     * Reason
+     */
+    reason?: string | null;
+    /**
+     * Context Sentence
+     */
+    context_sentence: string;
+    highlight: VocabHighlight;
+    anchor: AnchorRef;
+    source: VocabSource;
+    /**
+     * Created At
+     */
+    created_at: string;
+};
+
+/**
  * VocabCounts
  * plans/03 §11.1 counts(フィルタに関わらない語彙帳全体の総数)。
  */
@@ -4386,6 +4604,16 @@ export type VocabEntrySummary = {
      * Generation
      */
     generation: 'pending' | 'done' | 'failed';
+};
+
+/**
+ * VocabExtractResponse
+ */
+export type VocabExtractResponse = {
+    /**
+     * Job Id
+     */
+    job_id: string;
 };
 
 /**
@@ -5362,6 +5590,45 @@ export type ViewerListRevisionsResponses = {
 
 export type ViewerListRevisionsResponse = ViewerListRevisionsResponses[keyof ViewerListRevisionsResponses];
 
+export type ViewerRevisionDiffData = {
+    body?: never;
+    path: {
+        /**
+         * Paper Id
+         */
+        paper_id: string;
+    };
+    query: {
+        /**
+         * From
+         */
+        from: string;
+        /**
+         * To
+         */
+        to: string;
+    };
+    url: '/api/papers/{paper_id}/revisions/diff';
+};
+
+export type ViewerRevisionDiffErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ViewerRevisionDiffError = ViewerRevisionDiffErrors[keyof ViewerRevisionDiffErrors];
+
+export type ViewerRevisionDiffResponses = {
+    /**
+     * Successful Response
+     */
+    200: RevisionDiffResponse;
+};
+
+export type ViewerRevisionDiffResponse = ViewerRevisionDiffResponses[keyof ViewerRevisionDiffResponses];
+
 export type ViewerGetDocumentData = {
     body?: never;
     path: {
@@ -5550,7 +5817,14 @@ export type TranslationsListSetsResponses = {
 export type TranslationsListSetsResponse = TranslationsListSetsResponses[keyof TranslationsListSetsResponses];
 
 export type TranslationsStartLiteralData = {
-    body: LiteralTranslationRequest;
+    /**
+     * Body
+     */
+    body: ({
+        style: 'literal';
+    } & LiteralTranslationRequest) | ({
+        style: 'easy';
+    } & EasyTranslationRequest);
     path: {
         /**
          * Revision Id
@@ -7553,6 +7827,203 @@ export type ExportFullStatusResponses = {
 
 export type ExportFullStatusResponse2 = ExportFullStatusResponses[keyof ExportFullStatusResponses];
 
+export type ImportFullStartData = {
+    body: BodyImportFullStart;
+    path?: never;
+    query?: never;
+    url: '/api/import/full';
+};
+
+export type ImportFullStartErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ImportFullStartError = ImportFullStartErrors[keyof ImportFullStartErrors];
+
+export type ImportFullStartResponses = {
+    /**
+     * Successful Response
+     */
+    202: ImportFullStartResponse;
+};
+
+export type ImportFullStartResponse2 = ImportFullStartResponses[keyof ImportFullStartResponses];
+
+export type ImportFullStatusData = {
+    body?: never;
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/import/full/{job_id}';
+};
+
+export type ImportFullStatusErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ImportFullStatusError = ImportFullStatusErrors[keyof ImportFullStatusErrors];
+
+export type ImportFullStatusResponses = {
+    /**
+     * Successful Response
+     */
+    200: ImportFullStatusResponse;
+};
+
+export type ImportFullStatusResponse2 = ImportFullStatusResponses[keyof ImportFullStatusResponses];
+
+export type ExportStandaloneAvailabilityData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/availability';
+};
+
+export type ExportStandaloneAvailabilityErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneAvailabilityError = ExportStandaloneAvailabilityErrors[keyof ExportStandaloneAvailabilityErrors];
+
+export type ExportStandaloneAvailabilityResponses = {
+    /**
+     * Successful Response
+     */
+    200: StandaloneAvailability;
+};
+
+export type ExportStandaloneAvailabilityResponse = ExportStandaloneAvailabilityResponses[keyof ExportStandaloneAvailabilityResponses];
+
+export type ExportStandaloneSourceHtmlData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/source.html';
+};
+
+export type ExportStandaloneSourceHtmlErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneSourceHtmlError = ExportStandaloneSourceHtmlErrors[keyof ExportStandaloneSourceHtmlErrors];
+
+export type ExportStandaloneSourceHtmlResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type ExportStandaloneTranslationHtmlData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/translation.html';
+};
+
+export type ExportStandaloneTranslationHtmlErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneTranslationHtmlError = ExportStandaloneTranslationHtmlErrors[keyof ExportStandaloneTranslationHtmlErrors];
+
+export type ExportStandaloneTranslationHtmlResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type ExportStandaloneBilingualHtmlData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/bilingual.html';
+};
+
+export type ExportStandaloneBilingualHtmlErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneBilingualHtmlError = ExportStandaloneBilingualHtmlErrors[keyof ExportStandaloneBilingualHtmlErrors];
+
+export type ExportStandaloneBilingualHtmlResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type ExportStandaloneArticleHtmlData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/article.html';
+};
+
+export type ExportStandaloneArticleHtmlErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneArticleHtmlError = ExportStandaloneArticleHtmlErrors[keyof ExportStandaloneArticleHtmlErrors];
+
+export type ExportStandaloneArticleHtmlResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
 export type ArticlesGetData = {
     body?: never;
     path: {
@@ -8417,6 +8888,50 @@ export type VocabExportMarkdownResponses = {
     200: unknown;
 };
 
+export type VocabExportAnkiData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Kind
+         */
+        kind?: Array<string> | null;
+        /**
+         * Due
+         */
+        due?: boolean | null;
+        /**
+         * Q
+         */
+        q?: string | null;
+        /**
+         * Library Item Id
+         */
+        library_item_id?: string | null;
+        /**
+         * Sort
+         */
+        sort?: string;
+    };
+    url: '/api/vocab/export/anki';
+};
+
+export type VocabExportAnkiErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabExportAnkiError = VocabExportAnkiErrors[keyof VocabExportAnkiErrors];
+
+export type VocabExportAnkiResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
 export type VocabDeleteData = {
     body?: never;
     path: {
@@ -8566,6 +9081,126 @@ export type VocabReviewResponses = {
 };
 
 export type VocabReviewResponse2 = VocabReviewResponses[keyof VocabReviewResponses];
+
+export type VocabCandidatesExtractData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/vocab-candidates/extract';
+};
+
+export type VocabCandidatesExtractErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabCandidatesExtractError = VocabCandidatesExtractErrors[keyof VocabCandidatesExtractErrors];
+
+export type VocabCandidatesExtractResponses = {
+    /**
+     * Successful Response
+     */
+    202: VocabExtractResponse;
+};
+
+export type VocabCandidatesExtractResponse = VocabCandidatesExtractResponses[keyof VocabCandidatesExtractResponses];
+
+export type VocabCandidatesListData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/vocab-candidates';
+};
+
+export type VocabCandidatesListErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabCandidatesListError = VocabCandidatesListErrors[keyof VocabCandidatesListErrors];
+
+export type VocabCandidatesListResponses = {
+    /**
+     * Successful Response
+     */
+    200: VocabCandidateListResponse;
+};
+
+export type VocabCandidatesListResponse = VocabCandidatesListResponses[keyof VocabCandidatesListResponses];
+
+export type VocabCandidatesAcceptData = {
+    body?: never;
+    path: {
+        /**
+         * Candidate Id
+         */
+        candidate_id: string;
+    };
+    query?: never;
+    url: '/api/vocab-candidates/{candidate_id}/accept';
+};
+
+export type VocabCandidatesAcceptErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabCandidatesAcceptError = VocabCandidatesAcceptErrors[keyof VocabCandidatesAcceptErrors];
+
+export type VocabCandidatesAcceptResponses = {
+    /**
+     * Successful Response
+     */
+    201: VocabCandidateAcceptResponse;
+};
+
+export type VocabCandidatesAcceptResponse = VocabCandidatesAcceptResponses[keyof VocabCandidatesAcceptResponses];
+
+export type VocabCandidatesDismissData = {
+    body?: never;
+    path: {
+        /**
+         * Candidate Id
+         */
+        candidate_id: string;
+    };
+    query?: never;
+    url: '/api/vocab-candidates/{candidate_id}/dismiss';
+};
+
+export type VocabCandidatesDismissErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type VocabCandidatesDismissError = VocabCandidatesDismissErrors[keyof VocabCandidatesDismissErrors];
+
+export type VocabCandidatesDismissResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type VocabCandidatesDismissResponse = VocabCandidatesDismissResponses[keyof VocabCandidatesDismissResponses];
 
 export type ResourcesListData = {
     body?: never;

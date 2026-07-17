@@ -278,3 +278,10 @@ def render_bibtex(papers: list[PaperBib]) -> str:
         render_bibtex_entry(paper, cite_key=unique_cite_key(paper, used)) for paper in papers
     ]
     return "\n\n".join(entries) + ("\n" if entries else "")
+
+
+# ============================================================================
+# インポート API スキーマ(完全データ移行 Task 5)
+# ============================================================================
+# NOTE: Pydantic モデルは routers/export.py に直接定義する(循環 import 回避のため
+#       schemas/export.py は DB 非依存の純関数に限定する方針)。

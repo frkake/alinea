@@ -4,8 +4,10 @@
 system[0] プリアンブル + system[1] 論文文脈 + (任意)system[2] 注釈・メモ + 会話履歴 +
 今回の質問(選択周辺全文つき)を ``LLMRequest`` に組む。**訳文は入れない(原文を正)**。
 
-M0 簡略化: 圧縮モード(全セクション要約 + 関連セクション全文)は未実装で、全文モードの
-予算超過時はトークン予算までの切詰めで代替する(§2.2.3〜2.2.4 は後続)。
+圧縮モード(docs/05 §3): 論文コンテキストが ``SYSTEM1_FULL_BUDGET`` を超える場合は末尾
+切詰めではなく「全セクションの要約 + 質問・選択に関連するセクションの全文」で構成する
+(:mod:`alinea_core.document.context_compaction`)。選択範囲の周辺全文は user メッセージ側で
+``_render_surroundings`` が別途付与する。要約は決定的な抽出的要約で LLM に依存しない。
 """
 
 from __future__ import annotations
@@ -16,6 +18,10 @@ from typing import Any
 
 import tiktoken
 from alinea_core.document.blocks import Block, DocumentContent, Section
+from alinea_core.document.context_compaction import (
+    RenderedSection,
+    compact_document_context,
+)
 from alinea_core.document.plaintext import block_to_plain, inline_to_plain
 from alinea_core.search.rebuild import BlockIndexRow, compute_index_rows
 from alinea_llm.types import ContentPart, LLMRequest, Message
@@ -24,9 +30,25 @@ from alinea_api.chat.prompts import format_system_preamble
 
 # トークン予算(plans/07 §2.2.1 確定値)。
 SYSTEM1_FULL_BUDGET = 60_000
+ANNOTATIONS_BUDGET = 4_000  # system[2] 注釈・メモ(§2.2.1)
 HISTORY_BUDGET = 12_000
 SURROUNDING_CONTEXT_BLOCKS = 2  # アンカー ±2 ブロック(§2.2.1)
 MAX_OUTPUT_TOKENS = 8_192
+
+# 圧縮モードに入ったことをモデルへ伝える注記(docs/05 §3)。
+_COMPRESSION_NOTE = (
+    "(注記: 本文が長いため、関連の低いセクションは各セクションの要約に圧縮しています。"
+    "全文が必要なセクションがあれば、そのセクションについて質問してください。)"
+)
+
+# 注釈の色 → 日本語ラベル(annotations.color の値域・§2.2.5)。
+_ANNOTATION_COLOR_LABELS = {
+    "important": "重要",
+    "question": "疑問",
+    "idea": "アイデア",
+    "term": "用語",
+}
+_NOTE_BODY_PREVIEW = 500  # メモ本文の冒頭文字数(§2.2.5)
 
 
 @functools.lru_cache(maxsize=1)
@@ -68,17 +90,22 @@ def _section_label(sec: Section) -> str:
     return f"§{num}" if num else (sec.heading.title or sec.id)
 
 
-def render_document_context(content: DocumentContent, revision_id: str) -> str:
-    """`document_revisions.content` を「論文コンテキスト」平文へ展開する(§2.2.2)。
+def _context_preamble(revision_id: str) -> str:
+    return f"# 論文コンテキスト(revision {revision_id})"
+
+
+def render_context_sections(content: DocumentContent) -> list[RenderedSection]:
+    """`document_revisions.content` を節ノード単位の展開済みセクション列へ変換する(§2.2.2)。
 
     行頭 `[block_id|位置]` が根拠マーカーの語彙になる。reference_entry は含めない。
+    入れ子セクションは文書順にフラットな列へ並べる(圧縮モードのセクション単位に対応)。
     """
     rows = {r.block_id: r for r in compute_index_rows(content)}
-    lines: list[str] = [f"# 論文コンテキスト(revision {revision_id})"]
+    out: list[RenderedSection] = []
 
     def walk(sec: Section) -> None:
         header = f"## [{sec.id}|{_section_label(sec)}] {sec.heading.title or ''}".rstrip()
-        lines.append(header)
+        body_lines: list[str] = []
         for blk in sec.blocks:
             if blk.type == "reference_entry":
                 continue
@@ -87,22 +114,37 @@ def render_document_context(content: DocumentContent, revision_id: str) -> str:
                 continue
             row = rows.get(blk.id)
             position = _display_position(row) if row is not None else _section_label(sec)
-            lines.append(f"[{blk.id}|{position}] {text}")
+            body_lines.append(f"[{blk.id}|{position}] {text}")
+        out.append(RenderedSection(section_id=sec.id, header=header, body_lines=tuple(body_lines)))
         for sub in sec.sections:
             walk(sub)
 
     for s in content.sections:
         walk(s)
+    return out
+
+
+def render_document_context(content: DocumentContent, revision_id: str) -> str:
+    """全セクション全文の「論文コンテキスト」平文(圧縮しない場合の出力。§2.2.2)。"""
+    lines: list[str] = [_context_preamble(revision_id)]
+    for sec in render_context_sections(content):
+        lines.append(sec.header)
+        lines.extend(sec.body_lines)
     return "\n".join(lines)
 
 
-def _truncate_to_budget(text: str, budget: int) -> str:
-    """予算トークンを超える文脈を切り詰める(M0 の圧縮モード代替)。"""
-    enc = _encoder()
-    ids = enc.encode(text, disallowed_special=())
-    if len(ids) <= budget:
-        return text
-    return enc.decode(ids[:budget]) + "\n…(文脈が長いため以降を省略しました)"
+def _anchor_section_ids(
+    content: DocumentContent,
+    context_anchors: Sequence[Mapping[str, Any]],
+) -> set[str]:
+    """選択アンカーの block_id が属するセクション ID を求める(圧縮モードで全文昇格する)。"""
+    if not context_anchors:
+        return set()
+    wanted = {str(a.get("block_id", "")) for a in context_anchors}
+    section_of: dict[str, str] = {}
+    for sec, blk in content.iter_blocks():
+        section_of[blk.id] = sec.id
+    return {section_of[b] for b in wanted if b in section_of}
 
 
 def _render_surroundings(
@@ -149,6 +191,62 @@ def _select_history(history: Sequence[tuple[str, str]], budget: int) -> list[tup
     return selected
 
 
+def _truncate_to_budget(text: str, budget: int) -> str:
+    """予算トークンを超えるテキストを末尾から切り詰める(注釈・メモの予算制御に使用)。"""
+    enc = _encoder()
+    ids = enc.encode(text, disallowed_special=())
+    if len(ids) <= budget:
+        return text
+    return enc.decode(ids[:budget]) + "\n…(文脈が長いため以降を省略しました)"
+
+
+def render_annotations_context(
+    *,
+    annotations: Sequence[Mapping[str, Any]],
+    notes: Sequence[Mapping[str, Any]],
+    validator: Any,
+) -> str:
+    """注釈(ハイライト/コメント)・メモを system[2] の平文へ整形する(plans/07 §2.2.5)。
+
+    ``validator`` は :class:`alinea_api.chat.evidence.EvidenceValidator`(``display_for``
+    で位置表記を導出する)。予算 ANNOTATIONS_BUDGET を超えたら末尾から切り詰める。
+    どちらも空なら空文字を返す(呼び出し側は system[2] を付けない)。
+    """
+    lines: list[str] = []
+
+    for ann in annotations:
+        anchor = ann.get("anchor") if isinstance(ann.get("anchor"), Mapping) else {}
+        block_id = str(anchor.get("block_id", "")) if isinstance(anchor, Mapping) else ""
+        position = validator.display_for(block_id) or ""
+        pos_tag = f"[{block_id}|{position}]" if block_id else ""
+        kind = ann.get("kind")
+        quote = ""
+        if isinstance(anchor, Mapping) and anchor.get("quote"):
+            quote = f' "{str(anchor["quote"]).strip()}"'
+        if kind == "comment":
+            body = str(ann.get("body") or "").strip()
+            comment = f"(コメント: {body})" if body else ""
+            lines.append(f"- コメント {pos_tag}{quote}{comment}".rstrip())
+        else:
+            color = str(ann.get("color") or "")
+            label = _ANNOTATION_COLOR_LABELS.get(color)
+            head = f"ハイライト({label})" if label else "ハイライト"
+            lines.append(f"- {head} {pos_tag}{quote}".rstrip())
+
+    for note in notes:
+        title = str(note.get("title") or "").strip()
+        body = str(note.get("body_md") or "").strip().replace("\n", " ")
+        preview = body[:_NOTE_BODY_PREVIEW]
+        ellipsis = "…" if len(body) > _NOTE_BODY_PREVIEW else ""
+        title_part = f"({title}) " if title else ""
+        lines.append(f"- メモ: {title_part}{preview}{ellipsis}".rstrip())
+
+    if not lines:
+        return ""
+    header = "# ユーザーの注釈・メモ(参考。回答の根拠は本文のみ)"
+    return _truncate_to_budget("\n".join([header, *lines]), ANNOTATIONS_BUDGET)
+
+
 def build_chat_request(
     *,
     content: DocumentContent,
@@ -167,8 +265,14 @@ def build_chat_request(
     system0 = format_system_preamble(
         title=title, authors_short=authors_short, venue_year=venue_year, arxiv_id=arxiv_id
     )
-    system1 = _truncate_to_budget(
-        render_document_context(content, revision_id), SYSTEM1_FULL_BUDGET
+    # 予算超過時は末尾切詰めではなく「全セクション要約 + 関連セクション全文」で圧縮する(§3)。
+    system1 = compact_document_context(
+        render_context_sections(content),
+        budget=SYSTEM1_FULL_BUDGET,
+        preamble=_context_preamble(revision_id),
+        note=_COMPRESSION_NOTE,
+        query=user_content,
+        anchor_section_ids=_anchor_section_ids(content, context_anchors),
     )
     system_parts = [
         ContentPart.from_text(system0, cache_hint=True),  # キャッシュ第1境界(§2.6)
@@ -201,9 +305,12 @@ def build_chat_request(
 
 
 __all__ = [
+    "ANNOTATIONS_BUDGET",
     "HISTORY_BUDGET",
     "SYSTEM1_FULL_BUDGET",
     "build_chat_request",
     "estimate_tokens",
+    "render_annotations_context",
+    "render_context_sections",
     "render_document_context",
 ]

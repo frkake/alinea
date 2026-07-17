@@ -4,8 +4,8 @@ import { create } from "zustand";
 import type { SidePanelTabId } from "@/components/ui/SidePanelTabs";
 import type { Preset } from "@/components/viewer/article/types";
 
-/** 翻訳スタイル(plans/03 §7)。オンデマンド生成対象は literal のみ。 */
-export type TranslationStyle = "natural" | "literal";
+/** 翻訳スタイル(plans/03 §7)。オンデマンド生成対象は literal/easy。 */
+export type TranslationStyle = "natural" | "literal" | "easy";
 
 /** 本文ペインへスクロールを依頼する対象(viewer-shell §2.3)。 */
 export type PendingScrollTarget =
@@ -54,6 +54,10 @@ interface ViewerStoreState {
   literalStatus: "unknown" | "generating" | "ready";
   literalJobId: string | null;
   literalSetId: string | null;
+  /** やさしい訳(easy)のオンデマンド生成状態(S11 M3。literalStatus と同方針)。 */
+  easyStatus: "unknown" | "generating" | "ready";
+  easyJobId: string | null;
+  easySetId: string | null;
 
   // 読書位置・モード間位置引き継ぎ(viewer-shell §3.4 / §8)
   currentBlockId: string | null;
@@ -101,6 +105,11 @@ interface ViewerStoreState {
   setPanel(open: boolean, tab?: SidePanelTabId): void;
   setStyle(style: TranslationStyle): void;
   setLiteralGeneration(state: {
+    status: "unknown" | "generating" | "ready";
+    jobId?: string | null;
+    setId?: string | null;
+  }): void;
+  setEasyGeneration(state: {
     status: "unknown" | "generating" | "ready";
     jobId?: string | null;
     setId?: string | null;
@@ -188,6 +197,9 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
   literalStatus: "unknown",
   literalJobId: null,
   literalSetId: null,
+  easyStatus: "unknown",
+  easyJobId: null,
+  easySetId: null,
   currentBlockId: null,
   pendingScrollTarget: null,
   searchOpen: false,
@@ -223,13 +235,16 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
       itemId,
       revisionId,
       tocOpen: tocRaw === "1" ? true : tocRaw === "0" ? false : get().tocOpen,
-      style: styleRaw === "literal" ? "literal" : styleRaw === "natural" ? "natural" : get().style,
+      style: styleRaw === "literal" ? "literal" : styleRaw === "easy" ? "easy" : styleRaw === "natural" ? "natural" : get().style,
       panelOpen,
       activeTab,
-      // リビジョンが変わるので直訳生成状態は未確認に戻す(plans/06 §10.2)。
+      // リビジョンが変わるので直訳/やさしい訳生成状態は未確認に戻す(plans/06 §10.2)。
       literalStatus: "unknown",
       literalJobId: null,
       literalSetId: null,
+      easyStatus: "unknown",
+      easyJobId: null,
+      easySetId: null,
       activeArticlePreset: (["beginner", "implementer", "researcher", "reading_group"] as const).includes(
         articlePresetRaw as Preset,
       )
@@ -267,6 +282,14 @@ export const useViewerStore = create<ViewerStoreState>((set, get) => ({
       literalStatus: status,
       literalJobId: jobId === undefined ? s.literalJobId : jobId,
       literalSetId: setId === undefined ? s.literalSetId : setId,
+    }));
+  },
+
+  setEasyGeneration({ status, jobId, setId }) {
+    set((s) => ({
+      easyStatus: status,
+      easyJobId: jobId === undefined ? s.easyJobId : jobId,
+      easySetId: setId === undefined ? s.easySetId : setId,
     }));
   },
 

@@ -15,32 +15,51 @@
 
 from __future__ import annotations
 
+import base64
 import csv
 import io
+import mimetypes
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Any
 
 import structlog
 from alinea_core.db.models import (
+    Article,
+    ArticleBlock,
     ChatMessage,
     ChatThread,
+    DocumentRevision,
     Job,
     LibraryItem,
     Paper,
     ResourceLink,
+    SourceAsset,
+    TranslationUnit,
 )
 from alinea_core.db.models import Note as NoteModel
-from alinea_core.db.revisions import get_paper_revisions, reading_position_revision_id
+from alinea_core.db.revisions import (
+    get_latest_paper_revision,
+    get_paper_revisions,
+    reading_position_revision_id,
+)
+from alinea_core.document.blocks import DocumentContent
 from alinea_core.jobs.store import JobStore
-from fastapi import APIRouter, Depends, Query, Response, status
+from alinea_core.storage.s3 import S3Storage, StorageKeys
+from alinea_core.translation import (
+    BLOCKING_FLAGS,
+    find_effective_set,
+    resolve_translation_set_units,
+)
+from fastapi import APIRouter, Depends, Query, Response, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from alinea_api.deps import CurrentUser, DbDep, SettingsDep
 from alinea_api.errors import ProblemException
 from alinea_api.routers.annotations import list_annotations
+from alinea_api.routers.papers import StorageDep
 from alinea_api.schemas.common import PaperBib
 from alinea_api.schemas.export import (
     ExportAnnotation,
@@ -55,6 +74,14 @@ from alinea_api.schemas.export import (
 )
 from alinea_api.schemas.jobs import JobOut, job_to_out
 from alinea_api.schemas.library import build_paper_bib
+from alinea_api.schemas.standalone import StandaloneAvailability
+from alinea_api.schemas.standalone_html import (
+    ArticleBlockView,
+    StandaloneMeta,
+    TranslationView,
+    render_article_html,
+    render_document_html,
+)
 
 router = APIRouter(tags=["export"])
 log = structlog.get_logger("alinea.api.export")
@@ -65,6 +92,8 @@ _CSV_MEDIA_TYPE = "text/csv; charset=utf-8"
 # plans/01 §4.3(apps/worker/settings.BULK_QUEUE と同値。apps 間 import 禁止のため定数で持つ。
 # routers/ingest.py・articles.py 等の既存 wakeup ヘルパと同方針)。
 _BULK_QUEUE = "alinea:bulk"
+_MAX_IMPORT_ARCHIVE_BYTES = 100 * 1024 * 1024
+_IMPORT_READ_CHUNK_BYTES = 1024 * 1024
 
 
 def _valid_uuid(value: str) -> bool:
@@ -456,3 +485,431 @@ async def get_export_full(job_id: str, user: CurrentUser, db: DbDep) -> ExportFu
         raise ProblemException("not_found")
     download_url = job.result.get("download_url") if isinstance(job.result, dict) else None
     return ExportFullStatusResponse(job=job_to_out(job), download_url=download_url)
+
+
+# ============================================================================
+# インポート API(完全データ移行 Task 5)
+# POST /api/import/full   — multipart zip → S3 一時 key → import Job 作成
+# GET  /api/import/full/{job_id} — import Job の進捗確認
+# ============================================================================
+
+
+class ImportFullStartResponse(BaseModel):
+    job_id: str
+
+
+class ImportFullStatusResponse(BaseModel):
+    job: JobOut
+    summary: dict[str, Any] | None
+
+
+def get_import_job_wakeup(settings: SettingsDep) -> JobWakeup:
+    """import Job の arq 起床通知(export と同一 bulk キューを使う)。"""
+
+    async def wakeup(job_id: str) -> None:
+        try:
+            await _default_export_wakeup(settings.redis_url, job_id)
+        except Exception:
+            await log.awarning("import_wakeup_failed", job_id=job_id)
+
+    return wakeup
+
+
+ImportJobWakeupDep = Annotated[JobWakeup, Depends(get_import_job_wakeup)]
+
+
+async def _read_limited_import_upload(file: UploadFile) -> bytes:
+    """インポートアーカイブを上限付きで読み込む。"""
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(_IMPORT_READ_CHUNK_BYTES):
+        total += len(chunk)
+        if total > _MAX_IMPORT_ARCHIVE_BYTES:
+            raise ProblemException("payload_too_large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@router.post(
+    "/api/import/full",
+    response_model=ImportFullStartResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="import_full_start",
+)
+async def start_import_full(
+    user: CurrentUser,
+    db: DbDep,
+    settings: SettingsDep,
+    wakeup: ImportJobWakeupDep,
+    file: UploadFile,
+) -> ImportFullStartResponse:
+    """multipart zip を受け取り S3 一時 key に保存して import Job を作成する。"""
+    data = await _read_limited_import_upload(file)
+    upload_id = str(uuid.uuid4())
+    upload_key = StorageKeys.import_upload(str(user.id), upload_id)
+
+    storage = S3Storage(settings)
+    await storage.put(
+        storage.assets_bucket, upload_key, data, content_type="application/zip"
+    )
+
+    store = JobStore(db)
+    job_id = await store.enqueue(
+        kind="import",
+        priority="bulk",
+        user_id=str(user.id),
+        payload={"upload_key": upload_key},
+    )
+    await wakeup(job_id)
+    return ImportFullStartResponse(job_id=job_id)
+
+
+@router.get(
+    "/api/import/full/{job_id}",
+    response_model=ImportFullStatusResponse,
+    operation_id="import_full_status",
+)
+async def get_import_full(
+    job_id: str, user: CurrentUser, db: DbDep
+) -> ImportFullStatusResponse:
+    if not _valid_uuid(job_id):
+        raise ProblemException("not_found")
+    job = await db.get(Job, job_id)
+    if job is None or str(job.user_id) != str(user.id):
+        raise ProblemException("not_found")
+    summary = job.result.get("summary") if isinstance(job.result, dict) else None
+    return ImportFullStatusResponse(job=job_to_out(job), summary=summary)
+
+
+# ============================================================================
+# 論文単位スタンドアロンエクスポート(Feature S3)
+# ============================================================================
+# spec: docs/superpowers/specs/2026-07-16-standalone-paper-export-design.md
+# 原本 PDF とみなす source_assets.kind(papers.py の _PDF_KINDS と同値。apps 間 import の
+# 循環を避けるため定数で持つ)。
+_STANDALONE_PDF_KINDS = ("pdf", "arxiv_pdf", "pdf_upload", "extension_capture")
+_HTML_MEDIA_TYPE = "text/html; charset=utf-8"
+
+
+def _now_iso() -> str:
+    import datetime as _dt
+
+    return _dt.datetime.now(_dt.UTC).isoformat()
+
+
+async def _latest_revision(db: DbDep, item: LibraryItem) -> DocumentRevision | None:
+    paper = await db.get(Paper, item.paper_id)
+    if paper is None:
+        return None
+    return await get_latest_paper_revision(db, paper)
+
+
+def _document_from_revision(revision: DocumentRevision) -> DocumentContent | None:
+    try:
+        content = DocumentContent.model_validate(revision.content)
+    except Exception:  # 壊れた content は「原文なし」として扱う(P3)
+        return None
+    return content if content.iter_blocks() else None
+
+
+async def _has_original_pdf(db: DbDep, revision: DocumentRevision) -> bool:
+    row = (
+        await db.execute(
+            select(SourceAsset.id)
+            .where(
+                SourceAsset.paper_id == revision.paper_id,
+                SourceAsset.kind.in_(_STANDALONE_PDF_KINDS),
+                SourceAsset.source_version == revision.source_version,
+            )
+            .limit(1)
+        )
+    ).first()
+    return row is not None
+
+
+async def _translated_pdf_key(
+    db: DbDep, revision: DocumentRevision, user_id: str
+) -> str | None:
+    """有効 natural セット由来の訳文 PDF の正規キー(無ければ None)。papers.py と同一規則。"""
+    tset = await find_effective_set(db, str(revision.id), "natural", user_id)
+    if tset is None:
+        return None
+    return StorageKeys.translated_pdf(
+        str(revision.paper_id),
+        revision.source_version,
+        "natural",
+        translation_set_id=(str(tset.id) if tset.scope == "personal" else None),
+    )
+
+
+async def _has_translated_pdf(db: DbDep, revision: DocumentRevision, user_id: str) -> bool:
+    key = await _translated_pdf_key(db, revision, user_id)
+    if key is None:
+        return False
+    row = (
+        await db.execute(
+            select(SourceAsset.id)
+            .where(
+                SourceAsset.paper_id == revision.paper_id,
+                SourceAsset.kind == "translated_pdf",
+                SourceAsset.storage_key == key,
+            )
+            .limit(1)
+        )
+    ).first()
+    return row is not None
+
+
+async def _has_article(db: DbDep, item_id: str) -> bool:
+    row = (
+        await db.execute(
+            select(Article.id).where(Article.library_item_id == item_id).limit(1)
+        )
+    ).first()
+    return row is not None
+
+
+async def _translation_complete(db: DbDep, revision: DocumentRevision, user_id: str) -> bool:
+    tset = await find_effective_set(db, str(revision.id), "natural", user_id)
+    return tset is not None and tset.status == "complete"
+
+
+@router.get(
+    "/api/library-items/{item_id}/export/standalone/availability",
+    response_model=StandaloneAvailability,
+    operation_id="export_standaloneAvailability",
+)
+async def standalone_availability(
+    item_id: str, user: CurrentUser, db: DbDep
+) -> StandaloneAvailability:
+    """成果物ごとの生成有無(UI の選択可否判定。最新リビジョン基準でビューアと一致)。"""
+    item = await _get_owned_item(db, user.id, item_id)
+    revision = await _latest_revision(db, item)
+    if revision is None:
+        return StandaloneAvailability(
+            source_html=False,
+            translation_html=False,
+            bilingual_html=False,
+            article_html=await _has_article(db, item_id),
+            pdf_original=False,
+            pdf_translated=False,
+            pdf_bilingual=False,
+        )
+
+    source_ready = _document_from_revision(revision) is not None
+    translation_ready = await _translation_complete(db, revision, str(user.id))
+    pdf_original = await _has_original_pdf(db, revision)
+    pdf_translated = await _has_translated_pdf(db, revision, str(user.id))
+    return StandaloneAvailability(
+        source_html=source_ready,
+        translation_html=translation_ready,
+        bilingual_html=translation_ready,
+        article_html=await _has_article(db, item_id),
+        pdf_original=pdf_original,
+        pdf_translated=pdf_translated,
+        # 決定 D(暫定): 対訳 PDF は原文 PDF + 訳文 PDF の結合で作れる時のみ可。
+        pdf_bilingual=pdf_original and pdf_translated,
+    )
+
+
+def _unit_displayable(unit: TranslationUnit) -> bool:
+    text_ja = unit.text_ja or ""
+    content_ja = unit.content_ja
+    typed_table = isinstance(content_ja, dict) and content_ja.get("kind") == "table"
+    flags = set(unit.quality_flags or [])
+    return bool(text_ja or typed_table) and not (flags & BLOCKING_FLAGS)
+
+
+async def _translation_views(
+    db: DbDep, revision: DocumentRevision, user_id: str
+) -> dict[str, TranslationView]:
+    tset = await find_effective_set(db, str(revision.id), "natural", user_id)
+    if tset is None:
+        return {}
+    units = await resolve_translation_set_units(db, tset)
+    return {
+        block_id: TranslationView(
+            content_ja=unit.content_ja,
+            text_ja=unit.text_ja or "",
+            displayable=_unit_displayable(unit),
+        )
+        for block_id, unit in units.items()
+    }
+
+
+async def _image_data_uris(storage: StorageDep, asset_keys: set[str]) -> dict[str, str]:
+    """図の S3 バイトを data URI 化(best-effort。欠損はプレースホルダに委ねる)。"""
+    out: dict[str, str] = {}
+    for key in sorted(asset_keys):
+        try:
+            data = await storage.get(storage.assets_bucket, key)
+        except Exception:  # noqa: S112 — 欠損アセットは skip(P3。レンダラが代替表示)
+            continue
+        mime = mimetypes.guess_type(key)[0] or "image/png"
+        encoded = base64.b64encode(data).decode("ascii")
+        out[key] = f"data:{mime};base64,{encoded}"
+    return out
+
+
+def _document_asset_keys(content: DocumentContent) -> set[str]:
+    return {
+        block.asset_key
+        for _section, block in content.iter_blocks()
+        if block.type in ("figure", "table", "equation") and block.asset_key
+    }
+
+
+def _standalone_meta(paper_bib: PaperBib, quality: str, mode_label: str) -> StandaloneMeta:
+    return StandaloneMeta(
+        title=paper_bib.title,
+        authors=list(paper_bib.authors),
+        arxiv_id=paper_bib.arxiv_id,
+        generated_at=_now_iso(),
+        mode_label=mode_label,
+        quality_level=quality,
+    )
+
+
+async def _resolved_document(
+    db: DbDep, user: CurrentUser, item_id: str
+) -> tuple[LibraryItem, DocumentRevision, DocumentContent, PaperBib]:
+    item = await _get_owned_item(db, user.id, item_id)
+    revision = await _latest_revision(db, item)
+    if revision is None:
+        raise ProblemException("not_found")
+    content = _document_from_revision(revision)
+    if content is None:
+        raise ProblemException("not_found")
+    paper = await db.get(Paper, item.paper_id)
+    if paper is None:
+        raise ProblemException("not_found")
+    return item, revision, content, build_paper_bib(paper)
+
+
+def _html_filename(paper: PaperBib, suffix: str) -> str:
+    """HTML 版のファイル名(export_filename の .md を .html に差し替え)。"""
+    return export_filename(paper, suffix=suffix).removesuffix(".md") + ".html"
+
+
+@router.get(
+    "/api/library-items/{item_id}/export/standalone/source.html",
+    operation_id="export_standaloneSourceHtml",
+)
+async def standalone_source_html(
+    item_id: str, user: CurrentUser, db: DbDep, storage: StorageDep
+) -> Response:
+    _item, revision, content, paper_bib = await _resolved_document(db, user, item_id)
+    image_data_uris = await _image_data_uris(storage, _document_asset_keys(content))
+    html_doc = render_document_html(
+        content,
+        mode="source",
+        units={},
+        image_data_uris=image_data_uris,
+        meta=_standalone_meta(paper_bib, revision.quality_level, "原文"),
+    )
+    return _attachment(
+        html_doc, media_type=_HTML_MEDIA_TYPE, filename=_html_filename(paper_bib, "-source")
+    )
+
+
+@router.get(
+    "/api/library-items/{item_id}/export/standalone/translation.html",
+    operation_id="export_standaloneTranslationHtml",
+)
+async def standalone_translation_html(
+    item_id: str, user: CurrentUser, db: DbDep, storage: StorageDep
+) -> Response:
+    _item, revision, content, paper_bib = await _resolved_document(db, user, item_id)
+    if not await _translation_complete(db, revision, str(user.id)):
+        raise ProblemException("not_found")
+    units = await _translation_views(db, revision, str(user.id))
+    image_data_uris = await _image_data_uris(storage, _document_asset_keys(content))
+    html_doc = render_document_html(
+        content,
+        mode="translation",
+        units=units,
+        image_data_uris=image_data_uris,
+        meta=_standalone_meta(paper_bib, revision.quality_level, "訳文"),
+    )
+    return _attachment(
+        html_doc, media_type=_HTML_MEDIA_TYPE, filename=_html_filename(paper_bib, "-translation")
+    )
+
+
+@router.get(
+    "/api/library-items/{item_id}/export/standalone/bilingual.html",
+    operation_id="export_standaloneBilingualHtml",
+)
+async def standalone_bilingual_html(
+    item_id: str, user: CurrentUser, db: DbDep, storage: StorageDep
+) -> Response:
+    _item, revision, content, paper_bib = await _resolved_document(db, user, item_id)
+    if not await _translation_complete(db, revision, str(user.id)):
+        raise ProblemException("not_found")
+    units = await _translation_views(db, revision, str(user.id))
+    image_data_uris = await _image_data_uris(storage, _document_asset_keys(content))
+    html_doc = render_document_html(
+        content,
+        mode="bilingual",
+        units=units,
+        image_data_uris=image_data_uris,
+        meta=_standalone_meta(paper_bib, revision.quality_level, "対訳"),
+    )
+    return _attachment(
+        html_doc, media_type=_HTML_MEDIA_TYPE, filename=_html_filename(paper_bib, "-bilingual")
+    )
+
+
+@router.get(
+    "/api/library-items/{item_id}/export/standalone/article.html",
+    operation_id="export_standaloneArticleHtml",
+)
+async def standalone_article_html(
+    item_id: str, user: CurrentUser, db: DbDep, storage: StorageDep
+) -> Response:
+    item = await _get_owned_item(db, user.id, item_id)
+    article = (
+        await db.execute(
+            select(Article)
+            .where(Article.library_item_id == item_id)
+            .order_by(Article.generated_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if article is None:
+        raise ProblemException("not_found")
+    blocks = (
+        (
+            await db.execute(
+                select(ArticleBlock)
+                .where(ArticleBlock.article_id == article.id)
+                .order_by(ArticleBlock.position.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    views = [ArticleBlockView(type=b.type, content=dict(b.content or {})) for b in blocks]
+    asset_keys = {
+        str(b.content["asset_key"])
+        for b in blocks
+        if isinstance(b.content, dict) and b.content.get("asset_key")
+    }
+    image_data_uris = await _image_data_uris(storage, asset_keys)
+
+    paper = await db.get(Paper, item.paper_id)
+    if paper is None:
+        raise ProblemException("not_found")
+    paper_bib = build_paper_bib(paper)
+    meta = StandaloneMeta(
+        title=article.title or paper_bib.title,
+        authors=list(paper_bib.authors),
+        arxiv_id=paper_bib.arxiv_id,
+        generated_at=_now_iso(),
+        mode_label="記事",
+        quality_level="A",
+    )
+    html_doc = render_article_html(views, image_data_uris=image_data_uris, meta=meta)
+    return _attachment(
+        html_doc, media_type=_HTML_MEDIA_TYPE, filename=_html_filename(paper_bib, "-article")
+    )

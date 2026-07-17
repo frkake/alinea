@@ -473,3 +473,130 @@ async def test_glossary_changes_do_not_affect_vocab(
     await db_session.commit()
     after_delete = (await vocab_ctx.client.get("/api/vocab")).json()
     assert after_delete["counts"] == before["counts"]
+
+
+# ============================================================================
+# PY-VOC-10: Anki TSV エクスポート
+# ============================================================================
+def test_render_anki_tsv_fields() -> None:
+    """_render_anki_tsv() が Front/Back/tags 列を正しく組み立てる。"""
+    from alinea_api.routers.vocab import _render_anki_tsv
+    from alinea_api.schemas.chat import AnchorRef
+    from alinea_api.schemas.vocab import (
+        VocabAi,
+        VocabEntryDetail,
+        VocabHighlight,
+        VocabMeaning,
+        VocabSource,
+        VocabSrs,
+    )
+
+    entry = VocabEntryDetail(
+        id="test-id",
+        kind="word",
+        term="reflow",
+        meaning_short="リフロー",
+        source=VocabSource(
+            library_item_id="lib-id",
+            paper_title="Rectified Flow Paper",
+            display="Rectified Flow · §2.1",
+        ),
+        added_at="2026-01-01",
+        generation="done",
+        pos_label="noun",
+        ipa="/ˈriːfloʊ/",  # noqa: RUF001 - intentional IPA (stress mark / length mark)
+        anchor=AnchorRef(revision_id="rev-id", block_id="blk", display="§2.1"),
+        context_sentence="The reflow procedure straightens paths.",
+        highlight=VocabHighlight(start=4, end=10),
+        ai=VocabAi(
+            context_meaning=VocabMeaning(short="リフロー", long="パスを整列させる手順"),
+            interpretation="経路の整列手法",
+            etymology=None,
+            mnemonic="re + flow = 再び流す",
+        ),
+        srs=VocabSrs(stage=1, next_review_at="2026-01-02", review_count=0, history=[]),
+    )
+
+    tsv = _render_anki_tsv([entry])
+    lines = tsv.splitlines()
+
+    # ヘッダ行
+    assert lines[0] == "#separator:tab"
+    assert lines[1] == "#html:true"
+    assert lines[2] == "#tags column:3"
+
+    # カード行
+    assert len(lines) == 4
+    parts = lines[3].split("\t")
+    assert len(parts) == 3
+
+    front, back, tags = parts
+    # Front
+    assert "reflow" in front
+    assert "noun" in front
+    assert "/ˈriːfloʊ/" in front  # noqa: RUF001 - intentional IPA (stress mark / length mark)
+
+    # Back
+    assert "リフロー" in back
+    assert "パスを整列させる手順" in back
+    assert "The reflow procedure straightens paths." in back
+    assert "経路の整列手法" in back
+    assert "re + flow = 再び流す" in back
+    assert "Rectified Flow · §2.1" in back
+
+    # Tags
+    assert "alinea" in tags
+    assert "word" in tags
+
+
+async def test_export_anki_tsv_structure(vocab_ctx: SimpleNamespace) -> None:
+    """PY-VOC-10a: エンドポイントが正しい TSV ヘッダと Content-Disposition を返す。"""
+    created = await vocab_ctx.client.post("/api/vocab", json=_create_payload(vocab_ctx))
+    assert created.status_code == 201
+
+    resp = await vocab_ctx.client.get("/api/vocab/export/anki")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert "attachment" in resp.headers["content-disposition"]
+    assert "alinea-vocab-" in resp.headers["content-disposition"]
+    assert resp.headers["content-disposition"].endswith('.txt"')
+
+    text = resp.text
+    lines = text.splitlines()
+    assert lines[0] == "#separator:tab"
+    assert lines[1] == "#html:true"
+    assert lines[2] == "#tags column:3"
+    # カード行が 1 行以上
+    assert len(lines) >= 4
+    # カード行はタブ 2 本(3 列)
+    assert lines[3].count("\t") == 2
+
+
+async def test_export_anki_contains_term_and_context(vocab_ctx: SimpleNamespace) -> None:
+    """PY-VOC-10b: カード内に term と context_sentence が含まれる。"""
+    created = await vocab_ctx.client.post("/api/vocab", json=_create_payload(vocab_ctx))
+    assert created.status_code == 201
+
+    resp = await vocab_ctx.client.get("/api/vocab/export/anki")
+    assert resp.status_code == 200
+
+    text = resp.text
+    assert "reflow" in text
+    assert "The reflow procedure straightens paths." in text
+    assert "alinea" in text
+
+
+async def test_export_anki_filter_kind(vocab_ctx: SimpleNamespace) -> None:
+    """PY-VOC-10c: kind=word フィルタで word のみ返す(word エントリのみ登録)。"""
+    # word エントリ追加
+    await vocab_ctx.client.post("/api/vocab", json=_create_payload(vocab_ctx))
+
+    # kind=word のみ要求
+    resp = await vocab_ctx.client.get("/api/vocab/export/anki?kind=word")
+    assert resp.status_code == 200
+
+    card_lines = [line for line in resp.text.splitlines() if not line.startswith("#")]
+    # word タグのみ
+    for line in card_lines:
+        tags = line.split("\t")[2]
+        assert "word" in tags

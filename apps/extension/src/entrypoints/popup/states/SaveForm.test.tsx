@@ -43,10 +43,10 @@ test("shows quality B estimate when latex missing and hides row when null", () =
   const { rerender } = render(
     <SaveForm preview={{ title: "X", latexAvailable: false }} />,
   );
-  expect(screen.getByText(/品質レベル B 見込み/)).toBeInTheDocument();
+  expect(screen.getByText(/品質は解析後に確定/)).toBeInTheDocument();
 
   rerender(<SaveForm preview={{ title: "X", latexAvailable: null }} />);
-  expect(screen.queryByText(/品質レベル/)).toBeNull();
+  expect(screen.queryByText(/品質は解析後に確定/)).toBeNull();
 });
 
 test("default status is planned (読む予定) and 3 choices are shown", () => {

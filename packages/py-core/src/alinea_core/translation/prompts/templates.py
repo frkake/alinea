@@ -103,6 +103,13 @@ _STYLE_LITERAL = """## 文体規定(直訳)
 - 関係詞・分詞構文は構造が見える形で訳す(自然さより構文対応を優先する)。
 - カタカナ語・定訳・頭字語・用語表の扱いは自然訳と同じ。"""
 
+_STYLE_EASY = """## 文体規定(やさしい訳)
+- 「だ・である」調に固定する。
+- 高校生や他分野の研究者が読んでも理解できる平易な日本語にする。
+- 専門用語は初出時に括弧で短い説明を添える(例: 損失関数(モデルの誤りを数値化したもの))。
+- 長い一文は読みやすく 2 文に分割してよい。意味を変えない範囲で言い換えを許す。
+- カタカナ語・定訳・頭字語・用語表の扱いは自然訳と同じ。"""
+
 _OUTPUT = "\n".join(
     [
         "## 出力",
@@ -116,12 +123,18 @@ _OUTPUT = "\n".join(
 
 
 def build_system_preamble(style: str = "natural") -> str:
-    """system[0]: 静的プリアンブル(plans/06 §5.1/§5.2)。スタイル別に 2 系統。
+    """system[0]: 静的プリアンブル(plans/06 §5.1/§5.2)。スタイル別に 3 系統。
 
-    ``style='literal'`` では「文体規定」節を直訳版に差し替える(他節は共通)。対訳例は
+    ``style='literal'`` では「文体規定」節を直訳版に差し替える(他節は共通)。
+    ``style='easy'`` では「文体規定」節をやさしい訳版に差し替える。対訳例は
     GOOD 2・BAD 2 を埋め込む(plans/06 §5.1)。
     """
-    style_section = _STYLE_LITERAL if style == "literal" else _STYLE_NATURAL
+    if style == "literal":
+        style_section = _STYLE_LITERAL
+    elif style == "easy":
+        style_section = _STYLE_EASY
+    else:
+        style_section = _STYLE_NATURAL
     examples = format_examples(GOOD_EXAMPLES[:2] + BAD_EXAMPLES[:2])
     return "\n\n".join([_LEAD, _RULES, style_section, _OUTPUT, "## 対訳例\n" + examples])
 

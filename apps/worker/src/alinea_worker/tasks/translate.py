@@ -52,7 +52,7 @@ from alinea_worker import notify
 from alinea_worker.latex_pdf import LatexPdfBuildError, build_translation_pdfs_if_ready
 
 # translate_section が担当する reason(plans/06 §3.1)。
-_SECTION_REASONS = frozenset({"initial", "literal", "on_demand", "table", "retry_failed"})
+_SECTION_REASONS = frozenset({"initial", "literal", "easy", "on_demand", "table", "retry_failed"})
 # 単一ユニット再翻訳(proposal 保存。plans/06 §11.1)。
 _SINGLE_UNIT_REASONS = frozenset({"retranslate", "instructed"})
 # 再翻訳のエスカレーション先タスク名(plans/04 §8)。

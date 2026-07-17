@@ -206,8 +206,10 @@ export function ViewerShell({
         : null;
   const pdfAssetIdentity = { revisionId, translationSetId };
   const pdfFetchMode = pdfDocumentMode === "translated" ? "translated" : "source";
+  // easy 訳の PDF は M3 では生成しないため、PDF 経路では natural にフォールバックする(S11 spec §7)。
+  const pdfStyle = translationStyle === "literal" ? "literal" : "natural";
   const pdfVariantQuery =
-    pdfFetchMode === "source" ? "" : `?variant=${pdfFetchMode}&style=${translationStyle}`;
+    pdfFetchMode === "source" ? "" : `?variant=${pdfFetchMode}&style=${pdfStyle}`;
   const pdfDownloadLabel = pdfFetchMode === "source" ? "原文PDF" : "日本語PDF";
 
   return (
@@ -250,7 +252,7 @@ export function ViewerShell({
           <PdfDocumentProvider
             paperId={paperId}
             variant={pdfFetchMode}
-            style={translationStyle}
+            style={pdfStyle}
             identity={pdfAssetIdentity}
           >
             <PdfSidebar
@@ -272,7 +274,7 @@ export function ViewerShell({
               lastPositionBlockId={
                 viewer.last_position?.mode === "pdf" ? viewer.last_position.block_id : null
               }
-              translationStyle={translationStyle}
+              translationStyle={pdfStyle}
               translationSetId={translationSetId}
               onOpenInTranslation={onOpenInTranslation}
             />

@@ -107,6 +107,11 @@ class StorageKeys:
     def export(user_id: str, export_id: str) -> str:
         return f"exports/{user_id}/{export_id}.zip"
 
+    @staticmethod
+    def import_upload(user_id: str, upload_id: str) -> str:
+        """インポート用の一時 zip キー(assets バケット)。完了後に削除しない — 再実行用に保持。"""
+        return f"imports/{user_id}/{upload_id}.zip"
+
 
 class S3Storage:
     """async S3 クライアント。sources / assets の 2 バケットを扱う。"""

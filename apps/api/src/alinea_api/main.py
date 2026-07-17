@@ -43,6 +43,7 @@ from alinea_api.routers import (
     translations,
     viewer,
     vocab,
+    vocab_candidates,
 )
 from alinea_api.routers import (
     settings as settings_router,
@@ -93,6 +94,7 @@ def create_app() -> FastAPI:
     app.include_router(share.router)
     app.include_router(collections.router)
     app.include_router(vocab.router)
+    app.include_router(vocab_candidates.router)
     app.include_router(resources.router)
 
     return app
