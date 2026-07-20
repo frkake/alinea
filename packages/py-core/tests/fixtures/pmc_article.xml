@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Minimal PMC Open Access JATS article for deterministic parser tests.
+     No DOCTYPE / external entities on purpose (the safe path must also accept
+     well-formed OA XML). XXE-hostile variants are built inline in the tests. -->
+<article xmlns:xlink="http://www.w3.org/1999/xlink" article-type="research-article">
+  <front>
+    <journal-meta>
+      <journal-title-group>
+        <journal-title>Journal of Deterministic Testing</journal-title>
+      </journal-title-group>
+    </journal-meta>
+    <article-meta>
+      <article-id pub-id-type="pmid">31000000</article-id>
+      <article-id pub-id-type="pmc">PMC6543210</article-id>
+      <article-id pub-id-type="doi">10.1234/jdt.2019.42</article-id>
+      <title-group>
+        <article-title>A Deterministic Method for Parsing JATS</article-title>
+      </title-group>
+      <contrib-group>
+        <contrib contrib-type="author">
+          <name><surname>Curie</surname><given-names>Marie</given-names></name>
+        </contrib>
+        <contrib contrib-type="author">
+          <name><surname>Franklin</surname><given-names>Rosalind</given-names></name>
+        </contrib>
+      </contrib-group>
+      <pub-date pub-type="epub">
+        <day>15</day><month>6</month><year>2019</year>
+      </pub-date>
+      <permissions>
+        <license xlink:href="https://creativecommons.org/licenses/by/4.0/">
+          <license-p>This is an open access article under CC BY 4.0.</license-p>
+        </license>
+      </permissions>
+      <abstract>
+        <p>We present a method for structuring biomedical articles from JATS XML
+        into a quality-A document representation.</p>
+      </abstract>
+    </article-meta>
+  </front>
+  <body>
+    <sec id="s1">
+      <title>Introduction</title>
+      <p>Biomedical literature is distributed as JATS XML by PubMed Central.
+      This paragraph references <xref ref-type="bibr" rid="B1">Curie et al.</xref>
+      and a figure <xref ref-type="fig" rid="f1">Figure 1</xref>.</p>
+      <p>An <bold>emphasised</bold> clause with an <unknown-inline-tag>unmapped
+      inline element</unknown-inline-tag> that must degrade to its child text.</p>
+    </sec>
+    <sec id="s2">
+      <title>Methods</title>
+      <p>The equation below defines the loss.</p>
+      <disp-formula id="e1">
+        <tex-math>\mathcal{L} = \sum_i (y_i - \hat{y}_i)^2</tex-math>
+      </disp-formula>
+      <fig id="f1">
+        <label>Figure 1</label>
+        <caption><p>A deterministic overview figure.</p></caption>
+        <graphic xlink:href="6543210f1.jpg"/>
+      </fig>
+      <table-wrap id="t1">
+        <label>Table 1</label>
+        <caption><p>Results across configurations.</p></caption>
+        <table>
+          <thead>
+            <tr><th>Config</th><th>Score</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>A</td><td>0.91</td></tr>
+            <tr><td>B</td><td>0.87</td></tr>
+          </tbody>
+        </table>
+      </table-wrap>
+    </sec>
+  </body>
+  <back>
+    <ref-list>
+      <ref id="B1">
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name><surname>Curie</surname><given-names>M</given-names></name>
+          </person-group>
+          <article-title>Foundational radioactivity work</article-title>
+          <source>Nature</source>
+          <year>1898</year>
+        </element-citation>
+      </ref>
+    </ref-list>
+  </back>
+</article>

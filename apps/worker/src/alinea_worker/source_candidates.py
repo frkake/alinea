@@ -193,7 +193,7 @@ class _PdfOcrJsonError(ValueError):
 class SourceCandidate:
     """A parsed source that is ready for completeness assessment and persistence."""
 
-    source_format: Literal["latex", "arxiv_html", "pdf"]
+    source_format: Literal["latex", "arxiv_html", "pdf", "jats"]
     content: DocumentContent
     parsed: ParsedDocument | ParsedPdfDocument
     report: DocumentCompleteness

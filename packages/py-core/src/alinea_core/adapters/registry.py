@@ -10,9 +10,16 @@ from __future__ import annotations
 from alinea_core.adapters.acl_anthology import AclAnthologyAdapter
 from alinea_core.adapters.base import SiteAdapter, SiteRef
 from alinea_core.adapters.openreview import OpenReviewAdapter
+from alinea_core.adapters.pubmed import PmcAdapter, PubMedAdapter
 
-# 検出優先順(docs/02 §8): ACL Anthology → OpenReview → PubMed/PMC。
-_ADAPTERS: tuple[SiteAdapter, ...] = (AclAnthologyAdapter(), OpenReviewAdapter())
+# 検出優先順(docs/02 §8): ACL Anthology → OpenReview → PubMed / PMC。
+# URL 空間は重ならない(各アダプタの match は自サイトのホスト/パスにのみ当たる)。
+_ADAPTERS: tuple[SiteAdapter, ...] = (
+    AclAnthologyAdapter(),
+    OpenReviewAdapter(),
+    PubMedAdapter(),
+    PmcAdapter(),
+)
 
 
 def registered_adapters() -> tuple[SiteAdapter, ...]:

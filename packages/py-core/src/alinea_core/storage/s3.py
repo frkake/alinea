@@ -43,6 +43,10 @@ class StorageKeys:
         return f"sources/{paper_id}/{source_version}/arxiv.html"
 
     @staticmethod
+    def jats_xml(paper_id: str, source_version: str) -> str:
+        return f"sources/{paper_id}/{source_version}/jats.xml"
+
+    @staticmethod
     def original_pdf(paper_id: str, source_version: str) -> str:
         return f"sources/{paper_id}/{source_version}/original.pdf"
 

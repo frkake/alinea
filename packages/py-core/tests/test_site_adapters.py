@@ -294,6 +294,31 @@ _INVALID_OR = [
 ]
 
 
+# --------------------------------------------------------------------------- #
+# PubMed / PMC アダプタ(Task 17)
+# --------------------------------------------------------------------------- #
+
+from alinea_core.adapters import (  # noqa: E402
+    PmcAdapter,
+    PubMedAdapter,
+)
+
+_VALID_PUBMED = [
+    ("https://pubmed.ncbi.nlm.nih.gov/31000000/", "31000000"),
+    ("https://pubmed.ncbi.nlm.nih.gov/31000000", "31000000"),
+    ("http://www.ncbi.nlm.nih.gov/pubmed/31000000", "31000000"),
+    ("pubmed.ncbi.nlm.nih.gov/31000000/", "31000000"),
+]
+
+_INVALID_PUBMED = [
+    "https://pubmed.ncbi.nlm.nih.gov/",
+    "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6543210/",
+    "https://arxiv.org/abs/2209.03003",
+    "",
+    "not a url",
+]
+
+
 def test_openreview_match_valid() -> None:
     from alinea_core.adapters.openreview import OpenReviewAdapter
 
@@ -492,3 +517,168 @@ async def test_fetch_note_returns_none_on_empty_notes() -> None:
     finally:
         await client.aclose()
     assert note is None
+
+
+_VALID_PMC = [
+    ("https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6543210/", "PMC6543210"),
+    ("https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6543210", "PMC6543210"),
+    ("https://pmc.ncbi.nlm.nih.gov/articles/PMC6543210/", "PMC6543210"),
+    ("ncbi.nlm.nih.gov/pmc/articles/PMC6543210/", "PMC6543210"),
+]
+
+_INVALID_PMC = [
+    "https://pubmed.ncbi.nlm.nih.gov/31000000/",
+    "https://www.ncbi.nlm.nih.gov/pmc/",
+    "https://arxiv.org/abs/2209.03003",
+    "",
+]
+
+
+def test_pubmed_match_valid() -> None:
+    adapter = PubMedAdapter()
+    for url, external_id in _VALID_PUBMED:
+        ref = adapter.match(url)
+        assert ref is not None, url
+        assert ref.site == "pubmed"
+        assert ref.external_id == external_id, url
+
+
+def test_pubmed_match_invalid() -> None:
+    adapter = PubMedAdapter()
+    for url in _INVALID_PUBMED:
+        assert adapter.match(url) is None, url
+
+
+def test_pmc_match_valid() -> None:
+    adapter = PmcAdapter()
+    for url, external_id in _VALID_PMC:
+        ref = adapter.match(url)
+        assert ref is not None, url
+        assert ref.site == "pmc", url
+        # PMCID は大文字 PMC + 数字へ正規化する。
+        assert ref.external_id == external_id, url
+
+
+def test_pmc_match_invalid() -> None:
+    adapter = PmcAdapter()
+    for url in _INVALID_PMC:
+        assert adapter.match(url) is None, url
+
+
+def test_pubmed_pmc_url_builders() -> None:
+    pubmed = PubMedAdapter()
+    pmc = PmcAdapter()
+    pm_ref = SiteRef(site="pubmed", external_id="31000000")
+    pmc_ref = SiteRef(site="pmc", external_id="PMC6543210")
+    assert pubmed.landing_url(pm_ref) == "https://pubmed.ncbi.nlm.nih.gov/31000000/"
+    assert pmc.landing_url(pmc_ref) == "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6543210/"
+    # PubMed は本文 PDF 直リンクを持たない(NCBI client 経由でしか本文へ到達しない)。
+    assert pubmed.pdf_url(pm_ref) is None
+
+
+def test_resolve_adapter_pubmed_and_pmc() -> None:
+    resolved_pm = resolve_adapter("https://pubmed.ncbi.nlm.nih.gov/31000000/")
+    assert resolved_pm is not None
+    assert resolved_pm[0].site == "pubmed"
+    assert resolved_pm[1].external_id == "31000000"
+
+    resolved_pmc = resolve_adapter("https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6543210/")
+    assert resolved_pmc is not None
+    assert resolved_pmc[0].site == "pmc"
+    assert resolved_pmc[1].external_id == "PMC6543210"
+
+
+# --------------------------------------------------------------------------- #
+# NCBI E-utilities / PMC OA クライアント + Redis throttle(Task 17)
+# --------------------------------------------------------------------------- #
+
+from alinea_core.adapters.pubmed import (  # noqa: E402
+    NcbiClient,
+    NcbiConfig,
+    ncbi_throttle,
+    ncbi_throttle_interval_ms,
+)
+
+
+class _FakeRedis:
+    """in-memory の最小 Redis(SET NX PX スピン用)。TTL は無視する。"""
+
+    def __init__(self) -> None:
+        self._store: dict[str, bytes] = {}
+        self.set_calls = 0
+
+    async def get(self, name: str) -> bytes | None:
+        return self._store.get(name)
+
+    async def set(
+        self,
+        name: str,
+        value: bytes,
+        *,
+        ex: int | None = None,
+        px: int | None = None,
+        nx: bool = False,
+    ) -> bool | None:
+        self.set_calls += 1
+        if nx and name in self._store:
+            return None
+        self._store[name] = value
+        return True
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_ncbi_throttle_interval_depends_on_api_key() -> None:
+    # API キーなし = 3 req/s(>= 333ms 間隔)、あり = 10 req/s(>= 100ms 間隔)。
+    assert ncbi_throttle_interval_ms(api_key=None) >= 333
+    assert ncbi_throttle_interval_ms(api_key="secret") >= 100
+    assert ncbi_throttle_interval_ms(api_key="secret") < ncbi_throttle_interval_ms(api_key=None)
+
+
+async def test_ncbi_throttle_spins_until_slot_free() -> None:
+    redis = _FakeRedis()
+    # 最初の取得は成功、2 回目は占有中(nx 失敗)→ 解放後に取得できる。
+    await ncbi_throttle(redis, interval_ms=100, sleep_ms=1)
+    assert redis.set_calls == 1
+
+
+async def test_ncbi_client_fetches_pmc_jats_from_configured_base() -> None:
+    jats = (_FIXTURE.parent / "pmc_article.xml").read_bytes()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # PMC OA XML は設定可能な base URL 配下のみ叩く(実 NCBI へは行かない)。
+        assert request.url.host == "eutils.test"
+        if "efetch" in request.url.path:
+            return httpx.Response(200, content=jats,
+                                  headers={"content-type": "application/xml"})
+        raise AssertionError(f"unexpected NCBI path: {request.url.path}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://eutils.test")
+    config = NcbiConfig(eutils_base_url="http://eutils.test", api_key=None)
+    ncbi = NcbiClient(config=config, client=client, redis=_FakeRedis())
+    try:
+        xml = await ncbi.fetch_pmc_jats("PMC6543210")
+    finally:
+        await client.aclose()
+    assert b"A Deterministic Method for Parsing JATS" in xml
+
+
+async def test_ncbi_client_maps_pmid_to_pmcid() -> None:
+    idconv = b"""<?xml version="1.0"?>
+    <pmcids status="ok">
+      <record requested-id="31000000" pmcid="PMC6543210" pmid="31000000"/>
+    </pmcids>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "idconv.test"
+        return httpx.Response(200, content=idconv, headers={"content-type": "application/xml"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://idconv.test")
+    config = NcbiConfig(idconv_base_url="http://idconv.test", api_key=None)
+    ncbi = NcbiClient(config=config, client=client, redis=_FakeRedis())
+    try:
+        pmcid = await ncbi.pmid_to_pmcid("31000000")
+    finally:
+        await client.aclose()
+    assert pmcid == "PMC6543210"
