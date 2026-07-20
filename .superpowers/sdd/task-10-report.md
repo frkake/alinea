@@ -60,4 +60,45 @@ Source: `apps/web/node_modules/katex@0.16.22/dist/`
 ## Concerns
 
 - **HTML file size:** ~950KB inlined (fonts + JS + CSS) before content. Acceptable for a download artifact.
-- **Fixture sharing not fully wired to TS:** The shared JSON exists but no TS test currently reads it. Can be wired in a follow-up.
+
+---
+
+## Review Fixes (second commit: ef43062)
+
+### Important — TS parity test added
+
+Added `apps/web/src/components/viewer/latex-display-clean.test.ts` (Vitest) that imports `cleanLatexDisplayText` from the real TS source and loads the same shared fixture JSON. Canonical fixture location moved to `apps/web/src/components/viewer/latex-display-clean.fixtures.json` (adjacent to the TS source). Python test updated to reference this path via `pathlib`.
+
+**`pnpm --filter @alinea/web test -- latex-display-clean.test.ts` output:**
+```
+ ✓ src/components/viewer/latex-display-clean.test.ts > cleanLatexDisplayText — shared fixture parity > 'label command removed'
+ ✓ src/components/viewer/latex-display-clean.test.ts > cleanLatexDisplayText — shared fixture parity > 'notag command removed'
+ ✓ src/components/viewer/latex-display-clean.test.ts > cleanLatexDisplayText — shared fixture parity > 'textbf unwrapped'
+ ✓ src/components/viewer/latex-display-clean.test.ts > cleanLatexDisplayText — shared fixture parity > 'top-level ampersand passthrough (no L…'
+ ✓ src/components/viewer/latex-display-clean.test.ts > cleanLatexDisplayText — shared fixture parity > 'top-level ampersand in LaTeX context …'
+ ✓ src/components/viewer/latex-display-clean.test.ts > cleanLatexDisplayText — shared fixture parity > 'plain text unchanged'
+ ✓ src/components/viewer/latex-display-clean.test.ts > cleanLatexDisplayText — shared fixture parity > 'textit unwrapped'
+ ✓ src/components/viewer/latex-display-clean.test.ts > cleanLatexDisplayText — shared fixture parity > 'emph unwrapped'
+ ✓ src/components/viewer/latex-display-clean.test.ts > cleanLatexDisplayText — shared fixture parity > 'curly braces removed'
+ ✓ src/components/viewer/latex-display-clean.test.ts > cleanLatexDisplayText — shared fixture parity > 'tilde in LaTeX context replaced with …'
+
+ Test Files  1 passed (1)
+      Tests  10 passed (10)
+```
+
+### Minor 1 — manifest version key
+
+Added `"katex_version": "0.16.22"` as the first key in `manifest.json`.
+
+### Minor 2 — manifest integrity test
+
+Added `test_katex_manifest_integrity` to `test_standalone_html.py`: loads `manifest.json`, asserts `katex_version == "0.16.22"`, then for each file entry asserts `sha256(path.read_bytes()).hexdigest() == manifest[name]`.
+
+### Minor 3 — url check covers http:// too
+
+Updated `test_katex_runtime_contains_no_external_urls` to use `re.findall(r'(?:src|href)=["\']https?://', runtime)` (same pattern as the document-level test), covering both `http://` and `https://` in src/href attributes.
+
+**`uv run pytest apps/api/tests/test_standalone_html.py -q` output:**
+```
+39 passed in 1.36s
+```
