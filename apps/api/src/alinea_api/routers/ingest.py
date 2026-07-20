@@ -26,6 +26,7 @@ from alinea_core.adapters.fetch import (
     SiteFetchError,
     adapter_allowed_hosts,
     fetch_html,
+    fetch_note,
 )
 from alinea_core.adapters.fetch import (
     fetch_pdf as fetch_site_pdf,
@@ -131,11 +132,25 @@ class SiteGateway:
 
     アダプタ(純粋)が宣言するホストだけを許可し、landing HTML → SiteMeta 写像、本文 PDF の
     取得を :mod:`alinea_core.adapters.fetch` の境界付きクライアント経由で行う。
+
+    OpenReview は API2 note を優先取得し、note 不在なら citation_* フォールバックを使う。
+    ACL Anthology 等の他アダプタは従来通り landing HTML → parse_metadata。
     """
 
     async def fetch_metadata(self, adapter: SiteAdapter, ref: SiteRef) -> SiteMeta:
+        from alinea_core.adapters.openreview import OpenReviewAdapter
+
         allowed = adapter_allowed_hosts(adapter, ref)
         html = await fetch_html(adapter.landing_url(ref), allowed_hosts=allowed)
+
+        if isinstance(adapter, OpenReviewAdapter):
+            # OpenReview: API2 note を試み、取れたら note 経由の高品質メタを使う。
+            # note が None/403/empty の場合は citation_* フォールバックへ。
+            note = await fetch_note(adapter, ref)
+            return adapter.parse_metadata_from_note_and_citation(
+                note=note, citation_html=html, ref=ref
+            )
+
         return adapter.parse_metadata(html, ref)
 
     async def fetch_pdf(

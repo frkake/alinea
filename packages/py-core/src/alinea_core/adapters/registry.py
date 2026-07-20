@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from alinea_core.adapters.acl_anthology import AclAnthologyAdapter
 from alinea_core.adapters.base import SiteAdapter, SiteRef
+from alinea_core.adapters.openreview import OpenReviewAdapter
 
-# 検出優先順(docs/02 §8): ACL Anthology → (将来)OpenReview → PubMed/PMC。
-_ADAPTERS: tuple[SiteAdapter, ...] = (AclAnthologyAdapter(),)
+# 検出優先順(docs/02 §8): ACL Anthology → OpenReview → PubMed/PMC。
+_ADAPTERS: tuple[SiteAdapter, ...] = (AclAnthologyAdapter(), OpenReviewAdapter())
 
 
 def registered_adapters() -> tuple[SiteAdapter, ...]:

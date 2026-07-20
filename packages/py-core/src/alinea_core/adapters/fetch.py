@@ -33,6 +33,7 @@ from alinea_core.settings import CoreSettings, get_settings
 
 if TYPE_CHECKING:
     from alinea_core.adapters.base import SiteAdapter, SiteRef
+    from alinea_core.adapters.openreview import OpenReviewAdapter
 
 # HTML / PDF の最大バイト数は arXiv 取得と同じ上限を再利用する(§limits)。
 MAX_SITE_HTML_BYTES = MAX_ARXIV_HTML_BYTES
@@ -245,12 +246,71 @@ async def fetch_pdf(
             await http.aclose()
 
 
+async def fetch_note(
+    adapter: OpenReviewAdapter,
+    ref: SiteRef,
+    *,
+    settings: CoreSettings | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> dict[str, object] | None:
+    """OpenReview API2 note を取得して最初の note オブジェクトを返す。
+
+    ``GET https://openreview.net/api2/notes?id={external_id}`` は openreview.net 上にあり、
+    adapter_allowed_hosts の allow-list 内に収まる。JSON を解析し ``notes`` 配列の先頭を返す。
+    404・403・notes=[] の場合は ``None`` を返す(Citation メタへのフォールバックを指示)。
+
+    :param adapter: OpenReviewAdapter インスタンス。
+    :param ref: 対象論文の SiteRef。
+    :param settings: CoreSettings(省略時は get_settings())。
+    :param client: 注入する httpx.AsyncClient(省略時は make_site_client() を生成・破棄)。
+    """
+    import json
+
+    s = settings or get_settings()
+    owns = client is None
+    http = client or make_site_client(s)
+    allowed = adapter_allowed_hosts(adapter, ref)
+    url = adapter.api2_note_url(ref)
+    try:
+        resp = await _request_following_redirects(
+            http, url, allowed_hosts=allowed, timeout_config=_HTML_TIMEOUT
+        )
+        status = resp.status_code
+        ctx = getattr(resp, "_alinea_ctx", None)
+        if status in (403, 404):
+            if ctx is not None:
+                await ctx.__aexit__(None, None, None)
+            return None
+        if status != 200:
+            if ctx is not None:
+                await ctx.__aexit__(None, None, None)
+            return None
+        raw = await _read_and_close(
+            resp, max_bytes=MAX_SITE_HTML_BYTES, too_large_kind="source_too_large"
+        )
+        try:
+            payload = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            return None
+        notes = payload.get("notes") if isinstance(payload, dict) else None
+        if not isinstance(notes, list) or len(notes) == 0:
+            return None
+        note = notes[0]
+        return dict(note) if isinstance(note, dict) else None
+    except SiteFetchError:
+        return None
+    finally:
+        if owns:
+            await http.aclose()
+
+
 __all__ = [
     "MAX_SITE_HTML_BYTES",
     "MAX_SITE_PDF_BYTES",
     "SiteFetchError",
     "adapter_allowed_hosts",
     "fetch_html",
+    "fetch_note",
     "fetch_pdf",
     "make_site_client",
 ]

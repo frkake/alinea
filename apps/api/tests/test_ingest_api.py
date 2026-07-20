@@ -13,11 +13,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import json as _json
 import random
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path as _Path
 from typing import Any
 
+import httpx as _httpx
 import pytest
 import pytest_asyncio
 from alinea_api.main import app
@@ -2015,3 +2018,131 @@ async def test_asset_denies_without_access(
     asset_id = encode_asset_id(f"figures/{paper.id}/rev-1/blk-1.png")
     r = await client.get(f"/api/assets/{asset_id}", follow_redirects=False)
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# OpenReview SiteGateway: API2 note path + citation fallback (Task 16 fix)
+# ---------------------------------------------------------------------------
+
+_OR_NOTE_FIXTURE = _Path(__file__).resolve().parents[3] / "packages" / "py-core" / "tests" / "fixtures" / "openreview_note.json"
+_OR_FORUM_HTML = (
+    "<html><head>"
+    '<meta name="citation_title" content="Citation Fallback Title">'
+    '<meta name="citation_author" content="Smith, Jane">'
+    '<meta name="citation_publication_date" content="2024/01">'
+    "</head><body>OpenReview forum</body></html>"
+)
+
+
+async def test_site_gateway_openreview_uses_api2_note_when_present() -> None:
+    """SiteGateway.fetch_metadata は OpenReview に対して API2 note を優先する。
+
+    API2 note が返ったとき、title/authors/abstract/venue/date/license が note 由来になる。
+    citation_* メタは使われない(note の title が非空なのでフォールバックしない)。
+    """
+    from alinea_api.routers.ingest import SiteGateway
+    from alinea_core.adapters import SiteRef
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    note_payload = _json.loads(_OR_NOTE_FIXTURE.read_text())
+    requested_paths: list[str] = []
+
+    def handler(request: _httpx.Request) -> _httpx.Response:
+        requested_paths.append(request.url.path)
+        if request.url.path == "/forum":
+            return _httpx.Response(200, text=_OR_FORUM_HTML, headers={"content-type": "text/html"})
+        if request.url.path == "/api2/notes":
+            return _httpx.Response(200, json=note_payload)
+        return _httpx.Response(404, text="not found")
+
+    transport = _httpx.MockTransport(handler)
+
+    class _InjectedGateway(SiteGateway):
+        async def fetch_metadata(self, adapter: Any, ref: Any) -> Any:  # type: ignore[override]
+            from alinea_core.adapters import SiteRef as _SiteRef
+            from alinea_core.adapters import adapter_allowed_hosts, fetch_html
+            from alinea_core.adapters.fetch import fetch_note
+            from alinea_core.adapters.openreview import OpenReviewAdapter as _OpenReviewAdapterCls
+
+            client = _httpx.AsyncClient(transport=transport)
+            try:
+                allowed = adapter_allowed_hosts(adapter, _SiteRef(**ref.__dict__))
+                html = await fetch_html(
+                    adapter.landing_url(ref), allowed_hosts=allowed, client=client
+                )
+                if isinstance(adapter, _OpenReviewAdapterCls):
+                    note = await fetch_note(adapter, ref, client=client)
+                    return adapter.parse_metadata_from_note_and_citation(
+                        note=note, citation_html=html, ref=ref
+                    )
+                return adapter.parse_metadata(html, ref)
+            finally:
+                await client.aclose()
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    gateway = _InjectedGateway()
+    meta = await gateway.fetch_metadata(adapter, ref)
+
+    # API2 note 由来のデータが返っていること。
+    assert meta.title == "Attention Is All You Need (Mock)"
+    assert meta.authors == [{"name": "Alice Author"}, {"name": "Bob Builder"}]
+    assert meta.abstract.startswith("We introduce a new mock architecture")
+    assert meta.venue == "ICLR 2024"
+    assert meta.published_on == "2024-01-02"
+    assert meta.license == "cc-by-4.0"
+    # pdf_url は adapter 宣言 URL(HTML 由来でも note 由来でもない)。
+    assert meta.pdf_url == "https://openreview.net/pdf?id=abc123XYZ"
+    # forum と api2/notes の両方がリクエストされた。
+    assert any("forum" in p for p in requested_paths)
+    assert any("api2" in p for p in requested_paths)
+
+
+async def test_site_gateway_openreview_falls_back_to_citation_on_absent_note() -> None:
+    """API2 note が 403/empty のとき、citation_* HTML フォールバックを使う。"""
+    from alinea_api.routers.ingest import SiteGateway
+    from alinea_core.adapters import SiteRef
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    def handler(request: _httpx.Request) -> _httpx.Response:
+        if request.url.path == "/forum":
+            return _httpx.Response(200, text=_OR_FORUM_HTML, headers={"content-type": "text/html"})
+        if request.url.path == "/api2/notes":
+            return _httpx.Response(403, text="Forbidden")
+        return _httpx.Response(404)
+
+    transport = _httpx.MockTransport(handler)
+
+    class _InjectedGateway(SiteGateway):
+        async def fetch_metadata(self, adapter: Any, ref: Any) -> Any:  # type: ignore[override]
+            from alinea_core.adapters import SiteRef as _SiteRef
+            from alinea_core.adapters import adapter_allowed_hosts, fetch_html
+            from alinea_core.adapters.fetch import fetch_note
+            from alinea_core.adapters.openreview import OpenReviewAdapter as _OpenReviewAdapterCls
+
+            client = _httpx.AsyncClient(transport=transport)
+            try:
+                allowed = adapter_allowed_hosts(adapter, _SiteRef(**ref.__dict__))
+                html = await fetch_html(
+                    adapter.landing_url(ref), allowed_hosts=allowed, client=client
+                )
+                if isinstance(adapter, _OpenReviewAdapterCls):
+                    note = await fetch_note(adapter, ref, client=client)
+                    return adapter.parse_metadata_from_note_and_citation(
+                        note=note, citation_html=html, ref=ref
+                    )
+                return adapter.parse_metadata(html, ref)
+            finally:
+                await client.aclose()
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    gateway = _InjectedGateway()
+    meta = await gateway.fetch_metadata(adapter, ref)
+
+    # citation_* フォールバック由来のデータが返っていること。
+    assert meta.title == "Citation Fallback Title"
+    assert meta.authors == [{"name": "Jane Smith"}]
+    assert meta.published_on == "2024-01-01"
+    # pdf_url はフォールバックでも adapter 宣言 URL。citation_pdf_url は使わない。
+    assert meta.pdf_url == "https://openreview.net/pdf?id=abc123XYZ"

@@ -6,6 +6,7 @@ URL 検出・citation_* メタ抽出・SiteMeta 写像・registry 解決を fixt
 
 from __future__ import annotations
 
+import json as _json
 from pathlib import Path
 
 import httpx
@@ -263,3 +264,231 @@ async def test_fetch_pdf_rejects_non_pdf_body() -> None:
     finally:
         await client.aclose()
     assert exc.value.kind == "source_not_found"
+
+
+# --------------------------------------------------------------------------- #
+# OpenReview アダプタ
+# --------------------------------------------------------------------------- #
+
+_OR_FIXTURE = Path(__file__).parent / "fixtures" / "openreview_note.json"
+_OR_HOSTS = frozenset({"openreview.net"})
+
+_VALID_OR = [
+    # forum URL → 同一 SiteRef
+    ("https://openreview.net/forum?id=abc123XYZ", "abc123XYZ"),
+    ("http://openreview.net/forum?id=abc123XYZ", "abc123XYZ"),
+    # pdf URL → 同一 SiteRef
+    ("https://openreview.net/pdf?id=abc123XYZ", "abc123XYZ"),
+    # 特殊文字を含む ID (URL エンコード済み)
+    ("https://openreview.net/forum?id=Abc_1-2%2F3", "Abc_1-2/3"),
+]
+
+_INVALID_OR = [
+    "https://openreview.net/",                          # ルートだけ
+    "https://openreview.net/group?id=ICLR.cc/2024",    # group URL
+    "https://openreview.net/revisions?id=abc",          # revisions URL
+    "https://aclanthology.org/2023.acl-long.123/",
+    "https://arxiv.org/abs/2209.03003",
+    "",
+    "not a url",
+]
+
+
+def test_openreview_match_valid() -> None:
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    for url, external_id in _VALID_OR:
+        ref = adapter.match(url)
+        assert ref is not None, f"should match: {url}"
+        assert ref.site == "openreview"
+        assert ref.external_id == external_id, f"id mismatch for {url}"
+
+
+def test_openreview_match_invalid() -> None:
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    for url in _INVALID_OR:
+        assert adapter.match(url) is None, f"should not match: {url}"
+
+
+def test_openreview_forum_and_pdf_url_normalize_to_same_ref() -> None:
+    """forum?id=X と /pdf?id=X は同一 SiteRef になる。"""
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    forum_ref = adapter.match("https://openreview.net/forum?id=abc123XYZ")
+    pdf_ref = adapter.match("https://openreview.net/pdf?id=abc123XYZ")
+    assert forum_ref is not None
+    assert pdf_ref is not None
+    assert forum_ref == pdf_ref
+
+
+def test_openreview_url_builders() -> None:
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    assert adapter.pdf_url(ref) == "https://openreview.net/pdf?id=abc123XYZ"
+    assert adapter.landing_url(ref) == "https://openreview.net/forum?id=abc123XYZ"
+
+
+def test_openreview_adapter_allowed_hosts() -> None:
+    """アダプタ宣言ホストは openreview.net のみ(SSRF allow-list)。"""
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    hosts = adapter_allowed_hosts(adapter, ref)
+    assert hosts == frozenset({"openreview.net"})
+
+
+def test_openreview_parse_note_from_fixture() -> None:
+    """API2 note JSON → SiteMeta 写像を検証する。"""
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    payload = _json.loads(_OR_FIXTURE.read_text())
+    note = payload["notes"][0]
+    meta = adapter.parse_note(note, ref)
+
+    assert meta.site == "openreview"
+    assert meta.external_id == "abc123XYZ"
+    assert meta.title == "Attention Is All You Need (Mock)"
+    assert meta.authors == [{"name": "Alice Author"}, {"name": "Bob Builder"}]
+    assert meta.abstract.startswith("We introduce a new mock architecture")
+    assert meta.venue == "ICLR 2024"
+    # pdate 1704153600000 ms → 2024-01-02
+    assert meta.published_on == "2024-01-02"
+    assert meta.pdf_url == "https://openreview.net/pdf?id=abc123XYZ"
+    assert meta.license == "cc-by-4.0"
+    assert meta.doi is None
+
+
+def test_openreview_parse_note_fallback_to_citation_meta() -> None:
+    """note が空(notes=[])の場合は citation_* メタへフォールバックする。"""
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    # note が None → citation_* 経由
+    meta = adapter.parse_metadata_from_note_and_citation(
+        note=None,
+        citation_html="<html><head>"
+        '<meta name="citation_title" content="Fallback Title">'
+        '<meta name="citation_author" content="Doe, John">'
+        '<meta name="citation_publication_date" content="2023/05">'
+        "</head></html>",
+        ref=ref,
+    )
+    assert meta.title == "Fallback Title"
+    assert meta.authors == [{"name": "John Doe"}]
+    assert meta.published_on == "2023-05-01"
+    assert meta.pdf_url == "https://openreview.net/pdf?id=abc123XYZ"
+
+
+def test_openreview_resolve_adapter() -> None:
+    """registry 経由で OpenReview URL が解決される。"""
+    resolved = resolve_adapter("https://openreview.net/forum?id=abc123XYZ")
+    assert resolved is not None
+    adapter, ref = resolved
+    assert adapter.site == "openreview"
+    assert ref.external_id == "abc123XYZ"
+
+
+def test_openreview_resolve_adapter_pdf_url() -> None:
+    """PDF URL も registry で解決される。"""
+    resolved = resolve_adapter("https://openreview.net/pdf?id=abc123XYZ")
+    assert resolved is not None
+    adapter, ref = resolved
+    assert adapter.site == "openreview"
+    assert ref.external_id == "abc123XYZ"
+
+
+def test_openreview_citation_fallback_ignores_html_pdf_url() -> None:
+    """citation_html に citation_pdf_url があっても adapter URL を使う(SSRF 対策)。"""
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    citation_html = (
+        "<html><head>"
+        '<meta name="citation_title" content="Attack Paper">'
+        '<meta name="citation_author" content="Hacker, Evil">'
+        # 悪意のある citation_pdf_url (SSRF 試行)。
+        '<meta name="citation_pdf_url" content="https://169.254.169.254/latest/meta-data/">'
+        "</head></html>"
+    )
+    meta = adapter.parse_metadata_from_note_and_citation(
+        note=None, citation_html=citation_html, ref=ref
+    )
+    # HTML 由来の悪性 URL ではなくアダプタ宣言 URL が使われていること。
+    assert meta.pdf_url == "https://openreview.net/pdf?id=abc123XYZ"
+
+
+async def test_fetch_note_returns_note_on_success() -> None:
+    """fetch_note は API2 notes[0] を返す(MockTransport)。"""
+    from alinea_core.adapters.fetch import fetch_note
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    note_payload = _json.loads(_OR_FIXTURE.read_text())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "api2/notes" in request.url.path
+        return httpx.Response(
+            200,
+            json=note_payload,
+            headers={"content-type": "application/json"},
+        )
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        note = await fetch_note(adapter, ref, client=client)
+    finally:
+        await client.aclose()
+
+    assert note is not None
+    assert note["id"] == "abc123XYZ"
+    content = note["content"]
+    assert isinstance(content, dict)
+    assert content["title"]["value"] == "Attention Is All You Need (Mock)"
+
+
+async def test_fetch_note_returns_none_on_403() -> None:
+    """403 は note 不在として None を返す(in-tab PDF fallback シグナル)。"""
+    from alinea_core.adapters.fetch import fetch_note
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, text="Forbidden")
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        note = await fetch_note(adapter, ref, client=client)
+    finally:
+        await client.aclose()
+    assert note is None
+
+
+async def test_fetch_note_returns_none_on_empty_notes() -> None:
+    """notes=[] は note 不在として None を返す。"""
+    from alinea_core.adapters.fetch import fetch_note
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"notes": [], "count": 0})
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        note = await fetch_note(adapter, ref, client=client)
+    finally:
+        await client.aclose()
+    assert note is None

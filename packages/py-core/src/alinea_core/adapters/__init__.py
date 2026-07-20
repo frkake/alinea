@@ -18,9 +18,11 @@ from alinea_core.adapters.fetch import (
     SiteFetchError,
     adapter_allowed_hosts,
     fetch_html,
+    fetch_note,
     fetch_pdf,
     make_site_client,
 )
+from alinea_core.adapters.openreview import OpenReviewAdapter
 from alinea_core.adapters.registry import (
     registered_adapters,
     resolve_adapter,
@@ -31,6 +33,7 @@ __all__ = [
     "MAX_SITE_PDF_BYTES",
     "AclAnthologyAdapter",
     "CitationMeta",
+    "OpenReviewAdapter",
     "SiteAdapter",
     "SiteFetchError",
     "SiteMeta",
@@ -39,6 +42,7 @@ __all__ = [
     "citation_date_to_iso",
     "extract_citation_meta",
     "fetch_html",
+    "fetch_note",
     "fetch_pdf",
     "make_site_client",
     "normalize_scholar_author",
