@@ -55,7 +55,7 @@ M0 に含めない主なもの: 注釈・メモ(M1)、通知(M1)、PDF(M1)、記
 
 **DoD: 「読了した論文を概要図つきの記事モードで読み返し、コレクションを URL 共有して輪読会に臨める。LaTeX ソース由来の最高品質(品質 A 主経路)で読め、拾った単語が復習で定着する。」**(概要図は記事モード側=個人閲覧の要素であり、共有ページには載らない — [09-nonfunctional.md](09-nonfunctional.md) §5)
 
-- **記事モード(1h)**: 5 つ目の表示モードとして追加(独立エディタではない)。訳文・メモ・チャット履歴からのブログ風再構成、レベル/テンプレート選択、ブロックホバーで「✦書き直し指示/再生成/根拠を表示」、根拠チップ、原文引用ブロック、「議論したい点」、出典ブロック(削除不可)、ヘッダ「✦指示つき再生成」。公開機能は含まない(v2 検討 — §5 末尾参照)。→ [07-figures-and-articles.md](07-figures-and-articles.md)
+- **記事モード(1h)**: 5 つ目の表示モードとして追加(独立エディタではない)。訳文・メモ・チャット履歴からのブログ風再構成、レベル/テンプレート選択、ブロックホバーで「✦書き直し指示/再生成/根拠を表示」、根拠チップ、原文引用ブロック、「議論したい点」、出典ブロック(削除不可)、ヘッダ「✦指示つき再生成」。記事の公開/コメントは M3 で追加済み(§5 末尾参照)。→ [07-figures-and-articles.md](07-figures-and-articles.md)
 - **全体概要図**: 課題→提案→結果の 3 カードフロー。構造化図データ→SVG 決定的レンダリング(100% 同一デザイン)。版管理(「AI生成 · 版 2」)・指示つき書き直し・SVG ダウンロード。→ [07-figures-and-articles.md](07-figures-and-articles.md)
 - **解説図(画像生成 API)**: 記事内の詳細解説図・挿絵をラスター画像生成(GPT / Gemini / Grok、プロバイダ切替可)。概要図のラスター生成モードは設定で切替可能なオプション。重要テキストはキャプション側に持つ生成プロンプト仕様で文字破綻を緩和。→ [07-figures-and-articles.md](07-figures-and-articles.md)
 - **コレクション(4b)+共有ページ(4c)**: 順序ドラッグ・締切+残日数・担当者割当・読了進捗。共有リンク(発行/無効化、「共有ページにメモを含める」トグル)。共有ページはアカウント不要・閲覧専用・noindex。締切リマインド通知と、ダッシュボードの締切カードもここで有効化。→ [06-library.md](06-library.md)
@@ -70,16 +70,19 @@ M0 に含めない主なもの: 注釈・メモ(M1)、通知(M1)、PDF(M1)、記
 
 **DoD: 「arXiv 以外の主要ソースの論文も同じ体験で読め、学習・再読のループがツールの外(Anki・オフライン)まで届く。」**
 
-- **他サイトアダプタ**: OpenReview / ACL Anthology / PubMed / PMC。Hugging Face Paper PageはarXiv同定とGitHub／project／Model／Dataset／Space候補の収集に使う。→ [02-ingest.md](02-ingest.md)、[12-resources.md](12-resources.md)、[08-extension.md](08-extension.md)
-- **GitHubコード対応解析**: 論文blockと公開リポジトリのfile／symbol／行範囲を対応付ける。`off` / `on_demand` / `automatic`、月額予算、実行前見積もりでAPI費用を制御する。→ [12-resources.md](12-resources.md)
-- **OCR**: スキャン PDF への対応検討。品質レベルは新設せず B の内部拡張として扱う(A/B の 2 段階は維持)。
-- **arXiv バージョン差分表示**: v1→v2 の変更点提示とリアンカー。
-- **Anki エクスポート**: 語彙帳からのカード書き出し。→ [11-vocabulary.md](11-vocabulary.md)
-- **やさしい訳スタイル**: 第 3 の翻訳スタイル。→ [03-translation.md](03-translation.md)
-- **セマンティック検索**: 類似手持ち論文・クエリ翻訳のクロス検索強化。
-- **輪読会スペース**: グループ共有(Q4 の判断後)。v1 はコレクション共有リンク+各自の記事モード読み返しで代替する。
-- **PWA オフライン閲覧**。
-- **(M3 スコープ外・v2 検討)記事の公開/限定公開/コメント**: 確定デザインに公開 UI が存在しないため v1(M0〜M3)スコープ外。v1 の共有経路はコレクション共有ページ(4c)のみ。→ [07-figures-and-articles.md](07-figures-and-articles.md)
+> 実装状況(2026-07): 以下の M3 項目はコード実装+マージ済み(`feat/remaining-features-completion`)。**受け入れ基準の実測(DB マイグレーション適用後の全体 E2E・品質指標計測)は Task 32 の統合検証に委ねる。** OCR・輪読会スペースは引き続き未着手。
+
+- **他サイトアダプタ**(実装済み): ACL Anthology / OpenReview / PubMed / PMC のアダプタとサイト非依存の取り込みコアを実装(`alinea_core.adapters.registry`)。PMC の OA 記事は JATS 本文=品質 A を最優先(`0019_jats_source_format`)。Hugging Face Paper PageはarXiv同定とGitHub／project／Model／Dataset／Space候補の収集に使う(`0021_huggingface_resources`)。出版社ページ(IEEE/ACM)は追加候補として残る。→ [02-ingest.md](02-ingest.md)、[12-resources.md](12-resources.md)、[08-extension.md](08-extension.md)
+- **GitHubコード対応解析**(実装済み): 論文blockと公開リポジトリのfile／symbol／行範囲を対応付ける。`off` / `on_demand` / `automatic`、月額予算、実行前見積もりでAPI費用を制御する(migration `0020_code_analysis`)。→ [12-resources.md](12-resources.md)
+- **OCR**(未着手): スキャン PDF への対応検討。品質レベルは新設せず B の内部拡張として扱う(A/B の 2 段階は維持)。
+- **arXiv バージョン差分表示**(実装済み): v1→v2 の変更点提示とリアンカー。block 単位 diff エンジン+ `viewer_revision_diff` API。
+- **Anki エクスポート**(実装済み): 語彙帳からのカード書き出し(TSV 形式、外部依存なし)。→ [11-vocabulary.md](11-vocabulary.md)
+- **やさしい訳スタイル**(実装済み): 第 3 の翻訳スタイル(`style="easy"`、自然訳/直訳と同経路。migration `0012_easy_translation_style`)。→ [03-translation.md](03-translation.md)
+- **セマンティック検索**(実装済み): 類似手持ち論文(`libraryItems_similar`)・pgvector 埋め込みと全文検索の RRF 融合(migration `0016_semantic_embeddings`)。クエリ翻訳のクロス検索強化は将来検討。
+- **論文からスライド生成(PPTX)**(実装済み): 論文本文・書誌・図表のみを入力に日本語 PPTX を生成(Task 30、migration `0018_presentation_artifacts`)。詳細は[論文スライド生成ツール設計](superpowers/specs/2026-07-16-paper-presentation-tool-design.md)。
+- **記事の公開/限定公開/コメント**(実装済み): 記事のサニタイズ済みスナップショットを slug URL で公開し(migration `0015_article_publications`)、公開記事にコメントできる(migration `0017_publication_comments`)。著作権原則 P7 との整合として、公開スナップショットには原文引用本文・訳文・メモ・チャット・原論文図を含めない。→ [07-figures-and-articles.md](07-figures-and-articles.md)
+- **輪読会スペース**(未着手): グループ共有(Q4 の判断後)。v1 はコレクション共有リンク+各自の記事モード読み返しで代替する。
+- **PWA オフライン閲覧**(実装済み): installable な app-shell Service Worker(外部依存なし)。→ [12-resources.md](12-resources.md)
 
 ## 6. 継続的な品質指標(全マイルストーン共通で計測)
 
@@ -103,7 +106,7 @@ M0 に含めない主なもの: 注釈・メモ(M1)、通知(M1)、PDF(M1)、記
 | LLM コスト超過 | 運営持続性 | 共有キャッシュ・オンデマンド生成・クォータ([09-nonfunctional.md](09-nonfunctional.md))に加え、用途別プロバイダルーティング(翻訳=安価モデル/チャット・記事=上位モデル)と BYOK。早期に実測 |
 | 特定 LLM プロバイダの障害・モデル廃止 | 翻訳・チャット停止 | GPT/Claude/Gemini/DeepSeek の切替可能設計+フォールバック連鎖。モデル指定は設定で変更可能に保つ |
 | 画像生成のテキスト破綻(解説図) | 図の信頼低下 | 全体概要図は SVG 決定的レンダリングを維持し画像生成に依存しない。解説図は「重要テキストはキャプション側に持つ」プロンプト仕様で緩和 |
-| 著作権クレーム | サービス停止リスク | ライセンスマトリクス([09-nonfunctional.md](09-nonfunctional.md))を M0 から実装。共有系(4c)は M2 まで出さず、記事公開は v2 検討に後ろ倒し |
+| 著作権クレーム | サービス停止リスク | ライセンスマトリクス([09-nonfunctional.md](09-nonfunctional.md))を M0 から実装。共有系(4c)は M2 まで出さず、記事公開(M3)は P7 整合として公開スナップショットから原文引用本文・訳文・メモ・チャット・原論文図を除外する |
 | 翻訳の幻覚・省略 | 信頼喪失(致命的) | 自動品質検査+対訳ポップ+原文フォールバック(P1/P3)。「訳がおかしい?」導線を M0 から |
 
 ## 8. 受け入れ基準チェックリスト
@@ -119,5 +122,8 @@ M0 に含めない主なもの: 注釈・メモ(M1)、通知(M1)、PDF(M1)、記
 - [ ] M2: コレクション共有リンクをアカウント不要・noindex の共有ページ(4c)として開ける
 - [ ] M2: 「語彙に追加」した語が SRS 復習に現れ、「原文で見る→」で文脈に戻れる
 - [ ] M2: LaTeX ソース由来(品質 A 主経路)で取り込まれ、既存 B 論文が A へ昇格できる
-- [ ] M3: arXiv 以外の対応ソースでも M0 と同じ読解体験が成立する
+- [ ] M3: arXiv 以外の対応ソース(ACL Anthology / PubMed・PMC / Hugging Face 経由)でも M0 と同じ読解体験が成立する
+- [ ] M3: 語彙帳を Anki(TSV)で書き出せ、やさしい訳スタイルに切り替えられ、セマンティック検索で「似た手持ち論文」が出る
+- [ ] M3: 論文からスライド(PPTX)を生成でき、記事を公開してコメントを受けられる(公開スナップショットは P7 整合で原文本文・メモ等を含まない)
+- [ ] M3: PWA としてインストールでき、オフラインでも app-shell が表示される
 - [ ] 全期間: §6 の品質指標を計測し、目標を下回るマイルストーンはリリースしない
