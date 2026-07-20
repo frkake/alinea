@@ -99,6 +99,7 @@ function fullSettings(overrides: Partial<SettingsData> = {}): SettingsData {
       figure_image: { provider: "google", model: "gemini-3.1-flash-image" },
       overview_figure_raster_mode: false,
     },
+    code_analysis: { mode: "on_demand", monthly_budget_usd: 5 },
     available_models: {
       anthropic: [{ model: "claude-opus-4-8", label: "Claude Opus 4.8" }],
       deepseek: [{ model: "deepseek-v4-flash", label: "DeepSeek v4 Flash" }],

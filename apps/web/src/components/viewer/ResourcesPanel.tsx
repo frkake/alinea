@@ -1,9 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { CodeAnalysisEstimateResponse, RunOut } from "@alinea/api-client";
+import { settingsGet } from "@alinea/api-client";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
+import type { CodeAnalysisMode } from "@/components/settings/types";
 import {
   ResourceApiError,
   acceptResourceSuggestion,
@@ -14,15 +18,25 @@ import {
   patchResource,
   refreshResourceMeta,
 } from "@/lib/resources-api";
+import {
+  CodeAnalysisApiError,
+  estimateCodeAnalysis,
+  listCodeAnalysis,
+  startCodeAnalysis,
+} from "@/lib/code-analysis-api";
 import { useViewerStore } from "@/stores/viewer-store";
 import { ResourceAddFooter } from "./resources/ResourceAddFooter";
 import { ResourceCard } from "./resources/ResourceCard";
+import { CodeAnalysisEstimateModal } from "./resources/CodeAnalysisEstimateModal";
+import { CodeCorrespondencePanel } from "./resources/CodeCorrespondencePanel";
 import { ResourceSuggestionCard } from "./resources/ResourceSuggestionCard";
-import type { ResKind, ResourceListResponse } from "./resources/types";
+import type { ResKind, ResourceLink, ResourceListResponse } from "./resources/types";
 
 const SKELETON_COUNT = 3;
 const FLASH_MS = 2000;
 const UNDO_MS = 6000;
+/** running/queued の run がある間は結果一覧を短周期でポーリングする。 */
+const CODE_ANALYSIS_POLL_MS = 4000;
 
 /**
  * リソースタブ本体(docs/12・plans/09-screens/5a。viewer-shell §6.5: props なし)。
@@ -52,6 +66,67 @@ export function ResourcesPanel() {
     queryFn: () => listResources(itemId as string),
     enabled: Boolean(itemId),
     staleTime: 30_000,
+  });
+
+  // --- コード対応解析(Task 22・設計 §12) ---
+  // モードは設定から。off でも既存の完了結果は見せる(新規解析だけ無効化)。
+  const codeModeQuery = useQuery({
+    queryKey: ["settings", "code-analysis-mode"],
+    queryFn: async (): Promise<CodeAnalysisMode> => {
+      const data = (await settingsGet({ throwOnError: true })).data as {
+        code_analysis?: { mode?: CodeAnalysisMode };
+      };
+      return data.code_analysis?.mode ?? "on_demand";
+    },
+    staleTime: 60_000,
+  });
+  const codeMode: CodeAnalysisMode = codeModeQuery.data ?? "on_demand";
+
+  const codeRunsKey = ["code-analysis", itemId];
+  const codeRunsQuery = useQuery({
+    queryKey: codeRunsKey,
+    queryFn: () => listCodeAnalysis(itemId as string),
+    enabled: Boolean(itemId),
+    staleTime: 15_000,
+    refetchInterval: (q) => {
+      const runs = q.state.data?.runs ?? [];
+      return runs.some((r) => r.status === "queued" || r.status === "running")
+        ? CODE_ANALYSIS_POLL_MS
+        : false;
+    },
+  });
+
+  // 見積り確認モーダル / 結果パネルの対象 resource。
+  const [estimateResourceId, setEstimateResourceId] = useState<string | null>(null);
+  const [estimate, setEstimate] = useState<CodeAnalysisEstimateResponse | null>(null);
+  const [estimating, setEstimating] = useState(false);
+  const [resultResourceId, setResultResourceId] = useState<string | null>(null);
+
+  // 解析開始(estimate 確認後)。フック規則のため早期 return より上に置く。
+  const startMutation = useMutation({
+    mutationFn: async () => {
+      if (!itemId || !estimateResourceId || !estimate) throw new Error("no estimate");
+      return startCodeAnalysis(itemId, {
+        resource_id: estimateResourceId,
+        estimate_id: estimate.estimate_id,
+      });
+    },
+    onSuccess: () => {
+      setEstimateResourceId(null);
+      setEstimate(null);
+      void qc.invalidateQueries({ queryKey: ["code-analysis", itemId] });
+    },
+    onError: (err: unknown) => {
+      // 見積り失効 / commit 変化 / 予算・設定変更は 409。確認を閉じ、再見積もりを促す(設計 §10)。
+      if (err instanceof CodeAnalysisApiError && err.status === 409) {
+        setEstimateResourceId(null);
+        setEstimate(null);
+        toast({ kind: "info", message: "見積もりが失効しました。もう一度お試しください" });
+        void qc.invalidateQueries({ queryKey: ["code-analysis", itemId] });
+        return;
+      }
+      toast({ kind: "error", message: "解析を開始できませんでした" });
+    },
   });
 
   const invalidate = () => {
@@ -185,6 +260,38 @@ export function ResourcesPanel() {
     );
   };
 
+  // --- コード対応解析のハンドラ(設計 §7・§10) ---
+  const invalidateCodeRuns = () => {
+    void qc.invalidateQueries({ queryKey: codeRunsKey });
+  };
+
+  /** resource_id ごとの最新 run。runs は created_at 降順(API 契約)なので先頭が最新。 */
+  const latestRunFor = (resourceId: string): RunOut | null =>
+    codeRunsQuery.data?.runs.find((r) => r.resource_id === resourceId) ?? null;
+
+  const startEstimate = (resourceId: string) => {
+    if (!itemId) return;
+    setEstimateResourceId(resourceId);
+    setEstimate(null);
+    setEstimating(true);
+    estimateCodeAnalysis(itemId, { resource_id: resourceId }).then(
+      (est) => {
+        setEstimating(false);
+        setEstimate(est);
+      },
+      (err: unknown) => {
+        setEstimating(false);
+        setEstimateResourceId(null);
+        if (err instanceof CodeAnalysisApiError && err.status === 409) {
+          toast({ kind: "info", message: "リポジトリが更新されました。もう一度お試しください" });
+          invalidateCodeRuns();
+          return;
+        }
+        toast({ kind: "error", message: "見積もりを取得できませんでした" });
+      },
+    );
+  };
+
   if (query.isLoading) {
     return (
       <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
@@ -219,6 +326,31 @@ export function ResourcesPanel() {
   const items = data?.items ?? [];
   const suggestion = data?.suggestion ?? null;
   const isEmpty = items.length === 0 && suggestion === null;
+
+  const correspondenceCountFor = (run: RunOut | null): number =>
+    run && codeRunsQuery.data?.current_result?.run_id === run.run_id
+      ? (codeRunsQuery.data?.correspondences?.length ?? 0)
+      : 0;
+
+  const analysisFor = (resource: ResourceLink) => {
+    if (resource.kind !== "github") return undefined;
+    const run = latestRunFor(resource.id);
+    return {
+      mode: codeMode,
+      run,
+      correspondenceCount: correspondenceCountFor(run),
+      // ResourceCard は active な確定リソースにのみ描画される。GitHub の active カードは
+      // automatic の対象(suggested/dismissed は別カードで扱う。設計 §6)。
+      autoTargeted: true,
+      estimating: estimating && estimateResourceId === resource.id,
+      onStartEstimate: () => startEstimate(resource.id),
+      onViewResult: () => setResultResourceId(resource.id),
+    };
+  };
+
+  const estimateResource = items.find((r) => r.id === estimateResourceId) ?? null;
+  const resultResource = items.find((r) => r.id === resultResourceId) ?? null;
+  const resultRun = resultResource ? latestRunFor(resultResource.id) : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
@@ -259,12 +391,81 @@ export function ResourcesPanel() {
                 onEdit={(patch) => onEdit(resource.id, patch)}
                 onRefreshMeta={() => onRefreshMeta(resource.id)}
                 onDelete={() => onDelete(resource.id)}
+                analysis={analysisFor(resource)}
               />
             ))}
           </>
         )}
       </div>
       <ResourceAddFooter onAdd={onAdd} pending={addPending} errorMessage={addError} clearSignal={addSeq} />
+
+      <CodeAnalysisEstimateModal
+        open={estimateResourceId !== null}
+        repoTitle={estimateResource?.title ?? "GitHub リポジトリ"}
+        estimate={estimate}
+        loading={estimating}
+        starting={startMutation.isPending}
+        onConfirm={() => startMutation.mutate()}
+        onClose={() => {
+          setEstimateResourceId(null);
+          setEstimate(null);
+        }}
+      />
+
+      {resultResource && resultRun ? (
+        <Modal
+          open
+          onClose={() => setResultResourceId(null)}
+          labelledBy="code-analysis-result-title"
+          width={520}
+        >
+          <div style={{ display: "flex", flexDirection: "column", maxHeight: "80vh" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "14px 18px",
+                borderBottom: "1px solid var(--pr-border-hair, #ECE9DF)",
+              }}
+            >
+              <h2 id="code-analysis-result-title" style={{ margin: 0, fontSize: 14, fontWeight: 700, flex: 1 }}>
+                コード対応の結果 — {resultResource.title}
+              </h2>
+              <button
+                type="button"
+                aria-label="閉じる"
+                onClick={() => setResultResourceId(null)}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  fontSize: 16,
+                  color: "var(--pr-text-muted)",
+                  cursor: "pointer",
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <div style={{ overflowY: "auto" }}>
+              <CodeCorrespondencePanel
+                repoUrl={resultResource.url}
+                run={resultRun}
+                correspondences={
+                  codeRunsQuery.data?.current_result?.run_id === resultRun.run_id
+                    ? (codeRunsQuery.data?.correspondences ?? [])
+                    : []
+                }
+                stale={resultRun.stale}
+                onJumpBlock={(blockId) => {
+                  setResultResourceId(null);
+                  requestScroll({ kind: "block", blockId });
+                }}
+              />
+            </div>
+          </div>
+        </Modal>
+      ) : null}
     </div>
   );
 }

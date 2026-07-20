@@ -33,6 +33,7 @@ import {
   type AccentHex,
   type BodyFontValue,
   type ByokProvider,
+  type CodeAnalysisMode,
   type LlmUseCase,
   type RouteEntry,
   type SettingsCategory,
@@ -51,6 +52,25 @@ const FONT_SIZE_CSS_VAR = "--pr-content-font-size-px";
 function applyFontSizeVar(px: number): void {
   if (typeof document === "undefined") return;
   document.documentElement.style.setProperty(FONT_SIZE_CSS_VAR, `${px}px`);
+}
+
+/**
+ * API レスポンスを画面用 SettingsData へ正規化する。
+ * code_analysis.monthly_budget_usd は JSONB の都合で文字列で来る(schemas/settings.py の
+ * field_serializer)ため number へ寄せる。code_analysis 自体が欠ける古い応答にも既定で耐える。
+ */
+function normalizeSettings(raw: unknown): SettingsData {
+  const data = raw as SettingsData & {
+    code_analysis?: { mode?: CodeAnalysisMode; monthly_budget_usd?: number | string };
+  };
+  const ca = data.code_analysis;
+  return {
+    ...data,
+    code_analysis: {
+      mode: ca?.mode ?? "on_demand",
+      monthly_budget_usd: Number(ca?.monthly_budget_usd ?? 5),
+    },
+  };
 }
 
 /** 左ナビの表示順(4f §4.3)。 */
@@ -82,7 +102,7 @@ export function SettingsClient({ category }: { category: SettingsCategory }) {
 
   const settingsQuery = useQuery({
     queryKey: ["settings", "detail"],
-    queryFn: async () => (await settingsGet({ throwOnError: true })).data as unknown as SettingsData,
+    queryFn: async () => normalizeSettings((await settingsGet({ throwOnError: true })).data),
     staleTime: 60_000,
   });
 
@@ -128,7 +148,7 @@ export function SettingsClient({ category }: { category: SettingsCategory }) {
 
   const patchMutation = useMutation({
     mutationFn: async (body: Record<string, unknown>) =>
-      (await settingsUpdate({ body, throwOnError: true })).data as unknown as SettingsData,
+      normalizeSettings((await settingsUpdate({ body, throwOnError: true })).data),
     onSuccess: (data) => {
       queryClient.setQueryData(["settings", "detail"], data);
     },
@@ -176,6 +196,15 @@ export function SettingsClient({ category }: { category: SettingsCategory }) {
   };
   const onRasterChange = (next: boolean) => {
     patchMutation.mutate({ llm_routing: { overview_figure_raster_mode: next } });
+  };
+
+  // --- GitHub コード対応解析(Task 22・設計 §6-§7) ---
+  const onCodeAnalysisModeChange = (mode: CodeAnalysisMode) => {
+    patchMutation.mutate({ code_analysis: { mode } });
+  };
+  const onCodeAnalysisBudgetChange = (usd: number) => {
+    // API は Decimal を JSONB へ文字列で保存するため、2 桁の文字列で送る。
+    patchMutation.mutate({ code_analysis: { monthly_budget_usd: usd.toFixed(2) } });
   };
 
   // --- 翻訳(4f §4.4) ---
@@ -338,6 +367,8 @@ export function SettingsClient({ category }: { category: SettingsCategory }) {
               onDeleteAccount={() => {
                 deleteAccountMutation.mutate();
               }}
+              onCodeAnalysisModeChange={onCodeAnalysisModeChange}
+              onCodeAnalysisBudgetChange={onCodeAnalysisBudgetChange}
               readOnly={isMobile}
             />
           ) : category === "display" ? (

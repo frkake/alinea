@@ -1,6 +1,8 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
-import { ResourceCard } from "./ResourceCard";
+import type { RunOut } from "@alinea/api-client";
+import { ResourceCard, deriveCodeAnalysisState, type ResourceCardAnalysis } from "./ResourceCard";
 import type { ResourceLink } from "./types";
 
 function resource(overrides: Partial<ResourceLink> = {}): ResourceLink {
@@ -159,5 +161,146 @@ describe("ResourceCard ひとことメモ", () => {
     expect(screen.getByText(/train_reflow.py/)).toBeInTheDocument();
     screen.getByText("§2.2").click();
     expect(onJumpSection).toHaveBeenCalledWith("sec-3");
+  });
+});
+
+// Task 22: コード対応解析の導線(一状態機械)。
+function run(overrides: Partial<RunOut> = {}): RunOut {
+  return {
+    run_id: "run_1",
+    resource_id: "res_1",
+    revision_id: "rev_1",
+    commit_sha: "abc123def4567890",
+    trigger: "on_demand",
+    status: "succeeded",
+    stale: false,
+    estimated_cost_usd: "0.10",
+    actual_cost_usd: "0.10",
+    error: null,
+    created_at: "2026-07-18T00:00:00Z",
+    finished_at: "2026-07-18T00:05:00Z",
+    ...overrides,
+  };
+}
+
+function analysis(overrides: Partial<ResourceCardAnalysis> = {}): ResourceCardAnalysis {
+  return {
+    mode: "on_demand",
+    run: null,
+    correspondenceCount: 0,
+    autoTargeted: true,
+    estimating: false,
+    onStartEstimate: vi.fn(),
+    onViewResult: vi.fn(),
+    ...overrides,
+  };
+}
+
+describe("deriveCodeAnalysisState (Task 22 state machine)", () => {
+  test("idle before any estimate in on_demand", () => {
+    expect(deriveCodeAnalysisState(analysis())).toBe("idle");
+  });
+  test("estimating while an estimate is being fetched", () => {
+    expect(deriveCodeAnalysisState(analysis({ estimating: true }))).toBe("estimating");
+  });
+  test("off disables new analysis in off mode", () => {
+    expect(deriveCodeAnalysisState(analysis({ mode: "off" }))).toBe("off");
+  });
+  test("automatic_pending when automatic and targeted with no run yet", () => {
+    expect(deriveCodeAnalysisState(analysis({ mode: "automatic", autoTargeted: true }))).toBe(
+      "automatic_pending",
+    );
+  });
+  test("run status wins: queued / running / waiting_budget / failed", () => {
+    expect(deriveCodeAnalysisState(analysis({ run: run({ status: "queued" }) }))).toBe("queued");
+    expect(deriveCodeAnalysisState(analysis({ run: run({ status: "running" }) }))).toBe("running");
+    expect(deriveCodeAnalysisState(analysis({ run: run({ status: "waiting_budget" }) }))).toBe(
+      "waiting_budget",
+    );
+    expect(deriveCodeAnalysisState(analysis({ run: run({ status: "failed" }) }))).toBe("failed");
+  });
+  test("succeeded run is complete, or stale when marked stale", () => {
+    expect(deriveCodeAnalysisState(analysis({ run: run({ status: "succeeded" }) }))).toBe("complete");
+    expect(
+      deriveCodeAnalysisState(analysis({ run: run({ status: "succeeded", stale: true }) })),
+    ).toBe("stale");
+  });
+  test("existing results still show in off mode (run status wins over off)", () => {
+    expect(
+      deriveCodeAnalysisState(analysis({ mode: "off", run: run({ status: "succeeded" }) })),
+    ).toBe("complete");
+  });
+});
+
+describe("ResourceCard code analysis section", () => {
+  test("idle shows an enabled 解析ボタン that triggers onStartEstimate", async () => {
+    const user = userEvent.setup();
+    const onStartEstimate = vi.fn();
+    render(
+      <ResourceCard
+        resource={resource()}
+        flash={false}
+        {...noop}
+        analysis={analysis({ onStartEstimate })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: "コード対応を解析" });
+    expect(btn).toBeEnabled();
+    await user.click(btn);
+    expect(onStartEstimate).toHaveBeenCalled();
+  });
+
+  test("off mode disables the analyze button but keeps a settings link", () => {
+    render(
+      <ResourceCard
+        resource={resource()}
+        flash={false}
+        {...noop}
+        analysis={analysis({ mode: "off" })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "コード対応を解析" })).toBeDisabled();
+    expect(screen.getByText(/設定でコード解析が無効です/)).toBeInTheDocument();
+  });
+
+  test("complete shows the count, commit, and a 結果を見る button", async () => {
+    const user = userEvent.setup();
+    const onViewResult = vi.fn();
+    render(
+      <ResourceCard
+        resource={resource()}
+        flash={false}
+        {...noop}
+        analysis={analysis({ run: run({ status: "succeeded" }), correspondenceCount: 3, onViewResult })}
+      />,
+    );
+    expect(screen.getByText(/対応 3 件/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /結果を見る/ }));
+    expect(onViewResult).toHaveBeenCalled();
+  });
+
+  test("stale shows the repository-updated notice and re-analysis", () => {
+    render(
+      <ResourceCard
+        resource={resource()}
+        flash={false}
+        {...noop}
+        analysis={analysis({ run: run({ status: "succeeded", stale: true }) })}
+      />,
+    );
+    expect(screen.getByText("リポジトリが更新されています")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "再解析" })).toBeInTheDocument();
+  });
+
+  test("non-github cards never render the analysis section", () => {
+    render(
+      <ResourceCard
+        resource={resource({ kind: "article", title: "記事", source_label: "zenn.dev" })}
+        flash={false}
+        {...noop}
+        analysis={analysis()}
+      />,
+    );
+    expect(screen.queryByText("コード対応解析")).toBeNull();
   });
 });
