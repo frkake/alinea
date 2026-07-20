@@ -8,6 +8,8 @@ import {
   papersIngestLog,
   papersReingest,
   settingsGet,
+  viewerListRevisions,
+  viewerRevisionDiff,
   type LicenseCard,
   type PaperBib,
   type RevisionInfo,
@@ -24,6 +26,8 @@ vi.mock("@alinea/api-client", async (importOriginal) => {
     papersIngestLog: vi.fn(),
     settingsGet: vi.fn(),
     libraryItemsDelete: vi.fn(),
+    viewerListRevisions: vi.fn(),
+    viewerRevisionDiff: vi.fn(),
   };
 });
 
@@ -126,6 +130,11 @@ describe("InfoPanel (M1-21)", () => {
       data: { reading: { track_reading_time: true } },
     } as never);
     vi.mocked(papersIngestLog).mockResolvedValue({ data: { entries: [] } } as never);
+    // RevisionDiffPanel: default to single revision so it stays hidden in most InfoPanel tests
+    vi.mocked(viewerListRevisions).mockResolvedValue({
+      data: { items: [{ id: "rev_1", quality_level: "A", source_version: "v1", parser_version: "1.0.0", created_at: "2026-07-01T10:00:00+09:00", is_current: true }] },
+    } as never);
+    vi.mocked(viewerRevisionDiff).mockResolvedValue({ data: { from_revision_id: "rev_1", to_revision_id: "rev_1", stats: { added: 0, removed: 0, changed: 0, unchanged: 0 }, changes: [] } } as never);
   });
 
   afterEach(() => {
@@ -465,6 +474,39 @@ describe("InfoPanel (M1-21)", () => {
     );
 
     expect(await screen.findByText("再取り込みは既に実行中です")).toBeInTheDocument();
+  });
+
+  test("revision diff section appears when multiple revisions exist", async () => {
+    vi.mocked(viewerListRevisions).mockResolvedValue({
+      data: {
+        items: [
+          { id: "rev_1", quality_level: "A", source_version: "v1", parser_version: "1.0.0", created_at: "2026-07-01T10:00:00+09:00", is_current: false },
+          { id: "rev_2", quality_level: "A", source_version: "v2", parser_version: "1.0.0", created_at: "2026-07-02T10:00:00+09:00", is_current: true },
+        ],
+      },
+    } as never);
+    vi.mocked(viewerRevisionDiff).mockResolvedValue({
+      data: {
+        from_revision_id: "rev_1",
+        to_revision_id: "rev_2",
+        stats: { added: 2, removed: 1, changed: 0, unchanged: 5 },
+        changes: [],
+      },
+    } as never);
+
+    renderWithClient(
+      <InfoPanel
+        paper={paper()}
+        revision={revision()}
+        licenseCard={license()}
+        ingestTimeline={TIMELINE}
+        itemId="li_1"
+      />,
+    );
+
+    expect(await screen.findByText("改版差分")).toBeInTheDocument();
+    expect(await screen.findByText("+2")).toBeInTheDocument();
+    expect(screen.getByText("-1")).toBeInTheDocument();
   });
 
   // 取り込みキャンセル(docs/08 §2.2)。再取り込みも同じジョブ機構を使うため同じ経路で中止できる。
