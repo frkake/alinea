@@ -20,6 +20,10 @@ export default async function PublicArticlePage({
   const article = await fetchPublication(slug);
   if (!article) notFound();
 
+  // TODO(publisher-identity): isPublisher defaults false here — the public
+  // PublicArticleOut/CommentOut payload exposes no publisher identity, so
+  // hide/restore is unreachable from the public URL until the API adds an
+  // owner-by-slug signal. Server still enforces 403 on unauthorized moderation.
   return <PublishedArticle article={article} />;
 }
 
