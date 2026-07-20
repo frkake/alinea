@@ -28,6 +28,7 @@ from alinea_core.db.models import (
     CodeAnalysisRun,
     CodeCorrespondence,
     DocumentRevision,
+    Job,
     LibraryItem,
     Notification,
     Paper,
@@ -175,7 +176,7 @@ async def _enqueue_run_and_claim(
     link: ResourceLink,
     estimated_cost: str = "0.10",
     commit_sha: str = "c" * 40,
-):
+) -> tuple[CodeAnalysisRun, Job, JobStore]:
     run = CodeAnalysisRun(
         id=str(uuid.uuid4()),
         user_id=user.id,
@@ -241,8 +242,10 @@ async def test_happy_path_stores_verified_correspondence(db_session: AsyncSessio
     await run_analyze_code_job(_ctx(correspondences=good), store, job)
 
     refreshed = await store.get(str(job.id))
+    assert refreshed is not None
     assert refreshed.status == "succeeded"
     run_after = await db_session.get(CodeAnalysisRun, str(run.id))
+    assert run_after is not None
     assert run_after.status == "succeeded"
     assert await _count_correspondences(db_session, str(run.id)) == 1
     corr = (
@@ -307,6 +310,7 @@ async def test_prompt_injection_and_fabricated_excerpt_discarded(db_session: Asy
         _ctx(correspondences=fabricated, files=injected_files), store, job
     )
     refreshed = await store.get(str(job.id))
+    assert refreshed is not None
     assert refreshed.status == "succeeded"
     # 捏造・不在は全て破棄され、保存 0 件。
     assert await _count_correspondences(db_session, str(run.id)) == 0
@@ -344,8 +348,10 @@ async def test_empty_repo_succeeds_with_zero(db_session: AsyncSession) -> None:
     )
     await run_analyze_code_job(_ctx(correspondences=[], files={}), store, job)
     refreshed = await store.get(str(job.id))
+    assert refreshed is not None
     assert refreshed.status == "succeeded"
     run_after = await db_session.get(CodeAnalysisRun, str(run.id))
+    assert run_after is not None
     assert run_after.status == "succeeded"
     assert await _count_correspondences(db_session, str(run.id)) == 0
 
@@ -377,6 +383,7 @@ async def test_over_budget_waits_and_notifies_without_calling_apis(
     await run_analyze_code_job(ctx, store, job)
 
     run_after = await db_session.get(CodeAnalysisRun, str(run.id))
+    assert run_after is not None
     assert run_after.status == "waiting_budget"
     assert called["archive"] is False  # 外部 API を呼ばない。
     notes = (
@@ -403,8 +410,10 @@ async def test_llm_chain_exhausted_fails_run(db_session: AsyncSession) -> None:
     )
     await run_analyze_code_job(_ctx(correspondences=[], fail_llm=True), store, job)
     refreshed = await store.get(str(job.id))
+    assert refreshed is not None
     assert refreshed.status == "failed"
     run_after = await db_session.get(CodeAnalysisRun, str(run.id))
+    assert run_after is not None
     assert run_after.status == "failed"
     assert await _count_correspondences(db_session, str(run.id)) == 0
 
@@ -422,8 +431,10 @@ async def test_archive_github_error_fails_run(db_session: AsyncSession) -> None:
         _ctx(correspondences=[], archive_error=GitHubError("not_public")), store, job
     )
     refreshed = await store.get(str(job.id))
+    assert refreshed is not None
     assert refreshed.status == "failed"
     run_after = await db_session.get(CodeAnalysisRun, str(run.id))
+    assert run_after is not None
     assert run_after.status == "failed"
 
 
@@ -451,5 +462,6 @@ async def test_works_without_embedding_provider(db_session: AsyncSession) -> Non
         _ctx(correspondences=good, with_embeddings=False), store, job
     )
     refreshed = await store.get(str(job.id))
+    assert refreshed is not None
     assert refreshed.status == "succeeded"
     assert await _count_correspondences(db_session, str(run.id)) == 1

@@ -331,7 +331,7 @@ async def _estimate_id(ac: AsyncClient, item_id: str, resource_id: str) -> str:
         json={"resource_id": resource_id},
     )
     assert resp.status_code == 200, resp.text
-    return resp.json()["estimate_id"]
+    return str(resp.json()["estimate_id"])
 
 
 @pytest.mark.asyncio

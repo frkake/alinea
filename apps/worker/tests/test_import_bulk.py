@@ -986,7 +986,9 @@ async def test_import_enqueues_index_when_flag_on(db_session: AsyncSession) -> N
     arq_pool = _FakeArqPool()
     ctx = {"arq_pool": arq_pool, "settings": _Settings(enabled=True)}
 
-    enqueued = await _enqueue_embedding_index_jobs(ctx, store, _FakeJob(src["user_id"]), summary)
+    enqueued = await _enqueue_embedding_index_jobs(
+        ctx, cast(JobStore, store), _FakeJob(src["user_id"]), summary
+    )
 
     assert len(enqueued) == 1
     assert store.enqueued[0]["kind"] == "index_embeddings"
@@ -1002,13 +1004,16 @@ async def test_import_does_not_enqueue_index_when_flag_off(db_session: AsyncSess
 
     src = await _seed_user_data(db_session)
     revision = (await db_session.execute(select(DocumentRevision))).scalars().first()
+    assert revision is not None
     summary = {"indexed_revision_ids": [str(revision.id)]}
 
     store = _FakeStore(db_session)
     arq_pool = _FakeArqPool()
     ctx = {"arq_pool": arq_pool, "settings": _Settings(enabled=False)}
 
-    enqueued = await _enqueue_embedding_index_jobs(ctx, store, _FakeJob(src["user_id"]), summary)
+    enqueued = await _enqueue_embedding_index_jobs(
+        ctx, cast(JobStore, store), _FakeJob(src["user_id"]), summary
+    )
 
     assert enqueued == []
     assert store.enqueued == []
@@ -1040,6 +1045,7 @@ async def test_import_job_roundtrip_does_not_enqueue_index_by_default(
     await run_import_full_job({"s3": storage, "arq_pool": arq_pool}, store, job)
 
     done = await store.get(job_id)
+    assert done is not None
     assert done.status == "succeeded"
     assert arq_pool.calls == []
 

@@ -219,7 +219,7 @@ describe("SidePanel tabs milestone=M3", () => {
     const mockList = await import("@alinea/api-client");
     vi.spyOn(mockList, "vocabCandidatesList").mockResolvedValue({
       data: { items: [], count: 0 },
-    } as Awaited<ReturnType<typeof mockList.vocabCandidatesList>>);
+    } as never);
     renderWithClient(<SidePanel milestone="M3" />);
     await screen.findByRole("button", { name: "単語候補を抽出" });
   });

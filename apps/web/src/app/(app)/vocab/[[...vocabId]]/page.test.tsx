@@ -154,7 +154,7 @@ describe("VocabPage (VT-VOC-01 / VT-VOC-02 / VT-VOC-04 integration)", () => {
     fireEvent.click(screen.getByRole("button", { name: /Anki/i }));
 
     expect(triggerDownload).toHaveBeenCalledOnce();
-    const url: string = triggerDownload.mock.calls[0][0];
+    const url: string = triggerDownload.mock.calls[0]![0];
 
     // Each param appears exactly once
     const params = new URLSearchParams(url.split("?")[1] ?? "");

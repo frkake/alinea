@@ -31,6 +31,7 @@ from alinea_core.db.models import (
 from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
 from alinea_core.document.inlines import Inline
 from alinea_core.jobs.store import JobStore
+from alinea_llm.protocols import LLMProvider
 from alinea_llm.router import LLMRouter
 from alinea_llm.structured import attach_parsed
 from alinea_llm.testing.fake_provider import FakeLLMProvider, FakeImageProvider
@@ -336,10 +337,10 @@ async def test_user_route_fetched_via_for_job_once_per_job(
 
     if handler_name == "article_generate":
         from alinea_worker.tasks.generate_article import run_article_job
-        from test_generate_article import ArticleScriptProvider, _article_payload  # type: ignore[import-not-found]
+        from test_generate_article import ArticleScriptProvider, _article_payload
 
         seed = await _seed_user_paper_item_revision(db_session)
-        provider = ArticleScriptProvider()
+        provider: LLMProvider = ArticleScriptProvider()
         router = LLMRouter([("fake", "claude-opus-4-8", provider)])
         factory = FakeUserRouterFactory(router)
         store = JobStore(db_session)

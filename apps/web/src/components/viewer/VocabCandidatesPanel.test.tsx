@@ -43,8 +43,8 @@ function candidate(overrides: Partial<VocabCandidateOut> = {}): VocabCandidateOu
     reason: "Technical term for a specific normalizing flow method",
     context_sentence: "We propose rectified flow for generative modeling.",
     highlight: { start: 11, end: 25 },
-    anchor: { block_id: "block_1", display: "§1" },
-    source: { kind: "paragraph", block_id: "block_1" },
+    anchor: { revision_id: "rev_1", block_id: "block_1", display: "§1" },
+    source: { library_item_id: "li_test", paper_title: "Test Paper", display: "§1" },
     created_at: "2026-07-01T00:00:00Z",
     ...overrides,
   };
@@ -71,7 +71,7 @@ describe("VocabCandidatesPanel", () => {
   test("not-extracted state: shows extract button when no candidates exist", async () => {
     vi.mocked(vocabCandidatesList).mockResolvedValue({
       data: { items: [], count: 0 },
-    } as Awaited<ReturnType<typeof vocabCandidatesList>>);
+    } as never);
 
     renderWithClient(<VocabCandidatesPanel />);
 
@@ -83,7 +83,7 @@ describe("VocabCandidatesPanel", () => {
   test("extracting state: shows 抽出中… after extract is called and job_id is returned", async () => {
     vi.mocked(vocabCandidatesList).mockResolvedValue({
       data: { items: [], count: 0 },
-    } as Awaited<ReturnType<typeof vocabCandidatesList>>);
+    } as never);
     vi.mocked(vocabCandidatesExtract).mockResolvedValue({
       data: { job_id: "job_1" },
     } as Awaited<ReturnType<typeof vocabCandidatesExtract>>);
@@ -107,7 +107,7 @@ describe("VocabCandidatesPanel", () => {
       // After job done, server returns the candidates
       return {
         data: { items: listCallCount > 1 ? [cand] : [], count: listCallCount > 1 ? 1 : 0 },
-      } as Awaited<ReturnType<typeof vocabCandidatesList>>;
+      } as never;
     });
     vi.mocked(vocabCandidatesExtract).mockResolvedValue({
       data: { job_id: "job_extract" },
@@ -179,7 +179,7 @@ describe("VocabCandidatesPanel", () => {
   test("empty state after extraction: shows empty message", async () => {
     vi.mocked(vocabCandidatesList).mockResolvedValue({
       data: { items: [], count: 0 },
-    } as Awaited<ReturnType<typeof vocabCandidatesList>>);
+    } as never);
 
     // Pre-seed the QueryClient with extracted=true to simulate post-extraction empty state
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -222,11 +222,11 @@ describe("VocabCandidatesPanel", () => {
           items: acceptCalled ? [cand2] : [cand1, cand2],
           count: acceptCalled ? 1 : 2,
         },
-      } as Awaited<ReturnType<typeof vocabCandidatesList>>;
+      } as never;
     });
     vi.mocked(vocabCandidatesAccept).mockImplementation(async () => {
       acceptCalled = true;
-      return { data: { vocab_id: "v_1" } } as Awaited<ReturnType<typeof vocabCandidatesAccept>>;
+      return { data: { vocab_id: "v_1" } } as never;
     });
 
     renderWithClient(<VocabCandidatesPanel />);
@@ -287,7 +287,7 @@ describe("VocabCandidatesPanel", () => {
           items: dismissCalled ? [cand2] : [cand1, cand2],
           count: dismissCalled ? 1 : 2,
         },
-      } as Awaited<ReturnType<typeof vocabCandidatesList>>;
+      } as never;
     });
     vi.mocked(vocabCandidatesDismiss).mockImplementation(async () => {
       dismissCalled = true;

@@ -1252,7 +1252,7 @@ def test_apply_metadata_preserves_existing_repo_url() -> None:
     )
 
     run = object.__new__(IngestRun)
-    run._apply_metadata(paper, meta)
+    run._apply_metadata(cast(Paper, paper), meta)
 
     assert paper.official_repo_url == "https://github.com/manual/confirmed"
 
@@ -1292,7 +1292,7 @@ def test_apply_metadata_writes_repo_url_when_paper_has_none() -> None:
     )
 
     run = object.__new__(IngestRun)
-    run._apply_metadata(paper, meta)
+    run._apply_metadata(cast(Paper, paper), meta)
 
     assert paper.official_repo_url == "https://github.com/auto/detected"
 
@@ -1307,6 +1307,7 @@ async def test_ingest_enqueues_code_analysis_when_automatic_and_active_github(
     ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
     # ユーザーを automatic に設定し、active な GitHub Resource を追加する。
     user = await db_session.get(User, ids["user_id"])
+    assert user is not None
     user.settings = {"code_analysis": {"mode": "automatic", "monthly_budget_usd": "5.00"}}
     db_session.add(
         ResourceLink(
