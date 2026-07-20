@@ -98,8 +98,10 @@ def merge_missing(target: dict[str, object], source: Mapping[str, object]) -> di
     for key, value in source.items():
         if key not in merged:
             merged[key] = copy.deepcopy(value)
-        elif isinstance(merged[key], dict) and isinstance(value, Mapping):
-            merged[key] = merge_missing(merged[key], value)
+        else:
+            existing = merged[key]
+            if isinstance(existing, dict) and isinstance(value, Mapping):
+                merged[key] = merge_missing(existing, value)
     return merged
 
 # インポート zip のスキーマバージョン(エクスポート側の EXPORT_SCHEMA_VERSION と一致する)。
