@@ -6,6 +6,9 @@ import {
   annotationsCreate,
   annotationsList,
   translationsListUnits,
+  translationsRetranslate,
+  translationsAcceptProposal,
+  translationsDiscardProposal,
   viewerGetDocument,
   vocabCreate,
 } from "@alinea/api-client";
@@ -15,6 +18,7 @@ import { SelectionMenu } from "@/components/viewer/SelectionMenu";
 import { TranslationPane } from "@/components/viewer/TranslationPane";
 import { useViewerStore } from "@/stores/viewer-store";
 import { useTableTranslation } from "@/hooks/use-table-translation";
+import { useRetranslation } from "@/components/viewer/use-retranslation";
 
 vi.mock("@alinea/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@alinea/api-client")>();
@@ -25,8 +29,15 @@ vi.mock("@alinea/api-client", async (importOriginal) => {
     annotationsList: vi.fn(),
     annotationsCreate: vi.fn(),
     vocabCreate: vi.fn(),
+    translationsRetranslate: vi.fn(),
+    translationsAcceptProposal: vi.fn(),
+    translationsDiscardProposal: vi.fn(),
   };
 });
+
+vi.mock("@/components/viewer/use-retranslation", () => ({
+  useRetranslation: vi.fn(),
+}));
 
 // 「語彙に追加」(M2-17 wiring)は router.push で /vocab/{id} へ遷移する(next/navigation App
 // Router コンテキストはこのユニットテストの render 対象外のため mock する)。
@@ -164,6 +175,11 @@ describe("TranslationPane M1 wiring (1b §5.5 / §5.6)", () => {
       start: vi.fn(),
       retry: vi.fn(),
     });
+    vi.mocked(useRetranslation).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      error: null,
+    } as never);
   });
 
   test("clicking a color dot in the M1 selection menu creates a highlight anchored at the selection offsets", async () => {
@@ -477,5 +493,299 @@ describe("TranslationPane M1 wiring (1b §5.5 / §5.6)", () => {
       overflowWrap: "anywhere",
       wordBreak: "break-word",
     });
+  });
+});
+
+// Task 6: 再翻訳 → 提案採否フロー
+describe("TranslationPane retranslation proposal flow (Task 6)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useViewerStore.setState({
+      panelOpen: true,
+      activeTab: "chat",
+      selection: null,
+      currentBlockId: null,
+      activeSectionId: null,
+      pendingScrollTarget: null,
+      pendingHighlightQuery: null,
+      bilingualPopToggleSignal: 0,
+      bookmarkToggleSignal: 0,
+    });
+    vi.mocked(viewerGetDocument).mockResolvedValue({
+      data: {
+        revision_id: "rev_1",
+        quality_level: "A",
+        sections: [
+          {
+            id: "sec-1",
+            heading: { number: "1", title: "Introduction" },
+            blocks: [
+              {
+                id: "blk-1",
+                type: "paragraph",
+                inlines: [{ t: "text", v: "The rectified flow is an ODE." }],
+              },
+            ],
+          },
+        ],
+      },
+    } as never);
+    vi.mocked(annotationsList).mockResolvedValue({
+      data: {
+        items: [],
+        counts: { all: 0, important: 0, question: 0, idea: 0, term: 0, with_comment: 0, unplaced: 0 },
+      },
+    } as never);
+    vi.mocked(useTableTranslation).mockReturnValue({
+      status: "idle",
+      error: null,
+      start: vi.fn(),
+      retry: vi.fn(),
+    });
+  });
+
+  test("再翻訳ボタンクリックで translationsRetranslate が unit_id と一緒に呼ばれる", async () => {
+    const mutateFn = vi.fn();
+    vi.mocked(useRetranslation).mockReturnValue({
+      mutate: mutateFn,
+      isPending: false,
+      error: null,
+    } as never);
+    vi.mocked(translationsListUnits).mockResolvedValue({
+      data: {
+        items: [
+          {
+            unit_id: "unit_1",
+            block_id: "blk-1",
+            text_ja: "整流フローは常微分方程式である。",
+            content_ja: null,
+            state: "machine",
+            quality_flags: [],
+            proposal: null,
+          },
+        ],
+      },
+    } as never);
+
+    renderWithClient(
+      <TranslationPane
+        itemId="li_1"
+        revisionId="rev_1"
+        style="natural"
+        translationSetId="set_1"
+        translationStatus="complete"
+        toc={[]}
+        summaryLines={null}
+        lastPosition={null}
+      />,
+    );
+
+    await screen.findByText("整流フローは常微分方程式である。");
+    // 「対」ボタンをクリックしてポップを開く
+    fireEvent.click(screen.getByRole("button", { name: "対訳を表示" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "対訳" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /再翻訳/ }));
+
+    expect(mutateFn).toHaveBeenCalledOnce();
+    // useRetranslation が unit_1 に対して呼ばれていること
+    expect(useRetranslation).toHaveBeenCalledWith(
+      "unit_1",
+      expect.arrayContaining(["units", "rev_1"]),
+    );
+  });
+
+  test("再翻訳中はボタンが disabled になる", async () => {
+    vi.mocked(useRetranslation).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: true,
+      error: null,
+    } as never);
+    vi.mocked(translationsListUnits).mockResolvedValue({
+      data: {
+        items: [
+          {
+            unit_id: "unit_1",
+            block_id: "blk-1",
+            text_ja: "整流フローは常微分方程式である。",
+            content_ja: null,
+            state: "machine",
+            quality_flags: [],
+            proposal: null,
+          },
+        ],
+      },
+    } as never);
+
+    renderWithClient(
+      <TranslationPane
+        itemId="li_1"
+        revisionId="rev_1"
+        style="natural"
+        translationSetId="set_1"
+        translationStatus="complete"
+        toc={[]}
+        summaryLines={null}
+        lastPosition={null}
+      />,
+    );
+
+    await screen.findByText("整流フローは常微分方程式である。");
+    fireEvent.click(screen.getByRole("button", { name: "対訳を表示" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "対訳" });
+    const retranslateBtn = within(dialog).getByRole("button", { name: /再翻訳/ });
+    expect(retranslateBtn).toBeDisabled();
+  });
+
+  test("proposal がある unit では採用・破棄ボタンが表示される", async () => {
+    vi.mocked(useRetranslation).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      error: null,
+    } as never);
+    vi.mocked(translationsAcceptProposal).mockResolvedValue({ data: undefined } as never);
+    vi.mocked(translationsDiscardProposal).mockResolvedValue({ data: undefined } as never);
+    vi.mocked(translationsListUnits).mockResolvedValue({
+      data: {
+        items: [
+          {
+            unit_id: "unit_1",
+            block_id: "blk-1",
+            text_ja: "整流フローは常微分方程式である。",
+            content_ja: null,
+            state: "machine",
+            quality_flags: [],
+            proposal: {
+              text_ja: "整流フローはODEである。",
+              generated_at: "2026-07-20T00:00:00",
+              model: "gpt-4o",
+            },
+          },
+        ],
+      },
+    } as never);
+
+    renderWithClient(
+      <TranslationPane
+        itemId="li_1"
+        revisionId="rev_1"
+        style="natural"
+        translationSetId="set_1"
+        translationStatus="complete"
+        toc={[]}
+        summaryLines={null}
+        lastPosition={null}
+      />,
+    );
+
+    // proposal カードが段落の下に表示される(候補訳テキストで確認)
+    expect(await screen.findByText("整流フローはODEである。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "採用" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "破棄" })).toBeInTheDocument();
+  });
+
+  test("採用ボタンクリックで translationsAcceptProposal が呼ばれる", async () => {
+    vi.mocked(useRetranslation).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      error: null,
+    } as never);
+    vi.mocked(translationsAcceptProposal).mockResolvedValue({ data: undefined } as never);
+    vi.mocked(translationsDiscardProposal).mockResolvedValue({ data: undefined } as never);
+    vi.mocked(translationsListUnits).mockResolvedValue({
+      data: {
+        items: [
+          {
+            unit_id: "unit_1",
+            block_id: "blk-1",
+            text_ja: "整流フローは常微分方程式である。",
+            content_ja: null,
+            state: "machine",
+            quality_flags: [],
+            proposal: {
+              text_ja: "整流フローはODEである。",
+              generated_at: "2026-07-20T00:00:00",
+              model: "gpt-4o",
+            },
+          },
+        ],
+      },
+    } as never);
+
+    renderWithClient(
+      <TranslationPane
+        itemId="li_1"
+        revisionId="rev_1"
+        style="natural"
+        translationSetId="set_1"
+        translationStatus="complete"
+        toc={[]}
+        summaryLines={null}
+        lastPosition={null}
+      />,
+    );
+
+    await screen.findByText("整流フローはODEである。");
+
+    fireEvent.click(screen.getByRole("button", { name: "採用" }));
+
+    await waitFor(() =>
+      expect(translationsAcceptProposal).toHaveBeenCalledWith({
+        path: { unit_id: "unit_1" },
+      }),
+    );
+  });
+
+  test("破棄ボタンクリックで translationsDiscardProposal が呼ばれる", async () => {
+    vi.mocked(useRetranslation).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      error: null,
+    } as never);
+    vi.mocked(translationsAcceptProposal).mockResolvedValue({ data: undefined } as never);
+    vi.mocked(translationsDiscardProposal).mockResolvedValue({ data: undefined } as never);
+    vi.mocked(translationsListUnits).mockResolvedValue({
+      data: {
+        items: [
+          {
+            unit_id: "unit_1",
+            block_id: "blk-1",
+            text_ja: "整流フローは常微分方程式である。",
+            content_ja: null,
+            state: "machine",
+            quality_flags: [],
+            proposal: {
+              text_ja: "整流フローはODEである。",
+              generated_at: "2026-07-20T00:00:00",
+              model: "gpt-4o",
+            },
+          },
+        ],
+      },
+    } as never);
+
+    renderWithClient(
+      <TranslationPane
+        itemId="li_1"
+        revisionId="rev_1"
+        style="natural"
+        translationSetId="set_1"
+        translationStatus="complete"
+        toc={[]}
+        summaryLines={null}
+        lastPosition={null}
+      />,
+    );
+
+    await screen.findByText("整流フローはODEである。");
+
+    fireEvent.click(screen.getByRole("button", { name: "破棄" }));
+
+    await waitFor(() =>
+      expect(translationsDiscardProposal).toHaveBeenCalledWith({
+        path: { unit_id: "unit_1" },
+      }),
+    );
   });
 });
