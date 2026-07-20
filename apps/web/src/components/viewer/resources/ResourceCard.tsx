@@ -1,12 +1,39 @@
 "use client";
 
 import { useRef, useState } from "react";
+import type { RunOut } from "@alinea/api-client";
 import { EvidenceChip } from "@/components/ui/EvidenceChip";
 import { Popover } from "@/components/ui/Popover";
+import type { CodeAnalysisMode } from "@/components/settings/types";
 import { metaLine, parseNoteSegments } from "./format";
 import { ResourceKindIcon } from "./ResourceKindIcon";
 import type { ResKind, ResourceLink } from "./types";
 import { YouTubeThumbnail } from "./YouTubeThumbnail";
+
+/**
+ * GitHub カードのコード対応解析セクションの入力(Task 22)。親(ResourcesPanel)が
+ * モード・当該 resource の最新 run・見積り中フラグ・ハンドラを供給する。
+ */
+export interface ResourceCardAnalysis {
+  mode: CodeAnalysisMode;
+  /** この resource の最新 run(なければ null)。 */
+  run: RunOut | null;
+  /** 完了 run の検証済み対応件数。 */
+  correspondenceCount: number;
+  /**
+   * automatic モードでこの resource が自動解析対象か。ResourceCard は active な確定
+   * リソースにのみ描画されるため、GitHub カードは基本 true(suggested/dismissed は別カード)。
+   */
+  autoTargeted: boolean;
+  /** 見積り取得中(モーダルを開く直前〜取得完了まで)。 */
+  estimating: boolean;
+  /** 「コード対応を解析」= 見積りを取得して確認モーダルを開く。 */
+  onStartEstimate: () => void;
+  /** 「結果を見る」= 対応結果パネルを開く。 */
+  onViewResult: () => void;
+  /** 設定(コード解析)への遷移先。 */
+  settingsHref?: string;
+}
 
 export interface ResourceCardProps {
   resource: ResourceLink;
@@ -16,6 +43,41 @@ export interface ResourceCardProps {
   onEdit: (patch: { title?: string; kind?: ResKind; note?: string | null }) => void;
   onRefreshMeta: () => void;
   onDelete: () => void;
+  /** GitHub カードのコード対応解析導線(github 以外や未対応論文では未指定)。 */
+  analysis?: ResourceCardAnalysis;
+}
+
+/** 解析導線の表示状態(設計 §12 の一状態機械)。 */
+export type CodeAnalysisUiState =
+  | "off"
+  | "idle"
+  | "estimating"
+  | "queued"
+  | "running"
+  | "waiting_budget"
+  | "failed"
+  | "complete"
+  | "stale"
+  | "automatic_pending";
+
+/**
+ * 見積り前・見積り中・queued・running・waiting_budget・failed・complete・stale・
+ * automatic 対象・off を一つの関数で導出する(設計 §12)。既存の成功結果は off でも見せるため、
+ * run の状態を最優先で評価する。
+ */
+export function deriveCodeAnalysisState(analysis: ResourceCardAnalysis): CodeAnalysisUiState {
+  const { mode, run } = analysis;
+  if (run) {
+    if (run.status === "queued") return "queued";
+    if (run.status === "running") return "running";
+    if (run.status === "waiting_budget") return "waiting_budget";
+    if (run.status === "failed") return "failed";
+    if (run.status === "succeeded") return run.stale ? "stale" : "complete";
+  }
+  if (analysis.estimating) return "estimating";
+  if (mode === "off") return "off";
+  if (mode === "automatic" && analysis.autoTargeted) return "automatic_pending";
+  return "idle";
 }
 
 const KIND_LABELS: Record<ResKind, string> = {
@@ -33,6 +95,7 @@ export function ResourceCard({
   onEdit,
   onRefreshMeta,
   onDelete,
+  analysis,
 }: ResourceCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [kindSubmenu, setKindSubmenu] = useState(false);
@@ -260,6 +323,10 @@ export function ResourceCard({
         </div>
       ) : null}
 
+      {resource.kind === "github" && analysis ? (
+        <CodeAnalysisSection analysis={analysis} />
+      ) : null}
+
       <Popover
         open={menuOpen}
         onClose={() => {
@@ -349,6 +416,153 @@ export function ResourceCard({
     </div>
   );
 }
+
+/**
+ * GitHub カードのコード対応解析セクション(設計 §12 の一状態機械)。
+ * deriveCodeAnalysisState で導いた 1 状態を UI へ写す。off でも既存の完了結果は「結果を見る」で
+ * 参照でき、新規解析ボタンだけを無効化する。
+ */
+function CodeAnalysisSection({ analysis }: { analysis: ResourceCardAnalysis }) {
+  const state = deriveCodeAnalysisState(analysis);
+  const settingsHref = analysis.settingsHref ?? "/settings?category=account";
+
+  const analyzeButton = (label: string, disabled: boolean) => (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={analysis.onStartEstimate}
+      style={{
+        ...analysisButtonStyle,
+        opacity: disabled ? 0.5 : 1,
+        cursor: disabled ? "default" : "pointer",
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  const viewResultButton = (
+    <button type="button" onClick={analysis.onViewResult} style={analysisLinkButtonStyle}>
+      結果を見る →
+    </button>
+  );
+
+  const commitShort = analysis.run?.commit_sha?.slice(0, 10) ?? "";
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 5,
+        borderTop: "1px solid var(--pr-border-hair, #ECE9DF)",
+        paddingTop: 8,
+      }}
+    >
+      <span style={{ fontSize: 10, fontWeight: 600, color: "var(--pr-text-muted)" }}>
+        コード対応解析
+      </span>
+
+      {state === "idle" ? analyzeButton("コード対応を解析", false) : null}
+
+      {state === "estimating" ? (
+        <span style={analysisMutedText}>対象規模を取得中…</span>
+      ) : null}
+
+      {state === "automatic_pending" ? (
+        <span style={analysisMutedText}>取り込み後に自動で解析します</span>
+      ) : null}
+
+      {state === "queued" ? <span style={analysisMutedText}>解析を待機中…</span> : null}
+      {state === "running" ? <span style={analysisMutedText}>解析中…</span> : null}
+
+      {state === "waiting_budget" ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <span style={{ ...analysisMutedText, color: "var(--pr-warn, #A05A42)" }}>
+            月額予算を超えるため待機中
+          </span>
+          <a href={settingsHref} style={analysisLinkStyle}>
+            設定を見直す →
+          </a>
+        </div>
+      ) : null}
+
+      {state === "failed" ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <span style={{ ...analysisMutedText, color: "var(--pr-warn, #A05A42)" }}>
+            解析に失敗しました
+          </span>
+          {analysis.mode !== "off" ? analyzeButton("再解析", false) : null}
+        </div>
+      ) : null}
+
+      {state === "complete" ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={analysisMutedText}>
+            対応 {analysis.correspondenceCount} 件 · {commitShort}
+          </span>
+          {viewResultButton}
+        </div>
+      ) : null}
+
+      {state === "stale" ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <span style={{ ...analysisMutedText, color: "var(--pr-warn, #A05A42)" }}>
+            リポジトリが更新されています
+          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {viewResultButton}
+            {analysis.mode !== "off" ? analyzeButton("再解析", false) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {state === "off" ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          {analyzeButton("コード対応を解析", true)}
+          <a href={settingsHref} style={analysisLinkStyle}>
+            設定でコード解析が無効です →
+          </a>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const analysisButtonStyle = {
+  alignSelf: "flex-start" as const,
+  height: 26,
+  padding: "0 12px",
+  borderRadius: 6,
+  border: "1px solid var(--pr-acc-m)",
+  background: "var(--pr-acc-s)",
+  color: "var(--pr-acc)",
+  fontSize: 11,
+  fontWeight: 600,
+  fontFamily: "inherit",
+};
+
+const analysisLinkButtonStyle = {
+  border: "none",
+  background: "transparent",
+  color: "var(--pr-acc)",
+  fontSize: 11,
+  fontWeight: 600,
+  cursor: "pointer",
+  fontFamily: "inherit",
+  padding: 0,
+};
+
+const analysisLinkStyle = {
+  color: "var(--pr-acc)",
+  fontSize: 10.5,
+  fontWeight: 600,
+};
+
+const analysisMutedText = {
+  fontSize: 10.5,
+  color: "var(--pr-text-muted)",
+};
 
 const menuItemStyle = {
   display: "block",

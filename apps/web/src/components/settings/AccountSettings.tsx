@@ -10,9 +10,11 @@ import { SettingsControlRow } from "@/components/settings/SettingsControlRow";
 import { SettingToggleRow } from "@/components/settings/SettingToggleRow";
 import { ModelRoutingRow } from "@/components/settings/ModelRoutingRow";
 import { ApiKeyRow } from "@/components/settings/ApiKeyRow";
+import { CodeAnalysisSettings } from "@/components/settings/CodeAnalysisSettings";
 import {
   BYOK_PROVIDERS,
   type ByokProvider,
+  type CodeAnalysisMode,
   type LlmUseCase,
   type RouteEntry,
   type SettingsData,
@@ -30,6 +32,10 @@ export interface AccountSettingsProps {
   onDeleteKey: (provider: ByokProvider) => void;
   onLogout: () => void;
   onDeleteAccount: () => void;
+  /** GitHub コード対応解析の当月実費(USD)。未取得時は null(Task 22)。 */
+  codeAnalysisMonthCostUsd?: number | null;
+  onCodeAnalysisModeChange: (mode: CodeAnalysisMode) => void;
+  onCodeAnalysisBudgetChange: (usd: number) => void;
   /** モバイル縮退(mobile.md §1.2-7)。API キーの設定/削除・危険操作(変更系)を非描画にする。参照は可。 */
   readOnly?: boolean;
 }
@@ -81,6 +87,9 @@ export function AccountSettings({
   onDeleteKey,
   onLogout,
   onDeleteAccount,
+  codeAnalysisMonthCostUsd = null,
+  onCodeAnalysisModeChange,
+  onCodeAnalysisBudgetChange,
   readOnly = false,
 }: AccountSettingsProps) {
   const byProvider = new Map(apiKeys.map((k) => [k.provider, k]));
@@ -205,6 +214,21 @@ export function AccountSettings({
             description="オフ(既定)では SVG 決定的レンダリング。オンで画像生成 API を使用"
             checked={settings.llm_routing.overview_figure_raster_mode}
             onChange={onRasterChange}
+          />
+        </Card>
+      </SettingsSection>
+
+      <SettingsSection
+        title="GitHub コード対応解析"
+        titleNote="論文の主張とリポジトリのコードを対応付けます(LLM・埋め込み API を使用)"
+      >
+        <Card padding="none">
+          <CodeAnalysisSettings
+            mode={settings.code_analysis.mode}
+            monthlyBudgetUsd={settings.code_analysis.monthly_budget_usd}
+            currentMonthCostUsd={codeAnalysisMonthCostUsd}
+            onModeChange={onCodeAnalysisModeChange}
+            onBudgetChange={onCodeAnalysisBudgetChange}
           />
         </Card>
       </SettingsSection>

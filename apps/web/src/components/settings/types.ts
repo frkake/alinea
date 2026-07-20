@@ -78,6 +78,19 @@ export interface ExtensionPrefs {
   arxiv_inline_button: boolean;
 }
 
+/** GitHub コード対応解析のモード(設計 §6・API schemas/settings.py CodeAnalysisSettings)。 */
+export type CodeAnalysisMode = "off" | "on_demand" | "automatic";
+
+/**
+ * GitHub コード対応解析の設定(Task 21・22)。
+ * API は monthly_budget_usd を JSONB の都合で文字列でシリアライズするため、
+ * 画面側は number へ正規化して扱う(SettingsClient のクエリで変換)。
+ */
+export interface CodeAnalysisPrefs {
+  mode: CodeAnalysisMode;
+  monthly_budget_usd: number;
+}
+
 /** アクセントの hex → data-accent キー対応(plans/08 §2.3 ACCENTS)。 */
 export const ACCENT_SWATCHES: ReadonlyArray<{ hex: AccentHex; key: AccentKey; label: string }> = [
   { hex: "#3E5C76", key: "slate", label: "スレートブルー" },
@@ -148,6 +161,7 @@ export interface SettingsData {
   notifications: NotificationsPrefs;
   extension: ExtensionPrefs;
   llm_routing: LlmRouting;
+  code_analysis: CodeAnalysisPrefs;
   available_models: AvailableModels;
 }
 
