@@ -272,7 +272,7 @@ def _inline_katex_css() -> str:
     # まず .woff / .ttf の fallback を削除 (モダンブラウザは woff2 のみで十分)
     css = _FONT_OTHER_RE.sub("", css)
 
-    def _replace_woff2(m: re.Match) -> str:
+    def _replace_woff2(m: re.Match[str]) -> str:
         font_name = m.group(1)
         font_path = _KATEX_DIR / "fonts" / font_name
         try:

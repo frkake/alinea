@@ -57,11 +57,11 @@ _KNOWN_COMMANDS_RE = re.compile(
 def _unwrap_known_commands(value: str) -> str:
     for _ in range(6):
         prev = value
-        def _replace(m: re.Match) -> str:
+        def _replace(m: re.Match[str]) -> str:
             # Return the first non-None group
             for g in m.groups():
                 if g is not None:
-                    return g
+                    return str(g)
             return ""
         value = _KNOWN_COMMANDS_RE.sub(_replace, value)
         if value == prev:
@@ -73,7 +73,7 @@ def _unwrap_known_commands(value: str) -> str:
 # セグメントクリーニング (cleanLatexSegment)
 # ============================================================================
 
-def _item_replace(m: re.Match) -> str:
+def _item_replace(m: re.Match[str]) -> str:
     label = m.group(1)
     return f" {label} " if label else " • "
 
