@@ -6,6 +6,13 @@ __pycache__/
 *.egg-info/
 *.pyc
 
+# ppt-master: dedicated venv + its lock + transient conversion output.
+# NOTE: this ignores ONLY the local venv/output — the submodule-tracked files
+# under vendor/ppt-master/ are intentionally NOT ignored.
+.venv-ppt-master/
+.venv-ppt-master.lock.txt
+ppt-master-output/
+
 # build outputs
 .turbo/
 .next/
