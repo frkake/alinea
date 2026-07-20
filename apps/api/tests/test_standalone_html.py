@@ -10,6 +10,7 @@ Task 10 拡張: KaTeX 埋め込み・LaTeX表示クリーニングの golden テ
 
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
 import re
@@ -19,6 +20,7 @@ from alinea_api.schemas.standalone_html import (
     ArticleBlockView,
     StandaloneMeta,
     TranslationView,
+    _KATEX_DIR,
     build_katex_runtime,
     escape_html,
     render_article_html,
@@ -28,7 +30,11 @@ from alinea_api.schemas.standalone_html import (
 )
 from alinea_core.document.blocks import Block, DocumentContent
 
-_FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
+# Canonical shared fixture — also imported by the TS parity test
+_SHARED_FIXTURE = (
+    pathlib.Path(__file__).parent.parent.parent.parent  # repo root (apps/api -> apps -> repo)
+    / "apps/web/src/components/viewer/latex-display-clean.fixtures.json"
+)
 
 META = StandaloneMeta(
     title="Flow <Straight> & Fast",
@@ -335,9 +341,9 @@ def test_katex_runtime_contains_no_external_urls() -> None:
     ネットワーク参照ではないため除外する。src/href 属性や @import による外部ロードを検査する。
     """
     runtime = build_katex_runtime()
-    # HTML 属性による外部リソース参照がないか検査 (src=/href=/url() in CSS)
-    assert 'src="https://' not in runtime, "External https src found"
-    assert 'href="https://' not in runtime, "External https href found"
+    # HTML 属性による外部リソース参照がないか検査 (src=/href= with http/https)
+    external_src_href = re.findall(r'(?:src|href)=["\']https?://', runtime)
+    assert external_src_href == [], f"External src/href found: {external_src_href}"
     assert "@import url(http" not in runtime, "External @import found"
     # CDN ドメインが含まれていないか
     for cdn in ("cdn.jsdelivr.net", "cdnjs.cloudflare.com", "unpkg.com"):
@@ -371,6 +377,28 @@ def test_katex_runtime_css_has_inline_fonts() -> None:
     )
     # No relative font paths like fonts/KaTeX_*.woff2
     assert "fonts/KaTeX_" not in runtime, "Relative font path found — fonts not inlined"
+
+
+def test_katex_manifest_integrity() -> None:
+    """manifest.json の SHA-256 ハッシュがオンディスクファイルと一致すること。"""
+    manifest_path = _KATEX_DIR / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    # Version key present
+    assert "katex_version" in manifest, "manifest.json missing 'katex_version' key"
+    assert manifest["katex_version"] == "0.16.22"
+    # Hash integrity for every non-metadata entry
+    failures = []
+    for name, expected_sha in manifest.items():
+        if name == "katex_version":
+            continue
+        file_path = _KATEX_DIR / name
+        if not file_path.exists():
+            failures.append(f"{name}: file not found")
+            continue
+        actual_sha = hashlib.sha256(file_path.read_bytes()).hexdigest()
+        if actual_sha != expected_sha:
+            failures.append(f"{name}: expected {expected_sha[:16]}… got {actual_sha[:16]}…")
+    assert not failures, "manifest.json hash mismatches:\n" + "\n".join(failures)
 
 
 def test_document_with_katex_runtime_has_no_network_refs() -> None:
@@ -421,11 +449,15 @@ def test_document_with_katex_runtime_renders_math_markup() -> None:
 # ---------------------------------------------------------------------------
 
 def _load_latex_cases() -> list[dict]:
-    return json.loads((_FIXTURES_DIR / "latex_display_cases.json").read_text())
+    return json.loads(_SHARED_FIXTURE.read_text())
 
 
 def test_latex_clean_parity_with_shared_fixtures() -> None:
-    """shared JSON fixtures が Python clean_latex_display_text() で通ること。"""
+    """shared JSON fixtures が Python clean_latex_display_text() で通ること。
+
+    同一フィクスチャは apps/web/src/components/viewer/latex-display-clean.test.ts でも
+    TypeScript 側の cleanLatexDisplayText() に対して検査する (parity 保証)。
+    """
     cases = _load_latex_cases()
     failures = []
     for case in cases:
