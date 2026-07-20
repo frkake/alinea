@@ -74,6 +74,46 @@ const SOURCE_FACET_ITEMS: { value: SearchSourceFilter; label: string }[] = [
   { value: "article", label: "記事" },
 ];
 
+/** 一致種別ラベル(S12 セマンティック検索。全文=lexical / 意味=semantic / 両方=both)。 */
+const MATCH_TYPE_LABELS: Record<"lexical" | "semantic" | "both", string> = {
+  lexical: "全文",
+  semantic: "意味",
+  both: "両方",
+};
+
+/** 一致種別バッジ(4e §4.5 拡張)。フラグ off では `match_type` が無いので描画しない。 */
+function MatchTypeBadge({ matchType }: { matchType: SearchGroup["match_type"] }) {
+  if (!matchType) return null;
+  const isSemantic = matchType === "semantic" || matchType === "both";
+  return (
+    <span
+      data-testid="match-type-badge"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        height: 16,
+        padding: "0 6px",
+        borderRadius: 3,
+        fontSize: 9.5,
+        fontWeight: 700,
+        flex: "none",
+        background: isSemantic ? "var(--pr-acc-s)" : "var(--pr-bg-inset)",
+        color: isSemantic ? "var(--pr-acc)" : "var(--pr-text-sub2)",
+        whiteSpace: "nowrap",
+      }}
+      title={
+        matchType === "both"
+          ? "全文検索と意味検索の両方で一致"
+          : matchType === "semantic"
+            ? "意味的に関連(セマンティック検索)"
+            : "全文検索で一致"
+      }
+    >
+      {MATCH_TYPE_LABELS[matchType]}
+    </span>
+  );
+}
+
 export interface SearchFacetRailProps {
   source: SearchSourceFilter;
   paper: string | null;
@@ -380,8 +420,9 @@ export function SearchGroupCard({ group, q }: SearchGroupCardProps) {
             interactive={false}
           />
         ) : null}
-        <span style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--pr-text-muted)", flex: "none" }}>
-          {group.hit_count} 件
+        <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, flex: "none" }}>
+          <MatchTypeBadge matchType={group.match_type} />
+          <span style={{ fontSize: 10.5, color: "var(--pr-text-muted)" }}>{group.hit_count} 件</span>
         </span>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 2, padding: "6px 16px 12px" }}>
