@@ -1,0 +1,147 @@
+{
+  "quality_level": "A",
+  "sections": [
+    {
+      "id": "sec-abs",
+      "heading": { "number": "", "title": "Abstract" },
+      "blocks": [
+        {
+          "id": "blk-abs-1",
+          "type": "paragraph",
+          "inlines": [
+            {
+              "t": "text",
+              "v": "We present Rectified Flow, a method that learns a straight-line transport between two distributions and reduces sampling from 128 steps to a single step while retaining quality."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sec-1",
+      "heading": { "number": "1", "title": "Introduction" },
+      "blocks": [
+        {
+          "id": "blk-1-1",
+          "type": "paragraph",
+          "inlines": [
+            {
+              "t": "text",
+              "v": "Diffusion models generate high quality samples but require many iterative steps, which makes inference slow and costly in practice."
+            }
+          ]
+        },
+        {
+          "id": "blk-1-2",
+          "type": "paragraph",
+          "inlines": [
+            {
+              "t": "text",
+              "v": "Our goal is to straighten the probability flow so that generation follows an almost straight path from noise to data."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sec-2",
+      "heading": { "number": "2", "title": "Method" },
+      "blocks": [
+        {
+          "id": "blk-2-1",
+          "type": "paragraph",
+          "inlines": [
+            {
+              "t": "text",
+              "v": "We define a transport map between the two distributions and iteratively rectify it using a reflow procedure that reduces path curvature."
+            }
+          ]
+        },
+        {
+          "id": "blk-eq-1",
+          "type": "equation",
+          "number": "1",
+          "label": "eq:rf",
+          "latex": "\\frac{d}{dt} z_t = v(z_t, t)"
+        },
+        {
+          "id": "blk-fig-1",
+          "type": "figure",
+          "number": "1",
+          "label": "fig:straight",
+          "asset_key": "figures/paper/rev/blk-fig-1.png",
+          "caption": [
+            { "t": "text", "v": "Straightened trajectories after two reflow iterations." }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sec-3",
+      "heading": { "number": "3", "title": "Results" },
+      "blocks": [
+        {
+          "id": "blk-3-1",
+          "type": "paragraph",
+          "inlines": [
+            {
+              "t": "text",
+              "v": "Rectified Flow reaches an FID of 3.2 on the benchmark and recovers 96% of the multi-step quality using a single sampling step."
+            }
+          ]
+        },
+        {
+          "id": "blk-tab-1",
+          "type": "table",
+          "number": "1",
+          "label": "tab:main",
+          "caption": [
+            { "t": "text", "v": "Comparison of FID across sampling budgets." }
+          ],
+          "raw": "<table><tr><th>Steps</th><th>FID</th></tr><tr><td>1</td><td>3.2</td></tr><tr><td>128</td><td>3.0</td></tr></table>"
+        },
+        {
+          "id": "blk-fig-2",
+          "type": "figure",
+          "number": "2",
+          "label": "fig:samples",
+          "caption": [
+            { "t": "text", "v": "Qualitative single-step samples." }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sec-4",
+      "heading": { "number": "4", "title": "Limitations" },
+      "blocks": [
+        {
+          "id": "blk-4-1",
+          "type": "paragraph",
+          "inlines": [
+            {
+              "t": "text",
+              "v": "The reflow procedure requires an additional training pass and its benefit saturates after two iterations."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sec-5",
+      "heading": { "number": "5", "title": "Conclusion" },
+      "blocks": [
+        {
+          "id": "blk-5-1",
+          "type": "paragraph",
+          "inlines": [
+            {
+              "t": "text",
+              "v": "Straightening the transport map yields fast one-step generation without a large quality penalty."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

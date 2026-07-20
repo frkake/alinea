@@ -890,6 +890,9 @@ async def delete_item(
         asset_prefixes=[
             f"figures/{paper_id}/",
             f"thumbnails/{paper_id}/",
+            # 論文→PPTX 成果物(Task 29)。key は presentations/{library_item_id}/{job_id}.pptx。
+            # PresentationArtifact 行は library_item CASCADE で消えるが、S3 実体は明示削除する。
+            *(f"presentations/{library_item_id}/" for library_item_id in library_item_ids),
             *(f"renders/articles/{article_id}/" for article_id in article_ids),
             *(f"renders/overview/{article_id}/" for article_id in article_ids),
             *(f"renders/explainer/{explainer_id}/" for explainer_id in explainer_ids),

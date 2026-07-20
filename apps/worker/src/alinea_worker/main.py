@@ -31,7 +31,7 @@ HANDLERS: dict[str, JobHandler] = {}
 # LLM ルータを必須とする kind(取り込みはアブストラクト翻訳/要約、翻訳はセクション翻訳、
 # article は記事生成・ブロック書き直しで使う)。
 # ``ctx['router']`` が未構成(運営キー未設定)なら P3 準拠で可視的に失敗させる(bootstrap 参照)。
-_LLM_REQUIRED_KINDS = frozenset({"ingest", "translation", "article", "figure"})
+_LLM_REQUIRED_KINDS = frozenset({"ingest", "translation", "article", "figure", "presentation"})
 _NO_ROUTER_MESSAGE = (
     "LLM プロバイダの API キーが未設定です(運営キー/BYOK いずれも無し)。"
     "設定後に再試行してください。"
@@ -47,6 +47,7 @@ _JOB_QUEUE_BY_KIND = {
     "export": BULK_QUEUE,
     "paper_export": BULK_QUEUE,
     "account_delete": BULK_QUEUE,
+    "presentation": BULK_QUEUE,
 }
 
 

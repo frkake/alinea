@@ -37,6 +37,7 @@ from alinea_worker.figure_assets import (
     html_asset_url,
     isolated_figure_asset_payload,
     normalize_requested_asset,
+    sanitize_svg_document,
 )
 from alinea_worker.figure_assets import (
     _figure_asset_payload_trusted as figure_asset_payload,
@@ -888,6 +889,66 @@ def test_svg_structural_validator_allows_internal_gradient_and_use_fragment() ->
     assert payload.ext == "png"
     assert payload.width > 0
     assert payload.height > 0
+
+
+# --------------------------------------------------------------------------- #
+# Public SVG sanitizer (Task 29): reuses the existing validators without
+# weakening them. Presentation SVGs go through this before ppt-master.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "source",
+    [
+        b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg" onload="x()"/>',
+        b'<svg xmlns="http://www.w3.org/2000/svg"><image href="https://evil.example/x.png"/></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg"><image href="/etc/passwd"/></svg>',
+        b'<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><p>x</p></foreignObject></svg>',
+        b'<!DOCTYPE svg [<!ENTITY x "y">]><svg xmlns="http://www.w3.org/2000/svg">&x;</svg>',
+    ],
+    ids=["script", "onload", "external-url", "path-traversal", "foreignObject", "doctype-entity"],
+)
+def test_sanitize_svg_document_rejects_active_or_external_content(source: bytes) -> None:
+    with pytest.raises(FigureAssetError) as caught:
+        sanitize_svg_document(source)
+    assert caught.value.code == "unsafe_vector"
+
+
+def test_sanitize_svg_document_rejects_oversized_xml(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(figure_assets, "MAX_SVG_BYTES", 32)
+    big = b'<svg xmlns="http://www.w3.org/2000/svg">' + b"<g/>" * 100 + b"</svg>"
+    with pytest.raises(FigureAssetError) as caught:
+        sanitize_svg_document(big)
+    assert caught.value.code == "asset_too_large"
+
+
+def test_sanitize_svg_document_returns_canonical_passive_svg() -> None:
+    source = (
+        '<svg xmlns="http://www.w3.org/2000/svg"'
+        ' xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"'
+        ' viewBox="0 0 1280 720" width="1280" height="720" data-author="untrusted">'
+        '<g inkscape:label="Plot"><rect width="1280" height="720" fill="#0b1021"/>'
+        '<text x="80" y="200" fill="#ffffff">スライド</text></g>'
+        "</svg>"
+    ).encode()
+
+    out = sanitize_svg_document(source)
+
+    # Canonical bytes are returned; foreign/data metadata is stripped but the
+    # legitimate rendering nodes survive (no weakening of the accept path).
+    assert b"data-author" not in out
+    assert b"inkscape" not in out
+    assert b"<rect" in out
+    assert "スライド".encode() in out
+    # Re-sanitizing the output is idempotent (still safe SVG).
+    assert sanitize_svg_document(out)
+
+
+def test_sanitize_svg_document_is_the_render_gate() -> None:
+    # The private render path must delegate to the public sanitizer (same object)
+    # so figure SVG validation and presentation SVG validation cannot diverge.
+    assert figure_assets._validate_svg_document is sanitize_svg_document
 
 
 @pytest.mark.parametrize(
