@@ -25,6 +25,7 @@ from alinea_core.db.models import (
     Job,
     LibraryItem,
     Paper,
+    ResourceLink,
     TranslationSet,
     TranslationUnit,
     User,
@@ -1294,3 +1295,68 @@ def test_apply_metadata_writes_repo_url_when_paper_has_none() -> None:
     run._apply_metadata(paper, meta)
 
     assert paper.official_repo_url == "https://github.com/auto/detected"
+
+
+# ===========================================================================
+# Task 21: automatic モードでの code_analysis 自動起動(readable 遷移)
+# ===========================================================================
+async def test_ingest_enqueues_code_analysis_when_automatic_and_active_github(
+    db_session: AsyncSession, worker_ctx: dict[str, Any], seed_ingest_job: Any
+) -> None:
+    """automatic モード + active GitHub Resource があると readable 遷移で解析ジョブが入る。"""
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    # ユーザーを automatic に設定し、active な GitHub Resource を追加する。
+    user = await db_session.get(User, ids["user_id"])
+    user.settings = {"code_analysis": {"mode": "automatic", "monthly_budget_usd": "5.00"}}
+    db_session.add(
+        ResourceLink(
+            id=str(uuid.uuid4()),
+            library_item_id=ids["library_item_id"],
+            kind="github",
+            url="https://github.com/gnobitab/RectifiedFlow",
+            url_normalized="https://github.com/gnobitab/rectifiedflow",
+            status="active",
+        )
+    )
+    await db_session.commit()
+
+    store = JobStore(db_session)
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(worker_ctx, store, job)
+
+    ca_jobs = (
+        (await db_session.execute(select(Job).where(Job.kind == "code_analysis"))).scalars().all()
+    )
+    mine = [j for j in ca_jobs if str(j.library_item_id) == ids["library_item_id"]]
+    assert len(mine) == 1
+    assert mine[0].payload["trigger"] == "automatic"
+
+
+async def test_ingest_no_code_analysis_when_on_demand(
+    db_session: AsyncSession, worker_ctx: dict[str, Any], seed_ingest_job: Any
+) -> None:
+    """既定(on_demand)では GitHub Resource があっても readable で自動起動しない。"""
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    db_session.add(
+        ResourceLink(
+            id=str(uuid.uuid4()),
+            library_item_id=ids["library_item_id"],
+            kind="github",
+            url="https://github.com/gnobitab/RectifiedFlow",
+            url_normalized="https://github.com/gnobitab/rectifiedflow",
+            status="active",
+        )
+    )
+    await db_session.commit()
+
+    store = JobStore(db_session)
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(worker_ctx, store, job)
+
+    ca_jobs = (
+        (await db_session.execute(select(Job).where(Job.kind == "code_analysis"))).scalars().all()
+    )
+    mine = [j for j in ca_jobs if str(j.library_item_id) == ids["library_item_id"]]
+    assert mine == []

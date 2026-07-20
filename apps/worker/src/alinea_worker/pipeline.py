@@ -4734,6 +4734,63 @@ class IngestRun:
                     publish=self.deps.publish,
                 )
         await self.store.checkpoint(self.job_id, "readable", {"section_id": first}, progress=55)
+        await self._maybe_enqueue_automatic_code_analysis()
+
+    async def _maybe_enqueue_automatic_code_analysis(self) -> None:
+        """readable 到達時、automatic かつ active GitHub Resource があればコード解析を起動する。
+
+        設計 §6: 公式根拠を持つ候補(papers.official_repo_url)または active な GitHub Resource が
+        既に存在する場合に限る。suggested/dismissed は対象にしない。commit 未解決の automatic
+        ジョブを enqueue し、worker(analyze_code)が commit 解決・見積り・予算チェックする。
+        """
+        if self.user_id is None or self.library_item_id is None or self.paper_id is None:
+            return
+        from alinea_core.db.models import ResourceLink as _ResourceLink
+        from alinea_core.db.models import User as _User
+
+        user = await self.session.get(_User, self.user_id)
+        if user is None:
+            return
+        settings = (user.settings or {}).get("code_analysis") or {}
+        if settings.get("mode") != "automatic":
+            return
+
+        # active な GitHub Resource を優先。無ければ公式 GitHub 候補(official_repo_url)を使う。
+        link = (
+            await self.session.execute(
+                select(_ResourceLink)
+                .where(
+                    _ResourceLink.library_item_id == self.library_item_id,
+                    _ResourceLink.kind == "github",
+                    _ResourceLink.status == "active",
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        resource_id: str | None = str(link.id) if link is not None else None
+        if resource_id is None:
+            # 公式候補(official_repo_url)は resource_links 行を持たないため、automatic の
+            # 内部起動対象だが commit 解決には resource が必要。行が無ければ起動しない
+            # (候補 accept 時に resources API が起動する。§6)。
+            return
+
+        try:
+            await self.store.enqueue(
+                kind="code_analysis",
+                payload={
+                    "resource_id": resource_id,
+                    "library_item_id": self.library_item_id,
+                    "trigger": "automatic",
+                },
+                idempotency_key=f"code_analysis:auto:{self.user_id}:{self.library_item_id}:{resource_id}",
+                priority="bulk",
+                user_id=self.user_id,
+                paper_id=self.paper_id,
+                library_item_id=self.library_item_id,
+            )
+        except Exception:
+            # 解析起動の失敗で取り込み本体を止めない(ベストエフォート)。
+            return
 
     # -- translating_body -------------------------------------------------
 

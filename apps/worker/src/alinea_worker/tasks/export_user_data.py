@@ -32,6 +32,8 @@ from alinea_core.db.models import (
     ArticlePublication,
     ChatMessage,
     ChatThread,
+    CodeAnalysisRun,
+    CodeCorrespondence,
     Collection,
     CollectionEntry,
     CollectionShareToken,
@@ -376,6 +378,80 @@ async def _serialize_resources(
         }
         for r in rows
     ]
+
+
+async def _serialize_code_analysis(
+    session: AsyncSession, library_item_ids: list[str]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """コード対応解析の runs と correspondences(Task 21・設計 §11)。
+
+    生成コストの高いユーザーデータなので完全バックアップへ含める(固定 commit URL を保つ)。
+    見積り(estimates)は短命な派生データなので含めない。
+    """
+    if not library_item_ids:
+        return [], []
+    runs = (
+        (
+            await session.execute(
+                select(CodeAnalysisRun)
+                .where(CodeAnalysisRun.library_item_id.in_(library_item_ids))
+                .order_by(CodeAnalysisRun.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    run_rows = [
+        {
+            "id": str(r.id),
+            "library_item_id": str(r.library_item_id),
+            "resource_id": str(r.resource_id),
+            "revision_id": str(r.revision_id),
+            "commit_sha": r.commit_sha,
+            "analysis_version": r.analysis_version,
+            "trigger": r.trigger,
+            "status": r.status,
+            "stale": r.stale,
+            "estimated_cost_usd": str(r.estimated_cost_usd),
+            "actual_cost_usd": str(r.actual_cost_usd),
+            "error": r.error,
+            "created_at": _iso(r.created_at),
+            "finished_at": _iso(r.finished_at),
+        }
+        for r in runs
+    ]
+    run_ids = [str(r.id) for r in runs]
+    corr_rows: list[dict[str, Any]] = []
+    if run_ids:
+        corrs = (
+            (
+                await session.execute(
+                    select(CodeCorrespondence)
+                    .where(CodeCorrespondence.run_id.in_(run_ids))
+                    .order_by(CodeCorrespondence.run_id, CodeCorrespondence.position)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        corr_rows = [
+            {
+                "id": str(c.id),
+                "run_id": str(c.run_id),
+                "position": c.position,
+                "paper_anchor": c.paper_anchor,
+                "claim_text": c.claim_text,
+                "path": c.path,
+                "symbol": c.symbol,
+                "start_line": c.start_line,
+                "end_line": c.end_line,
+                "code_excerpt": c.code_excerpt,
+                "explanation_ja": c.explanation_ja,
+                "confidence": c.confidence,
+            }
+            for c in corrs
+        ]
+    return run_rows, corr_rows
 
 
 async def _serialize_articles(
@@ -1033,6 +1109,10 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
     publications = await _serialize_publications(session, article_ids)
     publication_ids = [p["id"] for p in publications]
 
+    code_analysis_runs, code_correspondences = await _serialize_code_analysis(
+        session, library_item_ids
+    )
+
     return {
         "schema_version": EXPORT_SCHEMA_VERSION,
         "exported_at": dt.datetime.now(dt.UTC).isoformat(),
@@ -1069,6 +1149,8 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
         "paper_external_ids": await _serialize_paper_external_ids(session, paper_ids),
         "share_tokens": await _serialize_share_tokens(session, collection_ids),
         "presentations": await _serialize_presentations(session, library_item_ids),
+        "code_analysis_runs": code_analysis_runs,
+        "code_correspondences": code_correspondences,
     }
 
 

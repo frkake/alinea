@@ -24,6 +24,7 @@ from alinea_api.routers import (
     assets,
     auth,
     chat,
+    code_analysis,
     collections,
     dashboard,
     export,
@@ -100,6 +101,7 @@ def create_app() -> FastAPI:
     app.include_router(resources.router)
     app.include_router(publications.router)
     app.include_router(presentations.router)
+    app.include_router(code_analysis.router)
 
     return app
 

@@ -51,6 +51,8 @@ from alinea_core.db.models import (
     ArticlePublication,
     ChatMessage,
     ChatThread,
+    CodeAnalysisRun,
+    CodeCorrespondence,
     Collection,
     CollectionEntry,
     CollectionShareToken,
@@ -1230,6 +1232,89 @@ class _Importer:
                 candidate_id,
             )
 
+    async def restore_code_analysis_runs(self, rows: list[dict[str, Any]]) -> None:
+        """コード対応解析 run を復元(Task 21)。revision_id / resource_id は id 保存なので直参照。
+
+        依存が復元されていない(revision/resource が無い)行はスキップして失敗記録する。
+        """
+        for row in rows:
+            run_id = str(row["id"])
+            if await self.session.get(CodeAnalysisRun, run_id) is not None:
+                self.skipped["code_analysis_runs"] += 1
+                continue
+            lib_id = self.item_map.get(str(row["library_item_id"]))
+            revision_id = str(row.get("revision_id") or "")
+            resource_id = str(row.get("resource_id") or "")
+            if lib_id is None or not revision_id or not resource_id:
+                self.failed.append(
+                    {"table": "code_analysis_runs", "id": run_id, "error": "unmapped references"}
+                )
+                continue
+            # revision / resource は id 保存で復元される。存在しなければ FK 違反になるため skip。
+            if await self.session.get(DocumentRevision, revision_id) is None:
+                self.failed.append(
+                    {"table": "code_analysis_runs", "id": run_id, "error": "missing revision"}
+                )
+                continue
+            if await self.session.get(ResourceLink, resource_id) is None:
+                self.failed.append(
+                    {"table": "code_analysis_runs", "id": run_id, "error": "missing resource"}
+                )
+                continue
+            await self._insert(
+                "code_analysis_runs",
+                CodeAnalysisRun(
+                    id=run_id,
+                    user_id=self.uid,
+                    library_item_id=lib_id,
+                    resource_id=resource_id,
+                    revision_id=revision_id,
+                    commit_sha=row["commit_sha"],
+                    analysis_version=row["analysis_version"],
+                    trigger=row.get("trigger") or "on_demand",
+                    status=row.get("status") or "succeeded",
+                    stale=bool(row.get("stale")),
+                    estimated_cost_usd=row.get("estimated_cost_usd") or "0",
+                    actual_cost_usd=row.get("actual_cost_usd") or "0",
+                    error=row.get("error"),
+                    created_at=_dt(row.get("created_at")),
+                    finished_at=_dt(row.get("finished_at")),
+                ),
+                run_id,
+            )
+
+    async def restore_code_correspondences(self, rows: list[dict[str, Any]]) -> None:
+        """検証済み対応を復元(Task 21)。run_id は id 保存なので直参照。"""
+        for row in rows:
+            corr_id = str(row["id"])
+            if await self.session.get(CodeCorrespondence, corr_id) is not None:
+                self.skipped["code_correspondences"] += 1
+                continue
+            run_id = str(row.get("run_id") or "")
+            if not run_id or await self.session.get(CodeAnalysisRun, run_id) is None:
+                self.failed.append(
+                    {"table": "code_correspondences", "id": corr_id, "error": "missing run"}
+                )
+                continue
+            await self._insert(
+                "code_correspondences",
+                CodeCorrespondence(
+                    id=corr_id,
+                    run_id=run_id,
+                    position=row.get("position") or 0,
+                    paper_anchor=row.get("paper_anchor") or {},
+                    claim_text=row.get("claim_text") or "",
+                    path=row["path"],
+                    symbol=row.get("symbol") or "",
+                    start_line=row["start_line"],
+                    end_line=row["end_line"],
+                    code_excerpt=row.get("code_excerpt") or "",
+                    explanation_ja=row.get("explanation_ja") or "",
+                    confidence=row.get("confidence") or "medium",
+                ),
+                corr_id,
+            )
+
     async def restore_latest_revisions(self, library: list[dict[str, Any]]) -> None:
         for entry in library:
             revision_id = entry.get("latest_revision_id")
@@ -1303,6 +1388,9 @@ async def import_data_json(
     await imp.restore_publication_comments(data.get("publication_comments") or [])
     await imp.restore_presentations(data.get("presentations") or [])
     await imp.restore_vocab_candidates(data.get("vocab_candidates") or [])
+    # code_analysis: revision / resource / library の復元後(FK 依存)。
+    await imp.restore_code_analysis_runs(data.get("code_analysis_runs") or [])
+    await imp.restore_code_correspondences(data.get("code_correspondences") or [])
     await imp.restore_latest_revisions(library)
 
     # 新規 document_revision について block_search_index を再構築(索引はエクスポートしない)。

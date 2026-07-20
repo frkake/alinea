@@ -27,6 +27,7 @@ from alinea_api.services.user_service import purge_user
 from alinea_core.db.models import LibraryItem, Paper, ResourceLink
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -738,3 +739,110 @@ async def test_delete_resource_removes_it(
 
     listing = (await client.get(f"/api/library-items/{item.id}/resources")).json()
     assert listing["items"] == []
+
+
+# ===========================================================================
+# Task 21: automatic モードでの code_analysis 自動起動
+# ===========================================================================
+async def test_code_analysis_enqueued_on_github_add_when_automatic(
+    db_session: AsyncSession,
+    redis_client: Any,
+    factories: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """automatic モードで active GitHub Resource を手動追加すると code_analysis ジョブが入る。"""
+    from alinea_core.db.models import Job
+
+    user = await factories.make_user(db_session)
+    user.settings = {"code_analysis": {"mode": "automatic", "monthly_budget_usd": "5.00"}}
+    paper = await factories.make_paper(db_session, owner=user, visibility="private")
+    await factories.make_revision(db_session, paper=paper)  # 本文 ready
+    item = await factories.make_library_item(db_session, user=user, paper=paper)
+    uid = str(user.id)
+    await db_session.commit()
+
+    _patch_http(
+        monkeypatch,
+        {
+            "https://api.github.com/repos/gnobitab/RectifiedFlow": _FakeResponse(
+                json_data={"language": "Python", "stargazers_count": 1, "pushed_at": None}
+            )
+        },
+    )
+    transport = ASGITransport(app=_build_app())
+    async with AsyncClient(
+        transport=transport, base_url="http://testserver",
+        headers={"Origin": "http://localhost:3000"}, trust_env=False,
+    ) as ac:
+        token = await create_session(redis_client, uid)
+        ac.cookies.set("yk_session", token)
+        try:
+            resp = await ac.post(
+                f"/api/library-items/{item.id}/resources",
+                json={"url": "https://github.com/gnobitab/RectifiedFlow"},
+            )
+            assert resp.status_code == 201, resp.text
+            jobs = (
+                await db_session.execute(
+                    select(Job).where(
+                        Job.kind == "code_analysis",
+                        Job.library_item_id == str(item.id),
+                    )
+                )
+            ).scalars().all()
+            assert len(jobs) == 1
+            assert jobs[0].payload["trigger"] == "automatic"
+        finally:
+            await db_session.rollback()
+            await purge_user(db_session, uid)
+
+
+async def test_code_analysis_not_enqueued_when_on_demand(
+    db_session: AsyncSession,
+    redis_client: Any,
+    factories: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """既定(on_demand)では GitHub Resource 追加で自動起動しない。"""
+    from alinea_core.db.models import Job
+
+    user = await factories.make_user(db_session)  # 既定 = on_demand
+    paper = await factories.make_paper(db_session, owner=user, visibility="private")
+    await factories.make_revision(db_session, paper=paper)
+    item = await factories.make_library_item(db_session, user=user, paper=paper)
+    uid = str(user.id)
+    await db_session.commit()
+
+    _patch_http(
+        monkeypatch,
+        {
+            "https://api.github.com/repos/gnobitab/RectifiedFlow": _FakeResponse(
+                json_data={"language": "Python", "stargazers_count": 1, "pushed_at": None}
+            )
+        },
+    )
+    transport = ASGITransport(app=_build_app())
+    async with AsyncClient(
+        transport=transport, base_url="http://testserver",
+        headers={"Origin": "http://localhost:3000"}, trust_env=False,
+    ) as ac:
+        token = await create_session(redis_client, uid)
+        ac.cookies.set("yk_session", token)
+        try:
+            resp = await ac.post(
+                f"/api/library-items/{item.id}/resources",
+                json={"url": "https://github.com/gnobitab/RectifiedFlow"},
+            )
+            assert resp.status_code == 201
+            jobs = (
+                await db_session.execute(
+                    select(Job).where(
+                        Job.kind == "code_analysis",
+                        Job.library_item_id == str(item.id),
+                    )
+                )
+            ).scalars().all()
+            assert jobs == []
+        finally:
+            await db_session.rollback()
+            await purge_user(db_session, uid)

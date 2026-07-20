@@ -47,6 +47,7 @@ _JOB_QUEUE_BY_KIND = {
     "export": BULK_QUEUE,
     "paper_export": BULK_QUEUE,
     "account_delete": BULK_QUEUE,
+    "code_analysis": BULK_QUEUE,
 }
 
 
