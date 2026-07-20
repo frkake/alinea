@@ -377,6 +377,107 @@ def test_validated_members_rejects_member_over_limit(monkeypatch: pytest.MonkeyP
             import_user_data._validated_members(zf)
 
 
+# ---------------------------------------------------------------------------
+# Task 3: 既存データ不変 — settings マージ・DB 行不変・冪等二重取り込み
+# ---------------------------------------------------------------------------
+
+
+async def test_import_preserves_target_settings(db_session: AsyncSession) -> None:
+    """取り込み先にある settings キーはバックアップで上書きされない。
+    バックアップ側のみにある新規キーだけが追加される。"""
+    # 取り込み元ユーザーを作ってバックアップ payload を取得
+    src = await _seed_user_data(db_session)
+    # バックアップ payload に settings を混入
+    payload = await _detached_payload(db_session, src["user_id"])
+    payload["settings"] = {
+        "display": {"theme": "light", "font_size": 14},
+        "new_section": {"key": "from_backup"},
+    }
+    await _delete_source_user(db_session, src["user_id"])
+
+    # 取り込み先ユーザーを既存 settings で作る(theme は "dark" = バックアップと意図的に異なる)
+    target_id = str(uuid.uuid4())
+    target_user = User(
+        id=target_id,
+        email=f"{uuid.uuid4().hex}@t.test",
+        settings={"display": {"theme": "dark"}, "existing_key": "target value"},
+    )
+    db_session.add(target_user)
+    await db_session.commit()
+
+    await import_data_json(db_session, target_id, payload)
+    await db_session.refresh(target_user)
+
+    # 既存キーは変わっていない
+    assert target_user.settings["display"]["theme"] == "dark", (
+        "import must not overwrite existing settings keys"
+    )
+    assert target_user.settings["existing_key"] == "target value"
+    # バックアップ側の新規セクションは追加される
+    assert target_user.settings.get("new_section") == {"key": "from_backup"}, (
+        "new keys from backup should be merged in"
+    )
+    # バックアップ側の display.font_size は既存 display dict に追加される
+    assert target_user.settings["display"].get("font_size") == 14
+
+
+async def test_import_preserves_existing_notes_and_resources(db_session: AsyncSession) -> None:
+    """インポートは既存の Note / ResourceLink 行を UPDATE しない(skip する)。"""
+    src = await _seed_user_data(db_session)
+    payload = await _detached_payload(db_session, src["user_id"])
+    await _delete_source_user(db_session, src["user_id"])
+
+    target = await _make_user(db_session)
+
+    # 1 回目: 新規行として挿入される
+    summary1 = await import_data_json(db_session, target["user_id"], payload)
+    assert summary1["failed"] == [], summary1["failed"]
+
+    # 取り込み後の Note を取得して body_md を変更しておく(target が後で編集した想定)
+    from alinea_core.db.models import Note, ResourceLink
+
+    notes = (await db_session.execute(select(Note))).scalars().all()
+    assert notes, "notes should have been imported"
+    note = notes[0]
+    original_note_id = note.id
+    note.body_md = "target value"
+    await db_session.commit()
+
+    # 2 回目: 同じ payload を再取り込み
+    summary2 = await import_data_json(db_session, target["user_id"], payload)
+    assert summary2["failed"] == [], summary2["failed"]
+
+    # Note は skip され、target が後で編集した body_md は上書きされない
+    await db_session.refresh(note)
+    assert note.body_md == "target value", (
+        "existing note body_md must not be overwritten on re-import"
+    )
+    assert summary2["skipped"]["notes"] >= 1
+
+
+async def test_idempotent_merge_double_import(db_session: AsyncSession) -> None:
+    """同じバックアップを 2 回取り込んでも created が 0 になる(完全冪等)。"""
+    src = await _seed_user_data(db_session)
+    payload = await _detached_payload(db_session, src["user_id"])
+    payload["settings"] = {"display": {"theme": "light"}, "new_section": {"val": 1}}
+    await _delete_source_user(db_session, src["user_id"])
+
+    target_id = str(uuid.uuid4())
+    db_session.add(User(id=target_id, email=f"{uuid.uuid4().hex}@t.test"))
+    await db_session.commit()
+
+    summary1 = await import_data_json(db_session, target_id, payload)
+    assert summary1["failed"] == [], summary1["failed"]
+    assert summary1["created"]["library"] >= 1
+
+    summary2 = await import_data_json(db_session, target_id, payload)
+    assert summary2["failed"] == [], summary2["failed"]
+    # 2 回目は何も created されない
+    assert summary2["created"]["library"] == 0
+    assert summary2["created"]["notes"] == 0
+    assert summary2["created"]["resources"] == 0
+
+
 def test_prepare_asset_destinations_rekeys_untrusted_storage_key() -> None:
     """manifestが指定した既存S3キーを移行先の書込み先に使わない。"""
     data = {
