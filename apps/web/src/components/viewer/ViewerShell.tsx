@@ -7,9 +7,12 @@ import {
   libraryItemsUpdate,
   translationsSectionTranslate,
   vocabCandidatesList,
+  type MeResponse,
   type ViewerInit,
 } from "@alinea/api-client";
 import { Z_INDEX, type ReadingStatus } from "@alinea/tokens";
+import { meQueryKey } from "@/components/notifications/queryKeys";
+import { buildPaperCacheUrls, postCachePaper } from "@/lib/offline-viewer";
 import { useToast } from "@/components/ui/Toast";
 import { useFinishReadingStore } from "@/components/library/finishReadingStore";
 import { useViewerStore } from "@/stores/viewer-store";
@@ -152,6 +155,22 @@ export function ViewerShell({
       }
     },
   });
+
+  // Task 23: オンライン表示が確定したら、この論文の viewer データ+関連 asset を SW へ保存
+  // 依頼する(CACHE_PAPER)。SW 側で同一 paper group として記録し、LRU/サイズ eviction を
+  // 適用する。認証ユーザー ID は SET_ACTIVE_USER で共有済みの me クエリから読む(per-user
+  // 分離のため userId を必ず付ける。未取得時は保存を見送る)。
+  useEffect(() => {
+    const me = qc.getQueryData<MeResponse | null>(meQueryKey);
+    const userId = me?.user.id;
+    if (!userId) return;
+    postCachePaper({
+      userId,
+      itemId,
+      revisionId,
+      urls: buildPaperCacheUrls({ itemId, revisionId, translationStyle }),
+    });
+  }, [qc, itemId, revisionId, translationStyle]);
 
   const onBack = () => {
     if (typeof window !== "undefined" && window.history.length <= 1) {
