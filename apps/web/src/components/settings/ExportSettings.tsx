@@ -19,12 +19,12 @@ export interface ExportSettingsProps {
 const EXPORT_JOB_POLL_MS = 2000;
 
 interface ExportFullStatus {
-  job: { status: string };
+  job: { status: string; error?: string | null };
   download_url: string | null;
 }
 
 interface ImportFullStatus {
-  job: { status: string };
+  job: { status: string; error?: string | null };
   summary: Record<string, unknown> | null;
 }
 
@@ -36,48 +36,12 @@ export function ExportSettings({ readOnly = false }: ExportSettingsProps = {}) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [formatOpen, setFormatOpen] = useState(false);
   const formatAnchor = useRef<HTMLDivElement>(null);
-  const [jsonJobId, setJsonJobId] = useState<string | null>(null);
   const [backupJobId, setBackupJobId] = useState<string | null>(null);
   const [importJobId, setImportJobId] = useState<string | null>(null);
   const importFileRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
 
-  const jsonJobQuery = useQuery({
-    queryKey: ["export", "full", jsonJobId],
-    queryFn: async (): Promise<ExportFullStatus> => {
-      const res = await fetch(`/api/export/full/${jsonJobId}`, { credentials: "include" });
-      if (!res.ok) throw new Error("export_full status request failed");
-      return (await res.json()) as ExportFullStatus;
-    },
-    enabled: jsonJobId !== null,
-    refetchInterval: (query) => (query.state.data?.download_url ? false : EXPORT_JOB_POLL_MS),
-  });
-
-  // download_url 取得 or failed で自動ダウンロード/表示復帰(4f §4.6 #3)。
-  useEffect(() => {
-    const data = jsonJobQuery.data;
-    if (!data || jsonJobId === null) return;
-    if (data.download_url) {
-      triggerDownload(data.download_url);
-      setJsonJobId(null);
-    } else if (data.job.status === "failed") {
-      toast({ kind: "error", message: "エクスポートの準備に失敗しました。もう一度お試しください" });
-      setJsonJobId(null);
-    }
-  }, [jsonJobQuery.data, jsonJobId, toast]);
-
-  async function startJsonExport(): Promise<void> {
-    try {
-      const res = await fetch("/api/export/full", { method: "POST", credentials: "include" });
-      if (!res.ok) throw new Error("export_full start failed");
-      const body = (await res.json()) as { job_id: string };
-      setJsonJobId(body.job_id);
-    } catch {
-      toast({ kind: "error", message: "エクスポートの準備に失敗しました。もう一度お試しください" });
-    }
-  }
-
-  // 完全バックアップジョブポーリング(JSON 一括と独立した job id を使う)
+  // 完全バックアップジョブポーリング
   const backupJobQuery = useQuery({
     queryKey: ["export", "backup", backupJobId],
     queryFn: async (): Promise<ExportFullStatus> => {
@@ -96,7 +60,7 @@ export function ExportSettings({ readOnly = false }: ExportSettingsProps = {}) {
       triggerDownload(data.download_url);
       setBackupJobId(null);
     } else if (data.job.status === "failed") {
-      toast({ kind: "error", message: "完全バックアップの準備に失敗しました。もう一度お試しください" });
+      toast({ kind: "error", message: data.job.error ?? "処理に失敗しました" });
       setBackupJobId(null);
     }
   }, [backupJobQuery.data, backupJobId, toast]);
@@ -136,7 +100,7 @@ export function ExportSettings({ readOnly = false }: ExportSettingsProps = {}) {
       toast({ kind: "success", message: "インポートが完了しました" });
       setImportJobId(null);
     } else if (data.job.status === "failed") {
-      toast({ kind: "error", message: "インポートに失敗しました。もう一度お試しください" });
+      toast({ kind: "error", message: data.job.error ?? "処理に失敗しました" });
       setImportJobId(null);
     }
   }, [importJobQuery.data, importJobId, toast]);
@@ -257,14 +221,6 @@ export function ExportSettings({ readOnly = false }: ExportSettingsProps = {}) {
             CSV (.csv)
           </button>
         </Popover>
-        <ExportFormatCard
-          title="JSON 一括"
-          description="全データの一括エクスポート"
-          busyLabel={jsonJobId !== null ? "準備中…" : null}
-          onExport={() => {
-            void startJsonExport();
-          }}
-        />
       </Card>
       <Card padding="md" style={{ display: "flex", gap: 10 }}>
         <ExportFormatCard
