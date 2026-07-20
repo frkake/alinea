@@ -126,6 +126,24 @@ text_models:
                    prompt_cache: none, effort: false}
     enabled: true
 
+# 埋め込みモデル(S12 セマンティック検索。docs/10 §5・spec §D1)。
+# text/image とは別セクション。llm_models の modality CHECK は ('text','image') のため、
+# 0002 のシーダはこのセクションを DB に投入しない(埋め込みは llm_task_routes の 8 タスク
+# にも混ぜない)。実行時の埋め込み設定は routing.yaml の embedding: を参照する。
+embedding_models:
+  - id: text-embedding-3-small
+    provider: openai
+    display_name: "OpenAI text-embedding-3-small"
+    dimensions: 1536
+    pricing: {input_per_mtok: 0.02}
+    enabled: true
+  - id: text-embedding-3-large
+    provider: openai
+    display_name: "OpenAI text-embedding-3-large"
+    dimensions: 3072       # 記録用。既定は small(1536)。切替時は全再インデックス(spec §6.4)
+    pricing: {input_per_mtok: 0.13}
+    enabled: false
+
 image_models:
   - id: gemini-3.1-flash-image
     provider: google

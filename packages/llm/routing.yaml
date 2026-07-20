@@ -58,3 +58,12 @@ tasks:
     size: "1536x1024"
     quality: standard
     timeout_s: 120
+
+# 埋め込み(S12 セマンティック検索)。tasks: の 8 タスク(DB の CHECK 制約と一致)には
+# 混ぜない。埋め込みはベクトル空間の非互換制約があり、フォールバックを同一次元・同一モデル
+# 系列に限定する(spec §D1)。既定は OpenAI text-embedding-3-small(1536 次元)。
+embedding:
+  provider: openai
+  model: text-embedding-3-small
+  dimensions: 1536
+  timeout_s: 60

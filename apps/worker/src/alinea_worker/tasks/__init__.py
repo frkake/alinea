@@ -12,6 +12,7 @@ from alinea_worker.tasks.fetch_resource_meta import run_fetch_resource_meta_job
 from alinea_worker.tasks.generate_explainer_figure import run_figure_job
 from alinea_worker.tasks.generate_vocab_ai import run_generate_vocab_ai
 from alinea_worker.tasks.import_user_data import run_import_full_job
+from alinea_worker.tasks.index_embeddings import EMBEDDING_JOB_KIND, run_index_embeddings_job
 from alinea_worker.tasks.ingest import ingest_paper
 from alinea_worker.tasks.translate import run_translation_job
 
@@ -33,8 +34,12 @@ HANDLERS["export"] = run_export_full_job
 HANDLERS["paper_export"] = run_export_paper_job
 # kind='import'(zip 展開+冪等マージ復元。完全データ移行 Task 4)。
 HANDLERS["import"] = run_import_full_job
+# kind='index_embeddings'(セマンティック検索の埋め込みインデクシング。S12・Task 19)。
+# フラグ off のときは no-op。統合時に ck_jobs_kind へ 'index_embeddings' を union する。
+HANDLERS[EMBEDDING_JOB_KIND] = run_index_embeddings_job
 
 __all__ = [
+    "EMBEDDING_JOB_KIND",
     "ingest_paper",
     "run_export_full_job",
     "run_export_paper_job",
@@ -43,5 +48,6 @@ __all__ = [
     "run_figure_job",
     "run_generate_vocab_ai",
     "run_import_full_job",
+    "run_index_embeddings_job",
     "run_translation_job",
 ]

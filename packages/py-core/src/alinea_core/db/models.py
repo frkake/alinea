@@ -10,6 +10,9 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
+# pgvector の SQLAlchemy 型(S12 セマンティック検索。vector(1536) 列)。実体は
+# docker/db/Dockerfile が同梱する postgresql-16-pgvector が提供する拡張。
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -763,6 +766,41 @@ class QuotaLimit(Base):
     updated_at: Mapped[dt.datetime] = _now()
 
 
+# S12 セマンティック検索(docs/10 §5)の埋め込み格納テーブル。
+# 埋め込みは title/abstract/source_text から再生成できる派生データ。完全バックアップには
+# 含めず、model / source_hash で「どのモデルで何を埋めたか」を保持して再計算をスキップする。
+# BYOK 秘密鍵はここに一切保存しない(ベクトルとメタのみ)。DDL の正は
+# apps/api/alembic/versions/0016_semantic_embeddings.py。
+_EMBEDDING_DIM = 1536
+
+
+class PaperEmbedding(Base):
+    __tablename__ = "paper_embeddings"
+    paper_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("papers.id", ondelete="CASCADE"), primary_key=True
+    )
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(_EMBEDDING_DIM), nullable=False)
+    source_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[dt.datetime] = _now()
+
+
+class BlockEmbedding(Base):
+    __tablename__ = "block_embeddings"
+    revision_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("document_revisions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    block_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(_EMBEDDING_DIM), nullable=False)
+    source_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[dt.datetime] = _now()
+
+
 __all__ = [
     "Annotation",
     "Article",
@@ -770,6 +808,7 @@ __all__ = [
     "ArticlePublication",
     "AuthIdentity",
     "Base",
+    "BlockEmbedding",
     "BlockSearchIndex",
     "ByokApiKey",
     "ChatMessage",
@@ -787,6 +826,7 @@ __all__ = [
     "Notification",
     "OverviewFigure",
     "Paper",
+    "PaperEmbedding",
     "PaperExternalId",
     "QuotaLimit",
     "ReadingSession",
