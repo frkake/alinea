@@ -103,6 +103,15 @@ async function savePill(url: string): Promise<PillResult> {
   try {
     const check = await apiCheck(url);
     useSite = check.kind === "site";
+    // Hugging Face(Task 18): サーバーが HF URL の arXiv ID を解決して既存 arXiv 経路で取り込む。
+    // 対象 repo に arXiv タグが無い(関連論文が見つからない)場合は保存せず error を返す
+    // (ピルは 1 クリック UI。詳細診断・候補選択はポップアップに委ねる)。
+    if (check.kind === "huggingface") {
+      if (!check.huggingface || check.huggingface.arxiv_id == null) {
+        return { state: "error" };
+      }
+      // arXiv ID が一意に決まった → HF URL をそのまま arXiv 保存へ渡す(サーバーが解決)。
+    }
   } catch {
     // 判定失敗時は従来どおり arXiv 経路を試す(non-arxiv なら 422 で error になる)。
   }

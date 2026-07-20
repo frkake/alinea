@@ -17,6 +17,19 @@ export function formatStars(stars: number | null | undefined): string | null {
   return `${text}k`;
 }
 
+/** downloads / likes 等のコンパクト表記(formatStars と同ルール)。 */
+export function formatCompact(value: number | null | undefined): string {
+  return formatStars(value) ?? "0";
+}
+
+/** Hugging Face repo 種別の日本語ラベル。 */
+export const HF_REPO_LABELS: Record<string, string> = {
+  paper: "Paper",
+  model: "Model",
+  dataset: "Dataset",
+  space: "Space",
+};
+
 /** updated_at(ISO 日付)→ YYYY-MM。 */
 export function formatUpdatedMonth(iso: string | null | undefined): string | null {
   if (!iso) return null;
@@ -77,6 +90,27 @@ export function metaLine(resource: ResourceLink): string {
       segments.push(resource.source_label);
       segments.push("解説記事");
       if (meta.reading_minutes != null) segments.push(`${meta.reading_minutes} min`);
+      break;
+    }
+    case "huggingface": {
+      const meta = resource.meta as {
+        repo_type?: string | null;
+        repo_id?: string | null;
+        downloads?: number | null;
+        likes?: number | null;
+        pipeline_tag?: string | null;
+      };
+      segments.push("Hugging Face");
+      if (meta.repo_type) segments.push(HF_REPO_LABELS[meta.repo_type] ?? meta.repo_type);
+      if (meta.repo_id) segments.push(meta.repo_id);
+      if (meta.pipeline_tag) segments.push(meta.pipeline_tag);
+      if (meta.downloads != null) segments.push(`⬇ ${formatCompact(meta.downloads)}`);
+      if (meta.likes != null) segments.push(`♥ ${formatCompact(meta.likes)}`);
+      break;
+    }
+    case "project": {
+      segments.push(resource.source_label);
+      segments.push("プロジェクトページ");
       break;
     }
     default:

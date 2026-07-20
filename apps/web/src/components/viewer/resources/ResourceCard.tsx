@@ -85,6 +85,8 @@ const KIND_LABELS: Record<ResKind, string> = {
   youtube: "YouTube 動画",
   slides: "スライド(PDF)",
   article: "解説記事",
+  huggingface: "Hugging Face",
+  project: "プロジェクトページ",
 };
 
 /** 確定リソースカード(kind 4 種共通。plans/09-screens/5a §4.5-b〜e)。 */

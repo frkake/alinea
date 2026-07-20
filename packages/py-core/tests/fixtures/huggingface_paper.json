@@ -1,0 +1,27 @@
+{
+  "id": "2307.09288",
+  "title": "Llama 2: Open Foundation and Fine-Tuned Chat Models",
+  "summary": "In this work, we develop and release Llama 2.",
+  "githubRepo": "https://github.com/facebookresearch/llama",
+  "projectPage": "https://ai.meta.com/llama/",
+  "linkedModels": [
+    {"id": "meta-llama/Llama-2-70b", "downloads": 500000, "likes": 900, "pipeline_tag": "text-generation"},
+    {"id": "meta-llama/Llama-2-13b", "downloads": 300000, "likes": 500, "pipeline_tag": "text-generation"},
+    {"id": "meta-llama/Llama-2-7b", "downloads": 700000, "likes": 1200, "pipeline_tag": "text-generation"},
+    {"id": "TheBloke/Llama-2-7B-GGUF", "downloads": 100000, "likes": 300, "pipeline_tag": "text-generation"},
+    {"id": "meta-llama/Llama-2-7b-chat", "downloads": 400000, "likes": 800, "pipeline_tag": "text-generation"},
+    {"id": "some/extra-model", "downloads": 50, "likes": 5, "pipeline_tag": "text-generation"}
+  ],
+  "linkedDatasets": [
+    {"id": "meta/llama-data", "downloads": 2000},
+    {"id": "someone/eval-set", "downloads": 8000},
+    {"id": "org/instruct", "downloads": 5000},
+    {"id": "extra/dataset", "downloads": 10}
+  ],
+  "linkedSpaces": [
+    {"id": "huggingface/llama2-demo", "likes": 400},
+    {"id": "someone/chat-ui", "likes": 900},
+    {"id": "org/playground", "likes": 100},
+    {"id": "extra/space", "likes": 1}
+  ]
+}

@@ -16,6 +16,7 @@ import asyncio
 import datetime as dt
 import hashlib
 import json
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 from urllib.parse import urlsplit
@@ -68,6 +69,7 @@ from alinea_api.schemas.ingest import (
     IngestCheckBib,
     IngestCheckResponse,
     IngestCheckSaved,
+    IngestHuggingFaceInfo,
     IngestLastPosition,
     IngestPdfMeta,
     IngestPipelineState,
@@ -184,6 +186,59 @@ def get_site_gateway() -> SiteGateway:
 
 SiteGatewayDep = Annotated[SiteGateway, Depends(get_site_gateway)]
 
+
+class HuggingFaceGateway:
+    """Hugging Face 公開 Hub API の副作用ラッパ(Task 18。テストで差し替え可能)。
+
+    Hugging Face を「論文本文の取得元」ではなく「論文同定 + 関連ソース収集」の情報源として扱う。
+    したがって Paper URL は arXiv ID を path から取り、Model/Dataset/Space URL は repo の
+    ``arxiv:<ID>`` タグから **一意に決まる場合だけ** arXiv ID を返す(0/複数 → 選択可能な診断)。
+    """
+
+    def _client(self, settings: CoreSettings) -> Any:
+        from alinea_core.adapters.huggingface import HuggingFaceClient, HuggingFaceConfig
+
+        return HuggingFaceClient(config=HuggingFaceConfig.from_settings(settings))
+
+    async def resolve_arxiv_id(
+        self, ref: Any, *, settings: CoreSettings
+    ) -> tuple[str | None, list[str]]:
+        """(arxiv_id, candidates)。Paper は一意、Model/Dataset/Space はタグ由来。"""
+        from alinea_core.adapters.huggingface import arxiv_id_from_tags
+
+        if ref.kind == "paper":
+            return ref.external_id, [ref.external_id]
+        client = self._client(settings)
+        tags = await client.fetch_repo_tags(ref.kind, ref.external_id)
+        candidates = sorted(
+            {
+                t.split(":", 1)[1].strip()
+                for t in tags
+                if isinstance(t, str)
+                and t.lower().startswith("arxiv:")
+                and t.split(":", 1)[1].strip()
+            }
+        )
+        return arxiv_id_from_tags(tags), candidates
+
+    async def discover_resources(self, arxiv_id: str, *, settings: CoreSettings) -> list[Any]:
+        """Paper API から関連ソース候補を導出する(取得失敗時は空)。"""
+        from alinea_core.adapters.huggingface import discover_paper_resources
+
+        client = self._client(settings)
+        try:
+            payload = await client.fetch_paper(arxiv_id)
+        except SiteFetchError:
+            return []
+        return discover_paper_resources(payload, arxiv_id=arxiv_id)
+
+
+def get_huggingface_gateway() -> HuggingFaceGateway:
+    return HuggingFaceGateway()
+
+
+HuggingFaceGatewayDep = Annotated[HuggingFaceGateway, Depends(get_huggingface_gateway)]
+
 JobWakeup = Callable[[str], Awaitable[None]]
 
 
@@ -222,10 +277,17 @@ async def ingest_check(
     db: DbDep,
     gateway: ArxivGatewayDep,
     site_gateway: SiteGatewayDep,
+    hf_gateway: HuggingFaceGatewayDep,
+    settings: SettingsDep,
     url: str = Query(..., description="現在タブの URL"),
 ) -> IngestCheckResponse:
     ref = parse_arxiv_url(url)
     if ref is None:
+        # Hugging Face(Paper/Model/Dataset/Space)は arXiv ID を解決して既存 arXiv 経路へ渡す。
+        # 本文取得元にはしない(品質 B のサイト取り込みではない)。Task 18。
+        hf_check = await _huggingface_check(db, hf_gateway, gateway, url, settings=settings)
+        if hf_check is not None:
+            return hf_check
         # 他サイトアダプタ(ACL Anthology 等)の論文ページなら kind="site" を返す。
         resolved = resolve_adapter(url)
         if resolved is not None:
@@ -330,6 +392,58 @@ def _site_body_unavailable(adapter: SiteAdapter, ref: SiteRef) -> bool:
         return False
     # PDF のみのサイト。PDF 直リンクを予測できないアダプタ(PubMed: pdf_url=None)は本文取得不可。
     return adapter.pdf_url(ref) is None
+
+
+async def _huggingface_check(
+    db: DbDep,
+    hf_gateway: HuggingFaceGateway,
+    arxiv_gateway: ArxivGateway,
+    url: str,
+    *,
+    settings: CoreSettings,
+) -> IngestCheckResponse | None:
+    """Hugging Face URL → arXiv ID 解決(Task 18)。HF でなければ ``None``。
+
+    Paper URL は path の arXiv ID をそのまま既存 arXiv 経路へ。Model/Dataset/Space は repo の
+    ``arxiv:<ID>`` タグから一意に決まる場合だけ arXiv 経路へ。0/複数件なら選択可能な診断を返す
+    (kind="huggingface" + arxiv_candidates)。
+    """
+    from alinea_core.adapters.huggingface import parse_huggingface_url
+
+    hf_ref = parse_huggingface_url(url)
+    if hf_ref is None:
+        return None
+
+    try:
+        arxiv_id, candidates = await hf_gateway.resolve_arxiv_id(hf_ref, settings=settings)
+    except SiteFetchError:
+        arxiv_id, candidates = None, []
+
+    hf_info = IngestHuggingFaceInfo(
+        repo_kind=hf_ref.kind,
+        repo_id=hf_ref.external_id,
+        arxiv_id=arxiv_id,
+        arxiv_candidates=candidates,
+    )
+
+    if arxiv_id is None:
+        # 一意に決まらない(0 件 = 関連論文なし / 複数件 = 選択が必要)。
+        return IngestCheckResponse(kind="huggingface", huggingface=hf_info)
+
+    # 一意に決まったら既存 arXiv 経路の check を実行し、HF 補助情報を添える。
+    arxiv_ref = parse_arxiv_url(arxiv_id)
+    if arxiv_ref is None:
+        return IngestCheckResponse(kind="huggingface", huggingface=hf_info)
+    bib, latex, tags = await _new_preview(arxiv_gateway, arxiv_ref)
+    return IngestCheckResponse(
+        kind="huggingface",
+        arxiv_id=arxiv_ref.id,
+        arxiv_version=arxiv_ref.version_suffix or None,
+        bib=bib,
+        latex_available=latex,
+        suggested_tags=tags,
+        huggingface=hf_info,
+    )
 
 
 async def _site_check(
@@ -594,6 +708,7 @@ async def ingest_arxiv(
     db: DbDep,
     wakeup: JobWakeupDep,
     gateway: ArxivGatewayDep,
+    hf_gateway: HuggingFaceGatewayDep,
     storage: PdfStorageDep,
     settings: SettingsDep,
     body: IngestArxivRequest,
@@ -613,7 +728,14 @@ async def ingest_arxiv(
                 job_id=str(prior.id),
             )
 
+    # Hugging Face URL(Paper/Model/Dataset/Space)は arXiv ID を解決して既存 arXiv 経路へ渡す。
+    # 取り込みに使った HF URL は active Resource、関連リンクは suggested Resource(Task 18)。
+    hf_ingest_url: str | None = None
     ref = parse_arxiv_url(body.url)
+    if ref is None:
+        hf_resolved = await _resolve_huggingface_ingest_url(hf_gateway, body.url, settings=settings)
+        if hf_resolved is not None:
+            ref, hf_ingest_url = hf_resolved
     if ref is None:
         raise ProblemException(
             "validation_error",
@@ -673,6 +795,13 @@ async def ingest_arxiv(
     if body.collection_id:
         await _add_to_collection(db, user_id, body.collection_id, library_item_id)
 
+    # Hugging Face 経由の取り込みなら、使った HF URL を active Resource、Paper API の関連リンクを
+    # suggested Resource として保存する(候補は勝手に確定しない。設計 §3)。
+    if hf_ingest_url is not None:
+        await _persist_huggingface_resources(
+            db, hf_gateway, item, arxiv_id=ref.id, ingest_url=hf_ingest_url, settings=settings
+        )
+
     await db.commit()
 
     # 稼働中 ingest があれば再利用(uq_jobs_ingest_active との競合回避)。
@@ -700,6 +829,129 @@ async def ingest_arxiv(
         await wakeup(job_id)
 
     return IngestArxivResponse(paper_id=paper_id, library_item_id=library_item_id, job_id=job_id)
+
+
+async def _resolve_huggingface_ingest_url(
+    hf_gateway: HuggingFaceGateway, url: str, *, settings: CoreSettings
+) -> tuple[ArxivId, str] | None:
+    """Hugging Face URL → (ArxivId, 正規化 HF URL)。HF でない/一意に決まらない場合は ``None``。
+
+    Paper URL は path の arXiv ID、Model/Dataset/Space は ``arxiv:<ID>`` タグから一意に決まる場合
+    だけ解決する(0/複数 → None で 422)。
+    """
+    from alinea_core.adapters.huggingface import parse_huggingface_url
+
+    hf_ref = parse_huggingface_url(url)
+    if hf_ref is None:
+        return None
+    try:
+        arxiv_id, _candidates = await hf_gateway.resolve_arxiv_id(hf_ref, settings=settings)
+    except SiteFetchError:
+        return None
+    if arxiv_id is None:
+        return None
+    arxiv_ref = parse_arxiv_url(arxiv_id)
+    if arxiv_ref is None:
+        return None
+    return arxiv_ref, url.strip()
+
+
+async def _persist_huggingface_resources(
+    db: DbDep,
+    hf_gateway: HuggingFaceGateway,
+    item: LibraryItem,
+    *,
+    arxiv_id: str,
+    ingest_url: str,
+    settings: CoreSettings,
+) -> None:
+    """取り込みに使った HF URL を active、Paper API の関連リンクを suggested として保存する。
+
+    dedup は正規化 URL(``uq_resource_links_item_url``)で行い、dismissed 済みの候補は復活させない
+    (行が既にあれば挿入しない)。apps 間 import 禁止のため ResourceLink は core モデルを直接使う。
+    """
+    from alinea_core.db.models import ResourceLink as _ResourceLink
+
+    from alinea_api.routers.resources import normalize_url
+
+    item_id = str(item.id)
+
+    async def _existing_norms() -> set[str]:
+        rows = (
+            (
+                await db.execute(
+                    select(_ResourceLink.url_normalized).where(
+                        _ResourceLink.library_item_id == item_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return set(rows)
+
+    existing = await _existing_norms()
+
+    def _hf_norm(u: str) -> str:
+        # resource_links.url_normalized は resources ルータの normalize_url に揃える
+        # (手動追加・dedup・dismiss 再提案防止と同一キー空間にするため。設計 §3)。
+        return normalize_url(u)
+
+    discovered = await hf_gateway.discover_resources(arxiv_id, settings=settings)
+
+    # 1) 取り込みに使った HF URL 自体 → active Resource。
+    ingest_norm = _hf_norm(ingest_url)
+    matched = next(
+        (d for d in discovered if _hf_norm(d.url) == ingest_norm),
+        None,
+    )
+    if ingest_norm not in existing:
+        db.add(
+            _ResourceLink(
+                id=str(uuid.uuid4()),
+                library_item_id=item_id,
+                status="active",
+                kind=(matched.kind if matched is not None else "huggingface"),
+                url=ingest_url,
+                url_normalized=ingest_norm,
+                official=False,
+                title=(matched.title if matched is not None else ingest_url),
+                source_domain="huggingface.co",
+                meta=(dict(matched.meta) if matched is not None else {}),
+                fetch_status="ok",
+                note_md="",
+                note_anchors=[],
+            )
+        )
+        existing.add(ingest_norm)
+
+    # 2) それ以外の関連リンク → suggested Resource(dedup・dismissed 非復活)。
+    for cand in discovered:
+        norm = _hf_norm(cand.url)
+        if norm in existing:
+            continue
+        meta = dict(cand.meta)
+        meta["relation"] = cand.relation
+        meta["official_candidate"] = cand.official_candidate
+        meta["detected_from"] = "huggingface_paper"
+        db.add(
+            _ResourceLink(
+                id=str(uuid.uuid4()),
+                library_item_id=item_id,
+                status="suggested",
+                kind=cand.kind,
+                url=cand.url,
+                url_normalized=norm,
+                official=False,
+                title=cand.title,
+                source_domain=urlsplit(cand.url).hostname or "",
+                meta=meta,
+                fetch_status="ok",
+                note_md="",
+                note_anchors=[],
+            )
+        )
+        existing.add(norm)
 
 
 async def _ensure_arxiv_pdf_available(

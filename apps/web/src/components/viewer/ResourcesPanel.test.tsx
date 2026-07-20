@@ -28,6 +28,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: new Headers({ "Content-Type": "application/json" }),
     json: async () => body,
   } as Response;
 }
@@ -56,6 +57,7 @@ describe("ResourcesPanel", () => {
     const listBody: ResourceListResponse = {
       items: [resource({ id: "a", title: "gnobitab/RectifiedFlow" }), resource({ id: "b", title: "other/repo" })],
       suggestion: { url: "https://github.com/x/y", detected_from: "arxiv_page" },
+      suggestions: [{ url: "https://github.com/x/y", detected_from: "arxiv_page" }],
       count: 2,
     };
     vi.stubGlobal(
@@ -147,6 +149,9 @@ describe("ResourcesPanel", () => {
       return jsonResponse({
         items: [],
         suggestion: { url: "https://github.com/gnobitab/RectifiedFlow", detected_from: "arxiv_page" },
+        suggestions: [
+          { url: "https://github.com/gnobitab/RectifiedFlow", detected_from: "arxiv_page" },
+        ],
         count: 0,
       });
     });
@@ -162,5 +167,88 @@ describe("ResourcesPanel", () => {
         expect.objectContaining({ method: "POST" }),
       ),
     );
+  });
+
+  // Task 18: Hugging Face 由来の複数候補を表示し、ID 指定で個別採用する。
+  test("renders multiple Hugging Face suggestions and accepts one by resource id", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.endsWith("/accept-suggestion")) {
+        return jsonResponse(resource({ id: "res_hf", kind: "huggingface" }), 200);
+      }
+      return jsonResponse({
+        items: [],
+        suggestion: {
+          url: "https://github.com/facebookresearch/llama",
+          detected_from: "huggingface_paper",
+          resource_id: "sug_github",
+          kind: "github",
+          relation: "github",
+          official_candidate: true,
+        },
+        suggestions: [
+          {
+            url: "https://github.com/facebookresearch/llama",
+            detected_from: "huggingface_paper",
+            resource_id: "sug_github",
+            kind: "github",
+            relation: "github",
+            title: "facebookresearch/llama",
+            official_candidate: true,
+          },
+          {
+            url: "https://huggingface.co/meta-llama/Llama-2-7b",
+            detected_from: "huggingface_paper",
+            resource_id: "sug_model",
+            kind: "huggingface",
+            relation: "model",
+            title: "meta-llama/Llama-2-7b",
+            official_candidate: false,
+            meta: { repo_type: "model", repo_id: "meta-llama/Llama-2-7b", downloads: 700000 },
+          },
+        ],
+        count: 0,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderWithClient(<ResourcesPanel />);
+
+    // github 公式候補 + Hugging Face Model 候補の両方が出る。
+    await screen.findByText("✦ 公式実装を検出しました");
+    await screen.findByText("🤗 Hugging Face Model");
+
+    // Model 候補を採用 → ID 指定の accept-suggestion を叩く。
+    const acceptButtons = screen.getAllByText("+ 追加");
+    fireEvent.click(acceptButtons[1]!);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/resources/sug_model/accept-suggestion",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+  });
+
+  test("collapses suggestions beyond the first few and expands on click", async () => {
+    const many = Array.from({ length: 6 }).map((_, i) => ({
+      url: `https://huggingface.co/org/model-${i}`,
+      detected_from: "huggingface_paper" as const,
+      resource_id: `sug_${i}`,
+      kind: "huggingface" as const,
+      relation: "model",
+      title: `org/model-${i}`,
+      official_candidate: false,
+      meta: { repo_type: "model", repo_id: `org/model-${i}` },
+    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ items: [], suggestion: many[0], suggestions: many, count: 0 })),
+    );
+    renderWithClient(<ResourcesPanel />);
+
+    await screen.findByText("他 3 件の候補を表示");
+    // 折り畳み時は 3 件だけ描画。
+    expect(screen.getAllByText("+ 追加")).toHaveLength(3);
+    fireEvent.click(screen.getByText("他 3 件の候補を表示"));
+    await waitFor(() => expect(screen.getAllByText("+ 追加")).toHaveLength(6));
   });
 });

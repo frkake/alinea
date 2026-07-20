@@ -12,6 +12,8 @@ import {
   resourcesRefreshMeta,
   resourcesSuggestionAccept,
   resourcesSuggestionDismiss,
+  resourcesAcceptSuggestion,
+  resourcesDismissSuggestion,
   type ResourceLink as SdkResourceLink,
   type ResourceListResponse as SdkResourceListResponse,
 } from "@alinea/api-client";
@@ -50,6 +52,7 @@ function toResourceListResponse(raw: SdkResourceListResponse): ResourceListRespo
     ...raw,
     items: raw.items.map(toResourceLink),
     suggestion: raw.suggestion ?? null,
+    suggestions: raw.suggestions ?? [],
   };
 }
 
@@ -96,5 +99,18 @@ export async function acceptResourceSuggestion(itemId: string): Promise<Resource
 
 export async function dismissResourceSuggestion(itemId: string): Promise<void> {
   const r = await resourcesSuggestionDismiss({ path: { item_id: itemId } });
+  throwIfError(r);
+}
+
+/** ID 指定で候補(suggested)を採用する(Hugging Face 等の永続候補。Task 18)。 */
+export async function acceptResourceSuggestionById(resourceId: string): Promise<ResourceLink> {
+  const r = await resourcesAcceptSuggestion({ path: { resource_id: resourceId } });
+  throwIfError(r);
+  return toResourceLink(r.data as SdkResourceLink);
+}
+
+/** ID 指定で候補(suggested)を却下する(再同期で復活しない。Task 18)。 */
+export async function dismissResourceSuggestionById(resourceId: string): Promise<void> {
+  const r = await resourcesDismissSuggestion({ path: { resource_id: resourceId } });
   throwIfError(r);
 }

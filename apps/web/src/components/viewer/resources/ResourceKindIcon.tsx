@@ -52,6 +52,25 @@ export function ResourceKindIcon({ kind, sourceLabel }: ResourceKindIconProps) {
       </span>
     );
   }
+  if (kind === "huggingface") {
+    return (
+      <span
+        style={{ ...BASE, background: "var(--pr-hf-icon-bg, rgba(255,159,10,0.18))", color: "var(--pr-hf-icon-fg, #C77700)", fontSize: 12 }}
+        aria-hidden
+      >
+        🤗
+      </span>
+    );
+  }
+  if (kind === "project") {
+    return (
+      <span
+        style={{ ...BASE, background: "var(--pr-official-bg, rgba(101,148,113,0.16))", color: "var(--pr-official-fg, #4C7458)", fontSize: 12 }}
+      >
+        🌐
+      </span>
+    );
+  }
   return (
     <span
       style={{

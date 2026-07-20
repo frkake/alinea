@@ -72,6 +72,33 @@ test.describe.serial("拡張 E2E", () => {
     await page.close();
   });
 
+  // XT-HF: Hugging Face URL は arXiv ID を解決して既存 arXiv 経路の保存前フォームを出す(Task 18)。
+  // 既定 skip: ingest_check がサーバ側で HF Hub API を叩く必要があり、ローカル E2E では外部
+  // ネットワークに接続しないため(Task 15/18 の hard constraint)。HF Hub API モックを配線した
+  // 環境でのみ有効化する。arXiv タグの無い Model/Dataset/Space は「関連論文が見つかりません」。
+  test.skip("XT-HF Hugging Face URL は関連論文を解決して保存前フォームを出す", async ({
+    extContext,
+    extensionId,
+  }) => {
+    await ensureLoggedIn(extContext);
+    const page = await extContext.newPage();
+    await page.goto(popupUrl(extensionId, "https://huggingface.co/papers/2307.09288"));
+    // Paper URL は arXiv ID(2307.09288)に解決され、arXiv 書誌プレビューが出る。
+    await expect(page.getByText("品質レベル A 見込み")).toBeVisible();
+    await page.close();
+  });
+
+  test.skip("XT-HF arXiv タグが無い Model は関連論文が見つからない旨を表示する", async ({
+    extContext,
+    extensionId,
+  }) => {
+    await ensureLoggedIn(extContext);
+    const page = await extContext.newPage();
+    await page.goto(popupUrl(extensionId, "https://huggingface.co/some/model-without-arxiv-tag"));
+    await expect(page.getByText("関連論文が見つかりません")).toBeVisible();
+    await page.close();
+  });
+
   test("XT-03/04 保存操作(Enter)→ 状態2(保存直後)進捗 + サイトで開く", async ({
     extContext,
     extensionId,

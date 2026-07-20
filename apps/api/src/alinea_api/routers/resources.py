@@ -488,6 +488,7 @@ async def _find_existing(db: DbDep, item_id: str, url_normalized: str) -> Resour
 
 
 async def _current_suggestion(db: DbDep, item: LibraryItem) -> ResourceSuggestion | None:
+    """arXiv 公式実装の動的候補(``papers.official_repo_url`` 由来。resource_id を持たない)。"""
     paper = await db.get(Paper, item.paper_id)
     if paper is None or not paper.official_repo_url:
         return None
@@ -503,6 +504,45 @@ async def _current_suggestion(db: DbDep, item: LibraryItem) -> ResourceSuggestio
     if count:
         return None
     return ResourceSuggestion(url=paper.official_repo_url, detected_from="arxiv_page")
+
+
+def _suggested_to_suggestion(link: ResourceLinkModel) -> ResourceSuggestion:
+    """``status='suggested'`` の resource_links 行 → 永続候補 DTO(設計 §3)。"""
+    meta = link.meta or {}
+    return ResourceSuggestion(
+        url=link.url,
+        detected_from="huggingface_paper",
+        resource_id=str(link.id),
+        kind=link.kind,
+        relation=str(meta.get("relation")) if meta.get("relation") is not None else None,
+        title=link.title or None,
+        official_candidate=bool(meta.get("official_candidate", False)),
+        meta={k: v for k, v in meta.items() if k not in ("relation", "official_candidate")},
+    )
+
+
+async def _collect_suggestions(db: DbDep, item: LibraryItem) -> list[ResourceSuggestion]:
+    """複数候補: arXiv 動的候補 + 永続 suggested(Hugging Face)候補(設計 §3)。"""
+    suggestions: list[ResourceSuggestion] = []
+    arxiv = await _current_suggestion(db, item)
+    if arxiv is not None:
+        suggestions.append(arxiv)
+    rows = (
+        (
+            await db.execute(
+                select(ResourceLinkModel)
+                .where(
+                    ResourceLinkModel.library_item_id == item.id,
+                    ResourceLinkModel.status == "suggested",
+                )
+                .order_by(ResourceLinkModel.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    suggestions.extend(_suggested_to_suggestion(r) for r in rows)
+    return suggestions
 
 
 @router.get(
@@ -527,8 +567,12 @@ async def list_resources(item_id: str, user: CurrentUser, db: DbDep) -> Resource
         .all()
     )
     items = [_to_out(r) for r in rows]
-    suggestion = await _current_suggestion(db, item)
-    return ResourceListResponse(items=items, suggestion=suggestion, count=len(items))
+    suggestions = await _collect_suggestions(db, item)
+    # 互換: 単数 suggestion は先頭候補(件数バッジには数えない)。
+    suggestion = suggestions[0] if suggestions else None
+    return ResourceListResponse(
+        items=items, suggestion=suggestion, suggestions=suggestions, count=len(items)
+    )
 
 
 # --- §12.2 POST 追加 -------------------------------------------------------------------
@@ -790,5 +834,56 @@ async def dismiss_suggestion(item_id: str, user: CurrentUser, db: DbDep) -> Resp
         note_anchors=[],
     )
     db.add(link)
+    await db.commit()
+    return Response(status_code=204)
+
+
+# --- Task 18: ID 指定の候補 accept / dismiss(永続 suggested 行) ---------------------
+
+
+async def _owned_suggested_resource(
+    db: DbDep, user_id: str, resource_id: str
+) -> tuple[ResourceLinkModel, LibraryItem]:
+    """所有する ``status='suggested'`` の候補行を返す(active/dismissed は not_found)。"""
+    link, item = await _owned_resource(db, user_id, resource_id)
+    if link.status != "suggested":
+        raise ProblemException("not_found")
+    return link, item
+
+
+@router.post(
+    "/api/resources/{resource_id}/accept-suggestion",
+    response_model=ResourceLinkOut,
+    operation_id="resources_accept_suggestion",
+)
+async def accept_suggestion_by_id(
+    resource_id: str, user: CurrentUser, db: DbDep
+) -> ResourceLinkOut:
+    """候補(suggested)を採用して active にする。
+
+    github / project の official_candidate だけ ``official=true`` にする(設計 §3)。
+    他 kind(Hugging Face の Model/Dataset/Space 等)は official=false のまま採用する。
+    """
+    link, item = await _owned_suggested_resource(db, user.id, resource_id)
+    meta = link.meta or {}
+    is_official = bool(meta.get("official_candidate", False)) and link.kind in ("github", "project")
+    link.status = "active"
+    link.official = is_official
+    await db.commit()
+    await db.refresh(link)
+    # 公式 GitHub を採用したら automatic 解析を起動する(設計 §6)。
+    await _maybe_enqueue_automatic_code_analysis(db, user, item, link)
+    return _to_out(link)
+
+
+@router.post(
+    "/api/resources/{resource_id}/dismiss-suggestion",
+    status_code=204,
+    operation_id="resources_dismiss_suggestion",
+)
+async def dismiss_suggestion_by_id(resource_id: str, user: CurrentUser, db: DbDep) -> Response:
+    """候補(suggested)を却下して dismissed にする。同一正規化 URL は再同期で復活させない。"""
+    link, _item = await _owned_suggested_resource(db, user.id, resource_id)
+    link.status = "dismissed"
     await db.commit()
     return Response(status_code=204)

@@ -1861,7 +1861,7 @@ export type IngestCheckResponse = {
     /**
      * Kind
      */
-    kind: 'arxiv' | 'site' | 'pdf' | 'unsupported';
+    kind: 'arxiv' | 'site' | 'pdf' | 'unsupported' | 'huggingface';
     /**
      * Arxiv Id
      */
@@ -1888,6 +1888,7 @@ export type IngestCheckResponse = {
      */
     suggested_tags?: Array<string>;
     saved?: IngestCheckSaved | null;
+    huggingface?: IngestHuggingFaceInfo | null;
 };
 
 /**
@@ -1934,6 +1935,35 @@ export type IngestFailure = {
      * Code
      */
     code?: string | null;
+};
+
+/**
+ * IngestHuggingFaceInfo
+ * kind="huggingface" のときの補助情報(Task 18)。
+ *
+ * - ``repo_kind``: paper / model / dataset / space。
+ * - ``arxiv_id``: 一意に決まった arXiv ID(Paper URL は path から、Model/Dataset/Space は
+ * ``arxiv:<ID>`` タグから)。決められない場合は ``None``。
+ * - ``arxiv_candidates``: Model/Dataset/Space の ``arxiv:<ID>`` タグが 0 件/複数件で一意に
+ * 決まらないとき、選択可能な候補一覧(空 = 関連論文が見つからない)。
+ */
+export type IngestHuggingFaceInfo = {
+    /**
+     * Repo Kind
+     */
+    repo_kind: 'paper' | 'model' | 'dataset' | 'space';
+    /**
+     * Repo Id
+     */
+    repo_id: string;
+    /**
+     * Arxiv Id
+     */
+    arxiv_id?: string | null;
+    /**
+     * Arxiv Candidates
+     */
+    arxiv_candidates?: Array<string>;
 };
 
 /**
@@ -3484,7 +3514,7 @@ export type ResourceLink = {
     /**
      * Kind
      */
-    kind: 'github' | 'youtube' | 'slides' | 'article';
+    kind: 'github' | 'youtube' | 'slides' | 'article' | 'huggingface' | 'project';
     /**
      * Url
      */
@@ -3528,6 +3558,8 @@ export type ResourceLink = {
 /**
  * ResourceListResponse
  * GET /api/library-items/{id}/resources(plans/03 §12.1)。
+ *
+ * ``suggestions``(複数)が正典。``suggestion``(単数)は互換期間中のみ先頭候補を返す。
  */
 export type ResourceListResponse = {
     /**
@@ -3535,6 +3567,10 @@ export type ResourceListResponse = {
      */
     items: Array<ResourceLink>;
     suggestion?: ResourceSuggestion | null;
+    /**
+     * Suggestions
+     */
+    suggestions?: Array<ResourceSuggestion>;
     /**
      * Count
      */
@@ -3556,7 +3592,7 @@ export type ResourcePatchRequest = {
     /**
      * Kind
      */
-    kind?: ('github' | 'youtube' | 'slides' | 'article') | null;
+    kind?: ('github' | 'youtube' | 'slides' | 'article' | 'huggingface' | 'project') | null;
     /**
      * Note
      */
@@ -3565,7 +3601,11 @@ export type ResourcePatchRequest = {
 
 /**
  * ResourceSuggestion
- * 公式実装の自動検出提案(docs/12 §5)。件数バッジには数えない。
+ * 関連ソース候補(docs/12 §5・設計 §3)。件数バッジには数えない。
+ *
+ * - arXiv 公式実装の動的候補(``papers.official_repo_url`` 由来)は ``resource_id=None``。
+ * - Hugging Face Paper API 由来の永続候補(``resource_links.status='suggested'``)は
+ * ``resource_id`` を持ち、ID 指定の accept/dismiss で個別に採用・却下できる。
  */
 export type ResourceSuggestion = {
     /**
@@ -3575,7 +3615,33 @@ export type ResourceSuggestion = {
     /**
      * Detected From
      */
-    detected_from?: 'arxiv_page';
+    detected_from?: 'arxiv_page' | 'huggingface_paper';
+    /**
+     * Resource Id
+     */
+    resource_id?: string | null;
+    /**
+     * Kind
+     */
+    kind?: ('github' | 'youtube' | 'slides' | 'article' | 'huggingface' | 'project') | null;
+    /**
+     * Relation
+     */
+    relation?: string | null;
+    /**
+     * Title
+     */
+    title?: string | null;
+    /**
+     * Official Candidate
+     */
+    official_candidate?: boolean;
+    /**
+     * Meta
+     */
+    meta?: {
+        [key: string]: unknown;
+    };
 };
 
 /**
@@ -10164,6 +10230,66 @@ export type ResourcesSuggestionDismissResponses = {
 };
 
 export type ResourcesSuggestionDismissResponse = ResourcesSuggestionDismissResponses[keyof ResourcesSuggestionDismissResponses];
+
+export type ResourcesAcceptSuggestionData = {
+    body?: never;
+    path: {
+        /**
+         * Resource Id
+         */
+        resource_id: string;
+    };
+    query?: never;
+    url: '/api/resources/{resource_id}/accept-suggestion';
+};
+
+export type ResourcesAcceptSuggestionErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ResourcesAcceptSuggestionError = ResourcesAcceptSuggestionErrors[keyof ResourcesAcceptSuggestionErrors];
+
+export type ResourcesAcceptSuggestionResponses = {
+    /**
+     * Successful Response
+     */
+    200: ResourceLink;
+};
+
+export type ResourcesAcceptSuggestionResponse = ResourcesAcceptSuggestionResponses[keyof ResourcesAcceptSuggestionResponses];
+
+export type ResourcesDismissSuggestionData = {
+    body?: never;
+    path: {
+        /**
+         * Resource Id
+         */
+        resource_id: string;
+    };
+    query?: never;
+    url: '/api/resources/{resource_id}/dismiss-suggestion';
+};
+
+export type ResourcesDismissSuggestionErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ResourcesDismissSuggestionError = ResourcesDismissSuggestionErrors[keyof ResourcesDismissSuggestionErrors];
+
+export type ResourcesDismissSuggestionResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type ResourcesDismissSuggestionResponse = ResourcesDismissSuggestionResponses[keyof ResourcesDismissSuggestionResponses];
 
 export type PublicationsUnpublishData = {
     body?: never;

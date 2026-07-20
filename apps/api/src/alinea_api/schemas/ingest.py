@@ -59,10 +59,26 @@ class IngestCheckSaved(BaseModel):
     pipeline: IngestPipelineState | None = None
 
 
+class IngestHuggingFaceInfo(BaseModel):
+    """kind="huggingface" のときの補助情報(Task 18)。
+
+    - ``repo_kind``: paper / model / dataset / space。
+    - ``arxiv_id``: 一意に決まった arXiv ID(Paper URL は path から、Model/Dataset/Space は
+      ``arxiv:<ID>`` タグから)。決められない場合は ``None``。
+    - ``arxiv_candidates``: Model/Dataset/Space の ``arxiv:<ID>`` タグが 0 件/複数件で一意に
+      決まらないとき、選択可能な候補一覧(空 = 関連論文が見つからない)。
+    """
+
+    repo_kind: Literal["paper", "model", "dataset", "space"]
+    repo_id: str
+    arxiv_id: str | None = None
+    arxiv_candidates: list[str] = Field(default_factory=list)
+
+
 class IngestCheckResponse(BaseModel):
     """§3.1 GET /api/ingest/check の 200 応答。"""
 
-    kind: Literal["arxiv", "site", "pdf", "unsupported"]
+    kind: Literal["arxiv", "site", "pdf", "unsupported", "huggingface"]
     arxiv_id: str | None = None
     arxiv_version: str | None = None
     # kind="site"(他サイトアダプタ。ACL Anthology 等)のときのみ非 null。
@@ -72,6 +88,8 @@ class IngestCheckResponse(BaseModel):
     latex_available: bool | None = None
     suggested_tags: list[str] = Field(default_factory=list)
     saved: IngestCheckSaved | None = None
+    # kind="huggingface" のときのみ非 null(Task 18)。
+    huggingface: IngestHuggingFaceInfo | None = None
 
 
 # --- POST /api/ingest/arxiv(§3.2) --------------------------------------------------
