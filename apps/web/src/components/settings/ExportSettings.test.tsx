@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
@@ -106,13 +106,17 @@ describe("ExportSettings (Task 4: JSON一括削除 / 完全バックアップ単
     renderWithClient(<ExportSettings />);
 
     await user.click(screen.getByRole("button", { name: "完全バックアップ をエクスポート" }));
-    await screen.findByText("S3 storage quota exceeded");
+    // Assert error is visible INSIDE the card (role=article, name=完全バックアップ)
+    const backupCard = await screen.findByRole("article", { name: "完全バックアップ" });
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "完全バックアップ をエクスポート" })).toBeInTheDocument(),
+      expect(within(backupCard).getByText("S3 storage quota exceeded")).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(within(backupCard).getByRole("button", { name: "完全バックアップ をエクスポート" })).toBeInTheDocument(),
     );
   });
 
-  test("完全バックアップ失敗時 error が null: フォールバック文言が表示される", async () => {
+  test("完全バックアップ失敗時 error が null: フォールバック文言がカード内に表示される", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
@@ -132,13 +136,16 @@ describe("ExportSettings (Task 4: JSON一括削除 / 完全バックアップ単
     renderWithClient(<ExportSettings />);
 
     await user.click(screen.getByRole("button", { name: "完全バックアップ をエクスポート" }));
-    await screen.findByText("処理に失敗しました");
+    const backupCard = await screen.findByRole("article", { name: "完全バックアップ" });
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "完全バックアップ をエクスポート" })).toBeInTheDocument(),
+      expect(within(backupCard).getByText("処理に失敗しました")).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(within(backupCard).getByRole("button", { name: "完全バックアップ をエクスポート" })).toBeInTheDocument(),
     );
   });
 
-  test("インポート失敗時: 実際の job.error がトーストに表示される", async () => {
+  test("インポート失敗時: 実際の job.error がインポートカード内に表示される", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
@@ -162,10 +169,14 @@ describe("ExportSettings (Task 4: JSON一括削除 / 完全バックアップ単
     Object.defineProperty(fileInput, "files", { value: [file], configurable: true });
     fireEvent.change(fileInput);
 
-    await screen.findByText("Invalid zip format");
+    // Assert error is visible INSIDE the import section card (role=article, name=インポート(復元))
+    const importCard = await screen.findByRole("article", { name: "インポート(復元)" });
+    await waitFor(() =>
+      expect(within(importCard).getByText("Invalid zip format")).toBeInTheDocument(),
+    );
   });
 
-  test("インポート失敗時 error が null: フォールバック文言が表示される", async () => {
+  test("インポート失敗時 error が null: フォールバック文言がインポートカード内に表示される", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
@@ -189,7 +200,10 @@ describe("ExportSettings (Task 4: JSON一括削除 / 完全バックアップ単
     Object.defineProperty(fileInput, "files", { value: [file], configurable: true });
     fireEvent.change(fileInput);
 
-    await screen.findByText("処理に失敗しました");
+    const importCard = await screen.findByRole("article", { name: "インポート(復元)" });
+    await waitFor(() =>
+      expect(within(importCard).getByText("処理に失敗しました")).toBeInTheDocument(),
+    );
   });
 });
 

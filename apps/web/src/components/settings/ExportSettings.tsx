@@ -9,6 +9,7 @@ import { SettingsSection } from "@/components/settings/SettingsSection";
 import { ExportFormatCard } from "@/components/settings/ExportFormatCard";
 import { ExportPaperPickerModal } from "@/components/settings/ExportPaperPickerModal";
 import { triggerDownload } from "@/components/settings/download";
+import type { DataJobState } from "@/components/settings/types";
 
 export interface ExportSettingsProps {
   /** モバイル縮退(mobile.md §1.2-7)。エクスポート実行(変更系)を非描画にする。設定値の参照は可。 */
@@ -19,25 +20,27 @@ export interface ExportSettingsProps {
 const EXPORT_JOB_POLL_MS = 2000;
 
 interface ExportFullStatus {
-  job: { status: string; error?: string | null };
+  job: DataJobState;
   download_url: string | null;
 }
 
 interface ImportFullStatus {
-  job: { status: string; error?: string | null };
+  job: DataJobState;
   summary: Record<string, unknown> | null;
 }
 
 /**
  * データカテゴリ(4f §4.6 + 完全データ移行 Task 6)。
- * 3 エクスポートカード + 完全バックアップカード + インポートカード。
+ * 2 エクスポートカード + 完全バックアップカード + インポートカード。
  */
 export function ExportSettings({ readOnly = false }: ExportSettingsProps = {}) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [formatOpen, setFormatOpen] = useState(false);
   const formatAnchor = useRef<HTMLDivElement>(null);
   const [backupJobId, setBackupJobId] = useState<string | null>(null);
+  const [backupError, setBackupError] = useState<string | null>(null);
   const [importJobId, setImportJobId] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
   const importFileRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
 
@@ -59,20 +62,26 @@ export function ExportSettings({ readOnly = false }: ExportSettingsProps = {}) {
     if (data.download_url) {
       triggerDownload(data.download_url);
       setBackupJobId(null);
+      setBackupError(null);
     } else if (data.job.status === "failed") {
-      toast({ kind: "error", message: data.job.error ?? "処理に失敗しました" });
+      const msg = data.job.error ?? "処理に失敗しました";
+      toast({ kind: "error", message: msg });
+      setBackupError(msg);
       setBackupJobId(null);
     }
   }, [backupJobQuery.data, backupJobId, toast]);
 
   async function startBackupExport(): Promise<void> {
+    setBackupError(null);
     try {
       const res = await fetch("/api/export/full", { method: "POST", credentials: "include" });
       if (!res.ok) throw new Error("export_full backup start failed");
       const body = (await res.json()) as { job_id: string };
       setBackupJobId(body.job_id);
     } catch {
-      toast({ kind: "error", message: "完全バックアップの準備に失敗しました。もう一度お試しください" });
+      const msg = "完全バックアップの準備に失敗しました。もう一度お試しください";
+      toast({ kind: "error", message: msg });
+      setBackupError(msg);
     }
   }
 
@@ -99,13 +108,17 @@ export function ExportSettings({ readOnly = false }: ExportSettingsProps = {}) {
     if (data.job.status === "succeeded") {
       toast({ kind: "success", message: "インポートが完了しました" });
       setImportJobId(null);
+      setImportError(null);
     } else if (data.job.status === "failed") {
-      toast({ kind: "error", message: data.job.error ?? "処理に失敗しました" });
+      const msg = data.job.error ?? "処理に失敗しました";
+      toast({ kind: "error", message: msg });
+      setImportError(msg);
       setImportJobId(null);
     }
   }, [importJobQuery.data, importJobId, toast]);
 
   async function handleImportFile(file: File): Promise<void> {
+    setImportError(null);
     try {
       const form = new FormData();
       form.append("file", file);
@@ -227,11 +240,16 @@ export function ExportSettings({ readOnly = false }: ExportSettingsProps = {}) {
           title="完全バックアップ"
           description="全データ(論文本文・翻訳・PDF・図・メモ等)を 1 つの zip に。別 PC への移行に使えます"
           busyLabel={backupJobId !== null ? "準備中…" : null}
+          errorLabel={backupError}
           onExport={() => {
             void startBackupExport();
           }}
         />
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+        <div
+          role="article"
+          aria-label="インポート(復元)"
+          style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}
+        >
           <span style={{ fontSize: 11.5, fontWeight: 600 }}>インポート(復元)</span>
           <span style={{ fontSize: 10.5, color: "var(--pr-text-muted)" }}>
             既存データはマージされ上書きされません。
@@ -259,6 +277,11 @@ export function ExportSettings({ readOnly = false }: ExportSettingsProps = {}) {
           ) : (
             <span style={{ fontSize: 11, color: "var(--pr-text-muted)", marginTop: 4 }}>
               復元中…
+            </span>
+          )}
+          {importError != null && (
+            <span style={{ fontSize: 10.5, color: "var(--pr-warn)", marginTop: 2 }}>
+              {importError}
             </span>
           )}
           <input
