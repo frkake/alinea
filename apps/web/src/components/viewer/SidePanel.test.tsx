@@ -145,13 +145,16 @@ describe("SidePanel tabs milestone=M2", () => {
   beforeEach(() => {
     resetStore();
     vi.clearAllMocks();
+    // 生成 SDK は本物の Response を消費する(headers / text / json)ため疑似応答も本物で返す。
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        status: 200,
-        json: async () => ({ items: [], suggestion: null, count: 0 }),
-      })),
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ items: [], suggestion: null, count: 0 }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
     );
   });
 
@@ -173,10 +176,14 @@ describe("SidePanel tabs milestone=M2", () => {
     useViewerStore.setState({ activeTab: "resources" });
     renderWithClient(<SidePanel milestone="M2" />);
     await screen.findByText("リソースはまだありません");
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/library-items/li_test/resources"),
-      expect.anything(),
-    );
+    // 生成 SDK は `fetch(request)` を単一の Request で呼ぶため、URL は Request から取り出す。
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const listCall = fetchMock.mock.calls.find((call: unknown[]) => {
+      const input = call[0] as RequestInfo | URL;
+      const u = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      return u.includes("/api/library-items/li_test/resources");
+    });
+    expect(listCall).toBeDefined();
   });
 
   test("M1 still hides リソース (M2 タブ追加は既存タブに影響しない)", () => {

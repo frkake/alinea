@@ -24,13 +24,39 @@ function resource(overrides: Partial<ResourceLink> = {}): ResourceLink {
   };
 }
 
+// 生成 SDK は内部で本物の `Response` を消費する(response.headers / response.text() /
+// response.json())ため、テストの疑似応答も本物の Response で組み立てる。
 function jsonResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
+  return new Response(status === 204 ? null : JSON.stringify(body), {
     status,
-    headers: new Headers({ "Content-Type": "application/json" }),
-    json: async () => body,
-  } as Response;
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+// 生成 SDK は `fetch(request)` を単一の `Request` で呼ぶ(url+init の 2 引数ではない)。
+// モックが受け取る第一引数(string / URL / Request)から URL・メソッドを取り出す。
+function calledUrl(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+function calledMethod(input: RequestInfo | URL, init?: RequestInit): string {
+  if (input instanceof Request) return input.method;
+  return (init?.method ?? "GET").toUpperCase();
+}
+async function calledBody(input: RequestInfo | URL, init?: RequestInit): Promise<string> {
+  if (input instanceof Request) return await input.clone().text();
+  return (init?.body as string) ?? "";
+}
+
+// ResourcesPanel は github の active カード描画時に code-analysis 一覧(Task 22)も引く。
+// GET のうち /code-analysis は空の RunsResponse を、それ以外(resources / settings)は
+// 与えられた list ボディを返して、カード描画が落ちないようにする。
+function routeGet(input: RequestInfo | URL, listBody: unknown): Response {
+  if (calledUrl(input).includes("/code-analysis")) {
+    return jsonResponse({ runs: [], correspondences: [], current_result: null });
+  }
+  return jsonResponse(listBody);
 }
 
 function renderWithClient(ui: ReactNode) {
@@ -62,7 +88,7 @@ describe("ResourcesPanel", () => {
     };
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => jsonResponse(listBody)),
+      vi.fn(async (input: RequestInfo | URL) => routeGet(input, listBody)),
     );
     const { container } = renderWithClient(<ResourcesPanel />);
 
@@ -95,8 +121,8 @@ describe("ResourcesPanel", () => {
 
   test("adding a URL posts to the create endpoint and clears the input", async () => {
     let listCalls = 0;
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (init?.method === "POST") {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (calledMethod(input, init) === "POST") {
         listCalls += 1;
         return jsonResponse(resource({ id: "new" }), 201);
       }
@@ -112,22 +138,21 @@ describe("ResourcesPanel", () => {
     fireEvent.click(screen.getByText("追加"));
 
     await waitFor(() => expect(listCalls).toBe(1));
-    const [url, init] = fetchMock.mock.calls.find(([, i]) => (i as RequestInit)?.method === "POST") as [
-      string,
-      RequestInit,
-    ];
-    expect(url).toBe("/api/library-items/li_1/resources");
-    expect(JSON.parse(init.body as string)).toEqual({
+    const postCall = fetchMock.mock.calls.find(
+      ([input, init]) => calledMethod(input, init) === "POST",
+    ) as [RequestInfo | URL, RequestInit | undefined];
+    expect(calledUrl(postCall[0])).toContain("/api/library-items/li_1/resources");
+    expect(JSON.parse(await calledBody(postCall[0], postCall[1]))).toEqual({
       url: "https://github.com/gnobitab/RectifiedFlow",
     });
   });
 
   test("duplicate URL (409) flashes the existing card and shows an info toast", async () => {
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (init?.method === "POST") {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (calledMethod(input, init) === "POST") {
         return jsonResponse({ code: "duplicate", existing: { resource_id: "res_1" } }, 409);
       }
-      return jsonResponse({ items: [resource()], suggestion: null, count: 1 });
+      return routeGet(input, { items: [resource()], suggestion: null, count: 1 });
     });
     vi.stubGlobal("fetch", fetchMock);
     renderWithClient(<ResourcesPanel />);
@@ -142,8 +167,8 @@ describe("ResourcesPanel", () => {
   });
 
   test("official implementation suggestion accept posts to the accept endpoint", async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      if (typeof url === "string" && url.endsWith("/resource-suggestion/accept")) {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (calledUrl(input).endsWith("/resource-suggestion/accept")) {
         return jsonResponse(resource({ id: "official", official: true }), 201);
       }
       return jsonResponse({
@@ -161,18 +186,22 @@ describe("ResourcesPanel", () => {
 
     fireEvent.click(screen.getByText("+ 追加"));
 
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
+    await waitFor(() => {
+      const accept = fetchMock.mock.calls.find(([input]) =>
+        calledUrl(input as RequestInfo | URL).endsWith("/resource-suggestion/accept"),
+      );
+      expect(accept).toBeDefined();
+      expect(calledUrl(accept![0] as RequestInfo | URL)).toContain(
         "/api/library-items/li_1/resource-suggestion/accept",
-        expect.objectContaining({ method: "POST" }),
-      ),
-    );
+      );
+      expect(calledMethod(accept![0] as RequestInfo | URL)).toBe("POST");
+    });
   });
 
   // Task 18: Hugging Face 由来の複数候補を表示し、ID 指定で個別採用する。
   test("renders multiple Hugging Face suggestions and accepts one by resource id", async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      if (typeof url === "string" && url.endsWith("/accept-suggestion")) {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (calledUrl(input).endsWith("/accept-suggestion")) {
         return jsonResponse(resource({ id: "res_hf", kind: "huggingface" }), 200);
       }
       return jsonResponse({
@@ -220,12 +249,16 @@ describe("ResourcesPanel", () => {
     const acceptButtons = screen.getAllByText("+ 追加");
     fireEvent.click(acceptButtons[1]!);
 
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
+    await waitFor(() => {
+      const accept = fetchMock.mock.calls.find(([input]) =>
+        calledUrl(input as RequestInfo | URL).endsWith("/accept-suggestion"),
+      );
+      expect(accept).toBeDefined();
+      expect(calledUrl(accept![0] as RequestInfo | URL)).toContain(
         "/api/resources/sug_model/accept-suggestion",
-        expect.objectContaining({ method: "POST" }),
-      ),
-    );
+      );
+      expect(calledMethod(accept![0] as RequestInfo | URL)).toBe("POST");
+    });
   });
 
   test("collapses suggestions beyond the first few and expands on click", async () => {
