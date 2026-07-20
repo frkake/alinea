@@ -125,6 +125,22 @@ def _fake_router(
     return LLMRouter([("fake", "fake-model", provider)])
 
 
+class _FakeFactory:
+    """テスト用 UserRouterFactory: 全タスク共通で固定 router を返す。"""
+
+    def __init__(self, router: LLMRouter) -> None:
+        self._router = router
+
+    async def for_job(self, *, user_id: str, task: str) -> LLMRouter:
+        return self._router
+
+
+def _fake_factory(
+    items: list[dict[str, Any]] | None = None, *, fail: bool = False
+) -> _FakeFactory:
+    return _FakeFactory(_fake_router(items, fail=fail))
+
+
 async def _count(db: AsyncSession, item: LibraryItem) -> int:
     return int(
         (
@@ -145,7 +161,7 @@ async def test_extract_creates_pending_candidates(db_session: AsyncSession) -> N
     job = await _enqueue_and_claim(db_session, user=user, item=item)
     store = JobStore(db_session)
     ctx = {
-        "router": _fake_router(
+        "user_router_factory": _fake_factory(
             [
                 {"term": "boils down to", "kind": "idiom", "block_id": "blk-p1"},
                 {"term": "albeit", "kind": "word", "block_id": "blk-p1", "reason": "難語"},
@@ -197,7 +213,7 @@ async def test_extract_drops_invalid_candidates(db_session: AsyncSession) -> Non
     # 注: kind の値域(word/collocation/idiom)は structured 出力スキーマが保証するため、ここでは
     # スキーマは通るが意味的に不正なケース(存在しない block / ブロックに無い語)を検証する。
     ctx = {
-        "router": _fake_router(
+        "user_router_factory": _fake_factory(
             [
                 {"term": "albeit", "kind": "word", "block_id": "blk-does-not-exist"},  # 実在せず
                 {"term": "quantum", "kind": "word", "block_id": "blk-p1"},  # blk-p1 に無い語
@@ -265,7 +281,7 @@ async def test_extract_skips_existing_and_is_idempotent(db_session: AsyncSession
     job = await _enqueue_and_claim(db_session, user=user, item=item)
     store = JobStore(db_session)
     await run_extract_vocab_candidates(
-        {"router": _fake_router(proposed)}, store, job
+        {"user_router_factory": _fake_factory(proposed)}, store, job
     )
 
     pending = (
@@ -289,7 +305,7 @@ async def test_extract_skips_existing_and_is_idempotent(db_session: AsyncSession
     # 冪等: もう一度同じ提案で走らせても新規は 0。
     total_before = await _count(db_session, item)
     job2 = await _enqueue_and_claim(db_session, user=user, item=item)
-    await run_extract_vocab_candidates({"router": _fake_router(proposed)}, store, job2)
+    await run_extract_vocab_candidates({"user_router_factory": _fake_factory(proposed)}, store, job2)
     assert await _count(db_session, item) == total_before
     finished2 = await store.get(str(job2.id))
     assert finished2 is not None
@@ -353,7 +369,7 @@ async def test_extract_truncates_to_max(db_session: AsyncSession) -> None:
     job = await _enqueue_and_claim(db_session, user=user, item=item)
     store = JobStore(db_session)
 
-    await run_extract_vocab_candidates({"router": _fake_router(proposed)}, store, job)
+    await run_extract_vocab_candidates({"user_router_factory": _fake_factory(proposed)}, store, job)
 
     created = await _count(db_session, item)
     assert created == MAX_CANDIDATES  # 上限で切り詰められる
@@ -370,7 +386,7 @@ async def test_extract_failure_marks_job_failed(db_session: AsyncSession) -> Non
     job = await _enqueue_and_claim(db_session, user=user, item=item)
     store = JobStore(db_session)
 
-    await run_extract_vocab_candidates({"router": _fake_router(fail=True)}, store, job)
+    await run_extract_vocab_candidates({"user_router_factory": _fake_factory(fail=True)}, store, job)
 
     assert await _count(db_session, item) == 0
     finished = await store.get(str(job.id))

@@ -4800,6 +4800,11 @@ def _summary_numbers_ok(lines: list[Any], material: str) -> bool:
 
 async def run_ingest(ctx: dict[str, Any], store: JobStore, job: Job) -> None:
     """ingest ジョブの本体(arq ハンドラから呼ばれる)。"""
+    if ctx.get("user_router_factory") is not None and job.user_id:
+        router = await ctx["user_router_factory"].for_job(
+            user_id=str(job.user_id), task="translation"
+        )
+        ctx = {**ctx, "router": router}
     deps = deps_from_ctx(ctx)
     run = IngestRun(store.session, store, job, deps)
     await run.run()
