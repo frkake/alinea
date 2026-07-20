@@ -8,21 +8,22 @@ import { openViewer } from "../fixtures/viewer";
  * デスクトップ「✦ ツール」→ 3 用途プリセットで生成開始 → SSE 進捗 → ダウンロード →
  * 再生成失敗時の旧成果物保持、およびモバイル非表示を検証する。
  *
- * === 実行の延期(Task 32 へ) ==================================================
- * 本 spec は `test.describe.skip` で登録し、実行は Task 32(E2E 実行レーン)へ延期する。
- * 理由:
- *  1. 生成 job(kind='presentation')は Task 29 の PresentationRunner が `vendor/ppt-master`
- *     submodule の専用仮想環境を実際に起動して SVG→PPTX 変換を行う。E2E 環境ではこの
- *     submodule 初期化・上流依存の同期(`pnpm ppt-master:update` 相当)が前提になるため、
- *     seed(§14 rectified-flow)だけでは成功まで走らない。
- *  2. 失敗経路(再生成失敗で旧成果物を残す)を決定的に起こすには、worker 側で
- *     provider_error / validating 失敗を注入するテスト用フックが要る(Task 32 で用意)。
- *  3. 実 LLM ルート(presentation)+ 鍵の可用性が E2E ハーネスで安定して揃う保証が
- *     まだ無い(FakeLLM でも構成 JSON→SVG 群の生成に時間がかかる)。
+ * === 実行環境ゲート(Task 32 で確認済み) ======================================
+ * 本 spec は成功経路が `vendor/ppt-master` submodule + 専用仮想環境 `.venv-ppt-master` に
+ * 依存するため、それらが用意されたリリース同等環境でのみ実行できる(既定の CI/開発
+ * 環境では submodule 未初期化のため PresentationRunner は exporting 段で決定的に失敗する)。
+ * したがって本 describe は `describe.skip` のまま残す(assertion は削除しない)。
  *
- * したがって steps は本番導線どおりに書いておき(Task 32 で `.skip` を外すだけで通る形)、
- * ユニット(PresentationDialog/PresentationProgress/SettingsClient/ViewerShell.mobile)で
- * ロジック・分岐・モバイル非表示・失敗時の旧成果物保持を先行して担保する。
+ * 実行を有効化する前提(release-env-gated):
+ *  1. `git submodule update --init vendor/ppt-master`(承認済み commit 0c0bdaf)+
+ *     `.venv-ppt-master`(python-pptx/lxml/pillow)を用意し、worker ctx に
+ *     `ppt_master_adapter` を注入する。
+ *  2. 再生成失敗経路(旧成果物保持)は worker 側の失敗注入フックが必要(未実装。followups)。
+ *  3. LLM は E2E の FakeLLM(ALINEA_FAKE_LLM=1)で決定的に構成 JSON→SVG を返す。
+ *
+ * DOM 導線(下記 steps)は現行実装の accessible name に合わせてある(Task 32 で再検証)。
+ * ロジック・分岐・モバイル非表示・失敗時の旧成果物保持はユニット
+ * (PresentationDialog/PresentationProgress/SettingsClient/ViewerShell.mobile)で先行担保する。
  * ============================================================================
  */
 test.describe.skip("PW-PRESENTATION スライド生成(実行は Task 32 へ延期)", () => {

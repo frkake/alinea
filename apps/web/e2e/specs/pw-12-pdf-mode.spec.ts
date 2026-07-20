@@ -16,9 +16,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * M1-18(`POST /api/ingest/pdf`)で quality B の PDF アイテムを都度取り込んでから検証する
  * (`../fixtures/sample.pdf`: 2 ページの合成 PDF)。
  *
- * bbox 選択→「≒ §2.2 ¶2 — 訳文で見る →」は実文書構造(pdfplumber の bbox→段落マッピング)
- * に依存し、合成 PDF では意味のある節番号を再現できないため test.fixme(PW-05 の図表参照
- * ポップと同じ「コンテンツ依存」理由。plans/13 §1.5 の運用規則に倣う)。
+ * bbox 選択→「≒ … — 訳文で見る →」の同期チップは、PDF ページ層(`.alinea-pdf-page-layer`)を
+ * クリックして bbox→ブロックのヒットテストを起こす実操作で検証する(Task 32 で実操作化)。
+ * 合成 PDF では節番号(§2.2 ¶2)の文言までは再現できないため、チップの表示文言は
+ * `/訳文で見る/` で判定し、遷移先が訳文モード + block パラメータになることを assertion する。
  */
 test.describe("PW-12 PDFモード", () => {
   test("同期表示・ページ送り・ズーム・見開き・訳文で開く", async ({ page }) => {
@@ -82,9 +83,48 @@ test.describe("PW-12 PDFモード", () => {
     await expect(page).toHaveURL(/mode=translation/);
   });
 
-  test.fixme(
-    "bbox 選択→「≒ §2.2 ¶2 — 訳文で見る →」で対応段落へ(合成 PDF では意味のある節構造を" +
-      "再現できないためコンテンツ依存。plans/13 §1.5 と同じ運用)",
-    async () => {},
-  );
+  test("bbox 選択→同期チップ「訳文で見る →」で対応ブロックの訳文へ", async ({ page }) => {
+    // 都度取り込んだ PDF アイテムで PDF モードを開く(§14 シードは PDF を持たない)。
+    const pdfPath = join(__dirname, "..", "fixtures", "sample.pdf");
+    const nonce = `\n% e2e-pw12b-${Date.now()}-${Math.random().toString(36).slice(2, 8)}\n`;
+    const pdfBytes = Buffer.concat([readFileSync(pdfPath), Buffer.from(nonce)]);
+    const res = await page.request.post("/api/ingest/pdf", {
+      multipart: {
+        file: { name: "sample.pdf", mimeType: "application/pdf", buffer: pdfBytes },
+        meta: JSON.stringify({ status: "planned", title_guess: "PW-12 Sync PDF" }),
+      },
+      headers: {
+        Origin: "http://localhost:3000",
+        "Idempotency-Key": `e2e-pw12b-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      },
+    });
+    expect(res.status(), await res.text()).toBe(202);
+    const { job_id, library_item_id } = (await res.json()) as {
+      job_id: string;
+      library_item_id: string;
+    };
+    expect((await waitForJob(page, job_id)).status).toBe("succeeded");
+
+    await openViewer(page, library_item_id, "pdf");
+    await expect(page.getByRole("radio", { name: "PDF", exact: true })).toBeChecked();
+
+    // PDF ページ層をクリックして bbox→ブロックのヒットテスト(同期選択)を起こす。
+    const pageLayer = page.locator(".alinea-pdf-page-layer").first();
+    await expect(pageLayer).toBeVisible();
+    const box = await pageLayer.boundingBox();
+    if (!box) throw new Error("PDF page layer has no bounding box");
+    // 本文が載る上部 1/3 付近を単クリック(ドラッグ >4px はテキスト選択扱いになるため単発)。
+    await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.28);
+
+    // 同期ハイライト + チップ(≒ … — 訳文で見る →)が現れる。
+    const highlight = page.getByTestId("pdf-bbox-highlight");
+    await expect(highlight).toBeVisible();
+    const chip = page.getByRole("button", { name: /訳文で見る/ });
+    await expect(chip).toBeVisible();
+
+    // チップで対応ブロックの訳文へ遷移する(mode=translation + block パラメータ)。
+    await chip.click();
+    await expect(page).toHaveURL(/mode=translation/);
+    await expect(page).toHaveURL(/block=/);
+  });
 });

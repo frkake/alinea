@@ -1,6 +1,10 @@
 """apps/api テスト用フィクスチャ。
 
 - DB は実 PostgreSQL(docker-compose)。SQLite 代替禁止(PGroonga 依存)。
+- **分離(Task 32)**: pytest-xdist の worker ごとに専用テスト DB を作成し、マイグレーションを
+  適用して(0002 のシードを保持したまま)用意する。suite 終了時に drop する。これにより
+  API 経由の commit が残らず、seed テストと通常テストを実行順で入れ替えても同じ結果になる。
+  仕組みは ``alinea_core.testing.testdb`` を参照(pgvector 非同梱環境の扱いを含む)。
 - FastAPI は httpx.AsyncClient + ASGITransport の in-process で叩く。
 - テストデータは uuid でユニーク化し、残っても他テストを壊さない。
 - アプリが持つ lru_cache 済みの Engine / Redis はイベントループに束縛されるため、
@@ -32,11 +36,54 @@ if _SRC not in sys.path:
 os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1")
 os.environ.setdefault("no_proxy", "localhost,127.0.0.1")
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql+asyncpg://alinea:alinea@localhost:5432/alinea",
-)
+from alinea_core.testing import testdb  # noqa: E402  (env 設定後に import する)
+
 MAILPIT_API = os.environ.get("MAILPIT_API", "http://localhost:8025")
+
+
+def _database_url() -> str:
+    """アクティブなテスト DB の URL(worker 分離済み)。"""
+    return testdb.database_url()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_test_database() -> Iterator[None]:
+    """worker 専用のテスト DB を作成・マイグレーションし、suite 終了時に drop する。
+
+    DATABASE_URL を差し替えるため、以降の Engine / settings は分離 DB を指す。
+    """
+    testdb.setup_test_database()
+    try:
+        yield
+    finally:
+        testdb.teardown_test_database()
+
+
+@pytest.fixture(scope="session")
+def pgvector_available() -> bool:
+    """埋め込みテーブル(vector 拡張)が実体化しているか(env 依存)。"""
+    return testdb.pgvector_enabled()
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """``@pytest.mark.requires_pgvector`` を pgvector 非同梱環境で理由付き skip する。"""
+    if testdb.pgvector_enabled():
+        return
+    skip = pytest.mark.skip(
+        reason="pgvector(vector 拡張)非同梱の DB。埋め込みテーブルは stamp 経路で未作成。"
+    )
+    for item in items:
+        if item.get_closest_marker("requires_pgvector") is not None:
+            item.add_marker(skip)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "requires_pgvector: 実 pgvector(vector 拡張)を要する。非同梱環境では skip。",
+    )
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -74,7 +121,7 @@ async def _reset_shared_clients() -> AsyncIterator[None]:
 
 @pytest_asyncio.fixture
 async def db_session() -> AsyncIterator[AsyncSession]:
-    engine = create_async_engine(DATABASE_URL, poolclass=None)
+    engine = create_async_engine(_database_url(), poolclass=None)
     maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     async with maker() as session:
         yield session
