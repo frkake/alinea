@@ -6,6 +6,7 @@ DocumentContent は document_revisions.content(JSONB)に格納する形と同型
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -121,3 +122,35 @@ class DocumentContent(BaseModel):
 
 
 Section.model_rebuild()
+
+
+def flatten_serialized_blocks(content: Mapping[str, object]) -> Iterator[Mapping[str, object]]:
+    """Serialize された DocumentContent の JSONB dict からすべての leaf ブロックを yield する。
+
+    Section は入れ子になる可能性があるため再帰的に走査する。
+    content が期待外の型(非 dict・非 list)の場合は安全にスキップする。
+    """
+    sections = content.get("sections") if isinstance(content, Mapping) else None
+    if not isinstance(sections, list):
+        return
+    for section in sections:
+        if not isinstance(section, Mapping):
+            continue
+        blocks = section.get("blocks")
+        if isinstance(blocks, list):
+            for block in blocks:
+                if isinstance(block, Mapping):
+                    yield block
+        # 入れ子セクションを再帰処理
+        sub_sections = section.get("sections")
+        if isinstance(sub_sections, list):
+            yield from flatten_serialized_blocks({"sections": sub_sections})
+
+
+def iter_document_asset_keys(content: Mapping[str, object]) -> Iterator[str]:
+    """DocumentContent の JSONB dict 内のすべての asset_key / thumbnail_key を yield する。"""
+    for block in flatten_serialized_blocks(content):
+        for field in ("asset_key", "thumbnail_key"):
+            key = block.get(field)
+            if isinstance(key, str) and key:
+                yield key

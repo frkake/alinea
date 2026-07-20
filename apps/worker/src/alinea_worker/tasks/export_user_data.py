@@ -54,6 +54,7 @@ from alinea_core.db.models import (
     VocabCandidate,
     VocabEntry,
 )
+from alinea_core.document.blocks import iter_document_asset_keys
 from alinea_core.jobs.store import JobStore
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from sqlalchemy import and_, or_, select
@@ -85,25 +86,47 @@ async def _serialize_library(session: AsyncSession, user_id: str) -> list[dict[s
     ).all()
     return [
         {
+            # --- 共有エンティティ識別子 ---
             "library_item_id": str(item.id),
             "paper_id": str(paper.id),
-            "title": paper.title,
-            "authors": _author_names(paper.authors),
-            "venue": paper.venue,
-            "year": paper.published_on.year if paper.published_on else None,
-            "arxiv_id": paper.arxiv_id,
-            "doi": paper.doi,
             "latest_revision_id": str(paper.latest_revision_id)
             if paper.latest_revision_id
             else None,
+            # --- PAPER_EXPORT_FIELDS ---
+            "arxiv_id": paper.arxiv_id,
+            "doi": paper.doi,
+            "pdf_sha256": paper.pdf_sha256,
+            "title": paper.title,
+            "authors": _author_names(paper.authors),
+            "abstract": paper.abstract,
+            "abstract_ja": paper.abstract_ja,
+            "summary_lines": paper.summary_lines,
+            "published_on": _iso(paper.published_on),
+            "venue": paper.venue,
+            "arxiv_categories": list(paper.arxiv_categories or []),
+            "license": paper.license,
+            "bib_estimated": paper.bib_estimated,
+            "visibility": paper.visibility,
+            "latest_version": paper.latest_version,
+            "official_repo_url": paper.official_repo_url,
+            "extracted_terms": list(paper.extracted_terms or []),
+            # thumbnail_key は LibraryItem のものを使う(Paper のは下の paper_thumbnail_key)
+            "paper_thumbnail_key": paper.thumbnail_key,
+            # legacy: year は published_on から導出(後方互換)
+            "year": paper.published_on.year if paper.published_on else None,
+            # --- LIBRARY_EXPORT_FIELDS ---
             "status": item.status,
             "priority": item.priority,
             "deadline": _iso(item.deadline),
             "tags": list(item.tags or []),
+            "suggested_tags": list(item.suggested_tags or []),
             "one_line_note": item.one_line_note,
             "understanding": item.understanding,
             "importance": item.importance,
+            "reading_position": item.reading_position,
+            "queue_order": item.queue_order,
             "total_active_seconds": item.total_active_seconds,
+            "thumbnail_key": item.thumbnail_key,
             "added_at": _iso(item.added_at),
             "finished_at": _iso(item.finished_at),
         }
@@ -341,6 +364,7 @@ async def _serialize_resources(
             "status": r.status,
             "kind": r.kind,
             "url": r.url,
+            "url_normalized": r.url_normalized,
             "title": r.title,
             "official": r.official,
             "note_md": r.note_md,
@@ -914,6 +938,34 @@ def collect_asset_keys(payload: dict[str, Any]) -> list[tuple[str, str]]:
     # explainer figures: raster 画像
     for f in payload.get("explainer_figures", []):
         add("assets", f.get("image_storage_key"))
+
+    # DocumentRevision の本文ブロック内の figure/table asset_key
+    for rev in payload.get("document_revisions", []):
+        content = rev.get("content")
+        if isinstance(content, dict):
+            for key in iter_document_asset_keys(content):
+                add("assets", key)
+
+    # Paper と LibraryItem のサムネイル + retina(@2x)兄弟
+    for entry in payload.get("library", []):
+        # LibraryItem のサムネイル
+        item_thumb = entry.get("thumbnail_key")
+        if isinstance(item_thumb, str) and item_thumb:
+            add("assets", item_thumb)
+            retina = StorageKeys.thumbnail_retina_sibling(
+                item_thumb, paper_id=str(entry.get("paper_id", ""))
+            )
+            if retina:
+                add("assets", retina)
+        # Paper のサムネイル
+        paper_thumb = entry.get("paper_thumbnail_key")
+        if isinstance(paper_thumb, str) and paper_thumb:
+            add("assets", paper_thumb)
+            retina = StorageKeys.thumbnail_retina_sibling(
+                paper_thumb, paper_id=str(entry.get("paper_id", ""))
+            )
+            if retina:
+                add("assets", retina)
 
     return keys
 

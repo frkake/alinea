@@ -476,3 +476,123 @@ def test_prepare_asset_destinations_rekeys_untrusted_storage_key() -> None:
     assert destination[0] == "sources"
     assert destination[1] != "sources/foreign/private/original.pdf"
     assert data["source_assets"][0]["storage_key"] == destination[1]
+
+
+async def test_import_all_columns_roundtrip(db_session: AsyncSession) -> None:
+    """Paper と LibraryItem の全列が export → import 後に同値で戻ることを検証する。"""
+    src = await _seed_user_data(db_session)
+    payload = await _detached_payload(db_session, src["user_id"])
+    await _delete_source_user(db_session, src["user_id"])
+    target = await _make_user(db_session)
+
+    summary = await import_data_json(db_session, target["user_id"], payload)
+    assert summary["failed"] == [], summary["failed"]
+
+    items = (
+        (await db_session.execute(
+            select(LibraryItem).where(LibraryItem.user_id == target["user_id"])
+        ))
+        .scalars()
+        .all()
+    )
+    assert len(items) == 1
+    item = items[0]
+
+    lib_entry = payload["library"][0]
+
+    # Paper フィールドは paper から確認
+    from alinea_core.db.models import Paper as PaperModel
+    paper = await db_session.get(PaperModel, item.paper_id)
+    assert paper is not None
+    assert paper.abstract == lib_entry["abstract"]
+    assert paper.abstract_ja == lib_entry["abstract_ja"]
+    assert paper.summary_lines == lib_entry["summary_lines"]
+    assert sorted(paper.arxiv_categories) == sorted(lib_entry["arxiv_categories"])
+    assert paper.license == (lib_entry["license"] or "unknown")
+    assert paper.official_repo_url == lib_entry["official_repo_url"]
+    assert paper.visibility == lib_entry["visibility"]
+    assert paper.latest_version == lib_entry["latest_version"]
+    assert paper.pdf_sha256 == lib_entry["pdf_sha256"]  # None in seed → None restored
+    assert paper.thumbnail_key == lib_entry["paper_thumbnail_key"]  # Paper.thumbnail_key
+
+    # LibraryItem フィールドを確認
+    assert item.suggested_tags == lib_entry["suggested_tags"]
+    assert item.reading_position == lib_entry["reading_position"]
+    assert item.queue_order == lib_entry["queue_order"]
+    assert item.thumbnail_key == lib_entry["thumbnail_key"]  # LibraryItem.thumbnail_key
+
+
+async def test_import_paper_license_none_roundtrip(db_session: AsyncSession) -> None:
+    """license=None の Paper が import 後も None(DB デフォルト 'unknown')で戻ることを検証する。"""
+    src = await _seed_user_data(db_session)
+    payload = await _detached_payload(db_session, src["user_id"])
+
+    # license を明示的に None にしてインポートする(old archive compatibility test)
+    payload["library"][0]["license"] = None
+
+    await _delete_source_user(db_session, src["user_id"])
+    target = await _make_user(db_session)
+
+    summary = await import_data_json(db_session, target["user_id"], payload)
+    assert summary["failed"] == [], summary["failed"]
+
+    from alinea_core.db.models import Paper as PaperModel
+    items = (
+        (await db_session.execute(
+            select(LibraryItem).where(LibraryItem.user_id == target["user_id"])
+        ))
+        .scalars()
+        .all()
+    )
+    assert items
+    paper = await db_session.get(PaperModel, items[0].paper_id)
+    assert paper is not None
+    # None を渡したとき DB が server_default='unknown' を使う(または None が許容される)
+    assert paper.license in ("unknown", None), f"unexpected license: {paper.license!r}"
+
+
+async def test_import_provenance_note_source_chat_message_id(db_session: AsyncSession) -> None:
+    """source_chat_message_id がエクスポートペイロードに含まれ、移行後は None になることを検証する。
+
+    INT PK(chat_messages.id)は移行先で再採番されるため NULL に落とす(来歴の軽微な劣化)。
+    ペイロードに source_chat_message_id フィールドが存在することは export の直接検査で確認し、
+    インポート後には必ず None になることを検証する。
+    """
+    src = await _seed_user_data(db_session)
+    # ペイロードを構築して source_chat_message_id フィールドの存在を確認
+    payload = await _detached_payload(db_session, src["user_id"])
+
+    # エクスポートペイロードの Note に source_chat_message_id フィールドが存在する
+    assert len(payload["notes"]) >= 1, "payload should have at least one note"
+    assert "source_chat_message_id" in payload["notes"][0], (
+        "source_chat_message_id field must be serialized in export"
+    )
+
+    # payload["notes"][0]["source_chat_message_id"] を非 None 値に差し替えてインポートする
+    # (実際に FK を張ると asyncpg の制約で複雑になるため、ここはシリアライズ→復元の検証)
+    payload["notes"][0]["source_chat_message_id"] = 99999
+
+    await _delete_source_user(db_session, src["user_id"])
+    target = await _make_user(db_session)
+
+    summary = await import_data_json(db_session, target["user_id"], payload)
+    assert summary["failed"] == [], summary["failed"]
+
+    target_items = [
+        i.id
+        for i in (
+            await db_session.execute(
+                select(LibraryItem).where(LibraryItem.user_id == target["user_id"])
+            )
+        ).scalars().all()
+    ]
+    restored_notes = (
+        (await db_session.execute(select(Note).where(Note.library_item_id.in_(target_items))))
+        .scalars()
+        .all()
+    )
+    # INT PK は移行先で再採番されるため None に落とす
+    for note in restored_notes:
+        assert note.source_chat_message_id is None, (
+            "source_chat_message_id must be None after cross-user import"
+        )
