@@ -48,6 +48,7 @@ from alinea_core.db.models import (
     Annotation,
     Article,
     ArticleBlock,
+    ArticlePublication,
     ChatMessage,
     ChatThread,
     Collection,
@@ -78,6 +79,7 @@ from alinea_core.search.rebuild import rebuild_block_search_index
 from alinea_core.storage.s3 import S3Storage
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 
 def merge_missing(target: dict[str, object], source: Mapping[str, object]) -> dict[str, object]:
     """再帰的不足キー補完マージ。
@@ -957,6 +959,54 @@ class _Importer:
                 figure_id,
             )
 
+    async def restore_publications(self, rows: list[dict[str, Any]]) -> None:
+        """記事公開スナップショット(Task 24)を復元する。
+
+        **重要**: 復元では ``visibility`` を必ず ``'unlisted'`` に落とす。移行操作だけで公開 URL
+        を再公開しない(docs/00 P4「意図しない公開をしない」)。private(公開解除済み)や public
+        も含めて一律 unlisted にする。slug は移行先で衝突し得るため衝突時は接尾辞で回避する。
+        """
+        for row in rows:
+            pub_id = str(row["id"])
+            if await self.session.get(ArticlePublication, pub_id) is not None:
+                self.skipped["publications"] += 1
+                continue
+            # 記事は今回このセッションで復元された(id を保持している)場合のみ紐づく。
+            article_id = str(row["article_id"])
+            if await self.session.get(Article, article_id) is None:
+                self.failed.append(
+                    {"table": "publications", "id": pub_id, "error": "unmapped article_id"}
+                )
+                continue
+            # slug 衝突回避(全体で一意。別ユーザーの公開 slug とぶつかり得る)。
+            slug = str(row.get("slug") or pub_id)
+            taken = (
+                await self.session.execute(
+                    select(ArticlePublication.id).where(ArticlePublication.slug == slug)
+                )
+            ).scalar_one_or_none()
+            if taken is not None:
+                slug = f"{slug}-{uuid.uuid4().hex[:6]}"
+            await self._insert(
+                "publications",
+                ArticlePublication(
+                    id=pub_id,
+                    article_id=article_id,
+                    user_id=self.uid,
+                    slug=slug,
+                    # 移行では常に unlisted(公開 URL を勝手に再公開しない)。
+                    visibility="unlisted",
+                    snapshot_version=row.get("snapshot_version") or 1,
+                    title=row.get("title") or "",
+                    paper_meta=row.get("paper_meta") or {},
+                    blocks=row.get("blocks") or [],
+                    published_at=_dt(row.get("published_at")),
+                    created_at=_dt(row.get("created_at")),
+                    updated_at=_dt(row.get("updated_at")),
+                ),
+                pub_id,
+            )
+
     async def restore_vocab_candidates(self, rows: list[dict[str, Any]]) -> None:
         for row in rows:
             candidate_id = str(row["id"])
@@ -1064,6 +1114,7 @@ async def import_data_json(
     await imp.restore_user_settings(data.get("settings"))
     await imp.restore_overview_figures(data.get("overview_figures") or [])
     await imp.restore_explainer_figures(data.get("explainer_figures") or [])
+    await imp.restore_publications(data.get("publications") or [])
     await imp.restore_vocab_candidates(data.get("vocab_candidates") or [])
     await imp.restore_latest_revisions(library)
 

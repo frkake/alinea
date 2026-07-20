@@ -21,6 +21,7 @@ from typing import Any, cast
 import pytest
 from alinea_core.db.models import (
     Annotation,
+    ArticlePublication,
     BlockSearchIndex,
     ChatMessage,
     ChatThread,
@@ -272,6 +273,40 @@ async def test_import_is_lossless_for_anchors_and_content(db_session: AsyncSessi
     )
     assert vocab is not None
     assert vocab.context_anchor == payload["vocab"][0]["context_anchor"]
+
+
+async def test_import_forces_publication_unlisted(db_session: AsyncSession) -> None:
+    """Task 24: 記事公開スナップショットの復元は必ず visibility=unlisted に落とす。
+
+    元は public でも、移行操作だけで公開 URL を再公開しない(P4)。slug と blocks は保持する。
+    """
+    src = await _seed_user_data(db_session)
+    payload = await _detached_payload(db_session, src["user_id"])
+    # エクスポートは public のまま保持している(復元側で unlisted に落とすのを検証する)。
+    assert payload["publications"][0]["visibility"] == "public"
+    await _delete_source_user(db_session, src["user_id"])
+    target = await _make_user(db_session)
+
+    summary = await import_data_json(db_session, target["user_id"], payload)
+    assert summary["created"].get("publications", 0) >= 1
+
+    restored = (
+        (
+            await db_session.execute(
+                select(ArticlePublication).where(ArticlePublication.user_id == target["user_id"])
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(restored) == 1
+    pub = restored[0]
+    # 公開 URL の再公開はしない。
+    assert pub.visibility == "unlisted"
+    # slug と本文スナップショットは保持される。
+    assert pub.slug == src["publication_slug"]
+    assert pub.title == "やさしい解説"
+    assert pub.blocks[0]["type"] == "heading"
 
 
 # ---------------------------------------------------------------------------

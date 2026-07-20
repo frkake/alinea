@@ -622,6 +622,39 @@ class ExplainerFigure(Base):
     )
 
 
+class ArticlePublication(Base):
+    """生成記事のサニタイズ済み公開スナップショット(Task 24)。
+
+    記事から漏えいのない安全な部分集合(heading/paragraph/attribution + ライセンス確認済み
+    overview/explainer 図)だけを切り出して保存し、slug で認証不要に読める。private 論文の記事
+    は公開できない。可視性は unlisted(URL 保持者のみ・robots noindex)/ public(検索索引許可)。
+    公開解除しても行は残し、slug を予約してリンク乗っ取りを防ぐ(visibility='private')。
+    """
+
+    __tablename__ = "article_publications"
+    id: Mapped[str] = _uuid_pk()
+    article_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("articles.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    slug: Mapped[str] = mapped_column(Text, nullable=False)
+    # unlisted | public | private(private = 公開解除後の slug 予約状態)。
+    visibility: Mapped[str] = mapped_column(Text, nullable=False, server_default="unlisted")
+    snapshot_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    title: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    paper_meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default="{}")
+    blocks: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, server_default="[]")
+    published_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[dt.datetime] = _now()
+    updated_at: Mapped[dt.datetime] = _now()
+    __table_args__ = (
+        UniqueConstraint("article_id", name="uq_article_publications_article"),
+        UniqueConstraint("slug", name="uq_article_publications_slug"),
+    )
+
+
 class ReadingSession(Base):
     __tablename__ = "reading_sessions"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -712,6 +745,7 @@ __all__ = [
     "Annotation",
     "Article",
     "ArticleBlock",
+    "ArticlePublication",
     "AuthIdentity",
     "Base",
     "BlockSearchIndex",
