@@ -13,10 +13,12 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Computed,
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     SmallInteger,
@@ -677,6 +679,48 @@ class ArticlePublication(Base):
     )
 
 
+class PublicationComment(Base):
+    """公開記事へのモデレーション付きコメント(Task 25)。
+
+    公開スナップショットのブロックに対して認証ユーザーが plain text コメントを投稿する。
+    - ``status`` = visible | hidden | deleted。hidden は記事公開者(publisher)がモデレーション
+      で伏せた状態、deleted は投稿者本人による soft delete(返信があってもスレッド構造を残す)。
+    - ``parent_id`` は同じ publication の 1 階層のみ(返信への返信は API 層で拒否する)。
+    - ``block_id`` は公開スナップショットに存在するブロックだけを許可する(API 層で検証)。
+    - 本文は plain text のみ・1〜4000 文字(API 層でサニタイズ・検証)。
+    """
+
+    __tablename__ = "publication_comments"
+    id: Mapped[str] = _uuid_pk()
+    publication_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("article_publications.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    # 返信先(同一 publication の 1 階層のみ)。親削除時は返信も CASCADE で消える。
+    parent_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("publication_comments.id", ondelete="CASCADE")
+    )
+    block_id: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    # visible | hidden | deleted。
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="visible")
+    created_at: Mapped[dt.datetime] = _now()
+    updated_at: Mapped[dt.datetime] = _now()
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('visible', 'hidden', 'deleted')",
+            name="ck_publication_comments_status",
+        ),
+        Index("ix_publication_comments_publication", "publication_id", "created_at"),
+        Index("ix_publication_comments_parent", "parent_id"),
+        Index("ix_publication_comments_user", "user_id"),
+    )
+
+
 class ReadingSession(Base):
     __tablename__ = "reading_sessions"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -788,6 +832,7 @@ __all__ = [
     "OverviewFigure",
     "Paper",
     "PaperExternalId",
+    "PublicationComment",
     "QuotaLimit",
     "ReadingSession",
     "ResourceLink",

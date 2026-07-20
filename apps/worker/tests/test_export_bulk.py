@@ -31,6 +31,7 @@ from alinea_core.db.models import (
     Notification,
     Paper,
     PaperExternalId,
+    PublicationComment,
     ReadingSession,
     ResourceLink,
     SavedFilter,
@@ -183,6 +184,35 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
             title="やさしい解説",
             paper_meta={"title": "Flow Straight and Fast"},
             blocks=[{"type": "heading", "content": {"heading": {"level": 2, "text": "はじめに"}}}],
+        )
+    )
+
+    # 記事公開コメント(Task 25)。本人 own コメントはバックアップに含まれ、第三者コメントは
+    # 本人所有データではないため含まれない(export 側の絞り込みを検証する)。
+    own_comment_id = str(uuid.uuid4())
+    db.add(
+        PublicationComment(
+            id=own_comment_id,
+            publication_id=publication_id,
+            user_id=user.id,
+            block_id="0",
+            body="自分のコメント",
+            status="visible",
+        )
+    )
+    # 第三者(別ユーザー)が本人の公開記事に残したコメント。
+    other_user = User(id=str(uuid.uuid4()), email=f"{uuid.uuid4().hex}@t.test")
+    db.add(other_user)
+    await db.flush()
+    third_party_comment_id = str(uuid.uuid4())
+    db.add(
+        PublicationComment(
+            id=third_party_comment_id,
+            publication_id=publication_id,
+            user_id=other_user.id,
+            block_id="0",
+            body="第三者のコメント",
+            status="visible",
         )
     )
 
@@ -363,6 +393,9 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
         "article_id": str(article.id),
         "publication_id": publication_id,
         "publication_slug": publication_slug,
+        "own_comment_id": own_comment_id,
+        "third_party_comment_id": third_party_comment_id,
+        "other_user_id": str(other_user.id),
     }
 
 
@@ -587,6 +620,28 @@ async def test_export_includes_publication_snapshot(db_session: AsyncSession) ->
     assert pub["visibility"] == "public"
     assert pub["snapshot_version"] == 2
     assert pub["blocks"][0]["type"] == "heading"
+
+
+async def test_export_includes_only_own_publication_comment(db_session: AsyncSession) -> None:
+    """記事公開コメント(Task 25)は本人 own のものだけをバックアップに含める。
+
+    第三者が本人の公開記事へ残したコメントは本人所有データではないため複製しない。
+    """
+    ids = await _seed_user_data(db_session)
+    payload = await build_export_payload(db_session, ids["user_id"])
+
+    assert "publication_comments" in payload
+    comments = payload["publication_comments"]
+    # 本人 own の 1 件だけが含まれる(第三者コメントは含まない)。
+    assert len(comments) == 1, comments
+    row = comments[0]
+    assert row["id"] == ids["own_comment_id"]
+    assert row["publication_id"] == ids["publication_id"]
+    assert row["body"] == "自分のコメント"
+    assert row["block_id"] == "0"
+    # 第三者コメントの id は決してエクスポートに現れない。
+    exported_ids = {c["id"] for c in comments}
+    assert ids["third_party_comment_id"] not in exported_ids
 
 
 async def test_export_document_asset_keys_collected(db_session: AsyncSession) -> None:

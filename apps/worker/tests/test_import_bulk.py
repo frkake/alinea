@@ -30,6 +30,7 @@ from alinea_core.db.models import (
     Note,
     Paper,
     PaperExternalId,
+    PublicationComment,
     User,
     VocabEntry,
 )
@@ -382,6 +383,50 @@ async def test_import_forces_publication_unlisted(db_session: AsyncSession) -> N
     assert pub.slug == src["publication_slug"]
     assert pub.title == "やさしい解説"
     assert pub.blocks[0]["type"] == "heading"
+
+
+async def test_import_restores_own_publication_comment(db_session: AsyncSession) -> None:
+    """Task 25: バックアップの本人 own コメントが移行先ユーザーへ復元される。
+
+    export 側が本人 own コメントだけを含めるため、payload には第三者コメントが存在しない。
+    復元後は投稿者が移行先ユーザーへ付け替えられ、publication へ正しく紐づく。
+    """
+    src = await _seed_user_data(db_session)
+    payload = await _detached_payload(db_session, src["user_id"])
+
+    # payload には本人 own の 1 件だけが含まれる(第三者コメントは export で除外済み)。
+    assert len(payload["publication_comments"]) == 1
+    assert payload["publication_comments"][0]["id"] == src["own_comment_id"]
+    exported_ids = {c["id"] for c in payload["publication_comments"]}
+    assert src["third_party_comment_id"] not in exported_ids
+
+    await _delete_source_user(db_session, src["user_id"])
+    target = await _make_user(db_session)
+
+    summary = await import_data_json(db_session, target["user_id"], payload)
+    assert summary["failed"] == [], summary["failed"]
+    assert summary["created"].get("publication_comments", 0) == 1
+
+    restored = (
+        (
+            await db_session.execute(
+                select(PublicationComment).where(
+                    PublicationComment.user_id == target["user_id"]
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(restored) == 1
+    comment = restored[0]
+    assert comment.body == "自分のコメント"
+    assert comment.block_id == "0"
+    # 投稿者は移行先ユーザーへ付け替えられる。
+    assert str(comment.user_id) == target["user_id"]
+    # 第三者コメントは復元されない。
+    third = await db_session.get(PublicationComment, src["third_party_comment_id"])
+    assert third is None
 
 
 # ---------------------------------------------------------------------------
