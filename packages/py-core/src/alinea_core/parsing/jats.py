@@ -113,10 +113,10 @@ def _safe_parse(data: bytes | str) -> _Node:
     def _reject_external(*_args: Any, **_kwargs: Any) -> bool:
         raise JatsParseError("parse_error", "external entity references are not allowed")
 
-    parser.StartDoctypeDeclHandler = _reject_doctype  # type: ignore[assignment]
-    parser.EntityDeclHandler = _reject_entity  # type: ignore[assignment]
-    parser.UnparsedEntityDeclHandler = _reject_entity  # type: ignore[assignment]
-    parser.ExternalEntityRefHandler = _reject_external  # type: ignore[assignment]
+    parser.StartDoctypeDeclHandler = _reject_doctype
+    parser.EntityDeclHandler = _reject_entity
+    parser.UnparsedEntityDeclHandler = _reject_entity
+    parser.ExternalEntityRefHandler = _reject_external
     # 予期しないパラメータ実体の展開も無効化する(標準実体 &amp; 等はそのまま処理される)。
     try:
         parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
@@ -149,9 +149,9 @@ def _safe_parse(data: bytes | str) -> _Node:
         else:
             node.text += text
 
-    parser.StartElementHandler = _start  # type: ignore[assignment]
-    parser.EndElementHandler = _end  # type: ignore[assignment]
-    parser.CharacterDataHandler = _chardata  # type: ignore[assignment]
+    parser.StartElementHandler = _start
+    parser.EndElementHandler = _end
+    parser.CharacterDataHandler = _chardata
 
     try:
         parser.Parse(raw, True)
@@ -307,8 +307,10 @@ def _extract_pub_date(article_meta: _Node) -> str | None:
     year = _clean(_all_text(year_node))
     if not re.fullmatch(r"\d{4}", year):
         return None
-    month = _clean(_all_text(_find(node, "month"))) if _find(node, "month") else "1"
-    day = _clean(_all_text(_find(node, "day"))) if _find(node, "day") else "1"
+    month_node = _find(node, "month")
+    month = _clean(_all_text(month_node)) if month_node is not None else "1"
+    day_node = _find(node, "day")
+    day = _clean(_all_text(day_node)) if day_node is not None else "1"
     try:
         month_i = min(max(int(month or "1"), 1), 12)
         day_i = min(max(int(day or "1"), 1), 31)
@@ -543,7 +545,7 @@ class _BodyBuilder:
             label=(node.attrib.get("id") or None),
             number=_clean(_all_text(label_node)) if label_node is not None else None,
             caption=caption,
-            cells=cells,  # type: ignore[call-arg]
+            cells=cells,
         )
 
     def _table_cells(self, table: _Node) -> list[list[str]]:
