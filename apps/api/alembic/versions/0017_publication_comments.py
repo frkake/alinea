@@ -26,8 +26,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0016_publication_comments"
-down_revision: str | None = "0015_article_publications"
+revision: str = "0017_publication_comments"
+down_revision: str | None = "0016_semantic_embeddings"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
