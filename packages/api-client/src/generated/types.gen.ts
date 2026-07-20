@@ -717,6 +717,48 @@ export type ChatThreadListResponse = {
 };
 
 /**
+ * CodeAnalysisEstimateResponse
+ */
+export type CodeAnalysisEstimateResponse = {
+    /**
+     * Estimate Id
+     */
+    estimate_id: string;
+    /**
+     * Commit Sha
+     */
+    commit_sha: string;
+    /**
+     * Files
+     */
+    files: number;
+    /**
+     * Estimated Input Tokens
+     */
+    estimated_input_tokens: number;
+    /**
+     * Estimated Output Tokens
+     */
+    estimated_output_tokens: number;
+    /**
+     * Estimated Embedding Tokens
+     */
+    estimated_embedding_tokens: number;
+    /**
+     * Estimated Cost Usd
+     */
+    estimated_cost_usd: string;
+    /**
+     * Budget Remaining Usd
+     */
+    budget_remaining_usd: string;
+    /**
+     * Expires At
+     */
+    expires_at: string;
+};
+
+/**
  * CollectionCreateBody
  * §13.1 ``POST /api/collections``。
  */
@@ -956,6 +998,50 @@ export type CommentUpdateRequest = {
 };
 
 /**
+ * CorrespondenceOut
+ */
+export type CorrespondenceOut = {
+    /**
+     * Paper Anchor
+     */
+    paper_anchor?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Claim Text
+     */
+    claim_text: string;
+    /**
+     * Path
+     */
+    path: string;
+    /**
+     * Symbol
+     */
+    symbol: string;
+    /**
+     * Start Line
+     */
+    start_line: number;
+    /**
+     * End Line
+     */
+    end_line: number;
+    /**
+     * Code Excerpt
+     */
+    code_excerpt: string;
+    /**
+     * Explanation Ja
+     */
+    explanation_ja: string;
+    /**
+     * Confidence
+     */
+    confidence: string;
+};
+
+/**
  * CursorPage[LibraryItemSummary]
  */
 export type CursorPageLibraryItemSummary = {
@@ -1189,6 +1275,20 @@ export type EntryPatchBody = {
      * Note
      */
     note?: string | null;
+};
+
+/**
+ * EstimateRequest
+ */
+export type EstimateRequest = {
+    /**
+     * Resource Id
+     */
+    resource_id: string;
+    /**
+     * Section Ids
+     */
+    section_ids?: Array<string> | null;
 };
 
 /**
@@ -3688,6 +3788,79 @@ export type RevisionListResponse = {
 };
 
 /**
+ * RunOut
+ */
+export type RunOut = {
+    /**
+     * Run Id
+     */
+    run_id: string;
+    /**
+     * Resource Id
+     */
+    resource_id: string;
+    /**
+     * Revision Id
+     */
+    revision_id: string;
+    /**
+     * Commit Sha
+     */
+    commit_sha: string;
+    /**
+     * Trigger
+     */
+    trigger: string;
+    /**
+     * Status
+     */
+    status: string;
+    /**
+     * Stale
+     */
+    stale: boolean;
+    /**
+     * Estimated Cost Usd
+     */
+    estimated_cost_usd: string;
+    /**
+     * Actual Cost Usd
+     */
+    actual_cost_usd: string;
+    /**
+     * Error
+     */
+    error?: string | null;
+    /**
+     * Created At
+     */
+    created_at?: string | null;
+    /**
+     * Finished At
+     */
+    finished_at?: string | null;
+};
+
+/**
+ * RunsResponse
+ */
+export type RunsResponse = {
+    /**
+     * Runs
+     */
+    runs: Array<RunOut>;
+    current_result?: RunOut | null;
+    /**
+     * Correspondences
+     */
+    correspondences?: Array<CorrespondenceOut>;
+    /**
+     * Stale
+     */
+    stale?: boolean;
+};
+
+/**
  * SavedFilterBody
  * POST/PATCH /api/saved-filters の共通リクエスト(§5.14。両者とも全項目送信)。
  */
@@ -4418,6 +4591,42 @@ export type StandaloneAvailability = {
      * Pdf Bilingual
      */
     pdf_bilingual: boolean;
+};
+
+/**
+ * StartRequest
+ */
+export type StartRequest = {
+    /**
+     * Resource Id
+     */
+    resource_id: string;
+    /**
+     * Estimate Id
+     */
+    estimate_id: string;
+    /**
+     * Section Ids
+     */
+    section_ids?: Array<string> | null;
+};
+
+/**
+ * StartResponse
+ */
+export type StartResponse = {
+    /**
+     * Job Id
+     */
+    job_id: string;
+    /**
+     * Run Id
+     */
+    run_id: string;
+    /**
+     * Status
+     */
+    status: string;
 };
 
 /**
@@ -10360,6 +10569,96 @@ export type PresentationsDownloadResponses = {
      */
     200: unknown;
 };
+
+export type CodeAnalysisEstimateData = {
+    body: EstimateRequest;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/code-analysis/estimate';
+};
+
+export type CodeAnalysisEstimateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CodeAnalysisEstimateError = CodeAnalysisEstimateErrors[keyof CodeAnalysisEstimateErrors];
+
+export type CodeAnalysisEstimateResponses = {
+    /**
+     * Successful Response
+     */
+    200: CodeAnalysisEstimateResponse;
+};
+
+export type CodeAnalysisEstimateResponse2 = CodeAnalysisEstimateResponses[keyof CodeAnalysisEstimateResponses];
+
+export type CodeAnalysisListData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/code-analysis';
+};
+
+export type CodeAnalysisListErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CodeAnalysisListError = CodeAnalysisListErrors[keyof CodeAnalysisListErrors];
+
+export type CodeAnalysisListResponses = {
+    /**
+     * Successful Response
+     */
+    200: RunsResponse;
+};
+
+export type CodeAnalysisListResponse = CodeAnalysisListResponses[keyof CodeAnalysisListResponses];
+
+export type CodeAnalysisStartData = {
+    body: StartRequest;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/code-analysis';
+};
+
+export type CodeAnalysisStartErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CodeAnalysisStartError = CodeAnalysisStartErrors[keyof CodeAnalysisStartErrors];
+
+export type CodeAnalysisStartResponses = {
+    /**
+     * Successful Response
+     */
+    202: StartResponse;
+};
+
+export type CodeAnalysisStartResponse = CodeAnalysisStartResponses[keyof CodeAnalysisStartResponses];
 
 export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
