@@ -2164,3 +2164,234 @@ async def test_site_gateway_openreview_falls_back_to_citation_on_absent_note() -
     assert meta.published_on == "2024-01-01"
     # pdf_url はフォールバックでも adapter 宣言 URL。citation_pdf_url は使わない。
     assert meta.pdf_url == "https://openreview.net/pdf?id=abc123XYZ"
+
+
+# ---------------------------------------------------------------------------
+# Task 18: Hugging Face 取り込み(arXiv 解決 + 関連ソース候補)
+# ---------------------------------------------------------------------------
+from alinea_api.routers.ingest import (  # noqa: E402
+    HuggingFaceGateway,
+    get_huggingface_gateway,
+)
+
+_HF_PAPER_URL = "https://huggingface.co/papers/2307.09288"
+_HF_MODEL_URL = "https://huggingface.co/meta-llama/Llama-2-7b"
+
+
+class _FakeHFGateway(HuggingFaceGateway):
+    """No-network Hugging Face gateway. Deterministic arXiv resolution + candidates."""
+
+    def __init__(
+        self,
+        *,
+        model_arxiv_id: str | None = "2307.09288",
+        model_candidates: list[str] | None = None,
+    ) -> None:
+        self.model_arxiv_id = model_arxiv_id
+        self.model_candidates = model_candidates if model_candidates is not None else ["2307.09288"]
+
+    async def resolve_arxiv_id(self, ref: Any, *, settings: Any) -> tuple[str | None, list[str]]:
+        if ref.kind == "paper":
+            return ref.external_id, [ref.external_id]
+        return self.model_arxiv_id, list(self.model_candidates)
+
+    async def discover_resources(self, arxiv_id: str, *, settings: Any) -> list[Any]:
+        from alinea_core.adapters.huggingface import DiscoveredResource
+
+        return [
+            DiscoveredResource(
+                url=f"https://huggingface.co/papers/{arxiv_id}",
+                kind="huggingface",
+                relation="paper",
+                title="Llama 2",
+                official_candidate=False,
+                meta={"repo_type": "paper"},
+            ),
+            DiscoveredResource(
+                url="https://github.com/facebookresearch/llama",
+                kind="github",
+                relation="github",
+                title="facebookresearch/llama",
+                official_candidate=True,
+                meta={},
+            ),
+            DiscoveredResource(
+                url="https://huggingface.co/meta-llama/Llama-2-7b",
+                kind="huggingface",
+                relation="model",
+                title="meta-llama/Llama-2-7b",
+                official_candidate=False,
+                meta={"repo_type": "model", "downloads": 700000},
+            ),
+        ]
+
+
+@pytest.fixture
+def seed_hf_mock() -> Iterator[_FakeHFGateway]:
+    gateway = _FakeHFGateway()
+    app.dependency_overrides[get_huggingface_gateway] = lambda: gateway
+    yield gateway
+    app.dependency_overrides.pop(get_huggingface_gateway, None)
+
+
+async def test_check_huggingface_paper_resolves_to_arxiv(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    seed_arxiv_mock: None,
+    seed_hf_mock: _FakeHFGateway,
+) -> None:
+    await _login(client, db_session, redis_client, unique_email)
+    r = await client.get("/api/ingest/check", params={"url": _HF_PAPER_URL})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["kind"] == "huggingface"
+    assert body["arxiv_id"] == "2307.09288"
+    assert body["huggingface"]["repo_kind"] == "paper"
+    assert body["huggingface"]["arxiv_id"] == "2307.09288"
+    # arXiv メタが載る(既存 arXiv 経路を通す)。
+    assert body["bib"]["title"].startswith("Mock Paper")
+
+
+async def test_check_huggingface_model_ambiguous_arxiv_returns_diagnostic(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+) -> None:
+    gateway = _FakeHFGateway(model_arxiv_id=None, model_candidates=["2307.09288", "2101.00001"])
+    app.dependency_overrides[get_huggingface_gateway] = lambda: gateway
+    try:
+        await _login(client, db_session, redis_client, unique_email)
+        r = await client.get("/api/ingest/check", params={"url": _HF_MODEL_URL})
+    finally:
+        app.dependency_overrides.pop(get_huggingface_gateway, None)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["kind"] == "huggingface"
+    assert body["arxiv_id"] is None
+    assert body["huggingface"]["arxiv_id"] is None
+    # 複数件 → 選択可能な診断。
+    assert set(body["huggingface"]["arxiv_candidates"]) == {"2307.09288", "2101.00001"}
+
+
+async def test_ingest_huggingface_paper_registers_active_and_suggested_resources(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+    wakeups: list[str],
+    seed_arxiv_mock: None,
+    seed_hf_mock: _FakeHFGateway,
+    fake_storage: Any,
+) -> None:
+    from alinea_core.db.models import ResourceLink
+
+    await _login(client, db_session, redis_client, unique_email)
+    r = await client.post("/api/ingest/arxiv", json={"url": _HF_PAPER_URL})
+    assert r.status_code == 202, r.text
+    body = r.json()
+    created_papers.append(body["paper_id"])
+    item_id = body["library_item_id"]
+
+    # arXiv パイプラインへ渡っている(source=arxiv, arxiv_id 解決済み)。
+    job = await db_session.get(Job, body["job_id"])
+    assert job is not None
+    assert job.payload["source"] == "arxiv"
+    assert job.payload["arxiv_id"] == "2307.09288"
+
+    rows = (
+        (
+            await db_session.execute(
+                select(ResourceLink).where(ResourceLink.library_item_id == item_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_status: dict[str, list[ResourceLink]] = {}
+    for row in rows:
+        by_status.setdefault(row.status, []).append(row)
+
+    # 取り込みに使った HF Paper URL は active。
+    active = by_status.get("active", [])
+    assert any(a.url == _HF_PAPER_URL for a in active)
+    # 関連リンク(GitHub 公式候補・Model)は suggested。
+    suggested = by_status.get("suggested", [])
+    sug_urls = {s.url for s in suggested}
+    assert "https://github.com/facebookresearch/llama" in sug_urls
+    assert "https://huggingface.co/meta-llama/Llama-2-7b" in sug_urls
+    # 公式候補フラグは meta に載る(github/project のみ true)。
+    gh = next(s for s in suggested if s.kind == "github")
+    assert gh.meta["official_candidate"] is True
+
+
+async def test_ingest_huggingface_dismissed_suggestion_not_resurrected(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+    wakeups: list[str],
+    seed_arxiv_mock: None,
+    seed_hf_mock: _FakeHFGateway,
+    fake_storage: Any,
+) -> None:
+    """再取り込み相当で同一正規化 URL の suggested を再生成しない(dismissed を復活させない)。"""
+    from alinea_core.db.models import ResourceLink
+
+    await _login(client, db_session, redis_client, unique_email)
+    r = await client.post("/api/ingest/arxiv", json={"url": _HF_PAPER_URL})
+    assert r.status_code == 202, r.text
+    item_id = r.json()["library_item_id"]
+    created_papers.append(r.json()["paper_id"])
+
+    # モデル候補を dismissed に変える。
+    model = (
+        (
+            await db_session.execute(
+                select(ResourceLink).where(
+                    ResourceLink.library_item_id == item_id,
+                    ResourceLink.kind == "huggingface",
+                    ResourceLink.status == "suggested",
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert model is not None
+    model.status = "dismissed"
+    await db_session.commit()
+
+    # 再度同じ関連リンクを永続化しても、正規化 URL 既存のため行は増えない(復活しない)。
+    from alinea_api.routers.ingest import _persist_huggingface_resources
+
+    item = await db_session.get(LibraryItem, item_id)
+    assert item is not None
+    await _persist_huggingface_resources(
+        db_session,
+        _FakeHFGateway(),
+        item,
+        arxiv_id="2307.09288",
+        ingest_url=_HF_PAPER_URL,
+        settings=get_api_settings(),
+    )
+    await db_session.commit()
+
+    same = (
+        (
+            await db_session.execute(
+                select(ResourceLink).where(
+                    ResourceLink.library_item_id == item_id,
+                    ResourceLink.url == "https://huggingface.co/meta-llama/Llama-2-7b",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(same) == 1
+    assert same[0].status == "dismissed"

@@ -27,14 +27,19 @@ export type ResourceLink = Omit<_ResourceLink, "thumbnail_url" | "note" | "meta"
 
 /**
  * ResourceListResponse: items を正規化済み ResourceLink の配列に固定。
+ * suggestions(複数)が正典。suggestion(単数)は互換期間中のみ先頭候補。
  */
-export type ResourceListResponse = Omit<_ResourceListResponse, "items" | "suggestion"> & {
+export type ResourceListResponse = Omit<
+  _ResourceListResponse,
+  "items" | "suggestion" | "suggestions"
+> & {
   items: ResourceLink[];
   suggestion: import("@alinea/api-client").ResourceSuggestion | null;
+  suggestions: import("@alinea/api-client").ResourceSuggestion[];
 };
 
 /** リソース種別(生成型 ResourceLink.kind の union を名付けたエイリアス)。 */
-export type ResKind = "github" | "youtube" | "slides" | "article";
+export type ResKind = "github" | "youtube" | "slides" | "article" | "huggingface" | "project";
 
 /** kind 別 meta 形(format.ts のキャスト用。生成型は meta?: Record<string, unknown>)。 */
 export interface ResourceGithubMeta {
@@ -56,9 +61,25 @@ export interface ResourceArticleMeta {
   reading_minutes: number | null;
 }
 
+/** Hugging Face カード meta(Paper/Model/Dataset/Space)。 */
+export interface ResourceHuggingFaceMeta {
+  repo_type: "paper" | "model" | "dataset" | "space";
+  repo_id: string | null;
+  downloads: number | null;
+  likes: number | null;
+  pipeline_tag: string | null;
+}
+
+/** 公式プロジェクトページ meta。 */
+export interface ResourceProjectMeta {
+  official_candidate?: boolean;
+}
+
 export type ResourceMeta =
   | ResourceGithubMeta
   | ResourceYoutubeMeta
   | ResourceSlidesMeta
   | ResourceArticleMeta
+  | ResourceHuggingFaceMeta
+  | ResourceProjectMeta
   | Record<string, never>;

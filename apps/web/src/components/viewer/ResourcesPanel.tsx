@@ -7,9 +7,11 @@ import { useToast } from "@/components/ui/Toast";
 import {
   ResourceApiError,
   acceptResourceSuggestion,
+  acceptResourceSuggestionById,
   createResource,
   deleteResource,
   dismissResourceSuggestion,
+  dismissResourceSuggestionById,
   listResources,
   patchResource,
   refreshResourceMeta,
@@ -18,11 +20,13 @@ import { useViewerStore } from "@/stores/viewer-store";
 import { ResourceAddFooter } from "./resources/ResourceAddFooter";
 import { ResourceCard } from "./resources/ResourceCard";
 import { ResourceSuggestionCard } from "./resources/ResourceSuggestionCard";
-import type { ResKind, ResourceListResponse } from "./resources/types";
+import type { ResKind, ResourceListResponse, ResourceSuggestion } from "./resources/types";
 
 const SKELETON_COUNT = 3;
 const FLASH_MS = 2000;
 const UNDO_MS = 6000;
+// 折り畳み時に既定で見せる候補数(残りは「他 N 件を表示」で展開)。設計 §8。
+const SUGGESTIONS_COLLAPSED = 3;
 
 /**
  * リソースタブ本体(docs/12・plans/09-screens/5a。viewer-shell §6.5: props なし)。
@@ -41,7 +45,9 @@ export function ResourcesPanel() {
   // 追加成功のたびに +1(ResourceAddFooter が入力欄をクリアするための合図。M2-17 followup)。
   const [addSeq, setAddSeq] = useState(0);
   const [flashId, setFlashId] = useState<string | null>(null);
-  const [suggestionPending, setSuggestionPending] = useState(false);
+  // 候補ごとの実行中フラグ(key = resource_id ?? url)。折り畳み展開状態。
+  const [pendingSuggestions, setPendingSuggestions] = useState<Set<string>>(new Set());
+  const [suggestionsExpanded, setSuggestionsExpanded] = useState(false);
   const flashTimer = useRef<number | null>(null);
   const undoTimers = useRef<Map<string, number>>(new Map());
   const listRef = useRef<HTMLDivElement>(null);
@@ -155,31 +161,52 @@ export function ResourcesPanel() {
     undoTimers.current.set(resourceId, timer);
   };
 
-  const onAcceptSuggestion = () => {
+  const suggestionKey = (s: ResourceSuggestion): string => s.resource_id ?? s.url;
+
+  const setSuggestionPending = (key: string, on: boolean) => {
+    setPendingSuggestions((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  };
+
+  // resource_id を持つ候補(Hugging Face 等の永続候補)は ID 指定で、持たない候補(arXiv 動的)は
+  // item スコープの従来 API で採用・却下する(設計 §3)。
+  const onAcceptSuggestion = (s: ResourceSuggestion) => {
     if (!itemId) return;
-    setSuggestionPending(true);
-    acceptResourceSuggestion(itemId).then(
+    const key = suggestionKey(s);
+    setSuggestionPending(key, true);
+    const p = s.resource_id
+      ? acceptResourceSuggestionById(s.resource_id)
+      : acceptResourceSuggestion(itemId);
+    p.then(
       () => {
-        setSuggestionPending(false);
+        setSuggestionPending(key, false);
         invalidate();
       },
       () => {
-        setSuggestionPending(false);
+        setSuggestionPending(key, false);
         toast({ kind: "error", message: "追加できませんでした" });
       },
     );
   };
 
-  const onDismissSuggestion = () => {
+  const onDismissSuggestion = (s: ResourceSuggestion) => {
     if (!itemId) return;
-    setSuggestionPending(true);
-    dismissResourceSuggestion(itemId).then(
+    const key = suggestionKey(s);
+    setSuggestionPending(key, true);
+    const p = s.resource_id
+      ? dismissResourceSuggestionById(s.resource_id)
+      : dismissResourceSuggestion(itemId);
+    p.then(
       () => {
-        setSuggestionPending(false);
+        setSuggestionPending(key, false);
         invalidate();
       },
       () => {
-        setSuggestionPending(false);
+        setSuggestionPending(key, false);
         toast({ kind: "error", message: "操作に失敗しました" });
       },
     );
@@ -217,8 +244,18 @@ export function ResourcesPanel() {
 
   const data = query.data;
   const items = data?.items ?? [];
-  const suggestion = data?.suggestion ?? null;
-  const isEmpty = items.length === 0 && suggestion === null;
+  // suggestions(複数)が正典。互換のため単数 suggestion しか無い応答も先頭候補として拾う。
+  const suggestions: ResourceSuggestion[] =
+    data?.suggestions && data.suggestions.length > 0
+      ? data.suggestions
+      : data?.suggestion
+        ? [data.suggestion]
+        : [];
+  const isEmpty = items.length === 0 && suggestions.length === 0;
+  const visibleSuggestions = suggestionsExpanded
+    ? suggestions
+    : suggestions.slice(0, SUGGESTIONS_COLLAPSED);
+  const hiddenCount = suggestions.length - visibleSuggestions.length;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
@@ -242,13 +279,33 @@ export function ResourcesPanel() {
           />
         ) : (
           <>
-            {suggestion ? (
+            {visibleSuggestions.map((s) => (
               <ResourceSuggestionCard
-                suggestion={suggestion}
-                onAccept={onAcceptSuggestion}
-                onDismiss={onDismissSuggestion}
-                pending={suggestionPending}
+                key={s.resource_id ?? s.url}
+                suggestion={s}
+                onAccept={() => onAcceptSuggestion(s)}
+                onDismiss={() => onDismissSuggestion(s)}
+                pending={pendingSuggestions.has(s.resource_id ?? s.url)}
               />
+            ))}
+            {hiddenCount > 0 ? (
+              <button
+                type="button"
+                onClick={() => setSuggestionsExpanded(true)}
+                style={{
+                  alignSelf: "flex-start",
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--pr-acc)",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  fontFamily: "inherit",
+                  cursor: "pointer",
+                  padding: "2px 0",
+                }}
+              >
+                {`他 ${hiddenCount} 件の候補を表示`}
+              </button>
             ) : null}
             {items.map((resource) => (
               <ResourceCard

@@ -112,6 +112,52 @@ describe("ResourceCard kind 別メタ表示(VT-VIEW-17)", () => {
     expect(screen.getByText("zenn.dev · 解説記事 · 15 min")).toBeInTheDocument();
   });
 
+  test("huggingface: Model・repo ID・downloads・likes をメタ行に表示", () => {
+    render(
+      <ResourceCard
+        resource={resource({
+          kind: "huggingface",
+          title: "meta-llama/Llama-2-7b",
+          source_label: "huggingface.co",
+          url: "https://huggingface.co/meta-llama/Llama-2-7b",
+          meta: {
+            repo_type: "model",
+            repo_id: "meta-llama/Llama-2-7b",
+            downloads: 700000,
+            likes: 1200,
+            pipeline_tag: "text-generation",
+          },
+        })}
+        flash={false}
+        {...noop}
+      />,
+    );
+    expect(
+      screen.getByText(
+        "Hugging Face · Model · meta-llama/Llama-2-7b · text-generation · ⬇ 700k · ♥ 1.2k",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test("project: ドメイン・プロジェクトページをメタ行に表示", () => {
+    render(
+      <ResourceCard
+        resource={resource({
+          kind: "project",
+          official: true,
+          title: "Llama project",
+          source_label: "ai.meta.com",
+          url: "https://ai.meta.com/llama/",
+          meta: { official_candidate: true },
+        })}
+        flash={false}
+        {...noop}
+      />,
+    );
+    expect(screen.getByText("ai.meta.com · プロジェクトページ")).toBeInTheDocument();
+    expect(screen.getByText("公式実装")).toBeInTheDocument();
+  });
+
   test("meta_fetched=false shows the 控えめな取得不可表示", () => {
     render(
       <ResourceCard

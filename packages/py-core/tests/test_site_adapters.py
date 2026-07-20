@@ -682,3 +682,252 @@ async def test_ncbi_client_maps_pmid_to_pmcid() -> None:
     finally:
         await client.aclose()
     assert pmcid == "PMC6543210"
+
+
+# --------------------------------------------------------------------------- #
+# Hugging Face アダプタ(Task 18)
+# --------------------------------------------------------------------------- #
+
+_HF_FIXTURE = Path(__file__).parent / "fixtures" / "huggingface_paper.json"
+
+_VALID_HF = [
+    ("https://huggingface.co/papers/2307.09288", "paper", "2307.09288"),
+    ("http://huggingface.co/papers/2307.09288", "paper", "2307.09288"),
+    ("https://hf.co/papers/2307.09288", "paper", "2307.09288"),
+    ("huggingface.co/papers/2307.09288", "paper", "2307.09288"),
+    ("https://huggingface.co/meta-llama/Llama-2-7b", "model", "meta-llama/Llama-2-7b"),
+    ("https://huggingface.co/datasets/squad", "dataset", "squad"),
+    ("https://huggingface.co/datasets/org/instruct", "dataset", "org/instruct"),
+    ("https://huggingface.co/spaces/huggingface/llama2-demo", "space", "huggingface/llama2-demo"),
+]
+
+_INVALID_HF = [
+    # org / user page (no repo id after org)
+    "https://huggingface.co/meta-llama",
+    # collections / settings / resolve は取り込み入口にしない
+    "https://huggingface.co/collections/meta-llama/llama-2",
+    "https://huggingface.co/settings/tokens",
+    "https://huggingface.co/meta-llama/Llama-2-7b/resolve/main/config.json",
+    # 他ホスト
+    "https://arxiv.org/abs/2307.09288",
+    "https://aclanthology.org/2023.acl-long.123/",
+    "https://nothuggingface.co/papers/2307.09288",
+    "",
+    "not a url",
+]
+
+
+def test_huggingface_match_valid() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceAdapter, parse_huggingface_url
+
+    adapter = HuggingFaceAdapter()
+    for url, kind, external_id in _VALID_HF:
+        ref = adapter.match(url)
+        assert ref is not None, url
+        assert ref.site == "huggingface"
+        assert ref.external_id == external_id, url
+        parsed = parse_huggingface_url(url)
+        assert parsed is not None, url
+        assert parsed.kind == kind, url
+        assert parsed.external_id == external_id, url
+
+
+def test_huggingface_match_invalid() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceAdapter, parse_huggingface_url
+
+    adapter = HuggingFaceAdapter()
+    for url in _INVALID_HF:
+        assert adapter.match(url) is None, url
+        assert parse_huggingface_url(url) is None, url
+
+
+def test_parse_huggingface_url_paper_ref() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceRef, parse_huggingface_url
+
+    assert parse_huggingface_url("https://huggingface.co/papers/2307.09288") == HuggingFaceRef(
+        kind="paper", external_id="2307.09288"
+    )
+
+
+def test_huggingface_allowed_hosts() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceAdapter
+
+    adapter = HuggingFaceAdapter()
+    ref = SiteRef(site="huggingface", external_id="2307.09288")
+    hosts = adapter_allowed_hosts(adapter, ref)
+    assert hosts == frozenset({"huggingface.co"})
+
+
+def test_discover_paper_resources_order_limit_and_relations() -> None:
+    from alinea_core.adapters.huggingface import discover_paper_resources
+
+    payload = _json.loads(_HF_FIXTURE.read_text())
+    resources = discover_paper_resources(payload, arxiv_id="2307.09288")
+
+    # 全種最大(1+1+1+5+3+3=14)は 13 件のグローバル上限で切り詰められる(≤13)。
+    assert len(resources) <= 13
+    assert len(resources) == 13
+
+    relations = [r.relation for r in resources]
+    # 生成順: paper -> github -> project -> model(5) -> dataset(3) -> space(上限で末尾 1 件が落ちる)。
+    assert relations[0] == "paper"
+    assert relations[1] == "github"
+    assert relations[2] == "project"
+    assert relations[3:8] == ["model"] * 5
+    assert relations[8:11] == ["dataset"] * 3
+    assert relations[11:13] == ["space"] * 2
+
+    assert {r.relation for r in resources} >= {"github", "project", "model", "dataset", "space"}
+
+
+def test_discover_paper_resources_kinds_and_official_candidates() -> None:
+    from alinea_core.adapters.huggingface import discover_paper_resources
+
+    payload = _json.loads(_HF_FIXTURE.read_text())
+    resources = discover_paper_resources(payload, arxiv_id="2307.09288")
+    by_relation = {r.relation: r for r in resources}
+
+    # Paper Page / Model / Dataset / Space は kind="huggingface"。
+    assert by_relation["paper"].kind == "huggingface"
+    assert by_relation["model"].kind == "huggingface"
+    assert by_relation["dataset"].kind == "huggingface"
+    assert by_relation["space"].kind == "huggingface"
+    # githubRepo は github、projectPage は project。
+    assert by_relation["github"].kind == "github"
+    assert by_relation["project"].kind == "project"
+
+    # official candidate は paper-level の githubRepo / projectPage のみ。
+    official = {r.relation for r in resources if r.official_candidate}
+    assert official == {"github", "project"}
+    # linked artifacts は official candidate ではない。
+    assert by_relation["model"].official_candidate is False
+    assert by_relation["paper"].official_candidate is False
+
+
+def test_discover_paper_resources_models_sorted_by_downloads_desc() -> None:
+    from alinea_core.adapters.huggingface import discover_paper_resources
+
+    payload = _json.loads(_HF_FIXTURE.read_text())
+    resources = discover_paper_resources(payload, arxiv_id="2307.09288")
+    model_urls = [r.url for r in resources if r.relation == "model"]
+    # downloads 降順の上位 5 件(700000, 500000, 400000, 300000, 100000)。
+    assert "meta-llama/Llama-2-7b" in model_urls[0]
+    assert "meta-llama/Llama-2-70b" in model_urls[1]
+    assert all("some/extra-model" not in u for u in model_urls)  # 6件目は上限で落ちる
+
+
+def test_discover_paper_resources_dedupes_by_normalized_url() -> None:
+    from alinea_core.adapters.huggingface import discover_paper_resources
+
+    payload = {
+        "id": "1234.5678",
+        "githubRepo": "https://github.com/acme/repo",
+        # projectPage が githubRepo と同一(正規化後) → 重複排除で 1 件に畳む。
+        "projectPage": "https://github.com/acme/repo/",
+        "linkedModels": [],
+        "linkedDatasets": [],
+        "linkedSpaces": [],
+    }
+    resources = discover_paper_resources(payload, arxiv_id="1234.5678")
+    urls = [r.url for r in resources]
+    # 正規化後 URL がユニーク。
+    from alinea_core.adapters.huggingface import normalize_candidate_url
+
+    normalized = [normalize_candidate_url(u) for u in urls]
+    assert len(normalized) == len(set(normalized))
+
+
+def test_huggingface_resolve_adapter() -> None:
+    resolved = resolve_adapter("https://huggingface.co/papers/2307.09288")
+    assert resolved is not None
+    adapter, ref = resolved
+    assert adapter.site == "huggingface"
+    assert ref.external_id == "2307.09288"
+
+
+def test_arxiv_id_from_tags_unique() -> None:
+    from alinea_core.adapters.huggingface import arxiv_id_from_tags
+
+    assert arxiv_id_from_tags(["arxiv:2307.09288", "license:mit"]) == "2307.09288"
+    # 0 件 → None(選択不能)。
+    assert arxiv_id_from_tags(["license:mit"]) is None
+    # 複数件 → None(一意に決まらない)。
+    assert arxiv_id_from_tags(["arxiv:2307.09288", "arxiv:2101.00001"]) is None
+    # 重複した同一 ID は一意扱い。
+    assert arxiv_id_from_tags(["arxiv:2307.09288", "arxiv:2307.09288"]) == "2307.09288"
+
+
+async def test_hf_client_fetch_paper_from_configured_base() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceClient, HuggingFaceConfig
+
+    payload = _json.loads(_HF_FIXTURE.read_text())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "hf.test"
+        assert "/api/papers/2307.09288" in request.url.path
+        return httpx.Response(200, json=payload, headers={"content-type": "application/json"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://hf.test")
+    config = HuggingFaceConfig(base_url="http://hf.test")
+    hf = HuggingFaceClient(config=config, client=client)
+    try:
+        data = await hf.fetch_paper("2307.09288")
+    finally:
+        await client.aclose()
+    assert data["id"] == "2307.09288"
+    assert data["githubRepo"].startswith("https://github.com/")
+
+
+async def test_hf_client_fetch_repo_tags_for_model() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceClient, HuggingFaceConfig
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "hf.test"
+        assert "/api/models/meta-llama/Llama-2-7b" in request.url.path
+        return httpx.Response(
+            200,
+            json={"id": "meta-llama/Llama-2-7b", "tags": ["arxiv:2307.09288", "license:llama2"]},
+            headers={"content-type": "application/json"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://hf.test")
+    config = HuggingFaceConfig(base_url="http://hf.test")
+    hf = HuggingFaceClient(config=config, client=client)
+    try:
+        tags = await hf.fetch_repo_tags("model", "meta-llama/Llama-2-7b")
+    finally:
+        await client.aclose()
+    assert "arxiv:2307.09288" in tags
+
+
+async def test_hf_client_maps_404_to_source_not_found() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceClient, HuggingFaceConfig
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="not found")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://hf.test")
+    hf = HuggingFaceClient(config=HuggingFaceConfig(base_url="http://hf.test"), client=client)
+    try:
+        with pytest.raises(SiteFetchError) as exc:
+            await hf.fetch_paper("2307.09288")
+    finally:
+        await client.aclose()
+    assert exc.value.kind == "source_not_found"
+
+
+async def test_hf_client_maps_429_to_rate_limited() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceClient, HuggingFaceConfig
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="slow down")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://hf.test")
+    hf = HuggingFaceClient(config=HuggingFaceConfig(base_url="http://hf.test"), client=client)
+    try:
+        with pytest.raises(SiteFetchError) as exc:
+            await hf.fetch_paper("2307.09288")
+    finally:
+        await client.aclose()
+    assert exc.value.kind == "rate_limited"
+

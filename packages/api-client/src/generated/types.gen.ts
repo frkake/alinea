@@ -717,6 +717,48 @@ export type ChatThreadListResponse = {
 };
 
 /**
+ * CodeAnalysisEstimateResponse
+ */
+export type CodeAnalysisEstimateResponse = {
+    /**
+     * Estimate Id
+     */
+    estimate_id: string;
+    /**
+     * Commit Sha
+     */
+    commit_sha: string;
+    /**
+     * Files
+     */
+    files: number;
+    /**
+     * Estimated Input Tokens
+     */
+    estimated_input_tokens: number;
+    /**
+     * Estimated Output Tokens
+     */
+    estimated_output_tokens: number;
+    /**
+     * Estimated Embedding Tokens
+     */
+    estimated_embedding_tokens: number;
+    /**
+     * Estimated Cost Usd
+     */
+    estimated_cost_usd: string;
+    /**
+     * Budget Remaining Usd
+     */
+    budget_remaining_usd: string;
+    /**
+     * Expires At
+     */
+    expires_at: string;
+};
+
+/**
  * CollectionCreateBody
  * §13.1 ``POST /api/collections``。
  */
@@ -956,6 +998,50 @@ export type CommentUpdateRequest = {
 };
 
 /**
+ * CorrespondenceOut
+ */
+export type CorrespondenceOut = {
+    /**
+     * Paper Anchor
+     */
+    paper_anchor?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Claim Text
+     */
+    claim_text: string;
+    /**
+     * Path
+     */
+    path: string;
+    /**
+     * Symbol
+     */
+    symbol: string;
+    /**
+     * Start Line
+     */
+    start_line: number;
+    /**
+     * End Line
+     */
+    end_line: number;
+    /**
+     * Code Excerpt
+     */
+    code_excerpt: string;
+    /**
+     * Explanation Ja
+     */
+    explanation_ja: string;
+    /**
+     * Confidence
+     */
+    confidence: string;
+};
+
+/**
  * CursorPage[LibraryItemSummary]
  */
 export type CursorPageLibraryItemSummary = {
@@ -1189,6 +1275,20 @@ export type EntryPatchBody = {
      * Note
      */
     note?: string | null;
+};
+
+/**
+ * EstimateRequest
+ */
+export type EstimateRequest = {
+    /**
+     * Resource Id
+     */
+    resource_id: string;
+    /**
+     * Section Ids
+     */
+    section_ids?: Array<string> | null;
 };
 
 /**
@@ -1761,7 +1861,7 @@ export type IngestCheckResponse = {
     /**
      * Kind
      */
-    kind: 'arxiv' | 'site' | 'pdf' | 'unsupported';
+    kind: 'arxiv' | 'site' | 'pdf' | 'unsupported' | 'huggingface';
     /**
      * Arxiv Id
      */
@@ -1788,6 +1888,7 @@ export type IngestCheckResponse = {
      */
     suggested_tags?: Array<string>;
     saved?: IngestCheckSaved | null;
+    huggingface?: IngestHuggingFaceInfo | null;
 };
 
 /**
@@ -1834,6 +1935,35 @@ export type IngestFailure = {
      * Code
      */
     code?: string | null;
+};
+
+/**
+ * IngestHuggingFaceInfo
+ * kind="huggingface" のときの補助情報(Task 18)。
+ *
+ * - ``repo_kind``: paper / model / dataset / space。
+ * - ``arxiv_id``: 一意に決まった arXiv ID(Paper URL は path から、Model/Dataset/Space は
+ * ``arxiv:<ID>`` タグから)。決められない場合は ``None``。
+ * - ``arxiv_candidates``: Model/Dataset/Space の ``arxiv:<ID>`` タグが 0 件/複数件で一意に
+ * 決まらないとき、選択可能な候補一覧(空 = 関連論文が見つからない)。
+ */
+export type IngestHuggingFaceInfo = {
+    /**
+     * Repo Kind
+     */
+    repo_kind: 'paper' | 'model' | 'dataset' | 'space';
+    /**
+     * Repo Id
+     */
+    repo_id: string;
+    /**
+     * Arxiv Id
+     */
+    arxiv_id?: string | null;
+    /**
+     * Arxiv Candidates
+     */
+    arxiv_candidates?: Array<string>;
 };
 
 /**
@@ -3384,7 +3514,7 @@ export type ResourceLink = {
     /**
      * Kind
      */
-    kind: 'github' | 'youtube' | 'slides' | 'article';
+    kind: 'github' | 'youtube' | 'slides' | 'article' | 'huggingface' | 'project';
     /**
      * Url
      */
@@ -3428,6 +3558,8 @@ export type ResourceLink = {
 /**
  * ResourceListResponse
  * GET /api/library-items/{id}/resources(plans/03 §12.1)。
+ *
+ * ``suggestions``(複数)が正典。``suggestion``(単数)は互換期間中のみ先頭候補を返す。
  */
 export type ResourceListResponse = {
     /**
@@ -3435,6 +3567,10 @@ export type ResourceListResponse = {
      */
     items: Array<ResourceLink>;
     suggestion?: ResourceSuggestion | null;
+    /**
+     * Suggestions
+     */
+    suggestions?: Array<ResourceSuggestion>;
     /**
      * Count
      */
@@ -3456,7 +3592,7 @@ export type ResourcePatchRequest = {
     /**
      * Kind
      */
-    kind?: ('github' | 'youtube' | 'slides' | 'article') | null;
+    kind?: ('github' | 'youtube' | 'slides' | 'article' | 'huggingface' | 'project') | null;
     /**
      * Note
      */
@@ -3465,7 +3601,11 @@ export type ResourcePatchRequest = {
 
 /**
  * ResourceSuggestion
- * 公式実装の自動検出提案(docs/12 §5)。件数バッジには数えない。
+ * 関連ソース候補(docs/12 §5・設計 §3)。件数バッジには数えない。
+ *
+ * - arXiv 公式実装の動的候補(``papers.official_repo_url`` 由来)は ``resource_id=None``。
+ * - Hugging Face Paper API 由来の永続候補(``resource_links.status='suggested'``)は
+ * ``resource_id`` を持ち、ID 指定の accept/dismiss で個別に採用・却下できる。
  */
 export type ResourceSuggestion = {
     /**
@@ -3475,7 +3615,33 @@ export type ResourceSuggestion = {
     /**
      * Detected From
      */
-    detected_from?: 'arxiv_page';
+    detected_from?: 'arxiv_page' | 'huggingface_paper';
+    /**
+     * Resource Id
+     */
+    resource_id?: string | null;
+    /**
+     * Kind
+     */
+    kind?: ('github' | 'youtube' | 'slides' | 'article' | 'huggingface' | 'project') | null;
+    /**
+     * Relation
+     */
+    relation?: string | null;
+    /**
+     * Title
+     */
+    title?: string | null;
+    /**
+     * Official Candidate
+     */
+    official_candidate?: boolean;
+    /**
+     * Meta
+     */
+    meta?: {
+        [key: string]: unknown;
+    };
 };
 
 /**
@@ -3685,6 +3851,79 @@ export type RevisionListResponse = {
      * Items
      */
     items: Array<RevisionListItem>;
+};
+
+/**
+ * RunOut
+ */
+export type RunOut = {
+    /**
+     * Run Id
+     */
+    run_id: string;
+    /**
+     * Resource Id
+     */
+    resource_id: string;
+    /**
+     * Revision Id
+     */
+    revision_id: string;
+    /**
+     * Commit Sha
+     */
+    commit_sha: string;
+    /**
+     * Trigger
+     */
+    trigger: string;
+    /**
+     * Status
+     */
+    status: string;
+    /**
+     * Stale
+     */
+    stale: boolean;
+    /**
+     * Estimated Cost Usd
+     */
+    estimated_cost_usd: string;
+    /**
+     * Actual Cost Usd
+     */
+    actual_cost_usd: string;
+    /**
+     * Error
+     */
+    error?: string | null;
+    /**
+     * Created At
+     */
+    created_at?: string | null;
+    /**
+     * Finished At
+     */
+    finished_at?: string | null;
+};
+
+/**
+ * RunsResponse
+ */
+export type RunsResponse = {
+    /**
+     * Runs
+     */
+    runs: Array<RunOut>;
+    current_result?: RunOut | null;
+    /**
+     * Correspondences
+     */
+    correspondences?: Array<CorrespondenceOut>;
+    /**
+     * Stale
+     */
+    stale?: boolean;
 };
 
 /**
@@ -4418,6 +4657,42 @@ export type StandaloneAvailability = {
      * Pdf Bilingual
      */
     pdf_bilingual: boolean;
+};
+
+/**
+ * StartRequest
+ */
+export type StartRequest = {
+    /**
+     * Resource Id
+     */
+    resource_id: string;
+    /**
+     * Estimate Id
+     */
+    estimate_id: string;
+    /**
+     * Section Ids
+     */
+    section_ids?: Array<string> | null;
+};
+
+/**
+ * StartResponse
+ */
+export type StartResponse = {
+    /**
+     * Job Id
+     */
+    job_id: string;
+    /**
+     * Run Id
+     */
+    run_id: string;
+    /**
+     * Status
+     */
+    status: string;
 };
 
 /**
@@ -9956,6 +10231,66 @@ export type ResourcesSuggestionDismissResponses = {
 
 export type ResourcesSuggestionDismissResponse = ResourcesSuggestionDismissResponses[keyof ResourcesSuggestionDismissResponses];
 
+export type ResourcesAcceptSuggestionData = {
+    body?: never;
+    path: {
+        /**
+         * Resource Id
+         */
+        resource_id: string;
+    };
+    query?: never;
+    url: '/api/resources/{resource_id}/accept-suggestion';
+};
+
+export type ResourcesAcceptSuggestionErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ResourcesAcceptSuggestionError = ResourcesAcceptSuggestionErrors[keyof ResourcesAcceptSuggestionErrors];
+
+export type ResourcesAcceptSuggestionResponses = {
+    /**
+     * Successful Response
+     */
+    200: ResourceLink;
+};
+
+export type ResourcesAcceptSuggestionResponse = ResourcesAcceptSuggestionResponses[keyof ResourcesAcceptSuggestionResponses];
+
+export type ResourcesDismissSuggestionData = {
+    body?: never;
+    path: {
+        /**
+         * Resource Id
+         */
+        resource_id: string;
+    };
+    query?: never;
+    url: '/api/resources/{resource_id}/dismiss-suggestion';
+};
+
+export type ResourcesDismissSuggestionErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ResourcesDismissSuggestionError = ResourcesDismissSuggestionErrors[keyof ResourcesDismissSuggestionErrors];
+
+export type ResourcesDismissSuggestionResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type ResourcesDismissSuggestionResponse = ResourcesDismissSuggestionResponses[keyof ResourcesDismissSuggestionResponses];
+
 export type PublicationsUnpublishData = {
     body?: never;
     path: {
@@ -10360,6 +10695,96 @@ export type PresentationsDownloadResponses = {
      */
     200: unknown;
 };
+
+export type CodeAnalysisEstimateData = {
+    body: EstimateRequest;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/code-analysis/estimate';
+};
+
+export type CodeAnalysisEstimateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CodeAnalysisEstimateError = CodeAnalysisEstimateErrors[keyof CodeAnalysisEstimateErrors];
+
+export type CodeAnalysisEstimateResponses = {
+    /**
+     * Successful Response
+     */
+    200: CodeAnalysisEstimateResponse;
+};
+
+export type CodeAnalysisEstimateResponse2 = CodeAnalysisEstimateResponses[keyof CodeAnalysisEstimateResponses];
+
+export type CodeAnalysisListData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/code-analysis';
+};
+
+export type CodeAnalysisListErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CodeAnalysisListError = CodeAnalysisListErrors[keyof CodeAnalysisListErrors];
+
+export type CodeAnalysisListResponses = {
+    /**
+     * Successful Response
+     */
+    200: RunsResponse;
+};
+
+export type CodeAnalysisListResponse = CodeAnalysisListResponses[keyof CodeAnalysisListResponses];
+
+export type CodeAnalysisStartData = {
+    body: StartRequest;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/code-analysis';
+};
+
+export type CodeAnalysisStartErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CodeAnalysisStartError = CodeAnalysisStartErrors[keyof CodeAnalysisStartErrors];
+
+export type CodeAnalysisStartResponses = {
+    /**
+     * Successful Response
+     */
+    202: StartResponse;
+};
+
+export type CodeAnalysisStartResponse = CodeAnalysisStartResponses[keyof CodeAnalysisStartResponses];
 
 export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
