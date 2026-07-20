@@ -1,6 +1,6 @@
 /* eslint-disable no-restricted-imports -- E2E 補助モジュールは親ディレクトリから import する(src の @/ エイリアス規約は外) */
 import { expect, test } from "@playwright/test";
-import { ORIGIN } from "../fixtures/api";
+import { ORIGIN, resolveRfItemId } from "../fixtures/api";
 
 /**
  * PW-17(plans/12 §4.3): 設定。
@@ -8,9 +8,12 @@ import { ORIGIN } from "../fixtures/api";
  * data-accent>` で検証)・本文書体切替(`<html data-body-font>`)・BYOK 登録→マスク表示・
  * 平文再表示不可を検証する。
  *
- * 「付録トグル→目次表示変化」は、§14 シード(Rectified Flow)に付録セクションが存在せず、
- * TOC 側にも付録専用の表示分岐が未実装(grep で `appendix` を含む TOC コンポーネントが
- * 存在しない)ため検証対象を用意できない。test.fixme とし followups に記載する。
+ * 「付録(未翻訳セクション)の目次表示」は Task 32 で実操作化する。§14 シードは既定で
+ * 要旨+先頭セクションのみ訳済み(sec-0/sec-1)で、以降(sec-2 以降)は「取り込み直後の
+ * 未翻訳=オンデマンド」状態になる。これは付録の自動翻訳オフ時と同じ TOC 表示分岐
+ * (「— 未翻訳」「未翻訳セクションを一括翻訳」)を通るため、この機構を決定的に検証できる。
+ * 付録セクションそのものを持つ固定論文は現状のシード/モックに無いため、付録専用文言では
+ * なく共通の未翻訳表示機構を検証する。
  */
 test.describe("PW-17 設定", () => {
   test("8カテゴリ・翻訳トグル永続化・アクセント/書体切替・BYOK", async ({ page }) => {
@@ -74,8 +77,27 @@ test.describe("PW-17 設定", () => {
     await page.request.delete("/api/settings/api-keys/openai", { headers: { Origin: ORIGIN } });
   });
 
-  test.fixme(
-    "付録トグル→目次表示変化(§14 シードに付録セクションが無く、TOC 側も付録専用表示が未実装)",
-    async () => {},
-  );
+  test("未翻訳(オンデマンド)セクションが目次に「— 未翻訳」+一括翻訳導線で表示される", async ({
+    page,
+  }) => {
+    // §14 シードの RF アイテムを訳文モードで開く(既定で sec-2 以降が未翻訳=オンデマンド)。
+    const itemId = await resolveRfItemId(page);
+    await page.goto(`/papers/${itemId}?mode=translation`);
+    await expect(page.getByRole("radiogroup", { name: "表示モード" })).toBeVisible();
+
+    // 目次を開く(折りたたみレール → パネル)。
+    const openToc = page.getByRole("button", { name: "目次を開く" });
+    if (await openToc.isVisible().catch(() => false)) {
+      await openToc.click();
+    }
+    const toc = page.getByRole("navigation", { name: "目次" });
+    await expect(toc).toBeVisible();
+
+    // 付録の自動翻訳オフ時と同じ機構: 未翻訳セクションは「— 未翻訳」を表示し、
+    // 「未翻訳セクションを一括翻訳」導線が現れる。
+    await expect(toc.getByText("— 未翻訳").first()).toBeVisible();
+    await expect(
+      toc.getByRole("button", { name: "未翻訳セクションを一括翻訳" }),
+    ).toBeVisible();
+  });
 });

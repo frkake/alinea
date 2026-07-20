@@ -48,7 +48,7 @@ exclude = ["alembic/versions/"]
 
 # 型スタブを提供しないサードパーティ(aioboto3/botocore 等)は import 追跡を無視する
 [[tool.mypy.overrides]]
-module = ["aioboto3.*", "botocore.*", "selectolax.*", "xxhash.*", "fitz.*", "pdfplumber.*"]
+module = ["aioboto3.*", "botocore.*", "selectolax.*", "xxhash.*", "fitz.*", "pdfplumber.*", "asyncpg.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

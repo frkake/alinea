@@ -1,6 +1,6 @@
 /* eslint-disable no-restricted-imports -- E2E 補助モジュールは親ディレクトリから import する(src の @/ エイリアス規約は外) */
 import { expect, test } from "@playwright/test";
-import { ORIGIN, resolveRfItemId } from "../fixtures/api";
+import { ORIGIN, resolveRfItemId, waitForJob } from "../fixtures/api";
 
 /**
  * PW-14(plans/12 §4.3・§11): 横断検索。
@@ -10,8 +10,9 @@ import { ORIGIN, resolveRfItemId } from "../fixtures/api";
  * seed.py から読み込まれていない(未接続の pre-wire フィクスチャ)ため、本 spec が
  * API 経由で作成して用意する。
  *
- * 記事(article)ソースは M2 スコープ(記事生成バックエンドは M2-03)のため、4e の
- * 「記事」バッジ・遷移は test.fixme とする。
+ * 記事(article)ソースは Task 32 で実操作化する: 記事生成バックエンド(M2-03)は
+ * 実装済みのため、本 spec が RF アイテムの記事を生成し、記事本文の決定的トークンで
+ * 「記事」バッジと「記事モードで開く →」遷移を検証する(article_v1 fake fixture 由来)。
  */
 test.describe("PW-14 横断検索", () => {
   test("ドロップダウン→全結果→源バッジ・源別遷移(本文/メモ/チャット)", async ({ page }) => {
@@ -73,8 +74,40 @@ test.describe("PW-14 横断検索", () => {
     await page.request.delete(`/api/notes/${noteId}`, { headers: { Origin: ORIGIN } });
   });
 
-  test.fixme(
-    "記事ソースのバッジ・遷移(記事生成バックエンドは M2-03。plans/13)",
-    async () => {},
-  );
+  test("記事ソースのバッジ「記事」・「記事モードで開く →」遷移", async ({ page }) => {
+    test.setTimeout(120_000);
+    const itemId = await resolveRfItemId(page);
+
+    // 記事を生成(初学者向け)。--reset により実行時点では記事は未生成。
+    const genRes = await page.request.post(`/api/library-items/${itemId}/article`, {
+      headers: { "Content-Type": "application/json", Origin: ORIGIN },
+      data: { preset: "beginner" },
+    });
+    // 既に存在(409)なら生成は不要。それ以外は 202 でジョブ完了を待つ。
+    if (genRes.status() === 202) {
+      const { job_id } = (await genRes.json()) as { job_id: string };
+      expect((await waitForJob(page, job_id, 90_000)).status).toBe("succeeded");
+    } else {
+      expect(genRes.status(), await genRes.text()).toBe(409);
+    }
+
+    // 記事本文の決定的トークン(article_v1 fake fixture の「手法」章段落)。
+    const q = "確率フローを直線化する";
+    await page.goto(`/search?q=${encodeURIComponent(q)}`);
+    await expect(page.getByText(new RegExp(`「${q}」の結果`))).toBeVisible();
+
+    // 「記事」ソースへ絞り込む(facet rail)。
+    await page.getByRole("button", { name: "記事", exact: true }).click();
+
+    // 記事ヒット行: 「記事」バッジ + 「記事モードで開く →」ジャンプ。
+    await expect(page.getByText("記事", { exact: true }).first()).toBeVisible();
+    const articleResult = page.getByRole("link", { name: /記事モードで開く →/ }).first();
+    await expect(articleResult).toBeVisible();
+    await articleResult.click();
+
+    // 記事ヒットは view=article + article_block を伴って論文を開く(searchNav.hrefForSearchTarget)。
+    await expect(page).toHaveURL(/\/papers\/.+\?/);
+    await expect(page).toHaveURL(/(view=article|mode=article)/);
+    await expect(page).toHaveURL(/article_block=/);
+  });
 });

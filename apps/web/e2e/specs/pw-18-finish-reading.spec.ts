@@ -9,8 +9,9 @@ import { openViewer } from "../fixtures/viewer";
  * すでに status=reading のため、都度取り込んだ新規アイテムで検証する)→モーダル(読了日・
  * 累計時間の自動記録表示・理解度・重要度・ひとことメモ・「すべてスキップ」経路)を検証する。
  *
- * 「記事モードで読み返す→」カードは M1-06 の docstring 通り M2-07 まで非表示(docs/10 §3 の
- * 決定)のため test.fixme とする。
+ * 「記事モードで読み返す →」カードは M2-07 で表示化済み(FinishReadingDialog の docstring)。
+ * Task 32 で実操作化する: モーダル内のカードをクリックすると記事モード(?mode=article)へ
+ * 遷移することを検証する。カードは常時表示(要約有無に依らない)。
  */
 test.describe("PW-18 読了フロー", () => {
   test("ステータス→「読んだ」でモーダル起動→理解度/重要度/メモ→保存", async ({ page }) => {
@@ -58,8 +59,25 @@ test.describe("PW-18 読了フロー", () => {
     await expect(page.getByRole("button", { name: /読んだ\s*▾/ })).toBeVisible();
   });
 
-  test.fixme(
-    "「記事モードで読み返す →」カード(M2-07 まで非表示。M1-06 docstring / docs/10 §3)",
-    async () => {},
-  );
+  test("「記事モードで読み返す →」カードで記事モードへ遷移する", async ({ page }) => {
+    const url = freshArxivUrl();
+    const { job_id, library_item_id } = await ingestArxiv(page, url);
+    const final = await waitForJob(page, job_id);
+    expect(final.status).toBe("succeeded");
+
+    await openViewer(page, library_item_id, "translation");
+    await page.getByRole("button", { name: /読む予定|すぐ読む|読んでいる/ }).click();
+    await page.getByRole("menuitemradio", { name: "読んだ" }).click();
+
+    const dialog = page.getByRole("dialog", { name: "「読んだ」にしました" });
+    await expect(dialog).toBeVisible();
+
+    // 記事モードで読み返すカード(常時表示)。クリックで ?mode=article へ push 遷移する。
+    const rereadCard = dialog.getByRole("button", { name: /記事モードで読み返す/ });
+    await expect(rereadCard).toBeVisible();
+    await rereadCard.click();
+
+    await expect(dialog).toBeHidden();
+    await expect(page).toHaveURL(new RegExp(`/papers/${library_item_id}\\?mode=article`));
+  });
 });

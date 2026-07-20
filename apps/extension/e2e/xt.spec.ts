@@ -25,6 +25,13 @@ declare const chrome: {
     getBadgeText(details: Record<string, never>): Promise<string>;
     getBadgeBackgroundColor(details: Record<string, never>): Promise<number[]>;
   };
+  permissions: { request(p: { origins: string[] }): Promise<boolean> };
+  scripting: {
+    registerContentScripts(
+      s: Array<{ id: string; matches: string[]; js: string[]; runAt?: string }>,
+    ): Promise<void>;
+    unregisterContentScripts(f?: { ids: string[] }): Promise<void>;
+  };
 };
 
 const SEED_ARXIV = "https://arxiv.org/abs/2209.03003"; // シード済み(状態3 用)
@@ -275,10 +282,66 @@ test.describe.serial("拡張 E2E", () => {
     await settingsPage.close();
   });
 
+  // XT-08(設定オン): arXiv abs のみ注入・非 arXiv 非注入。ピル注入の登録経路(SW の
+  // scripting.registerContentScripts)を直接叩いて検証する。popup の「設定オン」トグルが
+  // 呼ぶ browser.permissions.request(optional host)は実ユーザージェスチャーを要し
+  // Playwright では付与できない(XT-08 の docstring 参照)。そのため本テストは
+  // release-env(host 権限を事前付与できる環境)専用として test.fixme で登録し、
+  // 実操作+assertion を完成形で残す(権限付与手段が整えば .fixme を外すだけで通る)。
   test.fixme(
-    "XT-08 設定オンで arXiv abs のみ注入・保存後「✓保存済み」・非arXivページに非注入" +
-      "(chrome.permissions.request の実ユーザージェスチャー要求により Playwright 自動化不可。followups 参照)",
-    async () => {},
+    "XT-08 設定オンで arXiv abs のみ注入・保存後「保存済み」・非arXivページに非注入",
+    async ({ extContext, extensionId }) => {
+      await ensureLoggedIn(extContext);
+
+      // SW で optional host を付与し、abs 限定 matches で content script を登録する
+      // (popup の setPillEnabled と同じ登録。permissions.request のみジェスチャー依存)。
+      let [sw] = extContext.serviceWorkers();
+      if (!sw) sw = await extContext.waitForEvent("serviceworker");
+      await sw.evaluate(async () => {
+        await chrome.permissions.request({ origins: ["https://arxiv.org/*"] });
+        await chrome.scripting.registerContentScripts([
+          {
+            id: "arxiv-pill",
+            matches: ["https://arxiv.org/abs/*"],
+            js: ["content-scripts/arxiv-pill.js"],
+            runAt: "document_idle",
+          },
+        ]);
+        await chrome.storage.local.set({ "settings:arxivPillEnabled": true });
+      });
+
+      // arXiv abs ページ(ローカル fixture を配信)にピルが注入される。
+      const absHtml = readFileSync(join(__dirname, "fixtures", "arxiv-abs-2209.03003.html"), "utf-8");
+      await extContext.route("https://arxiv.org/abs/2209.03003", async (route) => {
+        await route.fulfill({ status: 200, contentType: "text/html", body: absHtml });
+      });
+      const abs = await extContext.newPage();
+      await abs.goto("https://arxiv.org/abs/2209.03003");
+      const pill = abs.locator(".alinea-pill");
+      await expect(pill).toBeVisible();
+      await expect(pill.locator(".alinea-pill-label")).toHaveText("保存");
+
+      // クリック保存 → 「保存済み」へ遷移する。
+      await pill.click();
+      await expect(pill.locator(".alinea-pill-label")).toHaveText("保存済み");
+      await abs.close();
+
+      // 非 arXiv ページには注入されない(matches が abs 限定)。
+      const other = await extContext.newPage();
+      await other.route("https://example.org/paper", async (route) => {
+        await route.fulfill({ status: 200, contentType: "text/html", body: "<h1 class='title'>x</h1>" });
+      });
+      await other.goto("https://example.org/paper");
+      await other.waitForTimeout(500);
+      expect(await other.locator(".alinea-pill").count()).toBe(0);
+      await other.close();
+
+      // 後始末。
+      await sw.evaluate(async () => {
+        await chrome.scripting.unregisterContentScripts({ ids: ["arxiv-pill"] });
+        await chrome.storage.local.set({ "settings:arxivPillEnabled": false });
+      });
+    },
   );
 
   test("XT-10 送信キュー永続: API停止中の保存が失敗キューに残り、コンテキスト再起動後も残り、復旧後に再試行で送信される", async () => {
