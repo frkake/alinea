@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import type { ApiKeyItem, MeResponse, QuotaResponse } from "@alinea/api-client";
+import { purgeUserAndWait } from "@/lib/offline-viewer";
 import { Card } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
 import { SettingsSection } from "@/components/settings/SettingsSection";
@@ -84,6 +85,17 @@ export function AccountSettings({
 }: AccountSettingsProps) {
   const byProvider = new Map(apiKeys.map((k) => [k.provider, k]));
 
+  // Task 23(オフライン閲覧の per-user 分離): 明示ログアウト / アカウント削除では、
+  // この端末に残る当該ユーザーのオフラインキャッシュ(直近論文の本文・訳文・図)を
+  // Service Worker から完全に削除し、その「完了を待ってから」実際のログアウト/削除
+  // (=ログイン画面への遷移を伴う親コールバック)を実行する。SW 非対応・controller 不在時は
+  // purgeUserAndWait が即解決するため遷移を妨げない。
+  const purgeThen = async (next: () => void) => {
+    const userId = me?.user.id;
+    if (userId) await purgeUserAndWait(userId);
+    next();
+  };
+
   return (
     <>
       <SettingsSection title="アカウント">
@@ -101,7 +113,11 @@ export function AccountSettings({
           </SettingsControlRow>
           {!readOnly ? (
             <SettingsControlRow title="ログアウト" description="このデバイスのセッションを終了します">
-              <button type="button" onClick={onLogout} style={secondaryButtonStyle}>
+              <button
+                type="button"
+                onClick={() => void purgeThen(onLogout)}
+                style={secondaryButtonStyle}
+              >
                 ログアウト
               </button>
             </SettingsControlRow>
@@ -200,7 +216,7 @@ export function AccountSettings({
               title="アカウントを完全に削除"
               description="ライブラリ・注釈・メモ・チャットを含む全データを削除します。取り消せません"
             >
-              <DeleteAccountButton onConfirm={onDeleteAccount} />
+              <DeleteAccountButton onConfirm={() => void purgeThen(onDeleteAccount)} />
             </SettingsControlRow>
           </Card>
         </SettingsSection>

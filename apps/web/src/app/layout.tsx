@@ -74,8 +74,10 @@ export default async function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
       <body>
-        <ServiceWorkerRegistration />
         <Providers theme={theme} accent={accent} bodyFont={bodyFont}>
+          {/* SW 登録は Providers 内(QueryClient 配下)で行う。Task 23 の per-user 分離で
+              authMe を useQuery するため、QueryClientProvider のスコープが必要。 */}
+          <ServiceWorkerRegistration />
           {children}
         </Providers>
       </body>
