@@ -18,6 +18,7 @@ from alinea_core.adapters.fetch import (
     SiteFetchError,
     adapter_allowed_hosts,
     fetch_html,
+    fetch_note,
     fetch_pdf,
     make_site_client,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "citation_date_to_iso",
     "extract_citation_meta",
     "fetch_html",
+    "fetch_note",
     "fetch_pdf",
     "make_site_client",
     "normalize_scholar_author",

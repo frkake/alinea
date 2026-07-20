@@ -158,6 +158,14 @@ class OpenReviewAdapter:
     def pdf_url(self, ref: SiteRef) -> str | None:
         return f"{_BASE}/pdf?id={quote(ref.external_id, safe='')}"
 
+    def api2_note_url(self, ref: SiteRef) -> str:
+        """OpenReview API2 の note エンドポイント URL。
+
+        ``GET https://openreview.net/api2/notes?id={external_id}`` は openreview.net ホスト
+        上にあり、adapter_allowed_hosts が宣言する allow-list 内に入る。
+        """
+        return f"{_BASE}/api2/notes?id={quote(ref.external_id, safe='')}"
+
     def parse_metadata(self, html: str, ref: SiteRef) -> SiteMeta:
         """landing HTML → ``citation_*`` フォールバック経路(API2 が使えない場合)。"""
         return self.parse_metadata_from_note_and_citation(
@@ -223,6 +231,8 @@ class OpenReviewAdapter:
                 return note_meta
 
         # citation_* フォールバック。
+        # SSRF 制約: pdf_url は「アダプタが宣言した URL」のみ。HTML の citation_pdf_url は
+        # 攻撃者が操作し得るため絶対に採用しない(Task 15 / Task 16 SSRF レビューと同方針)。
         cite = extract_citation_meta(citation_html)
         return SiteMeta(
             site=_SITE,
@@ -235,7 +245,7 @@ class OpenReviewAdapter:
             published_on=citation_date_to_iso(cite.publication_date),
             venue=cite.conference_title or cite.journal_title,
             doi=cite.doi,
-            pdf_url=cite.pdf_url or self.pdf_url(ref),
+            pdf_url=self.pdf_url(ref),  # アダプタ宣言 URL のみ(HTML 由来値は無視)
             license="unknown",
             categories=[],
         )

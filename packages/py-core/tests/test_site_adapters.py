@@ -405,3 +405,90 @@ def test_openreview_resolve_adapter_pdf_url() -> None:
     adapter, ref = resolved
     assert adapter.site == "openreview"
     assert ref.external_id == "abc123XYZ"
+
+
+def test_openreview_citation_fallback_ignores_html_pdf_url() -> None:
+    """citation_html に citation_pdf_url があっても adapter URL を使う(SSRF 対策)。"""
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    citation_html = (
+        "<html><head>"
+        '<meta name="citation_title" content="Attack Paper">'
+        '<meta name="citation_author" content="Hacker, Evil">'
+        # 悪意のある citation_pdf_url (SSRF 試行)。
+        '<meta name="citation_pdf_url" content="https://169.254.169.254/latest/meta-data/">'
+        "</head></html>"
+    )
+    meta = adapter.parse_metadata_from_note_and_citation(
+        note=None, citation_html=citation_html, ref=ref
+    )
+    # HTML 由来の悪性 URL ではなくアダプタ宣言 URL が使われていること。
+    assert meta.pdf_url == "https://openreview.net/pdf?id=abc123XYZ"
+
+
+async def test_fetch_note_returns_note_on_success() -> None:
+    """fetch_note は API2 notes[0] を返す(MockTransport)。"""
+    from alinea_core.adapters.fetch import fetch_note
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    note_payload = _json.loads(_OR_FIXTURE.read_text())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "api2/notes" in request.url.path
+        return httpx.Response(
+            200,
+            json=note_payload,
+            headers={"content-type": "application/json"},
+        )
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        note = await fetch_note(adapter, ref, client=client)
+    finally:
+        await client.aclose()
+
+    assert note is not None
+    assert note["id"] == "abc123XYZ"
+    content = note["content"]
+    assert isinstance(content, dict)
+    assert content["title"]["value"] == "Attention Is All You Need (Mock)"
+
+
+async def test_fetch_note_returns_none_on_403() -> None:
+    """403 は note 不在として None を返す(in-tab PDF fallback シグナル)。"""
+    from alinea_core.adapters.fetch import fetch_note
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, text="Forbidden")
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        note = await fetch_note(adapter, ref, client=client)
+    finally:
+        await client.aclose()
+    assert note is None
+
+
+async def test_fetch_note_returns_none_on_empty_notes() -> None:
+    """notes=[] は note 不在として None を返す。"""
+    from alinea_core.adapters.fetch import fetch_note
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"notes": [], "count": 0})
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        note = await fetch_note(adapter, ref, client=client)
+    finally:
+        await client.aclose()
+    assert note is None
