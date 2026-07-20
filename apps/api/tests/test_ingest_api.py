@@ -18,7 +18,7 @@ import random
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path as _Path
-from typing import Any
+from typing import Any, cast
 
 import httpx as _httpx
 import pytest
@@ -40,6 +40,7 @@ from alinea_api.services.session_service import create_session
 from alinea_api.services.user_service import upsert_user_by_email
 from alinea_api.settings import get_api_settings
 from alinea_core.arxiv.fetch import FetchError
+from alinea_core.licenses import LicenseId
 from alinea_core.arxiv.ids import ArxivId
 from alinea_core.arxiv.metadata import ArxivMeta
 from alinea_core.db.models import (
@@ -148,7 +149,7 @@ class _FakeSiteGateway(SiteGateway):
             venue="ACL 2023",
             doi=self.doi,
             pdf_url=f"https://aclanthology.org/{ref.external_id}.pdf",
-            license=self.license_id,
+            license=cast(LicenseId, self.license_id),
             categories=[],
         )
 
@@ -1109,7 +1110,7 @@ async def test_site_gateway_pdf_rejects_offhost_citation_pdf_url() -> None:
     transport = httpx.MockTransport(handler)
 
     class _InjectedGateway(SiteGateway):
-        async def fetch_metadata(self, adapter: Any, ref: Any) -> Any:  # type: ignore[override]
+        async def fetch_metadata(self, adapter: Any, ref: Any) -> Any:
             from alinea_core.adapters import adapter_allowed_hosts, fetch_html
 
             client = httpx.AsyncClient(transport=transport)
@@ -1123,7 +1124,7 @@ async def test_site_gateway_pdf_rejects_offhost_citation_pdf_url() -> None:
                 await client.aclose()
             return adapter.parse_metadata(html, ref)
 
-        async def fetch_pdf(self, adapter: Any, ref: Any, meta: Any, settings: Any) -> bytes:  # type: ignore[override]
+        async def fetch_pdf(self, adapter: Any, ref: Any, meta: Any, settings: Any) -> bytes:
             # 本物のホスト検証を通す(off-host は fetch 前に弾かれるはず)。
             from urllib.parse import urlsplit
 
@@ -2076,7 +2077,7 @@ async def test_site_gateway_openreview_uses_api2_note_when_present() -> None:
     transport = _httpx.MockTransport(handler)
 
     class _InjectedGateway(SiteGateway):
-        async def fetch_metadata(self, adapter: Any, ref: Any) -> Any:  # type: ignore[override]
+        async def fetch_metadata(self, adapter: Any, ref: Any) -> Any:
             from alinea_core.adapters import SiteRef as _SiteRef
             from alinea_core.adapters import adapter_allowed_hosts, fetch_html
             from alinea_core.adapters.fetch import fetch_note
@@ -2132,7 +2133,7 @@ async def test_site_gateway_openreview_falls_back_to_citation_on_absent_note() -
     transport = _httpx.MockTransport(handler)
 
     class _InjectedGateway(SiteGateway):
-        async def fetch_metadata(self, adapter: Any, ref: Any) -> Any:  # type: ignore[override]
+        async def fetch_metadata(self, adapter: Any, ref: Any) -> Any:
             from alinea_core.adapters import SiteRef as _SiteRef
             from alinea_core.adapters import adapter_allowed_hosts, fetch_html
             from alinea_core.adapters.fetch import fetch_note

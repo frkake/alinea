@@ -15,7 +15,7 @@ import json
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from alinea_core.db.models import (
@@ -444,7 +444,7 @@ async def test_plan_slides_repairs_once_then_succeeds() -> None:
     router = _router_for(provider)
     from types import SimpleNamespace
 
-    job = SimpleNamespace(id=_uid(), user_id=_uid(), library_item_id=_uid())
+    job = cast(Job, SimpleNamespace(id=_uid(), user_id=_uid(), library_item_id=_uid()))
     plan, resp = await plan_slides(
         router, packet=packet, preset="research_talk", audience="researcher",
         instruction=None, job=job,
@@ -466,7 +466,7 @@ async def test_plan_slides_fails_at_planning_after_repair() -> None:
     router = _router_for(provider)
     from types import SimpleNamespace
 
-    job = SimpleNamespace(id=_uid(), user_id=_uid(), library_item_id=_uid())
+    job = cast(Job, SimpleNamespace(id=_uid(), user_id=_uid(), library_item_id=_uid()))
     with pytest.raises(SlidePlanValidationError) as caught:
         await plan_slides(
             router, packet=packet, preset="research_talk", audience="researcher",
@@ -987,7 +987,7 @@ async def test_off_schema_injection_response_is_rejected_by_structured_output() 
     router = _router_for(provider)  # type: ignore[arg-type]
     from types import SimpleNamespace
 
-    job = SimpleNamespace(id=_uid(), user_id=_uid(), library_item_id=_uid())
+    job = cast(Job, SimpleNamespace(id=_uid(), user_id=_uid(), library_item_id=_uid()))
     with pytest.raises((ProviderChainExhausted, SlidePlanValidationError)):
         await plan_slides(
             router,

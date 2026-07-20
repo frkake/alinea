@@ -26,6 +26,7 @@ from alinea_worker.presentation.source_packet import (
     MAX_BLOCK_CHARS,
     MAX_FIGURES,
     MAX_PACKET_CHARS,
+    RevisionLike,
     SourcePacket,
     build_source_packet,
 )
@@ -54,12 +55,13 @@ def _fixture_content() -> DocumentContent:
     return DocumentContent.model_validate(json.loads(FIXTURE.read_text(encoding="utf-8")))
 
 
-def _revision(content: DocumentContent) -> object:
+def _revision(content: DocumentContent) -> RevisionLike:
     # Lightweight stand-in for DocumentRevision (build_source_packet only reads
     # ``id`` and ``content``); avoids a DB round-trip for the pure packet tests.
+    from typing import cast
     from types import SimpleNamespace
 
-    return SimpleNamespace(id=_uid(), content=content.model_dump())
+    return cast(RevisionLike, SimpleNamespace(id=_uid(), content=content.model_dump()))
 
 
 # --------------------------------------------------------------------------- #

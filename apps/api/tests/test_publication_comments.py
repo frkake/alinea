@@ -121,7 +121,7 @@ async def _publish(auth: SimpleNamespace, article_id: str) -> str:
         f"/api/articles/{article_id}/publication", json={"visibility": "public"}
     )
     assert resp.status_code == 201, resp.text
-    return resp.json()["slug"]
+    return str(resp.json()["slug"])
 
 
 async def _snapshot_block_id(auth: SimpleNamespace, slug: str) -> str:
@@ -131,7 +131,7 @@ async def _snapshot_block_id(auth: SimpleNamespace, slug: str) -> str:
     assert pub.status_code == 200, pub.text
     blocks = pub.json()["blocks"]
     assert blocks, "publication should have at least one block"
-    return blocks[0]["block_id"]
+    return str(blocks[0]["block_id"])
 
 
 async def _seed_and_publish(auth: SimpleNamespace, db: AsyncSession) -> tuple[str, str]:

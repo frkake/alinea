@@ -14,6 +14,7 @@ import hashlib
 import json
 import pathlib
 import re
+from typing import Any, cast
 
 from alinea_api.schemas.latex_display import clean_latex_display_text
 from alinea_api.schemas.standalone_html import (
@@ -448,8 +449,8 @@ def test_document_with_katex_runtime_renders_math_markup() -> None:
 # Task 10: LaTeX 表示クリーニング golden テスト (shared JSON fixtures)
 # ---------------------------------------------------------------------------
 
-def _load_latex_cases() -> list[dict]:
-    return json.loads(_SHARED_FIXTURE.read_text())
+def _load_latex_cases() -> list[dict[str, Any]]:
+    return cast(list[dict[str, Any]], json.loads(_SHARED_FIXTURE.read_text()))
 
 
 def test_latex_clean_parity_with_shared_fixtures() -> None:

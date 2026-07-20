@@ -21,7 +21,8 @@ import uuid
 from typing import Any
 
 from alinea_core.db.models import DocumentRevision, LibraryItem, Paper, User
-from alinea_core.document.blocks import Block, DocumentContent, Inline, Section, SectionHeading
+from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
+from alinea_core.document.inlines import Inline
 from alinea_core.jobs.store import JobStore
 from alinea_core.search.rebuild import rebuild_block_search_index
 from alinea_llm.errors import ErrorKind, ProviderError
@@ -177,6 +178,7 @@ def test_paper_embedding_text_combines_title_and_abstract() -> None:
 async def test_index_paper_embeds_title_and_abstract(db_session: AsyncSession) -> None:
     ids = await _seed_paper_revision(db_session)
     paper = await db_session.get(Paper, ids["paper_id"])
+    assert paper is not None
     provider = FakeEmbeddingProvider(dim=_DIM)
     store = InMemoryEmbeddingStore()
 
@@ -194,6 +196,7 @@ async def test_index_paper_embeds_title_and_abstract(db_session: AsyncSession) -
 async def test_index_paper_skips_when_model_and_hash_unchanged(db_session: AsyncSession) -> None:
     ids = await _seed_paper_revision(db_session)
     paper = await db_session.get(Paper, ids["paper_id"])
+    assert paper is not None
     provider = FakeEmbeddingProvider(dim=_DIM)
     store = InMemoryEmbeddingStore()
 
@@ -208,6 +211,7 @@ async def test_index_paper_skips_when_model_and_hash_unchanged(db_session: Async
 async def test_index_paper_recomputes_on_model_change(db_session: AsyncSession) -> None:
     ids = await _seed_paper_revision(db_session)
     paper = await db_session.get(Paper, ids["paper_id"])
+    assert paper is not None
     provider = FakeEmbeddingProvider(dim=_DIM)
     store = InMemoryEmbeddingStore()
 
@@ -344,6 +348,7 @@ async def test_job_indexes_paper_and_blocks_when_flag_on(db_session: AsyncSessio
     assert ids["paper_id"] in store_backend.papers
     assert (ids["revision_id"], "blk-a") in store_backend.blocks
     done = await job_store.get(job_id)
+    assert done is not None
     assert done.status == "succeeded"
 
 
@@ -420,6 +425,7 @@ async def test_job_records_partial_failure_and_still_succeeds(db_session: AsyncS
     assert store_backend.papers == {}
     assert store_backend.blocks == {}
     done = await job_store.get(job_id)
+    assert done is not None
     assert done.status == "succeeded"
     # 部分失敗が可視化されている。
     assert done.log and any(e.get("level") == "partial_failure" for e in done.log)
@@ -457,5 +463,6 @@ async def test_job_succeeds_even_if_record_partial_failure_raises(
     await run_index_embeddings_job(ctx, job_store, job)
 
     done = await job_store.get(job_id)
+    assert done is not None
     assert done.status == "succeeded"
     assert done.result["summary"]["partial_failure_log"] == "record_failed"

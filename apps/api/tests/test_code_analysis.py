@@ -31,7 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-def _build_app(repo_meta: RepoMetadata | Exception | None = None) -> tuple[FastAPI, dict]:
+def _build_app(repo_meta: RepoMetadata | Exception | None = None) -> tuple[FastAPI, dict[str, Any]]:
     from alinea_api.errors import register_exception_handlers
     from alinea_api.middleware import OriginCsrfMiddleware, RequestIdMiddleware
     from alinea_api.ratelimit import RateLimitMiddleware
