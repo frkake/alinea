@@ -4734,7 +4734,27 @@ class IngestRun:
                     publish=self.deps.publish,
                 )
         await self.store.checkpoint(self.job_id, "readable", {"section_id": first}, progress=55)
+        await self._mark_code_analysis_stale_on_new_revision()
         await self._maybe_enqueue_automatic_code_analysis()
+
+    async def _mark_code_analysis_stale_on_new_revision(self) -> None:
+        """新 revision が readable になったら、当該 item の旧 revision の成功コード解析結果を
+        stale にする(削除しない。設計 §7)。設定モードに関係なく実行する。"""
+        if self.user_id is None or self.library_item_id is None or self.revision_id is None:
+            return
+        from alinea_core.code_analysis import mark_runs_stale_for_new_revision
+
+        try:
+            await mark_runs_stale_for_new_revision(
+                self.session,
+                user_id=self.user_id,
+                library_item_id=self.library_item_id,
+                current_revision_id=self.revision_id,
+            )
+            await self.session.commit()
+        except Exception:
+            # stale マーキングの失敗で取り込み本体を止めない(ベストエフォート)。
+            await self.session.rollback()
 
     async def _maybe_enqueue_automatic_code_analysis(self) -> None:
         """readable 到達時、automatic かつ active GitHub Resource があればコード解析を起動する。

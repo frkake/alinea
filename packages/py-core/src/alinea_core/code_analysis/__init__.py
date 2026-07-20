@@ -46,6 +46,10 @@ from alinea_core.code_analysis.retrieval import (
     lexical_candidates,
     rerank_with_embeddings,
 )
+from alinea_core.code_analysis.stale import (
+    mark_runs_stale_for_new_commit,
+    mark_runs_stale_for_new_revision,
+)
 
 __all__ = [
     "ANALYSIS_VERSION",
@@ -76,6 +80,8 @@ __all__ = [
     "is_secret_file",
     "is_target_code_file",
     "lexical_candidates",
+    "mark_runs_stale_for_new_commit",
+    "mark_runs_stale_for_new_revision",
     "rerank_with_embeddings",
     "tree_sitter_available",
     "verify_correspondences",

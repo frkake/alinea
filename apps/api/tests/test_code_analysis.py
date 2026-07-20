@@ -517,3 +517,73 @@ async def test_get_runs_returns_current_and_correspondences(env: dict[str, Any])
     assert body["current_result"]["run_id"] == str(run.id)
     assert len(body["correspondences"]) == 1
     assert body["correspondences"][0]["path"] == "src/mod0.py"
+
+
+# --------------------------------------------------------------------------- #
+# stale: repo が新 commit になったら旧 commit の成功結果を stale にする(削除しない)
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_estimate_marks_prior_run_stale_on_new_commit(
+    db_session: AsyncSession, redis_client: Any, factories: Any
+) -> None:
+    from alinea_core.code_analysis.contracts import ANALYSIS_VERSION
+
+    user = await factories.make_user(db_session)
+    paper = await factories.make_paper(db_session, owner=user, visibility="private")
+    revision = await factories.make_revision(db_session, paper=paper)
+    item = await factories.make_library_item(db_session, user=user, paper=paper)
+    gh = await factories.make_resource_link(
+        db_session, library_item=item, kind="github", status="active"
+    )
+    # 旧 commit の成功 run を作る。
+    old_run = CodeAnalysisRun(
+        id=str(uuid.uuid4()),
+        user_id=str(user.id),
+        library_item_id=str(item.id),
+        resource_id=str(gh.id),
+        revision_id=str(revision.id),
+        commit_sha="0" * 40,  # 旧 commit
+        analysis_version=ANALYSIS_VERSION,
+        status="succeeded",
+        stale=False,
+    )
+    db_session.add(old_run)
+    uid = str(user.id)
+    await db_session.commit()
+
+    # resolver は新しい default branch commit を返す。
+    app, _state = _build_app(
+        RepoMetadata(
+            owner="gnobitab", repo="RectifiedFlow", default_branch="main",
+            commit_sha="f" * 40, tree_files=["a.py", "b.py"], total_code_bytes=1000,
+        )
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://testserver",
+        headers={"Origin": "http://localhost:3000"}, trust_env=False,
+    ) as ac:
+        token = await create_session(redis_client, uid)
+        ac.cookies.set("yk_session", token)
+        try:
+            resp = await ac.post(
+                f"/api/library-items/{item.id}/code-analysis/estimate",
+                json={"resource_id": str(gh.id)},
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["commit_sha"] == "f" * 40
+
+            # 旧 commit の run が stale=true になっている(削除されていない)。
+            await db_session.refresh(old_run)
+            assert old_run.stale is True
+            assert await db_session.get(CodeAnalysisRun, str(old_run.id)) is not None
+
+            # GET が stale を反映する(current_result は stale な旧 run のみなので stale=true)。
+            got = await ac.get(f"/api/library-items/{item.id}/code-analysis")
+            body = got.json()
+            assert body["current_result"]["run_id"] == str(old_run.id)
+            assert body["current_result"]["stale"] is True
+            assert body["stale"] is True
+        finally:
+            await db_session.rollback()
+            await purge_user(db_session, uid)

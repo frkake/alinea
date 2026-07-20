@@ -146,6 +146,16 @@ async def _bootstrap_automatic_run(
     except GitHubError:
         return None
 
+    # repo が更新され新 commit になったら、旧 commit の成功結果を stale にする(削除しない)。
+    from alinea_core.code_analysis import mark_runs_stale_for_new_commit
+
+    await mark_runs_stale_for_new_commit(
+        session,
+        user_id=str(item.user_id),
+        resource_id=str(link.id),
+        current_commit_sha=meta.commit_sha,
+    )
+
     # 冪等: 同一対象の既存 run があれば再利用。
     from sqlalchemy import select as _select
 
@@ -454,7 +464,10 @@ async def run_analyze_code_job(ctx: dict[str, Any], store: JobStore, job: Job) -
         llm_input_tokens += resp.usage.input_tokens + resp.usage.cached_input_tokens
         llm_output_tokens += resp.usage.output_tokens
 
-        raw = (resp.parsed or {}).get("correspondences") or []
+        parsed = resp.parsed if isinstance(resp.parsed, dict) else {}
+        raw = parsed.get("correspondences") or []
+        if not isinstance(raw, list):
+            raw = []
         # 7. サーバー検証(実バイト照合)。prompt injection は規則を変えない。
         verified = verify_correspondences(
             raw,

@@ -31,6 +31,7 @@ from alinea_core.code_analysis import (
 )
 from alinea_core.code_analysis.budget import budget_remaining_usd
 from alinea_core.code_analysis.github import GitHubError, RepoMetadata, resolve_repo_metadata
+from alinea_core.code_analysis.stale import mark_runs_stale_for_new_commit
 from alinea_core.db.models import (
     CodeAnalysisEstimate,
     CodeAnalysisRun,
@@ -45,6 +46,7 @@ from alinea_core.document.blocks import DocumentContent
 from alinea_core.jobs.store import JobStore
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from alinea_api.deps import CurrentUser, DbDep, SettingsDep
@@ -208,6 +210,46 @@ def _iso(value: dt.datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
+async def _add_run_or_reuse(
+    db: AsyncSession,
+    run: CodeAnalysisRun,
+    *,
+    existing_found: bool,
+    user: Any,
+    est: CodeAnalysisEstimate,
+    link: ResourceLinkModel,
+) -> CodeAnalysisRun:
+    """新規 run を SAVEPOINT で flush し、uq_code_analysis_runs_target 衝突なら既存を返す(minor 1)。
+
+    automatic トリガ(worker bootstrap)と on_demand start が同一対象で競合しても、job を失敗させず
+    既存 run を再利用する。既存が最初から見つかっていれば flush のみ。
+    """
+    if existing_found:
+        await db.flush()
+        return run
+    try:
+        async with db.begin_nested():
+            db.add(run)
+            await db.flush()
+        return run
+    except IntegrityError:
+        # 並行作成された run を読み直して返す。
+        raced = (
+            await db.execute(
+                select(CodeAnalysisRun).where(
+                    CodeAnalysisRun.user_id == str(user.id),
+                    CodeAnalysisRun.revision_id == str(est.revision_id),
+                    CodeAnalysisRun.resource_id == str(link.id),
+                    CodeAnalysisRun.commit_sha == est.commit_sha,
+                    CodeAnalysisRun.analysis_version == est.analysis_version,
+                )
+            )
+        ).scalar_one_or_none()
+        if raced is not None:
+            return raced
+        raise
+
+
 # --------------------------------------------------------------------------- #
 # POST estimate
 # --------------------------------------------------------------------------- #
@@ -252,6 +294,12 @@ async def estimate(
                 "rate_limited", detail="GitHub のレート制限中です"
             ) from exc
         raise ProblemException("provider_error", detail="GitHub の取得に失敗しました") from exc
+
+    # repo が更新され新しい default branch commit になったら、旧 commit の成功結果を stale に
+    # する(削除しない。設計 §7)。同 commit の結果はそのまま。
+    await mark_runs_stale_for_new_commit(
+        db, user_id=str(user.id), resource_id=str(link.id), current_commit_sha=meta.commit_sha
+    )
 
     content = DocumentContent.model_validate(revision.content)
     claim_set = extract_claims(content, str(revision.id), max_claims=MAX_CLAIMS)
@@ -407,9 +455,9 @@ async def start(
 
     if over_budget:
         run.status = "waiting_budget"
-        if existing is None:
-            db.add(run)
-        await db.flush()
+        run = await _add_run_or_reuse(
+            db, run, existing_found=existing is not None, user=user, est=est, link=link
+        )
         # 通知を作る(外部 API は呼ばない。設計 §7)。
         db.add(
             Notification(
@@ -422,9 +470,25 @@ async def start(
         return StartResponse(job_id="", run_id=str(run.id), status="waiting_budget")
 
     run.status = "queued"
-    if existing is None:
-        db.add(run)
-    await db.flush()
+    # automatic bootstrap 等との一意制約衝突を吸収し、既存 run を再利用する(minor 1)。
+    collided_run = await _add_run_or_reuse(
+        db, run, existing_found=existing is not None, user=user, est=est, link=link
+    )
+    if collided_run is not run:
+        # 並行で作られた run があった。既存が既に active/succeeded ならそれを返す。
+        run = collided_run
+        if run.status in ("succeeded",) and not run.stale:
+            return StartResponse(
+                job_id=str(run.job_id or ""), run_id=str(run.id), status="succeeded"
+            )
+        if run.status in ("queued", "running", "waiting_budget"):
+            return StartResponse(
+                job_id=str(run.job_id or ""), run_id=str(run.id), status=run.status
+            )
+        run.status = "queued"
+        run.stale = False
+        run.error = None
+        await db.flush()
 
     job_id = await store.enqueue_uncommitted(
         kind="code_analysis",
