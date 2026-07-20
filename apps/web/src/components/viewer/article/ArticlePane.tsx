@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { LastPosition } from "@alinea/api-client";
+import type { LastPosition, PublicationOut } from "@alinea/api-client";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useToast } from "@/components/ui/Toast";
 import { SelectionMenu } from "@/components/viewer/SelectionMenu";
@@ -12,6 +12,7 @@ import { articleKeys, fetchArticle, isArticleNotFound } from "@/components/viewe
 import { ArticleGenerateCTA } from "@/components/viewer/article/ArticleGenerateCTA";
 import { ArticleSkeleton } from "@/components/viewer/article/ArticleSkeleton";
 import { ArticleBody } from "@/components/viewer/article/ArticleBody";
+import { PublishArticleModal } from "@/components/publication/PublishArticleModal";
 import type { AnchorRef, Preset } from "@/components/viewer/article/types";
 
 const ARTICLE_TABS: ReadonlyArray<{ value: Preset; label: string }> = [
@@ -46,6 +47,11 @@ export function ArticlePane({ libraryItemId, revisionId, lastPosition }: Article
   const activePreset = useViewerStore((s) => s.activeArticlePreset);
   const setActivePreset = useViewerStore((s) => s.setActiveArticlePreset);
   const [availablePresets, setAvailablePresets] = useState<Preset[]>([]);
+  // 記事公開モーダル(Task 26)。所有者だけが到達する記事モードから開く。API には
+  // article_id 単位の所有者向け GET が無いため、公開状態は publish 成功時に受け取り
+  // セッション内で保持する(初回はボタン文言が「公開」、公開後は「公開設定」)。
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [publication, setPublication] = useState<PublicationOut | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const didInitialScroll = useRef(false);
@@ -190,21 +196,20 @@ export function ArticlePane({ libraryItemId, revisionId, lastPosition }: Article
     >
       <div style={{ width: "100%", minWidth: 0 }}>
         <div
-          role="tablist"
-          aria-label="読者タイプ別の記事"
           style={{
             position: "sticky",
             top: 0,
             zIndex: 4,
             display: "flex",
+            alignItems: "center",
             justifyContent: "center",
-            gap: 4,
             padding: "10px 16px",
             background: "color-mix(in srgb, var(--pr-bg-app) 94%, transparent)",
             borderBottom: "1px solid var(--pr-border-hair)",
             backdropFilter: "blur(8px)",
           }}
         >
+          <div role="tablist" aria-label="読者タイプ別の記事" style={{ display: "flex", gap: 4 }}>
           {ARTICLE_TABS.map((tab) => {
             const selected = tab.value === selectedPreset;
             const generated = availablePresets.includes(tab.value);
@@ -232,6 +237,27 @@ export function ArticlePane({ libraryItemId, revisionId, lastPosition }: Article
               </button>
             );
           })}
+          </div>
+          {article ? (
+            <button
+              type="button"
+              onClick={() => setPublishOpen(true)}
+              style={{
+                marginLeft: "auto",
+                border: "1px solid var(--pr-border-control)",
+                borderRadius: 999,
+                padding: "6px 12px",
+                background: publication ? "var(--pr-a-soft)" : "var(--pr-bg-card)",
+                color: publication ? "var(--pr-a)" : "var(--pr-text-sub)",
+                fontSize: 11.5,
+                fontWeight: 600,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              {publication ? "公開設定" : "公開"}
+            </button>
+          ) : null}
         </div>
         <div
           style={{
@@ -277,6 +303,15 @@ export function ArticlePane({ libraryItemId, revisionId, lastPosition }: Article
             setPanel(true, "chat");
           }}
           onCopy={copySelection}
+        />
+      ) : null}
+      {article ? (
+        <PublishArticleModal
+          open={publishOpen}
+          onClose={() => setPublishOpen(false)}
+          articleId={article.id}
+          current={publication}
+          onChanged={(pub) => setPublication(pub)}
         />
       ) : null}
     </div>
