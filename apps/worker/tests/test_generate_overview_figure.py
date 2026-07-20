@@ -196,6 +196,20 @@ def _router(provider: FigureScriptProvider) -> LLMRouter:
     return LLMRouter([("fake", "claude-opus-4-8", provider)])
 
 
+class _FakeFactory:
+    """テスト用 UserRouterFactory: 全タスク共通で固定 router を返す。"""
+
+    def __init__(self, router: LLMRouter) -> None:
+        self._router = router
+
+    async def for_job(self, *, user_id: str, task: str) -> LLMRouter:
+        return self._router
+
+
+def _factory(provider: FigureScriptProvider) -> _FakeFactory:
+    return _FakeFactory(_router(provider))
+
+
 async def _sources(db: AsyncSession, seed: dict[str, Any]) -> Any:
     return await collect_article_sources(
         db,
@@ -253,8 +267,9 @@ async def test_py_fig_03_initial_v1_then_rewrite_bumps_version(db_session: Async
     job = _job(seed)
 
     v1 = await create_overview_figure_v1(
-        {"router": _router(provider)},
+        {},
         db_session,
+        router=_router(provider),
         article=seed["article"],
         sources=sources,
         user=seed["user"],
@@ -284,7 +299,7 @@ async def test_py_fig_03_initial_v1_then_rewrite_bumps_version(db_session: Async
     )
     rewrite_job = await store.claim(rewrite_job_id)
     assert rewrite_job is not None
-    await run_overview_figure_job({"router": _router(rewrite_provider)}, store, rewrite_job)
+    await run_overview_figure_job({"user_router_factory": _factory(rewrite_provider)}, store, rewrite_job)
 
     refreshed_v1 = await db_session.get(OverviewFigure, v1.id)
     assert refreshed_v1 is not None
@@ -327,8 +342,9 @@ async def test_py_fig_04_raster_mode_off_by_default(db_session: AsyncSession) ->
     job = _job(seed)
 
     row = await create_overview_figure_v1(
-        {"router": _router(provider)},
+        {},
         db_session,
+        router=_router(provider),
         article=seed["article"],
         sources=sources,
         user=seed["user"],
@@ -368,10 +384,10 @@ async def test_py_fig_04_raster_mode_on_generates_image_via_image_router(
     image_provider = FakeImageProvider(name="google")
     router = _router(provider)
     image_router = ImageRouter([("google", "gemini-3.1-flash-image", image_provider)])
-    ctx = {"router": router, "image_router": image_router}
+    ctx = {"image_router": image_router}
 
     row = await create_overview_figure_v1(
-        ctx, db_session, article=seed["article"], sources=sources, user=seed["user"], job=job
+        ctx, db_session, router=router, article=seed["article"], sources=sources, user=seed["user"], job=job
     )
     await db_session.commit()
     assert row.render_mode == "raster"

@@ -102,6 +102,20 @@ def _fake_router(*, fail: bool = False) -> LLMRouter:
     return LLMRouter([("fake", "fake-model", provider)])
 
 
+class _FakeFactory:
+    """テスト用 UserRouterFactory: 全タスク共通で固定 router を返す。"""
+
+    def __init__(self, router: LLMRouter) -> None:
+        self._router = router
+
+    async def for_job(self, *, user_id: str, task: str) -> LLMRouter:
+        return self._router
+
+
+def _fake_factory(*, fail: bool = False) -> _FakeFactory:
+    return _FakeFactory(_fake_router(fail=fail))
+
+
 # ============================================================================
 # PY-VOC-02: 全フィールド生成・保存
 # ============================================================================
@@ -111,7 +125,7 @@ async def test_generate_vocab_ai_writes_all_fields_and_completes(
     user, item, entry = await _make_entry(db_session)
     job = await _enqueue_and_claim(db_session, user=user, item=item, entry=entry, fields=None)
     store = JobStore(db_session)
-    ctx = {"router": _fake_router()}
+    ctx = {"user_router_factory": _fake_factory()}
 
     await run_generate_vocab_ai(ctx, store, job)
 
@@ -145,7 +159,7 @@ async def test_generate_vocab_ai_skips_edited_fields(db_session: AsyncSession) -
 
     job = await _enqueue_and_claim(db_session, user=user, item=item, entry=entry, fields=None)
     store = JobStore(db_session)
-    ctx = {"router": _fake_router()}
+    ctx = {"user_router_factory": _fake_factory()}
 
     await run_generate_vocab_ai(ctx, store, job)
 
@@ -192,7 +206,7 @@ async def test_generate_vocab_ai_regenerate_limits_to_requested_fields(
         db_session, user=user, item=item, entry=entry, fields=["mnemonic", "etymology"]
     )
     store = JobStore(db_session)
-    ctx = {"router": _fake_router()}
+    ctx = {"user_router_factory": _fake_factory()}
 
     await run_generate_vocab_ai(ctx, store, job)
 
@@ -223,7 +237,7 @@ async def test_generate_vocab_ai_failure_preserves_entry_and_fails_job(
     user, item, entry = await _make_entry(db_session)
     job = await _enqueue_and_claim(db_session, user=user, item=item, entry=entry, fields=None)
     store = JobStore(db_session)
-    ctx = {"router": _fake_router(fail=True)}
+    ctx = {"user_router_factory": _fake_factory(fail=True)}
 
     await run_generate_vocab_ai(ctx, store, job)
 

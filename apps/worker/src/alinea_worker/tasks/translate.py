@@ -164,7 +164,9 @@ async def _run_single_unit_reason(ctx: dict[str, Any], store: JobStore, job: Job
         instruction=instruction,
         task=_RETRANSLATE_TASK,
     )
-    router = ctx["router"]
+    router = await ctx["user_router_factory"].for_job(
+        user_id=str(job.user_id), task=_RETRANSLATE_TASK
+    )
     result = await translate_block(
         block,
         router,
@@ -242,7 +244,7 @@ async def _run_glossary_change(ctx: dict[str, Any], store: JobStore, job: Job) -
         instruction="",
         task="translation",
     )
-    router = ctx["router"]
+    router = await ctx["user_router_factory"].for_job(user_id=str(job.user_id), task="translation")
     translated_ids: list[str] = []
     for block_id in block_ids:
         block = _find_block(content, block_id)
@@ -298,7 +300,7 @@ async def run_translation_job(ctx: dict[str, Any], store: JobStore, job: Job) ->
     if reason not in _SECTION_REASONS:
         raise NotImplementedError(f"translation reason not supported: {reason}")
 
-    router = ctx["router"]
+    router = await ctx["user_router_factory"].for_job(user_id=str(job.user_id), task="translation")
     publish = ctx.get("publish")
     result = await translate_section(
         store.session,

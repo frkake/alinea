@@ -188,7 +188,7 @@ async def run_generate_vocab_ai(ctx: dict[str, Any], store: JobStore, job: Job) 
 
     paper_title, section_label = await _paper_context(session, entry)
     request = _build_request(entry, paper_title=paper_title, section_label=section_label)
-    router = ctx["router"]
+    router = await ctx["user_router_factory"].for_job(user_id=str(job.user_id), task="vocab")
 
     try:
         resp = await router.complete(

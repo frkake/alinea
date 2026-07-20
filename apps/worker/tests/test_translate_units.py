@@ -43,6 +43,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
+class _FakeFactory:
+    """テスト用 UserRouterFactory: 全タスク共通で固定 router を返す。"""
+
+    def __init__(self, router: LLMRouter) -> None:
+        self._router = router
+
+    async def for_job(self, *, user_id: str, task: str) -> LLMRouter:
+        return self._router
+
+
 def _uid() -> str:
     return uuid.uuid4().hex[:10]
 
@@ -227,7 +237,7 @@ async def test_table_reason_worker_overrides_caption_only_plan_and_persists_one_
     job = await store.claim(job_id)
     assert job is not None
 
-    await run_translation_job({"router": router}, store, job)
+    await run_translation_job({"user_router_factory": _FakeFactory(router)}, store, job)
 
     units = (
         (
@@ -274,7 +284,7 @@ async def test_glossary_change_table_keeps_typed_cell_matrix(
     job = await store.claim(job_id)
     assert job is not None
 
-    await run_translation_job({"router": router}, store, job)
+    await run_translation_job({"user_router_factory": _FakeFactory(router)}, store, job)
 
     unit = (
         await db_session.execute(
@@ -370,7 +380,7 @@ async def test_retranslate_reason_saves_proposal_without_overwriting(
     store = JobStore(db_session)
     job = await store.claim(job_id)
     assert job is not None
-    await run_translation_job({"router": router}, store, job)
+    await run_translation_job({"user_router_factory": _FakeFactory(router)}, store, job)
 
     await db_session.refresh(unit)
     assert unit.text_ja == "旧訳"  # 直接上書きしない(plans/06 §11.1)
@@ -414,7 +424,7 @@ async def test_instructed_reason_saves_proposal(
     store = JobStore(db_session)
     job = await store.claim(job_id)
     assert job is not None
-    await run_translation_job({"router": router}, store, job)
+    await run_translation_job({"user_router_factory": _FakeFactory(router)}, store, job)
 
     await db_session.refresh(unit)
     assert unit.text_ja == "旧訳b"
@@ -455,7 +465,7 @@ async def test_retranslate_placeholder_mismatch_fails_job_without_saving_proposa
     job = await store.claim(job_id)
     assert job is not None
     broken_router = LLMRouter([("broken", "broken-model", _BrokenProvider())])
-    await run_translation_job({"router": broken_router}, store, job)
+    await run_translation_job({"user_router_factory": _FakeFactory(broken_router)}, store, job)
 
     await db_session.refresh(unit)
     assert unit.proposal is None  # 壊れた案は保存しない(P3)
@@ -499,7 +509,7 @@ async def test_glossary_change_reason_upserts_units_directly(
     store = JobStore(db_session)
     job = await store.claim(job_id)
     assert job is not None
-    await run_translation_job({"router": router}, store, job)
+    await run_translation_job({"user_router_factory": _FakeFactory(router)}, store, job)
 
     units = (
         (
@@ -554,7 +564,7 @@ async def test_glossary_change_reason_upserts_into_existing_units(
     store = JobStore(db_session)
     job = await store.claim(job_id)
     assert job is not None
-    await run_translation_job({"router": router}, store, job)
+    await run_translation_job({"user_router_factory": _FakeFactory(router)}, store, job)
 
     await db_session.refresh(existing)
     assert existing.text_ja != "旧語訳"  # 再翻訳結果で上書きされている

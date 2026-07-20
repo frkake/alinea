@@ -215,7 +215,7 @@ async def run_extract_vocab_candidates(ctx: dict[str, Any], store: JobStore, job
         return
 
     request = _build_request(_render_context(block_text))
-    router = ctx["router"]
+    router = await ctx["user_router_factory"].for_job(user_id=str(job.user_id), task="vocab")
     try:
         resp = await router.complete(
             VOCAB_TASK,
