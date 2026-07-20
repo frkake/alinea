@@ -4,7 +4,14 @@ import type { CSSProperties } from "react";
 import { CountBadge } from "@/components/ui/CountBadge";
 
 /** サイドパネルタブ(plans/08 §5.16)。排他タブ。 */
-export type SidePanelTabId = "chat" | "notes" | "annotations" | "figures" | "resources" | "info";
+export type SidePanelTabId =
+  | "chat"
+  | "notes"
+  | "annotations"
+  | "figures"
+  | "resources"
+  | "vocab-candidates"
+  | "info";
 
 const TAB_LABELS: Record<SidePanelTabId, string> = {
   chat: "チャット",
@@ -12,6 +19,7 @@ const TAB_LABELS: Record<SidePanelTabId, string> = {
   annotations: "注釈",
   figures: "図表",
   resources: "リソース",
+  "vocab-candidates": "単語候補",
   info: "情報",
 };
 
@@ -21,6 +29,7 @@ const ALL_TABS: readonly SidePanelTabId[] = [
   "annotations",
   "figures",
   "resources",
+  "vocab-candidates",
   "info",
 ];
 

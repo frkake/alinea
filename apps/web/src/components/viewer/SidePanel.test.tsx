@@ -184,3 +184,52 @@ describe("SidePanel tabs milestone=M2", () => {
     expect(screen.queryByRole("tab", { name: "リソース" })).toBeNull();
   });
 });
+
+// Task-8: サイドパネルに 単語候補 タブを追加(milestone="M3")。
+describe("SidePanel tabs milestone=M3", () => {
+  beforeEach(() => {
+    resetStore();
+    vi.clearAllMocks();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [], suggestion: null, count: 0 }),
+      })),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test("M3 shows 単語候補 tab", () => {
+    renderWithClient(<SidePanel milestone="M3" />);
+    expect(screen.getByRole("tab", { name: "単語候補" })).toBeInTheDocument();
+  });
+
+  test("M2 still hides 単語候補 (M3 タブ追加は既存タブに影響しない)", () => {
+    renderWithClient(<SidePanel milestone="M2" />);
+    expect(screen.queryByRole("tab", { name: "単語候補" })).toBeNull();
+  });
+
+  test("switching to 単語候補 mounts VocabCandidatesPanel directly", async () => {
+    useViewerStore.setState({ activeTab: "vocab-candidates" });
+    const mockList = await import("@alinea/api-client");
+    vi.spyOn(mockList, "vocabCandidatesList").mockResolvedValue({
+      data: { items: [], count: 0 },
+    } as Awaited<ReturnType<typeof mockList.vocabCandidatesList>>);
+    renderWithClient(<SidePanel milestone="M3" />);
+    await screen.findByRole("button", { name: "単語候補を抽出" });
+  });
+
+  test("単語候補 tab shows pending count badge when counts prop has vocab-candidates", () => {
+    renderWithClient(<SidePanel milestone="M3" counts={{ "vocab-candidates": 3 }} />);
+    // The tab button contains the label and CountBadge renders the number as text
+    const tab = screen.getByRole("tab", { name: /単語候補/ });
+    expect(tab).toBeInTheDocument();
+    // CountBadge renders the count as inline text within the tab button
+    expect(tab.textContent).toContain("3");
+  });
+});

@@ -2,10 +2,11 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   libraryItemsUpdate,
   translationsSectionTranslate,
+  vocabCandidatesList,
   type ViewerInit,
 } from "@alinea/api-client";
 import { Z_INDEX, type ReadingStatus } from "@alinea/tokens";
@@ -197,6 +198,20 @@ export function ViewerShell({
     );
   };
 
+  // 単語候補タブのペンディング件数バッジ(Task-8 Step 4)。
+  // staleTime を長めにして過剰リクエストを防ぐ(タブを開いた瞬間に VocabCandidatesPanel が
+  // staleTime:0 で独自フェッチするため、この query はバッジ表示だけに使う)。
+  const vocabCandidatesQuery = useQuery({
+    queryKey: ["vocab-candidates", itemId],
+    queryFn: async () => {
+      const res = await vocabCandidatesList({ path: { item_id: itemId }, throwOnError: true });
+      return res.data;
+    },
+    enabled: !isMobile,
+    staleTime: 60_000,
+  });
+  const vocabCandidatesCount = vocabCandidatesQuery.data?.count ?? 0;
+
   const progressPct = viewer.translation?.progress_pct ?? 0;
   const translationSetId =
     viewer.translation?.style === translationStyle
@@ -334,8 +349,12 @@ export function ViewerShell({
           </>
         ) : (
           <SidePanel
-            milestone="M2"
-            counts={{ annotations: viewer.counts.annotations, resources: viewer.counts.resources }}
+            milestone="M3"
+            counts={{
+              annotations: viewer.counts.annotations,
+              resources: viewer.counts.resources,
+              "vocab-candidates": vocabCandidatesCount || undefined,
+            }}
             renderTab={(tab) => {
               if (tab === "chat") return <ChatPanel itemId={itemId} />;
               if (tab === "figures")
