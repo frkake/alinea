@@ -181,4 +181,12 @@ describe("ViewerShell mobile reduction (mobile.md §4)", () => {
     expect(screen.queryByRole("tab", { name: "図表" })).toBeNull();
     expect(screen.getByText("chat-panel")).toBeInTheDocument();
   });
+
+  // Task 30(設計 Non-Goal「モバイルからの生成」): スライド生成の導線(✦ ツール)は
+  // デスクトップ専用。モバイル縮退ヘッダには一切描画しない。
+  test("does NOT render the presentation tool menu (✦ ツール) on mobile", () => {
+    renderMobile();
+    expect(screen.queryByRole("button", { name: /ツール/ })).toBeNull();
+    expect(screen.queryByText(/論文からスライドを生成/)).toBeNull();
+  });
 });

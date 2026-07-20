@@ -12,8 +12,12 @@ import { ModelRoutingRow } from "@/components/settings/ModelRoutingRow";
 import { ApiKeyRow } from "@/components/settings/ApiKeyRow";
 import {
   BYOK_PROVIDERS,
+  PRESENTATION_PROVIDERS,
+  PROVIDER_LABELS,
+  type AvailableModels,
   type ByokProvider,
   type LlmUseCase,
+  type ProviderId,
   type RouteEntry,
   type SettingsData,
 } from "@/components/settings/types";
@@ -200,6 +204,13 @@ export function AccountSettings({
               divider
             />
           ))}
+          {/* Task 30 §6: スライド生成モデルのルート表示。選択中 model id と利用可否のみを
+              表示し、API キー値は一切扱わない(available_models の openai/anthropic の有無で判定)。 */}
+          <PresentationRouteRow
+            route={settings.llm_routing.presentation}
+            availableModels={settings.available_models}
+            divider
+          />
           <SettingToggleRow
             title="概要図をラスター画像で生成"
             description="オフ(既定)では SVG 決定的レンダリング。オンで画像生成 API を使用"
@@ -297,5 +308,58 @@ function DeleteAccountButton({ onConfirm }: { onConfirm: () => void }) {
         </div>
       </Modal>
     </>
+  );
+}
+
+/**
+ * スライド生成モデルのルート表示(Task 30 §6)。ユーザーが provider/model を選べる
+ * ModelRoutingRow とは異なり、ここは「選択中 model id + 利用可否」の参照専用行にする
+ * (設計: 色・書体などと同じく詳細設定は安全既定に固定。プロバイダ選択は運営 + 鍵の有無で
+ * 自動決定される)。API キー値は一切扱わず、available_models に openai/anthropic の
+ * モデルが存在するかだけで可否を判定する。
+ */
+function PresentationRouteRow({
+  route,
+  availableModels,
+  divider = false,
+}: {
+  route: RouteEntry;
+  availableModels: AvailableModels;
+  divider?: boolean;
+}) {
+  const available = PRESENTATION_PROVIDERS.filter((p) => (availableModels[p]?.length ?? 0) > 0);
+  const availabilityNote =
+    available.length === 0
+      ? "利用できるモデルがありません(API キーを登録してください)"
+      : `${available.map((p) => PROVIDER_LABELS[p as ProviderId]).join("・")} が利用できます`;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "12px 18px",
+        borderBottom: divider ? "1px solid var(--pr-border-hair)" : undefined,
+      }}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minWidth: 0 }}>
+        <span style={{ fontSize: 12, fontWeight: 600 }}>スライド生成</span>
+        <span style={{ fontSize: 10.5, color: "var(--pr-text-muted)" }}>
+          論文からの PowerPoint 生成に使用。プロバイダは登録済みキーに応じて自動選択されます
+        </span>
+        <span
+          style={{
+            fontSize: 10.5,
+            color: available.length === 0 ? "var(--pr-warn)" : "var(--pr-text-muted)",
+          }}
+        >
+          {availabilityNote}
+        </span>
+      </div>
+      <span style={{ fontSize: 12, color: "var(--pr-text-mid)", fontVariantNumeric: "tabular-nums" }}>
+        {route.model || "—"}
+      </span>
+    </div>
   );
 }
