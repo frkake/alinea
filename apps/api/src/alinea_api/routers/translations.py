@@ -1003,7 +1003,7 @@ _OnDemandTranslationRequest = Annotated[
     "/api/revisions/{revision_id}/translations",
     response_model=LiteralTranslationResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    operation_id="translations_start_literal",
+    operation_id="translations_start_easy",
 )
 async def start_literal_translation(
     revision_id: str,

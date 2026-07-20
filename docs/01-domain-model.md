@@ -160,7 +160,7 @@ Anchor {
 
 ```
 TranslationSet {
-  revision_id, style,        # style: natural | literal(「スタイル: 自然訳」切替, [03-translation.md](03-translation.md))
+  revision_id, style,        # style: natural | literal | easy(「スタイル: 自然訳」切替, [03-translation.md](03-translation.md))
   glossary_snapshot_id,      # 適用した用語集の凍結スナップショット
   scope: shared | personal,  # 共有キャッシュ or 個人フォーク
   status: pending | partial | complete
@@ -258,7 +258,30 @@ Article {
 - 素材は訳文・メモ・チャット履歴。免責文言「元の論文とは別物です — 根拠チップから原文へ」を常時表示する(P1)。
 - `quote_source` は原文引用ブロック(英語原文+位置チップ+「原文で見る →」)。`figure_embed` は原論文図の転載で、ライセンスバッジと「クレジット自動付記」を伴う(Paper のライセンスから導出)。`attribution` は末尾の出典ブロックで「自動挿入 · 削除不可」。
 - `discussion` は「議論したい点」。項目ごとに由来(AI 発案 / ユーザーの疑問ハイライト由来)を持つ。
-- **v1 では公開属性(visibility)を持たない。** 確定デザインに記事の公開 UI が存在しないため、共有経路はコレクション共有ページのみ([06-library.md](06-library.md))。公開・限定公開・コメントは v2 検討。
+- **公開は別エンティティ ArticlePublication に切り出す**(下記)。Article 本体は個人の読み返しビューのままで、公開時はサニタイズ済みスナップショットを別行に持つ。共有経路はコレクション共有ページ([06-library.md](06-library.md))と記事公開の 2 系統。
+
+### ArticlePublication / PublicationComment(記事公開)— 実装済み
+
+記事のサニタイズ済み公開スナップショット。P7 整合として原文引用本文・原論文図・訳文・メモ・チャット・discussion を含めない([07-figures-and-articles.md](07-figures-and-articles.md) §2.8)。
+
+```
+ArticlePublication {
+  article_id,                # 1記事につき1公開(UNIQUE)
+  user_id,
+  slug,                      # 認証不要の公開 URL /p/{slug}(UNIQUE)
+  visibility: unlisted | public | private,  # unlisted=noindex / public=索引可 / private=公開解除後の slug 予約状態
+  snapshot_version,
+  title, paper_meta,         # 論文タイトル・書誌(公開表示用の最小情報)
+  blocks,                    # 許可リストのブロックのみ(heading/paragraph/attribution/overview_figure/explainer_figure)
+  published_at
+}
+PublicationComment {
+  publication_id, block_id,  # 公開記事のブロック単位に紐づく
+  author, body, created_at   # 論文ページへの公開ディスカッション(alphaXiv 型)ではない
+}
+```
+
+- **private 論文の記事は公開不可**。公開解除しても行は残し slug を予約する(リンク乗っ取り防止)。
 
 ## 10. OverviewFigure / ExplainerFigure(概要図・解説図)
 
@@ -377,7 +400,7 @@ Notification {
 - [ ] Notification が 3種+既読フラグで定義され、ステータス提案が「適用はユーザー操作のみ」であることが明記されている
 - [ ] SavedFilter が 名前+条件+ソート で定義され、件数が導出値であることが明記されている
 - [ ] Collection に 説明・締切・共有トークン(発行/無効化)・「共有ページにメモを含める」フラグ、CollectionEntry に order / assignee / 発表時間 / 予備注記 がある
-- [ ] Article が「論文×ユーザーで1つ・AI自動構成・版管理・根拠アンカー付きブロック構造・v1では公開属性なし」で定義されている
+- [ ] Article が「論文×ユーザーで1つ・AI自動構成・版管理・根拠アンカー付きブロック構造」で定義され、公開は別エンティティ ArticlePublication(slug・visibility 3値・サニタイズ済み blocks)+ PublicationComment として定義されている
 - [ ] OverviewFigure(JSON DSL+SVG決定的レンダリング+版管理)と ExplainerFigure(画像生成API産ラスター+provider/prompt/version記録)が区別されている
 - [ ] ER 図に ResourceLink / Notification / SavedFilter / Article(LibraryItem 1:0..1)/ OverviewFigure / ExplainerFigure が含まれている
 - [ ] すべての位置参照(注釈・チャット根拠・語彙・記事引用・リソースメモ)が §5 の Anchor に一本化されている

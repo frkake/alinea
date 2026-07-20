@@ -6535,7 +6535,7 @@ export type TranslationsListSetsResponses = {
 
 export type TranslationsListSetsResponse = TranslationsListSetsResponses[keyof TranslationsListSetsResponses];
 
-export type TranslationsStartLiteralData = {
+export type TranslationsStartEasyData = {
     /**
      * Body
      */
@@ -6554,23 +6554,23 @@ export type TranslationsStartLiteralData = {
     url: '/api/revisions/{revision_id}/translations';
 };
 
-export type TranslationsStartLiteralErrors = {
+export type TranslationsStartEasyErrors = {
     /**
      * Validation Error
      */
     422: HttpValidationError;
 };
 
-export type TranslationsStartLiteralError = TranslationsStartLiteralErrors[keyof TranslationsStartLiteralErrors];
+export type TranslationsStartEasyError = TranslationsStartEasyErrors[keyof TranslationsStartEasyErrors];
 
-export type TranslationsStartLiteralResponses = {
+export type TranslationsStartEasyResponses = {
     /**
      * Successful Response
      */
     202: LiteralTranslationResponse;
 };
 
-export type TranslationsStartLiteralResponse = TranslationsStartLiteralResponses[keyof TranslationsStartLiteralResponses];
+export type TranslationsStartEasyResponse = TranslationsStartEasyResponses[keyof TranslationsStartEasyResponses];
 
 export type TranslationsListUnitsData = {
     body?: never;
