@@ -600,3 +600,65 @@ async def test_export_anki_filter_kind(vocab_ctx: SimpleNamespace) -> None:
     for line in card_lines:
         tags = line.split("\t")[2]
         assert "word" in tags
+
+
+def test_render_anki_tsv_always_3_columns_per_row() -> None:
+    """_render_anki_tsv() の全データ行が必ず 3 列(タブ 2 本)であること(回帰テスト)。"""
+    from alinea_api.routers.vocab import _render_anki_tsv
+    from alinea_api.schemas.chat import AnchorRef
+    from alinea_api.schemas.vocab import (
+        VocabAi,
+        VocabEntryDetail,
+        VocabHighlight,
+        VocabMeaning,
+        VocabSource,
+        VocabSrs,
+    )
+
+    def _entry(term: str, context: str) -> VocabEntryDetail:
+        return VocabEntryDetail(
+            id=f"id-{term}",
+            kind="word",
+            term=term,
+            meaning_short="意味",
+            source=VocabSource(
+                library_item_id="li-1",
+                paper_title="Paper\tWith\tTabs",
+                display="Paper · §1",
+            ),
+            added_at="2026-01-01",
+            generation="done",
+            pos_label=None,
+            ipa=None,
+            anchor=AnchorRef(revision_id="rev", block_id="blk", display="§1"),
+            context_sentence=context,
+            highlight=VocabHighlight(start=0, end=len(term)),
+            ai=VocabAi(
+                context_meaning=VocabMeaning(short="short", long="line1\nline2"),
+                interpretation=None,
+                etymology=None,
+                mnemonic=None,
+            ),
+            srs=VocabSrs(stage=1, next_review_at="2026-01-02", review_count=0, history=[]),
+        )
+
+    entries = [
+        _entry("hello", "Hello\tworld"),   # タブを含む context
+        _entry("foo", "line1\nline2"),      # 改行を含む context
+        _entry("<bar>", "<b>bold</b>"),     # HTML 特殊文字
+    ]
+    tsv = _render_anki_tsv(entries)
+    data_lines = [l for l in tsv.splitlines() if not l.startswith("#")]
+    assert all(len(line.split("\t")) == 3 for line in data_lines), (
+        "全データ行が 3 列でなければならない"
+    )
+
+
+def test_anki_cell_sanitizer() -> None:
+    """_anki_cell() が改行→<br>、タブ→空白、HTML escape を行う。"""
+    from alinea_api.routers.vocab import _anki_cell
+
+    assert _anki_cell("a\tb") == "a b"
+    assert _anki_cell("a\nb") == "a<br>b"
+    assert _anki_cell("a\r\nb") == "a<br>b"
+    assert _anki_cell("<b>bold</b>") == "&lt;b&gt;bold&lt;/b&gt;"

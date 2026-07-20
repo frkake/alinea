@@ -702,8 +702,8 @@ async def standalone_availability(
     pdf_translated = await _has_translated_pdf(db, revision, str(user.id))
     return StandaloneAvailability(
         source_html=source_ready,
-        translation_html=translation_ready,
-        bilingual_html=translation_ready,
+        translation_html=source_ready and translation_ready,
+        bilingual_html=source_ready and translation_ready,
         article_html=await _has_article(db, item_id),
         pdf_original=pdf_original,
         pdf_translated=pdf_translated,

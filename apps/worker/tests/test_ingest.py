@@ -1209,3 +1209,88 @@ async def test_translating_body_waits_on_quota(
     assert tset is not None
     units = await _units_for_set(db_session, str(tset.id))
     assert units  # readable の先頭セクションは訳出済み
+
+
+# ===========================================================================
+# S4 回帰: _apply_metadata は既存 official_repo_url を上書きしない
+# ===========================================================================
+
+
+def test_apply_metadata_preserves_existing_repo_url() -> None:
+    """既に手動設定された official_repo_url は re-ingest で変わらない(S4 回帰)。"""
+    from types import SimpleNamespace
+
+    from alinea_core.arxiv.metadata import ArxivMeta
+
+    paper = SimpleNamespace(
+        arxiv_id=None,
+        title="Old",
+        authors=[],
+        abstract="",
+        published_on=None,
+        arxiv_categories=[],
+        doi=None,
+        venue=None,
+        license=None,
+        latest_version=None,
+        official_repo_url="https://github.com/manual/confirmed",
+    )
+
+    meta = ArxivMeta(
+        arxiv_id="2301.00000",
+        title="Test",
+        authors=[],
+        abstract="",
+        published_on=None,
+        arxiv_categories=[],
+        doi=None,
+        venue=None,
+        latest_version="v1",
+        license="unknown",
+        official_repo_url="https://github.com/auto/detected",
+    )
+
+    run = object.__new__(IngestRun)
+    run._apply_metadata(paper, meta)
+
+    assert paper.official_repo_url == "https://github.com/manual/confirmed"
+
+
+def test_apply_metadata_writes_repo_url_when_paper_has_none() -> None:
+    """paper.official_repo_url が None のとき meta の値が書き込まれる(S4)。"""
+    from types import SimpleNamespace
+
+    from alinea_core.arxiv.metadata import ArxivMeta
+
+    paper = SimpleNamespace(
+        arxiv_id=None,
+        title="Old",
+        authors=[],
+        abstract="",
+        published_on=None,
+        arxiv_categories=[],
+        doi=None,
+        venue=None,
+        license=None,
+        latest_version=None,
+        official_repo_url=None,
+    )
+
+    meta = ArxivMeta(
+        arxiv_id="2301.00001",
+        title="Test",
+        authors=[],
+        abstract="",
+        published_on=None,
+        arxiv_categories=[],
+        doi=None,
+        venue=None,
+        latest_version="v1",
+        license="unknown",
+        official_repo_url="https://github.com/auto/detected",
+    )
+
+    run = object.__new__(IngestRun)
+    run._apply_metadata(paper, meta)
+
+    assert paper.official_repo_url == "https://github.com/auto/detected"
