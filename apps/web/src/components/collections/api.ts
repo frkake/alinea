@@ -1,19 +1,29 @@
-import type {
-  CollectionDetail,
-  CollectionListResponse,
-  CollectionPatch,
-  CollectionEntry,
-  EntryPatch,
-  ShareInfo,
-} from "@/components/collections/types";
-
 /**
- * collections API(plans/03 §13)向けの薄い fetch ラッパー。
- * deviations: main.py へのルータ登録は他レーンの担当のため `@alinea/api-client` に
- * まだ生成されていない(rule 6 の許容範囲。生成後は `@alinea/api-client` 呼び出しへ
- * 差し替える)。同一オリジン相対パスのみを使い、セッションクッキーは `credentials: "include"`
- * で送る(`packages/api-client/src/index.ts` と同方針)。
+ * collections API(plans/03 §13)向けの薄い SDK ラッパー。
+ *
+ * `@alinea/api-client` の生成関数をラップし、呼び出し元が既存の `ApiError` で
+ * エラーを判別できるようにする。
  */
+import {
+  collectionsList,
+  collectionsGet,
+  collectionsCreate,
+  collectionsUpdate,
+  collectionsDelete,
+  collectionsAddEntry,
+  collectionEntriesUpdate,
+  collectionEntriesDelete,
+  collectionsReorderEntries,
+  collectionsShareIssue,
+  collectionsShareUpdate,
+  collectionsShareRevoke,
+  type CollectionDetailResponse,
+  type CollectionListResponse,
+  type CollectionEntryOut,
+  type ShareInfo,
+} from "@alinea/api-client";
+import type { CollectionDetail, CollectionPatch, CollectionEntry, EntryPatch } from "@/components/collections/types";
+
 export class ApiError extends Error {
   code: string;
   status: number;
@@ -25,108 +35,131 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  if (!res.ok) {
-    let code = "internal_error";
-    let message = "リクエストに失敗しました";
-    try {
-      const problem = (await res.json()) as { code?: string; title?: string; detail?: string };
-      code = problem.code ?? code;
-      message = problem.detail ?? problem.title ?? message;
-    } catch {
-      // JSON でないボディ(204 など)は無視する。
-    }
-    throw new ApiError(res.status, code, message);
+function toApiError(status: number, body: unknown): ApiError {
+  let code = "internal_error";
+  let message = "リクエストに失敗しました";
+  if (body && typeof body === "object") {
+    const b = body as { code?: string; title?: string; detail?: string };
+    code = b.code ?? code;
+    message = b.detail ?? b.title ?? message;
   }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  return new ApiError(status, code, message);
 }
 
-/**
- * 204 応答用(`request<void>` は `@typescript-eslint/no-invalid-void-type` に抵触するため
- * `unknown` 経由で握り潰す。決定・deviations)。
- */
-async function requestVoid(path: string, init?: RequestInit): Promise<void> {
-  await request<unknown>(path, init);
+function throwIfError(result: { error?: unknown; response: Response }): void {
+  if (result.error !== undefined) {
+    throw toApiError(result.response.status, result.error);
+  }
 }
 
-export function listCollections(): Promise<CollectionListResponse> {
-  return request<CollectionListResponse>("/api/collections");
+/** `CollectionEntryOut` の optional nullable フィールドを `T | null` へ正規化する。 */
+function toCollectionEntry(raw: CollectionEntryOut): CollectionEntry {
+  return {
+    ...raw,
+    assignee: raw.assignee ?? null,
+    presentation_minutes: raw.presentation_minutes ?? null,
+    note: raw.note ?? null,
+  };
 }
 
-export function getCollection(collectionId: string): Promise<CollectionDetail> {
-  return request<CollectionDetail>(`/api/collections/${collectionId}`);
+/** `CollectionDetailResponse` の optional nullable フィールドを `T | null` へ正規化する。 */
+function toCollectionDetail(raw: CollectionDetailResponse): CollectionDetail {
+  return {
+    ...raw,
+    description: raw.description ?? null,
+    deadline: raw.deadline ?? null,
+    days_left: raw.days_left ?? null,
+    entries: raw.entries.map(toCollectionEntry),
+  };
 }
 
-export function createCollection(body: {
+export async function listCollections(): Promise<CollectionListResponse> {
+  const r = await collectionsList();
+  throwIfError(r);
+  return r.data as CollectionListResponse;
+}
+
+export async function getCollection(collectionId: string): Promise<CollectionDetail> {
+  const r = await collectionsGet({ path: { collection_id: collectionId } });
+  throwIfError(r);
+  return toCollectionDetail(r.data as CollectionDetailResponse);
+}
+
+export async function createCollection(body: {
   name: string;
   description?: string;
   deadline?: string;
 }): Promise<CollectionDetail> {
-  return request<CollectionDetail>("/api/collections", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+  const r = await collectionsCreate({ body });
+  throwIfError(r);
+  return toCollectionDetail(r.data as CollectionDetailResponse);
 }
 
-export function patchCollection(
+export async function patchCollection(
   collectionId: string,
   body: CollectionPatch,
 ): Promise<CollectionDetail> {
-  return request<CollectionDetail>(`/api/collections/${collectionId}`, {
-    method: "PATCH",
-    body: JSON.stringify(body),
+  const r = await collectionsUpdate({ path: { collection_id: collectionId }, body });
+  throwIfError(r);
+  return toCollectionDetail(r.data as CollectionDetailResponse);
+}
+
+export async function deleteCollection(collectionId: string): Promise<void> {
+  const r = await collectionsDelete({ path: { collection_id: collectionId } });
+  throwIfError(r);
+}
+
+export async function addEntry(
+  collectionId: string,
+  libraryItemId: string,
+): Promise<CollectionEntry> {
+  const r = await collectionsAddEntry({
+    path: { collection_id: collectionId },
+    body: { library_item_id: libraryItemId },
   });
+  throwIfError(r);
+  return toCollectionEntry(r.data as CollectionEntryOut);
 }
 
-export function deleteCollection(collectionId: string): Promise<void> {
-  return requestVoid(`/api/collections/${collectionId}`, { method: "DELETE" });
+export async function patchEntry(entryId: string, body: EntryPatch): Promise<CollectionEntry> {
+  const r = await collectionEntriesUpdate({ path: { entry_id: entryId }, body });
+  throwIfError(r);
+  return toCollectionEntry(r.data as CollectionEntryOut);
 }
 
-export function addEntry(collectionId: string, libraryItemId: string): Promise<CollectionEntry> {
-  return request<CollectionEntry>(`/api/collections/${collectionId}/entries`, {
-    method: "POST",
-    body: JSON.stringify({ library_item_id: libraryItemId }),
-  });
+export async function removeEntry(entryId: string): Promise<void> {
+  const r = await collectionEntriesDelete({ path: { entry_id: entryId } });
+  throwIfError(r);
 }
 
-export function patchEntry(entryId: string, body: EntryPatch): Promise<CollectionEntry> {
-  return request<CollectionEntry>(`/api/collection-entries/${entryId}`, {
-    method: "PATCH",
-    body: JSON.stringify(body),
-  });
-}
-
-export function removeEntry(entryId: string): Promise<void> {
-  return requestVoid(`/api/collection-entries/${entryId}`, { method: "DELETE" });
-}
-
-export function reorderEntries(
+export async function reorderEntries(
   collectionId: string,
   entryIds: string[],
 ): Promise<{ ok: boolean }> {
-  return request<{ ok: boolean }>(`/api/collections/${collectionId}/entries/order`, {
-    method: "PUT",
-    body: JSON.stringify({ entry_ids: entryIds }),
+  const r = await collectionsReorderEntries({
+    path: { collection_id: collectionId },
+    body: { entry_ids: entryIds },
   });
+  throwIfError(r);
+  return { ok: (r.data as { ok?: boolean })?.ok ?? true };
 }
 
-export function issueShare(collectionId: string): Promise<ShareInfo> {
-  return request<ShareInfo>(`/api/collections/${collectionId}/share`, { method: "POST" });
+export async function issueShare(collectionId: string): Promise<ShareInfo> {
+  const r = await collectionsShareIssue({ path: { collection_id: collectionId } });
+  throwIfError(r);
+  return r.data as ShareInfo;
 }
 
-export function patchShare(collectionId: string, includeNotes: boolean): Promise<ShareInfo> {
-  return request<ShareInfo>(`/api/collections/${collectionId}/share`, {
-    method: "PATCH",
-    body: JSON.stringify({ include_notes: includeNotes }),
+export async function patchShare(collectionId: string, includeNotes: boolean): Promise<ShareInfo> {
+  const r = await collectionsShareUpdate({
+    path: { collection_id: collectionId },
+    body: { include_notes: includeNotes },
   });
+  throwIfError(r);
+  return r.data as ShareInfo;
 }
 
-export function revokeShare(collectionId: string): Promise<void> {
-  return requestVoid(`/api/collections/${collectionId}/share`, { method: "DELETE" });
+export async function revokeShare(collectionId: string): Promise<void> {
+  const r = await collectionsShareRevoke({ path: { collection_id: collectionId } });
+  throwIfError(r);
 }

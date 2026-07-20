@@ -1,63 +1,41 @@
-import type { LibraryItemSummary } from "@alinea/api-client";
-
 /**
- * collections API(plans/03 §13)の型。M2-09 時点では main.py にルータが未登録
- * (article レーンの担当)のため `@alinea/api-client` の生成物にまだ現れず、手書きする
- * (rule 6: 生成前の新規エンドポイントは手書き可。deviations 記載)。API 側の実装は
- * apps/api/src/alinea_api/schemas/collections.py と 1:1 対応させる。
+ * collections API(plans/03 §13)の型。
+ *
+ * `@alinea/api-client` の生成型を re-export し、後方互換のエイリアスだけをここで定義する。
+ * 生成型は OpenAPI "nullable optional" フィールドを `?: T | null` (= `T | null | undefined`) で
+ * 生成するが、呼び出し元は `T | null` を期待するため、ラッパー型で `undefined` を除去する。
  */
 
-export interface CollectionListItem {
-  id: string;
-  name: string;
-  deadline: string | null;
-  days_left: number | null;
-  item_count: number;
-  done_count: number;
-}
+export type {
+  CollectionListResponse,
+  CollectionListItem,
+  ShareInfo,
+  CollectionPatchBody as CollectionPatch,
+  EntryPatchBody as EntryPatch,
+} from "@alinea/api-client";
 
-export interface CollectionListResponse {
-  items: CollectionListItem[];
-}
+import type {
+  CollectionDetailResponse,
+  CollectionEntryOut,
+} from "@alinea/api-client";
 
-export interface ShareInfo {
-  status: "none" | "active" | "revoked";
-  token: string | null;
-  url: string | null;
-  include_notes: boolean;
-  included_note_count: number;
-}
-
-export interface CollectionEntry {
-  id: string;
-  order: number;
-  library_item: LibraryItemSummary;
-  assignee: string | null;
-  assignee_is_self: boolean;
-  presentation_minutes: number | null;
-  note: string | null;
-}
-
-export interface CollectionDetail {
-  id: string;
-  name: string;
+/**
+ * CollectionDetail: `CollectionDetailResponse` の nullable optional フィールドを
+ * `T | null` へ正規化(undefined を除去)。
+ */
+export type CollectionDetail = Omit<CollectionDetailResponse, "description" | "deadline" | "days_left"> & {
   description: string | null;
   deadline: string | null;
   days_left: number | null;
-  progress: { done: number; total: number };
-  share: ShareInfo;
   entries: CollectionEntry[];
-}
+};
 
-export interface EntryPatch {
-  assignee?: string | null;
-  assignee_is_self?: boolean;
-  presentation_minutes?: number | null;
-  note?: string | null;
-}
-
-export interface CollectionPatch {
-  name?: string;
-  description?: string | null;
-  deadline?: string | null;
-}
+/**
+ * CollectionEntry: `CollectionEntryOut` の nullable optional フィールドを
+ * `T | null` へ正規化(undefined を除去)。
+ */
+export type CollectionEntry = Omit<CollectionEntryOut, "assignee" | "presentation_minutes" | "note"> & {
+  assignee: string | null;
+  presentation_minutes: number | null;
+  note: string | null;
+};

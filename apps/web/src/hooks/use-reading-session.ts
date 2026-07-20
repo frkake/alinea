@@ -2,18 +2,12 @@
 
 import { useEffect, useRef } from "react";
 import { settingsGet } from "@alinea/api-client";
+import type { ReadingHeartbeatBody } from "@alinea/api-client";
 
 const HEARTBEAT_MS = 30_000;
 const ACTIVITY_WINDOW_MS = 60_000;
 const ACTIVITY_EVENTS = ["pointermove", "pointerdown", "keydown", "wheel", "scroll", "touchstart"] as const;
 const ACTIVITY_THROTTLE_MS = 250;
-
-interface ReadingSessionBody {
-  client_session_id: string;
-  started_at: string;
-  last_activity_at: string;
-  active_seconds: number;
-}
 
 /**
  * 読書時間計測(plans/07 §8.1 / plans/03 §5.9)。
@@ -24,8 +18,9 @@ interface ReadingSessionBody {
  * `pagehide` 時は `navigator.sendBeacon` で即時送信する。
  *
  * 設定 `reading.track_reading_time=false` のときは計測・送信を行わない。
- * `POST …/reading-sessions` は本レーン着手時点で `@alinea/api-client` に未生成のため、
- * `fetch()` 直書きで plans/03 §5.9 の契約どおりに呼ぶ(deviations 参照)。
+ * 型は `@alinea/api-client` の `ReadingHeartbeatBody` を使用する。
+ * 送信は `fetch` / `sendBeacon` を直接使用する(SDK の low-level transport は keepalive /
+ * sendBeacon に対応しない)。
  */
 export function useReadingSession(params: { itemId: string; enabled?: boolean }): void {
   const { itemId, enabled = true } = params;
@@ -42,7 +37,7 @@ export function useReadingSession(params: { itemId: string; enabled?: boolean })
     if (!enabled) return;
     let cancelled = false;
     void settingsGet()
-      .then((res) => {
+      .then((res: { data?: { [key: string]: unknown }; error?: unknown }) => {
         if (cancelled) return;
         const data = res.data as { reading?: { track_reading_time?: boolean } } | undefined;
         trackingAllowed.current = data?.reading?.track_reading_time !== false;
@@ -89,7 +84,7 @@ export function useReadingSession(params: { itemId: string; enabled?: boolean })
 
     const send = (useBeacon: boolean) => {
       if (!trackingAllowed.current) return;
-      const body: ReadingSessionBody = {
+      const body: ReadingHeartbeatBody = {
         client_session_id: clientSessionId.current,
         started_at: startedAt.current,
         last_activity_at: new Date(lastActivityAt.current).toISOString(),
