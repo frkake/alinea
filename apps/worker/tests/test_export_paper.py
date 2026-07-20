@@ -37,7 +37,7 @@ from alinea_core.db.models import (
 )
 from alinea_core.jobs.store import JobStore
 from alinea_core.storage.s3 import StorageKeys
-from alinea_worker.tasks.export_paper import run_export_paper_job
+from alinea_worker.tasks.export_paper import ArtifactUnavailableError, run_export_paper_job
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -496,7 +496,7 @@ async def test_fails_before_start_when_artifact_unavailable(db_session: AsyncSes
     )
     job = await store.claim(job_id)
     assert job is not None
-    with pytest.raises(Exception):  # noqa: B017 — 可用性検証で失敗すること自体を確認する
+    with pytest.raises(ArtifactUnavailableError):
         await run_export_paper_job({"s3": storage}, store, job)
 
     # 出力 zip は作られていない。
@@ -522,7 +522,7 @@ async def test_rejects_foreign_library_item(db_session: AsyncSession) -> None:
     )
     job = await store.claim(job_id)
     assert job is not None
-    with pytest.raises(Exception):  # noqa: B017 — 所有者不一致で失敗すること自体を確認する
+    with pytest.raises(ArtifactUnavailableError):
         await run_export_paper_job({"s3": storage}, store, job)
 
 

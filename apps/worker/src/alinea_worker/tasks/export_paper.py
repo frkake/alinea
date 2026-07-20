@@ -34,13 +34,13 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-import alinea_api.schemas.standalone_html as _standalone_html
 from alinea_api.schemas.export import export_filename
 from alinea_api.schemas.library import build_paper_bib
 from alinea_api.schemas.standalone_html import (
     ArticleBlockView,
     StandaloneMeta,
     TranslationView,
+    build_katex_runtime,
     render_article_html,
     render_document_html,
 )
@@ -404,10 +404,8 @@ async def _build_archive(
     """選択成果物を生成し zip バイト列を返す。集計(skipped_annotations 等)も返す。"""
     paper_bib = ctx.paper_bib
     quality = ctx.revision.quality_level if ctx.revision is not None else "A"
-    # KaTeX ランタイムが vendoring されていれば inline 埋め込み、無ければ LaTeX ソース表示に
-    # フォールバックする(設計 決定 A のフォールバック座。欠損ではなく読める劣化)。
-    build_katex_runtime = getattr(_standalone_html, "build_katex_runtime", None)
-    katex_runtime = build_katex_runtime() if callable(build_katex_runtime) else ""
+    # KaTeX ランタイムを inline 埋め込みする(Task 10 で vendoring 済み)。
+    katex_runtime = build_katex_runtime()
 
     files: list[tuple[str, bytes]] = []
     stats: dict[str, Any] = {"artifacts": list(artifacts)}
