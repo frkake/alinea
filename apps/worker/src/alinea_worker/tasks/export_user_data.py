@@ -46,6 +46,7 @@ from alinea_core.db.models import (
     OverviewFigure,
     Paper,
     PaperExternalId,
+    PublicationComment,
     ReadingSession,
     ResourceLink,
     SavedFilter,
@@ -831,6 +832,46 @@ async def _serialize_publications(
     ]
 
 
+async def _serialize_publication_comments(
+    session: AsyncSession, user_id: str, publication_ids: list[str]
+) -> list[dict[str, Any]]:
+    """本人が自分の公開記事に投稿したコメント(Task 25)。
+
+    バックアップは「本人が自分の publication へ投稿したコメント」だけを含める。第三者が
+    残したコメントは本人所有データではないため複製しない(``user_id == 本人`` かつ
+    ``publication_id ∈ 本人の publication`` の積集合で絞る)。
+    """
+    if not publication_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(PublicationComment)
+                .where(
+                    PublicationComment.user_id == user_id,
+                    PublicationComment.publication_id.in_(publication_ids),
+                )
+                .order_by(PublicationComment.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "publication_id": str(r.publication_id),
+            "parent_id": str(r.parent_id) if r.parent_id else None,
+            "block_id": r.block_id,
+            "body": r.body,
+            "status": r.status,
+            "created_at": _iso(r.created_at),
+            "updated_at": _iso(r.updated_at),
+        }
+        for r in rows
+    ]
+
+
 async def _serialize_source_assets(
     session: AsyncSession, paper_ids: list[str]
 ) -> list[dict[str, Any]]:
@@ -947,6 +988,9 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
     collections = await _serialize_collections(session, user_id)
     collection_ids = [c["id"] for c in collections]
 
+    publications = await _serialize_publications(session, article_ids)
+    publication_ids = [p["id"] for p in publications]
+
     return {
         "schema_version": EXPORT_SCHEMA_VERSION,
         "exported_at": dt.datetime.now(dt.UTC).isoformat(),
@@ -975,7 +1019,10 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
         "notifications": await _serialize_notifications(session, user_id),
         "overview_figures": await _serialize_overview_figures(session, article_ids),
         "explainer_figures": await _serialize_explainer_figures(session, article_ids),
-        "publications": await _serialize_publications(session, article_ids),
+        "publications": publications,
+        "publication_comments": await _serialize_publication_comments(
+            session, user_id, publication_ids
+        ),
         "source_assets": await _serialize_source_assets(session, paper_ids),
         "paper_external_ids": await _serialize_paper_external_ids(session, paper_ids),
         "share_tokens": await _serialize_share_tokens(session, collection_ids),

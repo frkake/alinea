@@ -64,6 +64,7 @@ from alinea_core.db.models import (
     OverviewFigure,
     Paper,
     PaperExternalId,
+    PublicationComment,
     ReadingSession,
     ResourceLink,
     SavedFilter,
@@ -223,6 +224,8 @@ class _Importer:
         self.thread_created: set[str] = set()
         self.article_created: set[str] = set()
         self.collection_created: set[str] = set()
+        # 復元済み publication の元 id 集合(コメントの紐づけ健全性を担保する)。
+        self.publication_seen: set[str] = set()
         # 索引再構築対象: (new_revision_id, content_dict)
         self._pending_index: list[tuple[str, dict[str, Any]]] = []
 
@@ -1036,6 +1039,8 @@ class _Importer:
         for row in rows:
             pub_id = str(row["id"])
             if await self.session.get(ArticlePublication, pub_id) is not None:
+                # 既存(冪等再取り込み)でもコメントの紐づけ対象として記録する。
+                self.publication_seen.add(pub_id)
                 self.skipped["publications"] += 1
                 continue
             # 記事は今回このセッションで復元された(id を保持している)場合のみ紐づく。
@@ -1054,7 +1059,7 @@ class _Importer:
             ).scalar_one_or_none()
             if taken is not None:
                 slug = f"{slug}-{uuid.uuid4().hex[:6]}"
-            await self._insert(
+            if await self._insert(
                 "publications",
                 ArticlePublication(
                     id=pub_id,
@@ -1072,6 +1077,53 @@ class _Importer:
                     updated_at=_dt(row.get("updated_at")),
                 ),
                 pub_id,
+            ):
+                self.publication_seen.add(pub_id)
+
+    async def restore_publication_comments(self, rows: list[dict[str, Any]]) -> None:
+        """本人が自分の公開記事へ投稿したコメント(Task 25)を復元する。
+
+        バックアップには本人の own コメントだけが含まれる(export 側で絞り込み済み)。移行先でも
+        投稿者を移行先ユーザーに付け替え、publication は id を保持して復元されたものだけへ紐づける。
+        親コメントを先に、返信を後に(parent_id 未解決の返信をスキップしないよう)処理する。
+        """
+        # 親(parent_id is None)を先に、返信を後に並べる。id は保持されるため元 id で解決できる。
+        ordered = sorted(rows, key=lambda r: r.get("parent_id") is not None)
+        for row in ordered:
+            comment_id = str(row["id"])
+            if await self.session.get(PublicationComment, comment_id) is not None:
+                self.skipped["publication_comments"] += 1
+                continue
+            publication_id = str(row["publication_id"])
+            # publication が今回のセッションで復元(id 保持)されていなければ紐づけできない。
+            if publication_id not in self.publication_seen:
+                self.failed.append(
+                    {
+                        "table": "publication_comments",
+                        "id": comment_id,
+                        "error": "unmapped publication_id",
+                    }
+                )
+                continue
+            parent_id = row.get("parent_id")
+            if parent_id is not None:
+                # 親は同一バックアップ内(本人 own)。復元済みでなければ親なし扱いに落とす。
+                if await self.session.get(PublicationComment, str(parent_id)) is None:
+                    parent_id = None
+            await self._insert(
+                "publication_comments",
+                PublicationComment(
+                    id=comment_id,
+                    publication_id=publication_id,
+                    user_id=self.uid,
+                    parent_id=str(parent_id) if parent_id else None,
+                    block_id=row.get("block_id") or "",
+                    body=row.get("body") or "",
+                    status=row.get("status") or "visible",
+                    created_at=_dt(row.get("created_at")),
+                    updated_at=_dt(row.get("updated_at")),
+                ),
+                comment_id,
             )
 
     async def restore_vocab_candidates(self, rows: list[dict[str, Any]]) -> None:
@@ -1184,6 +1236,7 @@ async def import_data_json(
     await imp.restore_overview_figures(data.get("overview_figures") or [])
     await imp.restore_explainer_figures(data.get("explainer_figures") or [])
     await imp.restore_publications(data.get("publications") or [])
+    await imp.restore_publication_comments(data.get("publication_comments") or [])
     await imp.restore_vocab_candidates(data.get("vocab_candidates") or [])
     await imp.restore_latest_revisions(library)
 

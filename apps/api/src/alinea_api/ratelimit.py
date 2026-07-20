@@ -40,6 +40,9 @@ def match_rule(method: str, path: str) -> RateRule:
     if method == "GET" and path.startswith("/api/share/"):
         # 共有ページ(匿名)は 120 回/分/IP(plans/03 §1.8・plans/01 §9.4)。
         return RateRule(name="share_page", limit=120, window=60, scope="ip")
+    if method == "POST" and path.startswith("/api/p/") and path.endswith("/comments"):
+        # 公開記事コメント投稿はユーザーごと 10 件/分に制限する(Task 25)。
+        return RateRule(name="publication_comment_post", limit=10, window=60, scope="user")
     return DEFAULT_RULE
 
 

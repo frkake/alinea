@@ -31,6 +31,7 @@ from alinea_core.db.models import (
     LibraryItem,
     OverviewFigure,
     Paper,
+    PublicationComment,
     User,
 )
 from alinea_core.db.revisions import get_latest_paper_revision
@@ -43,6 +44,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from alinea_api.deps import CurrentUser, DbDep
 from alinea_api.errors import ProblemException
 from alinea_api.schemas.publications import (
+    CommentCreateRequest,
+    CommentOut,
+    CommentUpdateRequest,
     PublicArticleOut,
     PublicationCreateRequest,
     PublicationOut,
@@ -169,6 +173,11 @@ async def _build_snapshot(
     overview = await _overview_snapshot(db, str(article.id))
     if overview is not None:
         blocks.insert(0, overview)
+
+    # 各公開ブロックに安定した block_id(最終順の位置)を付与する。コメントはこの block_id を
+    # 参照し、公開スナップショットに存在するブロックだけへ許可する(Task 25)。
+    for index, block in enumerate(blocks):
+        block["block_id"] = str(index)
 
     authors = [
         str(a.get("name", a)) if isinstance(a, dict) else str(a) for a in (paper.authors or [])
@@ -373,6 +382,228 @@ async def read_by_slug(slug: str, db: DbDep, response: Response) -> PublicArticl
         blocks=pub.blocks or [],
         published_at=_iso(pub.published_at),
     )
+
+
+# ---------------------------------------------------------------------------
+# 公開記事コメント + モデレーション(Task 25)
+# ---------------------------------------------------------------------------
+async def _active_publication_by_slug(db: AsyncSession, slug: str) -> ArticlePublication:
+    """公開中(unlisted/public)の publication を返す。無ければ 404。"""
+    pub = (
+        await db.execute(select(ArticlePublication).where(ArticlePublication.slug == slug))
+    ).scalar_one_or_none()
+    if pub is None or pub.visibility not in ("unlisted", "public"):
+        raise ProblemException("not_found")
+    return pub
+
+
+def _snapshot_block_ids(pub: ArticlePublication) -> set[str]:
+    """公開スナップショットに存在する block_id 集合(コメント可能な対象)。"""
+    ids: set[str] = set()
+    for block in pub.blocks or []:
+        if isinstance(block, dict):
+            block_id = block.get("block_id")
+            if isinstance(block_id, str):
+                ids.add(block_id)
+    return ids
+
+
+def _comment_out(comment: PublicationComment) -> CommentOut:
+    # visible 以外(hidden / deleted)は本文を伏せる(status で状態を伝える)。
+    body = comment.body if comment.status == "visible" else ""
+    return CommentOut(
+        id=str(comment.id),
+        block_id=comment.block_id,
+        parent_id=str(comment.parent_id) if comment.parent_id else None,
+        body=body,
+        status=comment.status,
+        created_at=_iso(comment.created_at),
+        updated_at=_iso(comment.updated_at),
+    )
+
+
+async def _owned_comment(
+    db: AsyncSession, pub: ArticlePublication, comment_id: str, user: User
+) -> PublicationComment:
+    """投稿者本人のコメントを返す。存在しなければ 404、他人のものなら 403。"""
+    if not _valid_uuid(comment_id):
+        raise ProblemException("not_found")
+    comment = await db.get(PublicationComment, comment_id)
+    if comment is None or str(comment.publication_id) != str(pub.id):
+        raise ProblemException("not_found")
+    if str(comment.user_id) != str(user.id):
+        raise ProblemException("forbidden", detail="このコメントを編集できるのは投稿者だけです")
+    return comment
+
+
+async def _moderated_comment(
+    db: AsyncSession, pub: ArticlePublication, comment_id: str, user: User
+) -> PublicationComment:
+    """記事公開者(publisher)がモデレーションできるコメントを返す。他者は 403。"""
+    if not _valid_uuid(comment_id):
+        raise ProblemException("not_found")
+    comment = await db.get(PublicationComment, comment_id)
+    if comment is None or str(comment.publication_id) != str(pub.id):
+        raise ProblemException("not_found")
+    if str(pub.user_id) != str(user.id):
+        raise ProblemException("forbidden", detail="モデレーションできるのは記事の公開者だけです")
+    return comment
+
+
+@router.get(
+    "/api/p/{slug}/comments",
+    response_model=list[CommentOut],
+    operation_id="publication_comments_list",
+)
+async def list_comments(slug: str, db: DbDep) -> list[CommentOut]:
+    """公開記事のコメント一覧(認証不要)。hidden / deleted は本文を伏せて返す。"""
+    pub = await _active_publication_by_slug(db, slug)
+    rows = (
+        (
+            await db.execute(
+                select(PublicationComment)
+                .where(PublicationComment.publication_id == str(pub.id))
+                .order_by(
+                    PublicationComment.created_at.asc(), PublicationComment.id.asc()
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [_comment_out(row) for row in rows]
+
+
+@router.post(
+    "/api/p/{slug}/comments",
+    response_model=CommentOut,
+    operation_id="publication_comments_create",
+)
+async def create_comment(
+    slug: str,
+    body: CommentCreateRequest,
+    user: CurrentUser,
+    db: DbDep,
+    response: Response,
+) -> CommentOut:
+    """コメント投稿(認証必須)。plain text のみ・block_id は公開スナップショットに実在必須。
+
+    parent_id は同一 publication の 1 階層のみ(返信への返信は 400)。
+    レート制限(10 件/分/ユーザー)は RateLimitMiddleware が担う。
+    """
+    pub = await _active_publication_by_slug(db, slug)
+
+    # block_id は公開スナップショットに存在するものだけ許可する(情報の紐づけ健全性)。
+    if body.block_id not in _snapshot_block_ids(pub):
+        raise ProblemException(
+            "bad_request", detail="コメント対象のブロックが公開記事に存在しません"
+        )
+
+    parent_id: str | None = None
+    if body.parent_id is not None:
+        if not _valid_uuid(body.parent_id):
+            raise ProblemException("bad_request", detail="返信先が不正です")
+        parent = await db.get(PublicationComment, body.parent_id)
+        # 返信先は同一 publication のルートコメント(1 階層のみ)でなければならない。
+        if parent is None or str(parent.publication_id) != str(pub.id):
+            raise ProblemException("bad_request", detail="返信先のコメントが見つかりません")
+        if parent.parent_id is not None:
+            raise ProblemException(
+                "bad_request", detail="返信は 1 階層までです(返信への返信はできません)"
+            )
+        parent_id = str(parent.id)
+
+    comment = PublicationComment(
+        id=str(uuid.uuid4()),
+        publication_id=str(pub.id),
+        user_id=str(user.id),
+        parent_id=parent_id,
+        block_id=body.block_id,
+        # body は schema 側で HTML 除去済み(plain text)。
+        body=body.body,
+        status="visible",
+    )
+    db.add(comment)
+    await db.commit()
+    await db.refresh(comment)
+    response.status_code = 201
+    return _comment_out(comment)
+
+
+@router.patch(
+    "/api/p/{slug}/comments/{comment_id}",
+    response_model=CommentOut,
+    operation_id="publication_comments_update",
+)
+async def update_comment(
+    slug: str,
+    comment_id: str,
+    body: CommentUpdateRequest,
+    user: CurrentUser,
+    db: DbDep,
+) -> CommentOut:
+    """コメント編集(投稿者本人のみ)。plain text のみ。"""
+    pub = await _active_publication_by_slug(db, slug)
+    comment = await _owned_comment(db, pub, comment_id, user)
+    if comment.status == "deleted":
+        raise ProblemException("conflict", detail="削除済みのコメントは編集できません")
+    comment.body = body.body
+    await db.commit()
+    await db.refresh(comment)
+    return _comment_out(comment)
+
+
+@router.delete(
+    "/api/p/{slug}/comments/{comment_id}",
+    status_code=204,
+    operation_id="publication_comments_delete",
+)
+async def delete_comment(
+    slug: str, comment_id: str, user: CurrentUser, db: DbDep
+) -> Response:
+    """コメント削除(投稿者本人のみ・soft delete)。返信があってもスレッド構造を残す。"""
+    pub = await _active_publication_by_slug(db, slug)
+    comment = await _owned_comment(db, pub, comment_id, user)
+    # 行は残し status=deleted に落とす(返信のスレッド構造を壊さない)。
+    comment.status = "deleted"
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.post(
+    "/api/p/{slug}/comments/{comment_id}/hide",
+    response_model=CommentOut,
+    operation_id="publication_comments_hide",
+)
+async def hide_comment(
+    slug: str, comment_id: str, user: CurrentUser, db: DbDep
+) -> CommentOut:
+    """コメントを非表示にする(記事公開者=publisher のみ)。"""
+    pub = await _active_publication_by_slug(db, slug)
+    comment = await _moderated_comment(db, pub, comment_id, user)
+    if comment.status != "deleted":
+        comment.status = "hidden"
+        await db.commit()
+        await db.refresh(comment)
+    return _comment_out(comment)
+
+
+@router.post(
+    "/api/p/{slug}/comments/{comment_id}/restore",
+    response_model=CommentOut,
+    operation_id="publication_comments_restore",
+)
+async def restore_comment(
+    slug: str, comment_id: str, user: CurrentUser, db: DbDep
+) -> CommentOut:
+    """非表示にしたコメントを再表示する(記事公開者=publisher のみ)。"""
+    pub = await _active_publication_by_slug(db, slug)
+    comment = await _moderated_comment(db, pub, comment_id, user)
+    if comment.status == "hidden":
+        comment.status = "visible"
+        await db.commit()
+        await db.refresh(comment)
+    return _comment_out(comment)
 
 
 __all__ = ["router"]
