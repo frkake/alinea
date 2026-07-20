@@ -17,10 +17,11 @@ from typing import Any
 import pytest_asyncio
 from alinea_api.services.session_service import create_session
 from alinea_api.services.user_service import purge_user, upsert_user_by_email
-from alinea_core.db.models import ArticleBlock, SourceAsset, User
+from alinea_core.db.models import ArticleBlock, Job, SourceAsset, User
 from alinea_core.storage.s3 import StorageKeys
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -384,3 +385,314 @@ async def test_article_html_404_when_no_article(
     await db_session.commit()
 
     assert (await client.get(_ART.format(item.id))).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 非同期エクスポート API(Task 12: POST .../export/standalone → paper_export job)
+# ---------------------------------------------------------------------------
+# 単一 HTML(source/translation/bilingual/article)だけの選択は同期 HTML エンドポイントへ
+# 誘導し、複数/PDF を含む選択は paper_export job を enqueue する。所有権・artifact 値域・
+# availability を enqueue 前にサーバ側で再検証する(worker ハンドラの契約を写す)。
+_START = "/api/library-items/{}/export/standalone"
+_STATUS = "/api/library-items/{}/export/standalone/{}"
+
+
+async def _seed_full_item(
+    db_session: AsyncSession, factories: Any, user: User
+) -> Any:
+    """原文/訳文/記事/原文 PDF/訳文 PDF がすべて available な library item を作る。"""
+    paper = await factories.make_paper(db_session, owner=user, visibility="private")
+    rev = await factories.make_revision(db_session, paper=paper)
+    item = await factories.make_library_item(db_session, user=user, paper=paper)
+    tset = await factories.make_translation_set(
+        db_session, revision=rev, style="natural", scope="shared", status="complete"
+    )
+    await factories.make_translation_unit(
+        db_session, translation_set=tset, block_id="blk-p1", text_ja="整流フロー"
+    )
+    await factories.make_article(db_session, library_item=item)
+    # 原文 PDF アセット。
+    db_session.add(
+        SourceAsset(
+            paper_id=str(paper.id),
+            kind="pdf",
+            source_url="https://arxiv.org/pdf/x",
+            source_version=rev.source_version,
+            storage_key=StorageKeys.original_pdf(str(paper.id), rev.source_version),
+            content_type="application/pdf",
+            byte_size=10,
+            sha256="a" * 64,
+        )
+    )
+    # 訳文 PDF アセット(有効 natural セット由来。scope=shared なので translation_set_id=None)。
+    db_session.add(
+        SourceAsset(
+            paper_id=str(paper.id),
+            kind="translated_pdf",
+            source_url="https://arxiv.org/pdf/x-ja",
+            source_version=rev.source_version,
+            storage_key=StorageKeys.translated_pdf(
+                str(paper.id), rev.source_version, "natural", translation_set_id=None
+            ),
+            content_type="application/pdf",
+            byte_size=10,
+            sha256="b" * 64,
+        )
+    )
+    await db_session.commit()
+    return item
+
+
+async def test_start_multi_enqueues_paper_export_job(
+    ctx: tuple[AsyncClient, str, FastAPI, _FakeStorage],
+    db_session: AsyncSession,
+    factories: Any,
+) -> None:
+    """複数成果物(HTML + PDF)の選択は paper_export job を enqueue し 202 を返す。"""
+    client, uid, _app, _storage = ctx
+    user = await db_session.get(User, uid)
+    assert user is not None
+    item = await _seed_full_item(db_session, factories, user)
+
+    res = await client.post(
+        _START.format(item.id),
+        json={"artifacts": ["source_html", "pdf_original"]},
+    )
+    assert res.status_code == 202, res.text
+    body = res.json()
+    job_id = body["job_id"]
+    assert body["mode"] == "job"
+    assert body["download_url"] is None
+
+    job = await db_session.get(Job, job_id)
+    assert job is not None
+    assert job.kind == "paper_export"
+    assert str(job.user_id) == uid
+    assert str(job.library_item_id) == str(item.id)
+    assert set(job.payload["artifacts"]) == {"source_html", "pdf_original"}
+
+
+async def test_start_single_html_uses_sync_endpoint(
+    ctx: tuple[AsyncClient, str, FastAPI, _FakeStorage],
+    db_session: AsyncSession,
+    factories: Any,
+) -> None:
+    """単一 HTML の選択は job を作らず、同期 HTML エンドポイントへ誘導する。"""
+    client, uid, _app, _storage = ctx
+    user = await db_session.get(User, uid)
+    assert user is not None
+    item = await _seed_full_item(db_session, factories, user)
+
+    res = await client.post(
+        _START.format(item.id),
+        json={"artifacts": ["source_html"]},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["mode"] == "sync"
+    assert body["job_id"] is None
+    # 同期 HTML エンドポイントへの相対 URL を返す。
+    assert body["download_url"] == _SRC.format(item.id)
+
+    # job は作られていない。
+    jobs = (
+        (
+            await db_session.execute(
+                select(Job).where(
+                    Job.user_id == uid, Job.kind == "paper_export"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert jobs == []
+
+
+async def test_start_rejects_foreign_item(
+    ctx: tuple[AsyncClient, str, FastAPI, _FakeStorage],
+    db_session: AsyncSession,
+    factories: Any,
+) -> None:
+    """他人の library item は 404(所有権をサーバ側で再検証)。"""
+    client, _uid, _app, _storage = ctx
+    other = await factories.make_user(db_session)
+    item = await _seed_full_item(db_session, factories, other)
+
+    try:
+        res = await client.post(
+            _START.format(item.id),
+            json={"artifacts": ["source_html", "pdf_original"]},
+        )
+        assert res.status_code == 404, res.text
+    finally:
+        await purge_user(db_session, str(other.id))
+        await db_session.commit()
+
+
+async def test_start_rejects_unknown_artifact_value(
+    ctx: tuple[AsyncClient, str, FastAPI, _FakeStorage],
+    db_session: AsyncSession,
+    factories: Any,
+) -> None:
+    """artifact 値域外(Literal 外)は 422(スキーマ検証)。"""
+    client, uid, _app, _storage = ctx
+    user = await db_session.get(User, uid)
+    assert user is not None
+    item = await _seed_full_item(db_session, factories, user)
+
+    res = await client.post(
+        _START.format(item.id),
+        json={"artifacts": ["source_html", "nonsense_pdf"]},
+    )
+    assert res.status_code == 422, res.text
+
+
+async def test_start_rejects_empty_artifacts(
+    ctx: tuple[AsyncClient, str, FastAPI, _FakeStorage],
+    db_session: AsyncSession,
+    factories: Any,
+) -> None:
+    """空選択は 400(生成すべき成果物がない)。"""
+    client, uid, _app, _storage = ctx
+    user = await db_session.get(User, uid)
+    assert user is not None
+    item = await _seed_full_item(db_session, factories, user)
+
+    res = await client.post(_START.format(item.id), json={"artifacts": []})
+    assert res.status_code == 400, res.text
+
+
+async def test_start_rejects_unavailable_artifact_before_enqueue(
+    ctx: tuple[AsyncClient, str, FastAPI, _FakeStorage],
+    db_session: AsyncSession,
+    factories: Any,
+) -> None:
+    """availability=false の artifact を含む選択は enqueue 前に 409 で弾く。"""
+    client, uid, _app, _storage = ctx
+    user = await db_session.get(User, uid)
+    assert user is not None
+    # 原文のみ(訳文・PDF は未生成)。
+    paper = await factories.make_paper(db_session, owner=user, visibility="private")
+    await factories.make_revision(db_session, paper=paper)
+    item = await factories.make_library_item(db_session, user=user, paper=paper)
+    await db_session.commit()
+
+    res = await client.post(
+        _START.format(item.id),
+        json={"artifacts": ["source_html", "pdf_original"]},
+    )
+    assert res.status_code == 409, res.text
+
+    # job は作られていない(生成を始める前に弾く)。
+    jobs = (
+        (
+            await db_session.execute(
+                select(Job).where(Job.user_id == uid, Job.kind == "paper_export")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert jobs == []
+
+
+async def test_start_is_idempotent_with_key(
+    ctx: tuple[AsyncClient, str, FastAPI, _FakeStorage],
+    db_session: AsyncSession,
+    factories: Any,
+) -> None:
+    """同一 Idempotency-Key の再投入は同じ job を返す(重複生成しない)。"""
+    client, uid, _app, _storage = ctx
+    user = await db_session.get(User, uid)
+    assert user is not None
+    item = await _seed_full_item(db_session, factories, user)
+
+    key = f"paper-export-{uuid.uuid4().hex}"
+    first = await client.post(
+        _START.format(item.id),
+        json={"artifacts": ["source_html", "pdf_original"]},
+        headers={"Idempotency-Key": key},
+    )
+    assert first.status_code == 202, first.text
+    second = await client.post(
+        _START.format(item.id),
+        json={"artifacts": ["source_html", "pdf_original"]},
+        headers={"Idempotency-Key": key},
+    )
+    assert second.status_code == 202, second.text
+    assert first.json()["job_id"] == second.json()["job_id"]
+
+    jobs = (
+        (
+            await db_session.execute(
+                select(Job).where(Job.user_id == uid, Job.kind == "paper_export")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(jobs) == 1
+
+
+async def test_status_polls_job_and_returns_download_url(
+    ctx: tuple[AsyncClient, str, FastAPI, _FakeStorage],
+    db_session: AsyncSession,
+    factories: Any,
+) -> None:
+    """status エンドポイントは job 状態を返し、完了後は download_url を露出する。"""
+    client, uid, _app, _storage = ctx
+    user = await db_session.get(User, uid)
+    assert user is not None
+    item = await _seed_full_item(db_session, factories, user)
+
+    start = await client.post(
+        _START.format(item.id),
+        json={"artifacts": ["source_html", "pdf_original"]},
+    )
+    assert start.status_code == 202, start.text
+    job_id = start.json()["job_id"]
+
+    pending = await client.get(_STATUS.format(item.id, job_id))
+    assert pending.status_code == 200, pending.text
+    pending_body = pending.json()
+    assert pending_body["download_url"] is None
+    assert pending_body["job"]["id"] == job_id
+    assert pending_body["job"]["status"] == "queued"
+
+    # worker の完了を模す(zip 化・S3 は worker の責務)。
+    job = await db_session.get(Job, job_id)
+    assert job is not None
+    job.status = "succeeded"
+    job.result = {"download_url": "https://example.test/exports/paper.zip"}
+    await db_session.commit()
+
+    done = await client.get(_STATUS.format(item.id, job_id))
+    assert done.status_code == 200, done.text
+    done_body = done.json()
+    assert done_body["download_url"] == "https://example.test/exports/paper.zip"
+    assert done_body["job"]["status"] == "succeeded"
+
+
+async def test_status_other_users_job_is_404(
+    ctx: tuple[AsyncClient, str, FastAPI, _FakeStorage],
+    db_session: AsyncSession,
+    factories: Any,
+) -> None:
+    """他人の job の status は 404。"""
+    client, uid, _app, _storage = ctx
+    user = await db_session.get(User, uid)
+    assert user is not None
+    item = await _seed_full_item(db_session, factories, user)
+
+    other = await factories.make_user(db_session)
+    other_job = await factories.make_job(
+        db_session, kind="paper_export", user=other, library_item=None
+    )
+    await db_session.commit()
+    try:
+        res = await client.get(_STATUS.format(item.id, other_job.id))
+        assert res.status_code == 404, res.text
+    finally:
+        await purge_user(db_session, str(other.id))
+        await db_session.commit()

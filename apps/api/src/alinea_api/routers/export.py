@@ -52,7 +52,7 @@ from alinea_core.translation import (
     find_effective_set,
     resolve_translation_set_units,
 )
-from fastapi import APIRouter, Depends, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, Header, Query, Response, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -67,6 +67,7 @@ from alinea_api.schemas.export import (
     ExportChatThread,
     ExportNote,
     ExportResource,
+    PaperExportRequest,
     export_filename,
     render_annotations_markdown,
     render_bibtex,
@@ -674,6 +675,38 @@ async def _translation_complete(db: DbDep, revision: DocumentRevision, user_id: 
     return tset is not None and tset.status == "complete"
 
 
+async def _compute_availability(
+    db: DbDep, item: LibraryItem, user_id: str
+) -> StandaloneAvailability:
+    """成果物ごとの生成有無を最新リビジョン基準で計算する(所有権チェックは呼び出し側)。"""
+    revision = await _latest_revision(db, item)
+    if revision is None:
+        return StandaloneAvailability(
+            source_html=False,
+            translation_html=False,
+            bilingual_html=False,
+            article_html=await _has_article(db, str(item.id)),
+            pdf_original=False,
+            pdf_translated=False,
+            pdf_bilingual=False,
+        )
+
+    source_ready = _document_from_revision(revision) is not None
+    translation_ready = await _translation_complete(db, revision, user_id)
+    pdf_original = await _has_original_pdf(db, revision)
+    pdf_translated = await _has_translated_pdf(db, revision, user_id)
+    return StandaloneAvailability(
+        source_html=source_ready,
+        translation_html=source_ready and translation_ready,
+        bilingual_html=source_ready and translation_ready,
+        article_html=await _has_article(db, str(item.id)),
+        pdf_original=pdf_original,
+        pdf_translated=pdf_translated,
+        # 決定 D(暫定): 対訳 PDF は原文 PDF + 訳文 PDF の結合で作れる時のみ可。
+        pdf_bilingual=pdf_original and pdf_translated,
+    )
+
+
 @router.get(
     "/api/library-items/{item_id}/export/standalone/availability",
     response_model=StandaloneAvailability,
@@ -684,32 +717,7 @@ async def standalone_availability(
 ) -> StandaloneAvailability:
     """成果物ごとの生成有無(UI の選択可否判定。最新リビジョン基準でビューアと一致)。"""
     item = await _get_owned_item(db, user.id, item_id)
-    revision = await _latest_revision(db, item)
-    if revision is None:
-        return StandaloneAvailability(
-            source_html=False,
-            translation_html=False,
-            bilingual_html=False,
-            article_html=await _has_article(db, item_id),
-            pdf_original=False,
-            pdf_translated=False,
-            pdf_bilingual=False,
-        )
-
-    source_ready = _document_from_revision(revision) is not None
-    translation_ready = await _translation_complete(db, revision, str(user.id))
-    pdf_original = await _has_original_pdf(db, revision)
-    pdf_translated = await _has_translated_pdf(db, revision, str(user.id))
-    return StandaloneAvailability(
-        source_html=source_ready,
-        translation_html=source_ready and translation_ready,
-        bilingual_html=source_ready and translation_ready,
-        article_html=await _has_article(db, item_id),
-        pdf_original=pdf_original,
-        pdf_translated=pdf_translated,
-        # 決定 D(暫定): 対訳 PDF は原文 PDF + 訳文 PDF の結合で作れる時のみ可。
-        pdf_bilingual=pdf_original and pdf_translated,
-    )
+    return await _compute_availability(db, item, str(user.id))
 
 
 def _unit_displayable(unit: TranslationUnit) -> bool:
@@ -913,3 +921,115 @@ async def standalone_article_html(
     return _attachment(
         html_doc, media_type=_HTML_MEDIA_TYPE, filename=_html_filename(paper_bib, "-article")
     )
+
+
+# ============================================================================
+# 論文単位スタンドアロンエクスポート(非同期 API・Task 12)
+# POST /api/library-items/{id}/export/standalone       — 複数選択 → paper_export job
+# GET  /api/library-items/{id}/export/standalone/{job_id} — job 進捗 + download_url
+# ============================================================================
+# 単一 HTML の選択は既存の同期エンドポイントへ誘導する(S3・job を挟まない)。artifact →
+# 同期 HTML エンドポイントのパス suffix 対応(item_id を埋めて相対 URL を返す)。
+_SYNC_HTML_ENDPOINT: dict[str, str] = {
+    "source_html": "source.html",
+    "translation_html": "translation.html",
+    "bilingual_html": "bilingual.html",
+    "article_html": "article.html",
+}
+
+
+class PaperExportStartResponse(BaseModel):
+    """``POST .../export/standalone`` のレスポンス。
+
+    - ``mode="sync"``: 単一 HTML 選択。``download_url`` は同期 HTML エンドポイントの相対 URL。
+    - ``mode="job"``: paper_export job を enqueue。``job_id`` を status でポーリングする。
+    """
+
+    mode: str  # "sync" | "job"
+    job_id: str | None = None
+    download_url: str | None = None
+
+
+class PaperExportStatusResponse(BaseModel):
+    job: JobOut
+    download_url: str | None
+
+
+@router.post(
+    "/api/library-items/{item_id}/export/standalone",
+    response_model=PaperExportStartResponse,
+    operation_id="export_standaloneStart",
+)
+async def start_standalone_export(
+    item_id: str,
+    body: PaperExportRequest,
+    user: CurrentUser,
+    db: DbDep,
+    wakeup: ExportJobWakeupDep,
+    response: Response,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> PaperExportStartResponse:
+    """選択成果物をエクスポートする。単一 HTML は同期 URL、それ以外は paper_export job。
+
+    所有権・artifact 値域(Literal で検証済み)・availability を enqueue 前に再検証し、
+    未生成成果物を含む場合は生成を始めずに 409 で弾く(worker ハンドラの契約を写す)。
+    """
+    item = await _get_owned_item(db, user.id, item_id)
+
+    # 重複排除しつつ選択順は保つ。
+    artifacts: list[str] = list(dict.fromkeys(body.artifacts))
+    if not artifacts:
+        raise ProblemException("bad_request", detail="少なくとも 1 つの成果物を選択してください")
+
+    # availability を再検証(未生成成果物は生成を始める前に弾く)。artifact 値は
+    # StandaloneAvailability の属性名と 1:1 対応する。
+    availability = await _compute_availability(db, item, str(user.id))
+    unavailable = [a for a in artifacts if not getattr(availability, a)]
+    if unavailable:
+        raise ProblemException(
+            "conflict",
+            detail=f"未生成の成果物が含まれています: {', '.join(sorted(unavailable))}",
+        )
+
+    # 単一 HTML の選択は同期 HTML エンドポイントへ誘導する(job を作らない)。
+    if len(artifacts) == 1 and artifacts[0] in _SYNC_HTML_ENDPOINT:
+        suffix = _SYNC_HTML_ENDPOINT[artifacts[0]]
+        return PaperExportStartResponse(
+            mode="sync",
+            job_id=None,
+            download_url=f"/api/library-items/{item_id}/export/standalone/{suffix}",
+        )
+
+    # 複数選択 / PDF は paper_export job を enqueue する(bulk キュー。export.full と同型)。
+    store = JobStore(db)
+    job_id = await store.enqueue(
+        kind="paper_export",
+        priority="bulk",
+        user_id=str(user.id),
+        paper_id=str(item.paper_id),
+        library_item_id=str(item.id),
+        payload={"artifacts": artifacts},
+        idempotency_key=idempotency_key,
+    )
+    await wakeup(job_id)
+    response.status_code = status.HTTP_202_ACCEPTED
+    return PaperExportStartResponse(mode="job", job_id=job_id, download_url=None)
+
+
+@router.get(
+    "/api/library-items/{item_id}/export/standalone/{job_id}",
+    response_model=PaperExportStatusResponse,
+    operation_id="export_standaloneStatus",
+)
+async def get_standalone_export(
+    item_id: str, job_id: str, user: CurrentUser, db: DbDep
+) -> PaperExportStatusResponse:
+    """paper_export job の進捗と(完了後は)署名付き download_url を返す。"""
+    # 所有権は job.user_id で担保する(item は導線の一貫性のため経路に残す)。
+    if not _valid_uuid(job_id):
+        raise ProblemException("not_found")
+    job = await db.get(Job, job_id)
+    if job is None or str(job.user_id) != str(user.id) or job.kind != "paper_export":
+        raise ProblemException("not_found")
+    download_url = job.result.get("download_url") if isinstance(job.result, dict) else None
+    return PaperExportStatusResponse(job=job_to_out(job), download_url=download_url)
