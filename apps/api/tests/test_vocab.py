@@ -661,4 +661,5 @@ def test_anki_cell_sanitizer() -> None:
     assert _anki_cell("a\tb") == "a b"
     assert _anki_cell("a\nb") == "a<br>b"
     assert _anki_cell("a\r\nb") == "a<br>b"
+    assert _anki_cell("a\rb") == "a<br>b"  # 孤立 CR も <br> に変換
     assert _anki_cell("<b>bold</b>") == "&lt;b&gt;bold&lt;/b&gt;"

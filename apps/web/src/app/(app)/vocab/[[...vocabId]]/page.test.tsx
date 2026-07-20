@@ -3,6 +3,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { VocabListResponse } from "@alinea/api-client";
 
+const triggerDownload = vi.fn();
+vi.mock("@/components/settings/download", () => ({
+  triggerDownload: (url: string) => triggerDownload(url),
+}));
+
 const replace = vi.fn();
 const push = vi.fn();
 let mockParams: { vocabId?: string[] } = {};
@@ -72,6 +77,7 @@ describe("VocabPage (VT-VOC-01 / VT-VOC-02 / VT-VOC-04 integration)", () => {
   beforeEach(() => {
     replace.mockClear();
     push.mockClear();
+    triggerDownload.mockClear();
     mockParams = {};
     mockSearch = new URLSearchParams();
     vocabList.mockReset().mockResolvedValue({ data: listResponse() });
@@ -137,5 +143,24 @@ describe("VocabPage (VT-VOC-01 / VT-VOC-02 / VT-VOC-04 integration)", () => {
     renderPage();
     await screen.findByText("boil down to");
     expect(screen.getByRole("button", { name: /復習をはじめる/ })).toHaveTextContent("12");
+  });
+
+  test("Anki export button passes kind/due/q/sort each exactly once into the download URL (TS-VOCAB-ANKI-URL)", async () => {
+    // Set all four filter params to known values
+    mockSearch = new URLSearchParams("kind=word&due=true&q=flow&sort=term");
+    renderPage();
+    await screen.findByText("boil down to");
+
+    fireEvent.click(screen.getByRole("button", { name: /Anki/i }));
+
+    expect(triggerDownload).toHaveBeenCalledOnce();
+    const url: string = triggerDownload.mock.calls[0][0];
+
+    // Each param appears exactly once
+    const params = new URLSearchParams(url.split("?")[1] ?? "");
+    expect(params.getAll("kind")).toEqual(["word"]);
+    expect(params.getAll("due")).toEqual(["true"]);
+    expect(params.getAll("q")).toEqual(["flow"]);
+    expect(params.getAll("sort")).toEqual(["term"]);
   });
 });
