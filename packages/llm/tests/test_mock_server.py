@@ -47,7 +47,7 @@ async def test_mock_openai_responses_endpoint() -> None:
 
 
 async def test_mock_openai_responses_accepts_output_config() -> None:
-    """output_config フィールド(Responses API スタイル)を受け付けて無視する。"""
+    """output_config フィールド(Responses API スタイル)を受け付けてエラーにならない。"""
     app = build_app()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
         body = {

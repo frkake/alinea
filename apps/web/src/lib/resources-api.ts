@@ -12,6 +12,8 @@ import {
   resourcesRefreshMeta,
   resourcesSuggestionAccept,
   resourcesSuggestionDismiss,
+  type ResourceLink as SdkResourceLink,
+  type ResourceListResponse as SdkResourceListResponse,
 } from "@alinea/api-client";
 import type { ResKind, ResourceLink, ResourceListResponse } from "@/components/viewer/resources/types";
 
@@ -32,10 +34,29 @@ function throwIfError(result: { error?: unknown; response: Response }): void {
   }
 }
 
+/** SDK `ResourceLink` の optional nullable フィールドを `T | null` へ正規化する。 */
+function toResourceLink(raw: SdkResourceLink): ResourceLink {
+  return {
+    ...raw,
+    thumbnail_url: raw.thumbnail_url ?? null,
+    note: raw.note ?? null,
+    meta: raw.meta ?? {},
+  };
+}
+
+/** SDK `ResourceListResponse` の items を正規化済み `ResourceLink` 配列に変換する。 */
+function toResourceListResponse(raw: SdkResourceListResponse): ResourceListResponse {
+  return {
+    ...raw,
+    items: raw.items.map(toResourceLink),
+    suggestion: raw.suggestion ?? null,
+  };
+}
+
 export async function listResources(itemId: string): Promise<ResourceListResponse> {
   const r = await resourcesList({ path: { item_id: itemId } });
   throwIfError(r);
-  return r.data as ResourceListResponse;
+  return toResourceListResponse(r.data as SdkResourceListResponse);
 }
 
 export async function createResource(
@@ -44,7 +65,7 @@ export async function createResource(
 ): Promise<ResourceLink> {
   const r = await resourcesCreate({ path: { item_id: itemId }, body: payload });
   throwIfError(r);
-  return r.data as ResourceLink;
+  return toResourceLink(r.data as SdkResourceLink);
 }
 
 export async function patchResource(
@@ -53,7 +74,7 @@ export async function patchResource(
 ): Promise<ResourceLink> {
   const r = await resourcesUpdate({ path: { resource_id: resourceId }, body: patch });
   throwIfError(r);
-  return r.data as ResourceLink;
+  return toResourceLink(r.data as SdkResourceLink);
 }
 
 export async function deleteResource(resourceId: string): Promise<void> {
@@ -64,13 +85,13 @@ export async function deleteResource(resourceId: string): Promise<void> {
 export async function refreshResourceMeta(resourceId: string): Promise<ResourceLink> {
   const r = await resourcesRefreshMeta({ path: { resource_id: resourceId } });
   throwIfError(r);
-  return r.data as ResourceLink;
+  return toResourceLink(r.data as SdkResourceLink);
 }
 
 export async function acceptResourceSuggestion(itemId: string): Promise<ResourceLink> {
   const r = await resourcesSuggestionAccept({ path: { item_id: itemId } });
   throwIfError(r);
-  return r.data as ResourceLink;
+  return toResourceLink(r.data as SdkResourceLink);
 }
 
 export async function dismissResourceSuggestion(itemId: string): Promise<void> {

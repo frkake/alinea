@@ -52,6 +52,27 @@ function throwIfError(result: { error?: unknown; response: Response }): void {
   }
 }
 
+/** `CollectionEntryOut` の optional nullable フィールドを `T | null` へ正規化する。 */
+function toCollectionEntry(raw: CollectionEntryOut): CollectionEntry {
+  return {
+    ...raw,
+    assignee: raw.assignee ?? null,
+    presentation_minutes: raw.presentation_minutes ?? null,
+    note: raw.note ?? null,
+  };
+}
+
+/** `CollectionDetailResponse` の optional nullable フィールドを `T | null` へ正規化する。 */
+function toCollectionDetail(raw: CollectionDetailResponse): CollectionDetail {
+  return {
+    ...raw,
+    description: raw.description ?? null,
+    deadline: raw.deadline ?? null,
+    days_left: raw.days_left ?? null,
+    entries: raw.entries.map(toCollectionEntry),
+  };
+}
+
 export async function listCollections(): Promise<CollectionListResponse> {
   const r = await collectionsList();
   throwIfError(r);
@@ -61,7 +82,7 @@ export async function listCollections(): Promise<CollectionListResponse> {
 export async function getCollection(collectionId: string): Promise<CollectionDetail> {
   const r = await collectionsGet({ path: { collection_id: collectionId } });
   throwIfError(r);
-  return r.data as CollectionDetailResponse as CollectionDetail;
+  return toCollectionDetail(r.data as CollectionDetailResponse);
 }
 
 export async function createCollection(body: {
@@ -71,7 +92,7 @@ export async function createCollection(body: {
 }): Promise<CollectionDetail> {
   const r = await collectionsCreate({ body });
   throwIfError(r);
-  return r.data as CollectionDetailResponse as CollectionDetail;
+  return toCollectionDetail(r.data as CollectionDetailResponse);
 }
 
 export async function patchCollection(
@@ -80,7 +101,7 @@ export async function patchCollection(
 ): Promise<CollectionDetail> {
   const r = await collectionsUpdate({ path: { collection_id: collectionId }, body });
   throwIfError(r);
-  return r.data as CollectionDetailResponse as CollectionDetail;
+  return toCollectionDetail(r.data as CollectionDetailResponse);
 }
 
 export async function deleteCollection(collectionId: string): Promise<void> {
@@ -97,13 +118,13 @@ export async function addEntry(
     body: { library_item_id: libraryItemId },
   });
   throwIfError(r);
-  return r.data as CollectionEntryOut as CollectionEntry;
+  return toCollectionEntry(r.data as CollectionEntryOut);
 }
 
 export async function patchEntry(entryId: string, body: EntryPatch): Promise<CollectionEntry> {
   const r = await collectionEntriesUpdate({ path: { entry_id: entryId }, body });
   throwIfError(r);
-  return r.data as CollectionEntryOut as CollectionEntry;
+  return toCollectionEntry(r.data as CollectionEntryOut);
 }
 
 export async function removeEntry(entryId: string): Promise<void> {
