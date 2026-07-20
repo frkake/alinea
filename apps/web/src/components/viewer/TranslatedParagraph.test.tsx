@@ -4,6 +4,12 @@ import type { TranslationUnitItem } from "@alinea/api-client";
 import { TranslatedParagraph, type PlacedHighlight } from "@/components/viewer/TranslatedParagraph";
 import type { DocBlock } from "@/components/viewer/document-types";
 
+// TranslatedParagraph now uses useRetranslation internally. Tests that don't
+// pass unitsQueryKey still render without a QueryClientProvider, so mock the hook.
+vi.mock("@/components/viewer/use-retranslation", () => ({
+  useRetranslation: () => ({ mutate: vi.fn(), isPending: false, error: null }),
+}));
+
 function block(overrides: Partial<DocBlock> = {}): DocBlock {
   return { id: "blk-1", type: "paragraph", inlines: [{ t: "text", v: "Hello world" }], ...overrides };
 }
