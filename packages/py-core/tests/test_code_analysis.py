@@ -67,7 +67,7 @@ def _device_tar(name: str) -> bytes:
 # --------------------------------------------------------------------------- #
 # archive 安全境界
 # --------------------------------------------------------------------------- #
-def test_extract_accepts_normal_code_files():
+def test_extract_accepts_normal_code_files() -> None:
     tar = _tar(
         [
             (f"{_PREFIX}/main.py", b"def f():\n    return 1\n"),
@@ -80,34 +80,34 @@ def test_extract_accepts_normal_code_files():
 
 
 @pytest.mark.parametrize("bad", ["../evil.py", "/etc/passwd.py", "a/../../x.py"])
-def test_extract_rejects_path_traversal_and_absolute(bad):
+def test_extract_rejects_path_traversal_and_absolute(bad: str) -> None:
     tar = _tar([(bad, b"x=1\n")])
     with pytest.raises(ArchiveError) as exc:
         extract_repository(tar, commit_sha="abc123")
     assert exc.value.code in {"path_traversal", "unsafe_member"}
 
 
-def test_extract_rejects_symlink():
+def test_extract_rejects_symlink() -> None:
     tar = _tar([(f"{_PREFIX}/ok.py", b"x=1\n")], links=[(f"{_PREFIX}/evil.py", "/etc/passwd", "sym")])
     with pytest.raises(ArchiveError) as exc:
         extract_repository(tar, commit_sha="abc123")
     assert exc.value.code == "unsafe_link"
 
 
-def test_extract_rejects_hardlink():
+def test_extract_rejects_hardlink() -> None:
     tar = _tar([(f"{_PREFIX}/ok.py", b"x=1\n")], links=[(f"{_PREFIX}/hl.py", f"{_PREFIX}/ok.py", "lnk")])
     with pytest.raises(ArchiveError) as exc:
         extract_repository(tar, commit_sha="abc123")
     assert exc.value.code == "unsafe_link"
 
 
-def test_extract_rejects_device_file():
+def test_extract_rejects_device_file() -> None:
     with pytest.raises(ArchiveError) as exc:
         extract_repository(_device_tar(f"{_PREFIX}/null.py"), commit_sha="abc123")
     assert exc.value.code == "unsafe_device"
 
 
-def test_extract_rejects_extracted_total_exceeded():
+def test_extract_rejects_extracted_total_exceeded() -> None:
     data = b"y" * 2048
     tar = _tar([(f"{_PREFIX}/a.py", data), (f"{_PREFIX}/b.py", data)])
     with pytest.raises(ArchiveError) as exc:
@@ -115,7 +115,7 @@ def test_extract_rejects_extracted_total_exceeded():
     assert exc.value.code == "extracted_too_large"
 
 
-def test_extract_rejects_target_code_over_limit():
+def test_extract_rejects_target_code_over_limit() -> None:
     data = b"z = 1\n" * 300
     tar = _tar([(f"{_PREFIX}/a.py", data), (f"{_PREFIX}/b.py", data)])
     with pytest.raises(ArchiveError) as exc:
@@ -123,7 +123,7 @@ def test_extract_rejects_target_code_over_limit():
     assert exc.value.code == "target_code_too_large"
 
 
-def test_extract_rejects_too_many_files():
+def test_extract_rejects_too_many_files() -> None:
     members = [(f"{_PREFIX}/f{i}.py", b"x=1\n") for i in range(5)]
     tar = _tar(members)
     with pytest.raises(ArchiveError) as exc:
@@ -131,7 +131,7 @@ def test_extract_rejects_too_many_files():
     assert exc.value.code == "too_many_files"
 
 
-def test_extract_skips_single_file_over_512kib():
+def test_extract_skips_single_file_over_512kib() -> None:
     big = b"a = 1\n" * 100_000  # > default per-file cap when lowered
     tar = _tar([(f"{_PREFIX}/big.py", big), (f"{_PREFIX}/small.py", b"ok=1\n")])
     repo = extract_repository(tar, commit_sha="abc123", max_file_bytes=1024)
@@ -153,7 +153,7 @@ def test_extract_skips_single_file_over_512kib():
         "credentials.json",
     ],
 )
-def test_secret_files_excluded(path):
+def test_secret_files_excluded(path: str) -> None:
     assert is_secret_file(path)
     assert not is_target_code_file(path)
 
@@ -174,11 +174,11 @@ def test_secret_files_excluded(path):
         "image.png",
     ],
 )
-def test_generated_binary_vendor_excluded(path):
+def test_generated_binary_vendor_excluded(path: str) -> None:
     assert not is_target_code_file(path)
 
 
-def test_extract_excludes_secrets_and_vendor_from_files():
+def test_extract_excludes_secrets_and_vendor_from_files() -> None:
     tar = _tar(
         [
             (f"{_PREFIX}/train.py", b"import torch\n"),
@@ -231,7 +231,7 @@ const beta = () => 42;
 
 
 @pytest.mark.skipif(not tree_sitter_available(), reason="tree-sitter grammar pack unavailable")
-def test_python_chunks_on_symbol_boundaries():
+def test_python_chunks_on_symbol_boundaries() -> None:
     chunks = chunk_source("main.py", PY_SRC)
     ts_chunks = [c for c in chunks if c.strategy == "tree_sitter"]
     symbols = {c.symbol for c in ts_chunks}
@@ -249,14 +249,14 @@ def test_python_chunks_on_symbol_boundaries():
 
 
 @pytest.mark.skipif(not tree_sitter_available(), reason="tree-sitter grammar pack unavailable")
-def test_js_chunks_on_symbol_boundaries():
+def test_js_chunks_on_symbol_boundaries() -> None:
     chunks = chunk_source("app.js", JS_SRC)
     symbols = {c.symbol for c in chunks if c.strategy == "tree_sitter"}
     assert "alpha" in symbols
     assert "Widget" in symbols
 
 
-def test_unknown_language_falls_back_to_line_window():
+def test_unknown_language_falls_back_to_line_window() -> None:
     # .txt は言語マップ外 → 行窓フォールバック(ただし対象拡張子でないので実運用では来ない)。
     src = "\n".join(f"line {i}" for i in range(450))
     chunks = chunk_source("notes.unknownext", src)
@@ -265,7 +265,7 @@ def test_unknown_language_falls_back_to_line_window():
     assert all(c.line_count <= MAX_CHUNK_LINES for c in chunks)
 
 
-def test_line_window_respects_max_lines():
+def test_line_window_respects_max_lines() -> None:
     src = "\n".join(f"x{i} = {i}" for i in range(500))
     # 言語判定できない拡張子で行窓を強制。
     chunks = chunk_source("data.zzz", src)
@@ -273,7 +273,7 @@ def test_line_window_respects_max_lines():
     assert len(chunks) >= 3
 
 
-def test_chunk_repository_is_deterministic():
+def test_chunk_repository_is_deterministic() -> None:
     files = {"b.py": PY_SRC, "a.py": PY_SRC}
     first = chunk_repository(files)
     second = chunk_repository(files)
@@ -296,7 +296,7 @@ _CLAIM = AnalysisClaim(
 _VALID_BLOCKS = {"blk-3-p0-abcd"}
 
 
-def test_verify_accepts_matching_correspondence():
+def test_verify_accepts_matching_correspondence() -> None:
     raw = [
         {
             "path": "model.py",
@@ -316,7 +316,7 @@ def test_verify_accepts_matching_correspondence():
     assert out[0].paper_anchor["block_id"] == "blk-3-p0-abcd"
 
 
-def test_verify_rejects_nonexistent_path():
+def test_verify_rejects_nonexistent_path() -> None:
     raw = [
         {
             "path": "does_not_exist.py",
@@ -333,7 +333,7 @@ def test_verify_rejects_nonexistent_path():
     ) == []
 
 
-def test_verify_rejects_out_of_range_lines():
+def test_verify_rejects_out_of_range_lines() -> None:
     raw = [
         {
             "path": "model.py",
@@ -350,7 +350,7 @@ def test_verify_rejects_out_of_range_lines():
     ) == []
 
 
-def test_verify_rejects_fabricated_excerpt():
+def test_verify_rejects_fabricated_excerpt() -> None:
     raw = [
         {
             "path": "model.py",
@@ -367,7 +367,7 @@ def test_verify_rejects_fabricated_excerpt():
     ) == []
 
 
-def test_verify_rejects_invalid_anchor():
+def test_verify_rejects_invalid_anchor() -> None:
     other_claim = AnalysisClaim(section_id="S9", block_id="blk-nope", claim_text="x")
     raw = [
         {
@@ -385,7 +385,7 @@ def test_verify_rejects_invalid_anchor():
     ) == []
 
 
-def test_prompt_injection_in_code_does_not_change_validation():
+def test_prompt_injection_in_code_does_not_change_validation() -> None:
     """コード内の「前の指示を無視せよ」で検証規則は変わらない。
 
     悪意ある excerpt が実バイトに無ければ、注入文言があっても破棄される。
@@ -434,7 +434,7 @@ def test_prompt_injection_in_code_does_not_change_validation():
     assert out[0].confidence == "medium"
 
 
-def test_verify_truncates_excerpt_to_500_chars():
+def test_verify_truncates_excerpt_to_500_chars() -> None:
     long_line = "x = " + "a" * 800
     files = {"big.py": long_line + "\n"}
     claim = AnalysisClaim(section_id="S1", block_id="b1", claim_text="c")
@@ -459,7 +459,7 @@ def test_verify_truncates_excerpt_to_500_chars():
 # --------------------------------------------------------------------------- #
 # 費用見積り
 # --------------------------------------------------------------------------- #
-def test_cost_estimate_is_conservative_and_positive():
+def test_cost_estimate_is_conservative_and_positive() -> None:
     pricing = ModelPricing(input_per_mtok=3.0, output_per_mtok=15.0, embedding_per_mtok=0.02)
     est = estimate_tokens_and_cost(
         total_code_chars=200_000,
@@ -477,7 +477,7 @@ def test_cost_estimate_is_conservative_and_positive():
     assert est.estimated_embedding_tokens >= 200_000 / 4
 
 
-def test_cost_scales_with_more_claims():
+def test_cost_scales_with_more_claims() -> None:
     pricing = ModelPricing(input_per_mtok=3.0, output_per_mtok=15.0)
     small = estimate_tokens_and_cost(
         total_code_chars=50_000, chunk_count=50, files=10, claim_count=5, pricing=pricing

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
+import yaml  # type: ignore[import-untyped]
 from alinea_llm.errors import ErrorKind, ProviderError
 from alinea_llm.protocols import EmbeddingProvider
 from alinea_llm.providers.openai_embeddings import (
@@ -135,7 +135,8 @@ class _FakeEmbeddingsNamespace:
 
     async def create(self, **kwargs: Any) -> _FakeEmbeddingResponse:
         self._owner.calls.append(kwargs)
-        return self._owner.builder(kwargs)
+        result: _FakeEmbeddingResponse = self._owner.builder(kwargs)
+        return result
 
 
 class _FakeOpenAIClient:
@@ -271,7 +272,8 @@ _PKG = Path(__file__).resolve().parents[1]
 
 
 def _yaml(name: str) -> dict[str, Any]:
-    return yaml.safe_load((_PKG / name).read_text(encoding="utf-8"))
+    result: dict[str, Any] = yaml.safe_load((_PKG / name).read_text(encoding="utf-8"))
+    return result
 
 
 def test_models_yaml_registers_embedding_model() -> None:

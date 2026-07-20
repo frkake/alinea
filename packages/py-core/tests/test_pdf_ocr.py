@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import fitz
 import pytest
@@ -48,7 +48,7 @@ def _scan_background_pdf(*, pages: int = 1, tiled: bool = False) -> bytes:
             page.insert_image(fitz.Rect(10, 10, 290, 390), stream=png)
     data = document.tobytes()
     document.close()
-    return data
+    return cast(bytes, data)
 
 
 def _gapped_tiled_scan_pdf() -> bytes:
@@ -66,7 +66,7 @@ def _gapped_tiled_scan_pdf() -> bytes:
         page.insert_image(rect, stream=png)
     data = document.tobytes()
     document.close()
-    return data
+    return cast(bytes, data)
 
 
 def _scan_visual_pdf(*visual_bboxes: tuple[float, float, float, float]) -> bytes:
@@ -86,7 +86,7 @@ def _scan_visual_pdf(*visual_bboxes: tuple[float, float, float, float]) -> bytes
     page.insert_image(page.rect, stream=png)
     data = document.tobytes()
     document.close()
-    return data
+    return cast(bytes, data)
 
 
 def _scan_table_grid_pdf() -> bytes:
@@ -117,7 +117,7 @@ def _scan_table_grid_pdf() -> bytes:
     page.insert_image(page.rect, stream=png)
     data = document.tobytes()
     document.close()
-    return data
+    return cast(bytes, data)
 
 
 def _inset_scan_background_pdf() -> bytes:
@@ -131,7 +131,7 @@ def _inset_scan_background_pdf() -> bytes:
     )
     data = document.tobytes()
     document.close()
-    return data
+    return cast(bytes, data)
 
 
 def _multi_page_raster_rect_pdf(
@@ -146,7 +146,7 @@ def _multi_page_raster_rect_pdf(
         page.insert_image(fitz.Rect(*bbox), stream=png)
     data = document.tobytes()
     document.close()
-    return data
+    return cast(bytes, data)
 
 
 def _smaller_image_pdf() -> bytes:
@@ -157,7 +157,7 @@ def _smaller_image_pdf() -> bytes:
     page.insert_image(fitz.Rect(50, 115, 250, 235), stream=image.tobytes("png"))
     data = document.tobytes()
     document.close()
-    return data
+    return cast(bytes, data)
 
 
 def _ocr_line(text: str, bbox: tuple[float, float, float, float]) -> dict[str, Any]:
@@ -998,7 +998,7 @@ def test_parse_pdf_ocr_inherits_confirmed_inset_scan_profile_across_blank_page(
             (50, 180, 250, 196),
         ),
     ]
-    pages_lines = [[], []]
+    pages_lines: list[list[dict[str, Any]]] = [[], []]
     pages_lines[text_page] = substantive_lines
     _install_ocr_pages(monkeypatch, pages_lines)
     inset = (34.0, 10.0, 266.0, 390.0)
@@ -1121,7 +1121,8 @@ def test_parse_pdf_reports_stable_missing_ocr_engine_error(
 def test_pdf_ocr_readiness_and_execution_fail_closed_on_unsupported_platform(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(pdf_parser_module.sys, "platform", "darwin")
+    import sys as _sys
+    monkeypatch.setattr(_sys, "platform", "darwin")
 
     readiness = pdf_parser_module.check_pdf_ocr_readiness()
     with pytest.raises(PdfParseError) as exc_info:

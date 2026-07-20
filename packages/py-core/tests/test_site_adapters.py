@@ -819,7 +819,7 @@ def test_discover_paper_resources_models_sorted_by_downloads_desc() -> None:
 def test_discover_paper_resources_dedupes_by_normalized_url() -> None:
     from alinea_core.adapters.huggingface import discover_paper_resources
 
-    payload = {
+    payload: dict[str, object] = {
         "id": "1234.5678",
         "githubRepo": "https://github.com/acme/repo",
         # projectPage が githubRepo と同一(正規化後) → 重複排除で 1 件に畳む。
@@ -875,7 +875,9 @@ async def test_hf_client_fetch_paper_from_configured_base() -> None:
     finally:
         await client.aclose()
     assert data["id"] == "2307.09288"
-    assert data["githubRepo"].startswith("https://github.com/")
+    github_repo = data["githubRepo"]
+    assert isinstance(github_repo, str)
+    assert github_repo.startswith("https://github.com/")
 
 
 async def test_hf_client_fetch_repo_tags_for_model() -> None:

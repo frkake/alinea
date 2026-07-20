@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -60,7 +61,7 @@ def _storage(response: dict[str, Any]) -> S3Storage:
     storage = object.__new__(S3Storage)
 
     @asynccontextmanager
-    async def client_ctx(**_kwargs: Any):
+    async def client_ctx(**_kwargs: Any) -> AsyncIterator[_Client]:
         yield _Client(response)
 
     storage._client_ctx = client_ctx  # type: ignore[method-assign]

@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import fitz
 import pytest
@@ -196,7 +197,7 @@ def _vector_drawing_pdf(*, with_caption: bool) -> bytes:
     )
     payload = document.tobytes()
     document.close()
-    return payload
+    return cast(bytes, payload)
 
 
 def test_vector_only_figure_is_cropped_from_pdf_drawing_commands() -> None:
@@ -548,7 +549,10 @@ def test_optional_table_detectors_never_abort_the_document() -> None:
         def find_tables(self) -> object:
             raise LookupError("third-party table detector failed")
 
-    fallback = SimpleNamespace(find=lambda _page_no: [])
+    fallback = cast(
+        pdf_parser_module._PdfPlumberTableFallback,
+        SimpleNamespace(find=lambda _page_no: []),
+    )
 
     assert pdf_parser_module._detect_table_candidates(BrokenPrimaryPage(), 1, fallback) == []
 

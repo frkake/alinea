@@ -37,8 +37,8 @@ def test_rrf_is_scale_independent() -> None:
 def test_rrf_ties_broken_by_id_ascending() -> None:
     # single list, but two ids never co-occur → same-position ids tie-break by id asc.
     fused = reciprocal_rank_fusion([["b"], ["a"]], k=60)
-    assert fused[0] == ("a", pytest.approx(1 / 61))
-    assert fused[1] == ("b", pytest.approx(1 / 61))
+    assert fused[0][0] == "a" and fused[0][1] == pytest.approx(1 / 61)
+    assert fused[1][0] == "b" and fused[1][1] == pytest.approx(1 / 61)
 
 
 def test_rrf_weights_can_disable_a_list() -> None:
