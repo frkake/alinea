@@ -62,9 +62,12 @@ class IngestCheckSaved(BaseModel):
 class IngestCheckResponse(BaseModel):
     """§3.1 GET /api/ingest/check の 200 応答。"""
 
-    kind: Literal["arxiv", "pdf", "unsupported"]
+    kind: Literal["arxiv", "site", "pdf", "unsupported"]
     arxiv_id: str | None = None
     arxiv_version: str | None = None
+    # kind="site"(他サイトアダプタ。ACL Anthology 等)のときのみ非 null。
+    site: str | None = None
+    external_id: str | None = None
     bib: IngestCheckBib | None = None
     latex_available: bool | None = None
     suggested_tags: list[str] = Field(default_factory=list)
@@ -90,6 +93,28 @@ class IngestArxivResponse(BaseModel):
     paper_id: str
     library_item_id: str
     job_id: str
+    duplicate: bool = False
+
+
+# --- POST /api/ingest/site(S8。他サイト取り込み) ------------------------------------
+
+
+class SiteIngestRequest(BaseModel):
+    """POST /api/ingest/site のリクエスト本文(ACL Anthology 等の論文ページ URL)。"""
+
+    url: str
+    status: str | None = None
+    tags: list[str] | None = None
+    collection_id: str | None = None
+    quick_note: str | None = None
+
+
+class SiteIngestResponse(BaseModel):
+    """POST /api/ingest/site の 202 応答(§3.2 と同型 + duplicate)。"""
+
+    job_id: str
+    library_item_id: str
+    paper_id: str
     duplicate: bool = False
 
 

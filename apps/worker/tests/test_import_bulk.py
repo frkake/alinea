@@ -27,6 +27,8 @@ from alinea_core.db.models import (
     DocumentRevision,
     LibraryItem,
     Note,
+    Paper,
+    PaperExternalId,
     User,
     VocabEntry,
 )
@@ -207,6 +209,79 @@ async def test_import_restores_shared_translation_and_paper_glossary(
     )
     assert len(paper_terms) == 1
     assert paper_terms[0].source_term == "straight map"
+
+
+async def test_import_restores_paper_external_id(db_session: AsyncSession) -> None:
+    """完全バックアップの外部識別子(site, external_id)が別ユーザーへ復元される。"""
+    src = await _seed_user_data(db_session)
+    payload = await _detached_payload(db_session, src["user_id"])
+    assert len(payload["paper_external_ids"]) == 1
+    external_id = payload["paper_external_ids"][0]["external_id"]
+    await _delete_source_user(db_session, src["user_id"])
+
+    target = await _make_user(db_session)
+    summary = await import_data_json(db_session, target["user_id"], payload)
+    assert summary["failed"] == [], summary["failed"]
+
+    row = (
+        await db_session.execute(
+            select(PaperExternalId).where(PaperExternalId.external_id == external_id)
+        )
+    ).scalar_one()
+    assert row.site == "acl_anthology"
+    # 復元された identifier は target の新規 paper を指す。
+    paper = await db_session.get(Paper, str(row.paper_id))
+    assert paper is not None
+    assert str(paper.owner_user_id) == target["user_id"]
+
+
+async def test_import_name_matches_by_external_id(db_session: AsyncSession) -> None:
+    """(site, external_id) で既存 Paper に名寄せし、重複作成しない。"""
+    src = await _seed_user_data(db_session)
+    payload = await _detached_payload(db_session, src["user_id"])
+    external_id = payload["paper_external_ids"][0]["external_id"]
+    # 元 paper から arxiv_id/doi を落とし、名寄せが external_id だけに依存するようにする。
+    for entry in payload["library"]:
+        entry["arxiv_id"] = None
+        entry["doi"] = None
+    await _delete_source_user(db_session, src["user_id"])
+    # 論文用の外部識別子は CASCADE で消えるため「別 PC」を模して明示除去済み。
+
+    # target には同一 (site, external_id) を持つ既存 paper を先に作っておく。
+    target = await _make_user(db_session)
+    existing = Paper(
+        id=str(uuid.uuid4()),
+        title="Pre-existing ACL paper",
+        visibility="private",
+        owner_user_id=target["user_id"],
+    )
+    db_session.add(existing)
+    await db_session.flush()
+    db_session.add(
+        PaperExternalId(
+            id=str(uuid.uuid4()),
+            paper_id=existing.id,
+            site="acl_anthology",
+            external_id=external_id,
+        )
+    )
+    await db_session.commit()
+
+    summary = await import_data_json(db_session, target["user_id"], payload)
+    assert summary["failed"] == [], summary["failed"]
+
+    # 既存 paper を再利用(新規 paper を作らない)。
+    papers = (
+        (
+            await db_session.execute(
+                select(PaperExternalId).where(PaperExternalId.external_id == external_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(papers) == 1
+    assert str(papers[0].paper_id) == str(existing.id)
 
 
 async def test_import_is_lossless_for_anchors_and_content(db_session: AsyncSession) -> None:

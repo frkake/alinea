@@ -120,6 +120,28 @@ class Paper(Base):
     updated_at: Mapped[dt.datetime] = _now()
 
 
+class PaperExternalId(Base):
+    """外部サイト由来の論文識別子(S8。ACL Anthology / OpenReview / PubMed 等)。
+
+    ``(site, external_id)`` を一意にし、一論文へ複数の識別子(例: PubMed の PMID と
+    PMC の PMCID)を保存できる。取り込み時の名寄せ(冪等化)と完全バックアップの
+    復元名寄せに使う。arXiv は ``papers.arxiv_id`` が担うため、ここには入れない。
+    """
+
+    __tablename__ = "paper_external_ids"
+    id: Mapped[str] = _uuid_pk()
+    paper_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
+    )
+    site: Mapped[str] = mapped_column(Text, nullable=False)
+    external_id: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_url: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    created_at: Mapped[dt.datetime] = _now()
+    __table_args__ = (
+        UniqueConstraint("site", "external_id", name="uq_paper_external_ids_site_external"),
+    )
+
+
 class SourceAsset(Base):
     __tablename__ = "source_assets"
     id: Mapped[str] = _uuid_pk()
@@ -731,6 +753,7 @@ __all__ = [
     "Notification",
     "OverviewFigure",
     "Paper",
+    "PaperExternalId",
     "QuotaLimit",
     "ReadingSession",
     "ResourceLink",

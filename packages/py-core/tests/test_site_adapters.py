@@ -8,10 +8,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
+import pytest
 from alinea_core.adapters import (
     AclAnthologyAdapter,
+    SiteFetchError,
     SiteRef,
+    adapter_allowed_hosts,
     extract_citation_meta,
+    fetch_html,
+    fetch_pdf,
     normalize_scholar_author,
     resolve_adapter,
 )
@@ -149,3 +155,111 @@ def test_resolve_adapter_none() -> None:
     assert resolve_adapter("https://arxiv.org/abs/2209.03003") is None
     assert resolve_adapter("https://example.com/paper") is None
     assert resolve_adapter("") is None
+
+
+# --------------------------------------------------------------------------- #
+# 境界付き HTTP クライアント + SSRF 対策(adapters/fetch.py)
+# --------------------------------------------------------------------------- #
+
+_ACL_HOSTS = frozenset({"aclanthology.org"})
+_MINIMAL_PDF = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+
+
+def test_adapter_allowed_hosts_from_declared_urls() -> None:
+    adapter = AclAnthologyAdapter()
+    ref = SiteRef(site="acl_anthology", external_id="2023.acl-long.42")
+    assert adapter_allowed_hosts(adapter, ref) == frozenset({"aclanthology.org"})
+
+
+async def test_fetch_html_returns_landing_on_allowed_host() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html><body>ok</body></html>",
+                              headers={"content-type": "text/html"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        html = await fetch_html(
+            "https://aclanthology.org/2023.acl-long.42/",
+            allowed_hosts=_ACL_HOSTS,
+            client=client,
+        )
+    finally:
+        await client.aclose()
+    assert "ok" in html
+
+
+async def test_fetch_html_rejects_host_not_in_allowlist() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - must not be called
+        raise AssertionError("request should be blocked before sending")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(SiteFetchError) as exc:
+            await fetch_html(
+                "https://evil.example/steal",
+                allowed_hosts=_ACL_HOSTS,
+                client=client,
+            )
+    finally:
+        await client.aclose()
+    assert exc.value.kind == "source_not_found"
+
+
+async def test_fetch_pdf_revalidates_host_after_redirect() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "aclanthology.org":
+            # allow-list 外ホストへ 302 リダイレクトする(SSRF 試行)。
+            return httpx.Response(302, headers={"location": "https://169.254.169.254/latest/meta"})
+        raise AssertionError("must not follow redirect to disallowed host")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(SiteFetchError) as exc:
+            await fetch_pdf(
+                "https://aclanthology.org/2023.acl-long.42.pdf",
+                allowed_hosts=_ACL_HOSTS,
+                client=client,
+            )
+    finally:
+        await client.aclose()
+    assert exc.value.kind == "source_not_found"
+
+
+async def test_fetch_pdf_follows_redirect_within_allowlist() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(".pdf") and "final" not in request.url.path:
+            return httpx.Response(
+                302, headers={"location": "https://aclanthology.org/final.pdf"}
+            )
+        return httpx.Response(
+            200, content=_MINIMAL_PDF, headers={"content-type": "application/pdf"}
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        data = await fetch_pdf(
+            "https://aclanthology.org/2023.acl-long.42.pdf",
+            allowed_hosts=_ACL_HOSTS,
+            client=client,
+        )
+    finally:
+        await client.aclose()
+    assert data.startswith(b"%PDF-")
+
+
+async def test_fetch_pdf_rejects_non_pdf_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>not a pdf</html>",
+                              headers={"content-type": "text/html"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(SiteFetchError) as exc:
+            await fetch_pdf(
+                "https://aclanthology.org/2023.acl-long.42.pdf",
+                allowed_hosts=_ACL_HOSTS,
+                client=client,
+            )
+    finally:
+        await client.aclose()
+    assert exc.value.kind == "source_not_found"
