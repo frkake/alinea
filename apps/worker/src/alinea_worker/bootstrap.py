@@ -6,13 +6,17 @@ worker が実際に翻訳・取り込みジョブを回せる状態にする。
 
 設計上の要点:
 
-- **apps 間 import 禁止**(Global Constraints)。LLM ルートは ``apps/api`` の ``DbRouteStore`` を
-  使わず、``llm_task_routes`` / ``llm_models`` を **raw SQL** で読む。SSE の発行形式は
-  ``apps/api/services/events.py`` と ``apps/api/routers/jobs.py`` の**購読形式に一致**させる
-  (import せず形式のみ複製。下記 :func:`_publish_event`)。
-- **運営キーのみ**(BYOK なし): worker のルータは startup 時に 1 度だけ構築する全ジョブ共通の
-  インスタンスで、per-user のセッションを保持できないため計測フック(``DbMeterHook``)は付けない
-  (per-user BYOK / worker 側の usage 計測は followups)。
+- **apps 間 import 禁止**(Global Constraints)。DB ルート解決 / BYOK 解決は apps/api ではなく
+  共有層 ``alinea_core.llm``(:func:`alinea_core.llm.build_user_router`)を使う(worker と api の
+  両方が同じ実装を共用する)。SSE の発行形式は ``apps/api/services/events.py`` と
+  ``apps/api/routers/jobs.py`` の**購読形式に一致**させる(import せず形式のみ複製。
+  下記 :func:`_publish_event`)。
+- **共有 ``ctx['router']`` は移行期間のみ**(Task 13): startup 時に 1 度だけ構築する全ジョブ共通の
+  運営キールータで、per-user BYOK / モデル上書きを解決できない。新規コードは
+  ``ctx['user_router_factory']``(:class:`alinea_worker.user_router.UserRouterFactory`)を使い、
+  ジョブごとにユーザー別ルータを構築する(秘密鍵・ルータはジョブ終了後に保持しない。60 秒
+  キャッシュは route chain metadata のみ)。ジョブ本体の移行は Task 14+。worker 側の
+  per-user usage 計測は followup(``for_job`` は ``attach_meter=False``)。
 - **キー未設定は黙って FakeLLMProvider に落とさない**(P3): 全プロバイダ未設定なら
   ``ctx['router']=None`` とし、翻訳を要するジョブは実行時に可視的に失敗させる
   (:func:`alinea_worker.main.run_job` が「キー未設定」をジョブログへ記録して失敗)。
@@ -31,6 +35,7 @@ import structlog
 from alinea_core.arxiv.fetch import make_arxiv_client
 from alinea_core.db.models import LibraryItem
 from alinea_core.db.session import get_sessionmaker
+from alinea_core.llm import LLMRuntimeConfig
 from alinea_core.parsing.pdf_parser import PdfOcrReadiness, check_pdf_ocr_readiness
 from alinea_core.settings import CoreSettings, get_settings
 from alinea_core.storage.s3 import S3Storage
@@ -42,6 +47,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from alinea_worker.settings import redis_settings
+from alinea_worker.user_router import UserRouterFactory
 
 log = structlog.get_logger("alinea.worker")
 
@@ -271,6 +277,30 @@ async def build_task_router(
     return TaskAwareLLMRouter(routers)
 
 
+def build_user_router_factory(
+    maker: async_sessionmaker[AsyncSession],
+    redis_client: redis.Redis,
+    settings: CoreSettings,
+) -> UserRouterFactory:
+    """ジョブ単位のユーザー別 LLM ルーターファクトリを構築する(Task 13)。
+
+    運営キー(``operator_keys_from_env`` = .env + 環境変数)と ``ALINEA_KEY_ENCRYPTION_SECRET``
+    (BYOK 復号)を ``LLMRuntimeConfig`` に束ね、共有層の ``build_user_router`` を per-user・
+    per-job で呼べるようにする。60 秒キャッシュ(Redis)は route chain metadata のみ。
+    秘密鍵はジョブ終了後に保持しない(ファクトリは不変の依存だけを持つ)。
+    """
+    config = LLMRuntimeConfig(
+        operator_api_keys=operator_keys_from_env(),
+        key_encryption_secret=settings.alinea_key_encryption_secret,
+        route_cache_ttl_s=60,
+    )
+    return UserRouterFactory(
+        sessionmaker=maker,
+        redis=redis_client,
+        config=config,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # publish コールバック(pipeline / translate_section が await する)
 # --------------------------------------------------------------------------- #
@@ -354,7 +384,10 @@ async def on_startup(ctx: dict[str, Any]) -> None:
 
     ctx["settings"] = settings
     ctx["sessionmaker"] = maker
+    # 移行期間: 共有 ``router``(全ジョブ共通・運営キーのみ)は残しつつ、新規コードは per-user・
+    # per-job の ``user_router_factory`` を使う(Task 13)。ジョブ本体の移行は Task 14+。
     ctx["router"] = router
+    ctx["user_router_factory"] = build_user_router_factory(maker, redis_client, settings)
     ctx["image_router"] = image_router
     ctx["redis"] = redis_client
     ctx["arq_pool"] = arq_pool
@@ -412,6 +445,7 @@ __all__ = [
     "build_fake_router",
     "build_router",
     "build_task_router",
+    "build_user_router_factory",
     "channel_key",
     "make_publish",
     "on_shutdown",

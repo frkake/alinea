@@ -140,6 +140,202 @@ wheels = [
 ]
 
 [[package]]
+name = "alinea-api"
+version = "0.1.0"
+source = { editable = "apps/api" }
+dependencies = [
+    { name = "alembic" },
+    { name = "alinea-core" },
+    { name = "alinea-figures" },
+    { name = "alinea-llm" },
+    { name = "arq" },
+    { name = "asyncpg" },
+    { name = "authlib" },
+    { name = "cryptography" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "itsdangerous" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "python-multipart" },
+    { name = "redis" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "structlog" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "alembic", specifier = "==1.16.2" },
+    { name = "alinea-core", editable = "packages/py-core" },
+    { name = "alinea-figures", editable = "packages/figures" },
+    { name = "alinea-llm", editable = "packages/llm" },
+    { name = "arq", specifier = "==0.26.3" },
+    { name = "asyncpg", specifier = "==0.30.0" },
+    { name = "authlib", specifier = "==1.6.0" },
+    { name = "cryptography", specifier = "==45.0.5" },
+    { name = "fastapi", specifier = "==0.115.14" },
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "itsdangerous", specifier = ">=2.2.0" },
+    { name = "pydantic", specifier = "==2.11.7" },
+    { name = "pydantic-settings", specifier = "==2.10.1" },
+    { name = "python-multipart", specifier = ">=0.0.9" },
+    { name = "redis", specifier = ">=5.0.0" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.41" },
+    { name = "structlog", specifier = ">=24.0.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = "==0.35.0" },
+]
+
+[[package]]
+name = "alinea-core"
+version = "0.1.0"
+source = { editable = "packages/py-core" }
+dependencies = [
+    { name = "aioboto3" },
+    { name = "alinea-llm" },
+    { name = "asyncpg" },
+    { name = "cryptography" },
+    { name = "httpx" },
+    { name = "pdfplumber" },
+    { name = "pillow" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pymupdf" },
+    { name = "python-ulid" },
+    { name = "redis" },
+    { name = "selectolax" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "xxhash" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aioboto3", specifier = ">=13.4.0,<14" },
+    { name = "alinea-llm", editable = "packages/llm" },
+    { name = "asyncpg", specifier = "==0.30.0" },
+    { name = "cryptography", specifier = "==45.0.5" },
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "pdfplumber", specifier = ">=0.11.0" },
+    { name = "pillow", specifier = ">=10.0.0" },
+    { name = "pydantic", specifier = "==2.11.7" },
+    { name = "pydantic-settings", specifier = "==2.10.1" },
+    { name = "pymupdf", specifier = ">=1.24.0" },
+    { name = "python-ulid", specifier = "==3.0.0" },
+    { name = "redis", specifier = ">=5.0.0" },
+    { name = "selectolax", specifier = ">=0.3.29" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.41" },
+    { name = "xxhash", specifier = ">=3.4.0" },
+]
+
+[[package]]
+name = "alinea-figures"
+version = "0.1.0"
+source = { editable = "packages/figures" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = "==2.11.7" }]
+
+[[package]]
+name = "alinea-llm"
+version = "0.1.0"
+source = { editable = "packages/llm" }
+dependencies = [
+    { name = "anthropic" },
+    { name = "cryptography" },
+    { name = "google-genai" },
+    { name = "httpx" },
+    { name = "jsonschema" },
+    { name = "openai" },
+    { name = "pillow" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "starlette" },
+    { name = "tiktoken" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", specifier = "==0.57.1" },
+    { name = "cryptography", specifier = "==45.0.5" },
+    { name = "google-genai", specifier = "==1.24.0" },
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "jsonschema", specifier = ">=4.20.0" },
+    { name = "openai", specifier = "==1.93.0" },
+    { name = "pillow", specifier = ">=10.0.0" },
+    { name = "pydantic", specifier = "==2.11.7" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "starlette", specifier = ">=0.40.0" },
+    { name = "tiktoken", specifier = ">=0.7.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = "==0.35.0" },
+]
+
+[[package]]
+name = "alinea-worker"
+version = "0.1.0"
+source = { editable = "apps/worker" }
+dependencies = [
+    { name = "alinea-core" },
+    { name = "alinea-figures" },
+    { name = "alinea-llm" },
+    { name = "arq" },
+    { name = "asyncpg" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "redis" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "structlog" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "alinea-core", editable = "packages/py-core" },
+    { name = "alinea-figures", editable = "packages/figures" },
+    { name = "alinea-llm", editable = "packages/llm" },
+    { name = "arq", specifier = "==0.26.3" },
+    { name = "asyncpg", specifier = "==0.30.0" },
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "pydantic", specifier = "==2.11.7" },
+    { name = "pydantic-settings", specifier = "==2.10.1" },
+    { name = "redis", specifier = ">=5.0.0" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.41" },
+    { name = "structlog", specifier = ">=24.0.0" },
+]
+
+[[package]]
+name = "alinea-workspace"
+version = "0.1.0"
+source = { virtual = "." }
+
+[package.dev-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "hypothesis" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "hypothesis", specifier = "==6.135.26" },
+    { name = "mypy", specifier = "==1.16.1" },
+    { name = "pytest", specifier = "==8.4.1" },
+    { name = "pytest-asyncio", specifier = "==1.0.0" },
+    { name = "pytest-cov", specifier = ">=5.0.0" },
+    { name = "ruff", specifier = "==0.12.2" },
+]
+
+[[package]]
 name = "annotated-types"
 version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1535,200 +1731,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/78/dd/b5295a9f97484e7a1c2b283a742ca45e3104991c55a1ef670dde161829ba/xxhash-3.8.1-cp312-cp312-win32.whl", hash = "sha256:bf28f55e427e0483acb1f666bd0d869b6d5e5a716680c216ad7befe3d4cfba2e", size = 31970, upload-time = "2026-07-06T10:45:07.823Z" },
     { url = "https://files.pythonhosted.org/packages/ec/31/3fa0b807d7e21515cd975e7fe5c039d52ac3e9401a96d6ad68dae6305215/xxhash-3.8.1-cp312-cp312-win_amd64.whl", hash = "sha256:2256e80e4960ee282f63428adb349cb7f8bd8efe4db770d88eb815f4b9860724", size = 32741, upload-time = "2026-07-06T10:45:09.42Z" },
     { url = "https://files.pythonhosted.org/packages/b8/05/86feada74e239600e6875aa507afb40482a89b92700aa74a92da83bdcb77/xxhash-3.8.1-cp312-cp312-win_arm64.whl", hash = "sha256:9df56e6df96a60590935e22373041cccc91fd55858763dcffb55bf63b3a2b396", size = 29234, upload-time = "2026-07-06T10:45:10.809Z" },
-]
-
-[[package]]
-name = "alinea-api"
-version = "0.1.0"
-source = { editable = "apps/api" }
-dependencies = [
-    { name = "alembic" },
-    { name = "arq" },
-    { name = "asyncpg" },
-    { name = "authlib" },
-    { name = "cryptography" },
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "itsdangerous" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "python-multipart" },
-    { name = "redis" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "structlog" },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "alinea-core" },
-    { name = "alinea-figures" },
-    { name = "alinea-llm" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "alembic", specifier = "==1.16.2" },
-    { name = "arq", specifier = "==0.26.3" },
-    { name = "asyncpg", specifier = "==0.30.0" },
-    { name = "authlib", specifier = "==1.6.0" },
-    { name = "cryptography", specifier = "==45.0.5" },
-    { name = "fastapi", specifier = "==0.115.14" },
-    { name = "httpx", specifier = "==0.28.1" },
-    { name = "itsdangerous", specifier = ">=2.2.0" },
-    { name = "pydantic", specifier = "==2.11.7" },
-    { name = "pydantic-settings", specifier = "==2.10.1" },
-    { name = "python-multipart", specifier = ">=0.0.9" },
-    { name = "redis", specifier = ">=5.0.0" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.41" },
-    { name = "structlog", specifier = ">=24.0.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = "==0.35.0" },
-    { name = "alinea-core", editable = "packages/py-core" },
-    { name = "alinea-figures", editable = "packages/figures" },
-    { name = "alinea-llm", editable = "packages/llm" },
-]
-
-[[package]]
-name = "alinea-core"
-version = "0.1.0"
-source = { editable = "packages/py-core" }
-dependencies = [
-    { name = "aioboto3" },
-    { name = "asyncpg" },
-    { name = "httpx" },
-    { name = "pdfplumber" },
-    { name = "pillow" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pymupdf" },
-    { name = "python-ulid" },
-    { name = "redis" },
-    { name = "selectolax" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "xxhash" },
-    { name = "alinea-llm" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aioboto3", specifier = ">=13.4.0,<14" },
-    { name = "asyncpg", specifier = "==0.30.0" },
-    { name = "httpx", specifier = "==0.28.1" },
-    { name = "pdfplumber", specifier = ">=0.11.0" },
-    { name = "pillow", specifier = ">=10.0.0" },
-    { name = "pydantic", specifier = "==2.11.7" },
-    { name = "pydantic-settings", specifier = "==2.10.1" },
-    { name = "pymupdf", specifier = ">=1.24.0" },
-    { name = "python-ulid", specifier = "==3.0.0" },
-    { name = "redis", specifier = ">=5.0.0" },
-    { name = "selectolax", specifier = ">=0.3.29" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.41" },
-    { name = "xxhash", specifier = ">=3.4.0" },
-    { name = "alinea-llm", editable = "packages/llm" },
-]
-
-[[package]]
-name = "alinea-figures"
-version = "0.1.0"
-source = { editable = "packages/figures" }
-dependencies = [
-    { name = "pydantic" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "pydantic", specifier = "==2.11.7" }]
-
-[[package]]
-name = "alinea-llm"
-version = "0.1.0"
-source = { editable = "packages/llm" }
-dependencies = [
-    { name = "anthropic" },
-    { name = "cryptography" },
-    { name = "google-genai" },
-    { name = "httpx" },
-    { name = "jsonschema" },
-    { name = "openai" },
-    { name = "pillow" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "starlette" },
-    { name = "tiktoken" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anthropic", specifier = "==0.57.1" },
-    { name = "cryptography", specifier = "==45.0.5" },
-    { name = "google-genai", specifier = "==1.24.0" },
-    { name = "httpx", specifier = "==0.28.1" },
-    { name = "jsonschema", specifier = ">=4.20.0" },
-    { name = "openai", specifier = "==1.93.0" },
-    { name = "pillow", specifier = ">=10.0.0" },
-    { name = "pydantic", specifier = "==2.11.7" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "starlette", specifier = ">=0.40.0" },
-    { name = "tiktoken", specifier = ">=0.7.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = "==0.35.0" },
-]
-
-[[package]]
-name = "alinea-worker"
-version = "0.1.0"
-source = { editable = "apps/worker" }
-dependencies = [
-    { name = "arq" },
-    { name = "asyncpg" },
-    { name = "httpx" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "redis" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "structlog" },
-    { name = "alinea-core" },
-    { name = "alinea-figures" },
-    { name = "alinea-llm" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "arq", specifier = "==0.26.3" },
-    { name = "asyncpg", specifier = "==0.30.0" },
-    { name = "httpx", specifier = "==0.28.1" },
-    { name = "pydantic", specifier = "==2.11.7" },
-    { name = "pydantic-settings", specifier = "==2.10.1" },
-    { name = "redis", specifier = ">=5.0.0" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.41" },
-    { name = "structlog", specifier = ">=24.0.0" },
-    { name = "alinea-core", editable = "packages/py-core" },
-    { name = "alinea-figures", editable = "packages/figures" },
-    { name = "alinea-llm", editable = "packages/llm" },
-]
-
-[[package]]
-name = "alinea-workspace"
-version = "0.1.0"
-source = { virtual = "." }
-
-[package.dev-dependencies]
-dev = [
-    { name = "httpx" },
-    { name = "hypothesis" },
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "httpx", specifier = "==0.28.1" },
-    { name = "hypothesis", specifier = "==6.135.26" },
-    { name = "mypy", specifier = "==1.16.1" },
-    { name = "pytest", specifier = "==8.4.1" },
-    { name = "pytest-asyncio", specifier = "==1.0.0" },
-    { name = "pytest-cov", specifier = ">=5.0.0" },
-    { name = "ruff", specifier = "==0.12.2" },
 ]
 
 [[package]]

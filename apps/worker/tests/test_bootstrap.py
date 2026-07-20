@@ -21,6 +21,7 @@ import pytest
 import pytest_asyncio
 import redis.asyncio as redis
 from alinea_core.db.models import LibraryItem, Paper, User
+from alinea_core.llm import LLMRuntimeConfig
 from alinea_core.parsing.pdf_parser import PdfOcrReadiness
 from alinea_llm.router import LLMRouter
 from alinea_llm.testing.fake_provider import FakeLLMProvider
@@ -37,6 +38,9 @@ from alinea_worker.bootstrap import (
     operator_keys_from_env,
     stream_key,
 )
+from alinea_worker.user_router import UserRouterFactory
+from cryptography.fernet import Fernet
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 DATABASE_URL = os.environ.get(
@@ -165,6 +169,139 @@ async def test_build_task_router_uses_task_specific_chains(
 def test_build_fake_router_is_usable() -> None:
     router = build_fake_router()
     assert isinstance(router, LLMRouter)
+
+
+# =========================================================================== #
+# UserRouterFactory — 同一プロセスでユーザーごとに別プロバイダへ解決する(Task 13)
+# =========================================================================== #
+
+
+def _runtime_config(**overrides: Any) -> LLMRuntimeConfig:
+    """テスト用 LLMRuntimeConfig。operator キーとキー暗号化秘密を明示する。"""
+    defaults: dict[str, Any] = {
+        "operator_api_keys": {},
+        "key_encryption_secret": Fernet.generate_key().decode(),
+        "route_cache_ttl_s": 60,
+    }
+    defaults.update(overrides)
+    return LLMRuntimeConfig(**defaults)
+
+
+def _byok_factory() -> Any:
+    """provider 名だけを覚える決定的な FakeLLMProvider ファクトリ。"""
+
+    def factory(provider: str, _key: str) -> Any:
+        return FakeLLMProvider(name=provider)
+
+    return factory
+
+
+async def _seed_user(session: AsyncSession) -> str:
+    uid = (
+        await session.execute(
+            text("INSERT INTO users (email) VALUES (:email) RETURNING id"),
+            {"email": f"router-{uuid.uuid4().hex}@example.com"},
+        )
+    ).scalar_one()
+    return str(uid)
+
+
+async def _set_override(session: AsyncSession, user_id: str, task: str, model_id: str) -> None:
+    await session.execute(
+        text(
+            "INSERT INTO user_task_model_overrides (user_id, task, model_id) "
+            "VALUES (CAST(:u AS uuid), :t, :m) "
+            "ON CONFLICT (user_id, task) DO UPDATE SET model_id = EXCLUDED.model_id"
+        ),
+        {"u": user_id, "t": task, "m": model_id},
+    )
+
+
+async def test_per_user_routes_do_not_cross_contaminate(
+    maker: async_sessionmaker[AsyncSession],
+) -> None:
+    """同一 Worker プロセスで user A は OpenAI、user B は Google を選び混ざらない。
+
+    chat の既定チェーン先頭は anthropic(claude-opus-4-8)。各ユーザーの override で
+    先頭モデルを別プロバイダへ差し替え、同じ factory・同じ task の解決結果が
+    ユーザー間で独立していることを検査する。
+    """
+    async with maker() as session:
+        user_a = await _seed_user(session)
+        user_b = await _seed_user(session)
+        # A → openai(gpt-5.5)、B → google(gemini-3.5-flash)を先頭に。
+        await _set_override(session, user_a, "chat", "gpt-5.5")
+        await _set_override(session, user_b, "chat", "gemini-3.5-flash")
+        await session.commit()
+
+    config = _runtime_config(
+        operator_api_keys={"openai": "sk-op-openai", "google": "sk-op-google"}
+    )
+    factory = UserRouterFactory(
+        sessionmaker=maker,
+        redis=None,
+        config=config,
+        provider_factory=_byok_factory(),
+    )
+
+    # 同じプロセスで A と B を交互に解決しても互いを汚染しない。
+    router_a = await factory.for_job(user_id=user_a, task="chat")
+    router_b = await factory.for_job(user_id=user_b, task="chat")
+    resp_a = await router_a.complete("chat", prompt="hi", user_id=user_a)
+    resp_b = await router_b.complete("chat", prompt="hi", user_id=user_b)
+
+    assert resp_a.provider == "openai"
+    assert resp_a.model == "gpt-5.5"
+    assert resp_b.provider == "google"
+    assert resp_b.model == "gemini-3.5-flash"
+
+    # 再度 A を解決しても B の結果に引きずられない。
+    router_a2 = await factory.for_job(user_id=user_a, task="chat")
+    resp_a2 = await router_a2.complete("chat", prompt="hi", user_id=user_a)
+    assert resp_a2.provider == "openai"
+
+
+async def test_route_invalidation_after_route_change(
+    maker: async_sessionmaker[AsyncSession],
+    redis_client: redis.Redis,
+) -> None:
+    """route 変更 → 60 秒キャッシュ失効後は次ジョブで新しい override が使われる。
+
+    override の書き換え + キャッシュ invalidate 後、同じ factory から取り直した
+    router は新しいプロバイダへ解決する(秘密鍵はキャッシュされない)。
+    """
+    async with maker() as session:
+        user_id = await _seed_user(session)
+        await _set_override(session, user_id, "chat", "gpt-5.5")  # 最初は openai
+        await session.commit()
+
+    config = _runtime_config(
+        operator_api_keys={"openai": "sk-op-openai", "google": "sk-op-google"}
+    )
+    factory = UserRouterFactory(
+        sessionmaker=maker,
+        redis=redis_client,
+        config=config,
+        provider_factory=_byok_factory(),
+    )
+
+    router1 = await factory.for_job(user_id=user_id, task="chat")
+    resp1 = await router1.complete("chat", prompt="hi", user_id=user_id)
+    assert resp1.provider == "openai"
+
+    # route を google へ変更し、キャッシュを失効させる。
+    async with maker() as session:
+        await _set_override(session, user_id, "chat", "gemini-3.5-flash")
+        await session.commit()
+    await factory.invalidate(task="chat", user_id=user_id)
+
+    router2 = await factory.for_job(user_id=user_id, task="chat")
+    resp2 = await router2.complete("chat", prompt="hi", user_id=user_id)
+    assert resp2.provider == "google"
+    assert resp2.model == "gemini-3.5-flash"
+
+    # クリーンアップ(実 Redis のキャッシュキーを消す)。
+    await factory.invalidate(task="chat", user_id=user_id)
 
 
 class _StubSettings:
@@ -317,6 +454,8 @@ async def test_on_startup_configures_ctx_with_fake_llm(
     await on_startup(ctx)
     try:
         assert isinstance(ctx["router"], LLMRouter)
+        # Task 13: per-user ルーターファクトリが ctx に載る(移行期間は router も残す)。
+        assert isinstance(ctx["user_router_factory"], UserRouterFactory)
         assert ctx["sessionmaker"] is not None
         assert ctx["redis"] is not None
         assert ctx["arq_pool"] is not None
