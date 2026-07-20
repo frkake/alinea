@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from alinea_llm.testing.mock_server import build_app
@@ -42,6 +44,91 @@ async def test_mock_openai_responses_endpoint() -> None:
     data = r.json()
     assert data["output_text"]
     assert data["usage"]["input_tokens"] >= 0
+
+
+async def test_mock_openai_responses_accepts_output_config() -> None:
+    """output_config フィールド(Responses API スタイル)を受け付けて無視する。"""
+    app = build_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+        body = {
+            "model": "gpt-5.5",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+            "output_config": {"include": ["output_text", "usage"]},
+        }
+        r = await c.post("/openai/v1/responses", json=body)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["output_text"]
+
+
+async def test_mock_openai_responses_streaming() -> None:
+    """Responses API の stream=true でSSEストリームを返す(OpenAI provider generate_stream 互換)。"""
+    app = build_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+        body = {
+            "model": "gpt-5.5",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+            "stream": True,
+            "output_config": {"include": ["output_text", "usage"]},
+        }
+        async with c.stream("POST", "/openai/v1/responses", json=body) as resp:
+            assert resp.status_code == 200
+            assert resp.headers["content-type"].startswith("text/event-stream")
+            raw = await resp.aread()
+
+    text = raw.decode()
+    # response.output_text.delta イベントが少なくとも1件あること
+    assert "response.output_text.delta" in text, f"no delta event in: {text[:200]}"
+    # response.completed イベントがあること
+    assert "response.completed" in text, f"no completed event in: {text[:200]}"
+
+    # SSE データをパースして delta テキストを収集
+    deltas: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("data: ") and line != "data: [DONE]":
+            try:
+                evt = json.loads(line[6:])
+            except json.JSONDecodeError:
+                continue
+            if evt.get("type") == "response.output_text.delta":
+                deltas.append(evt.get("delta", ""))
+    assert "".join(deltas), "streaming deltas should produce non-empty text"
+
+
+async def test_mock_openai_responses_streaming_with_evidence() -> None:
+    """output_config で evidence markers を要求すると [[evidence:...]] をレスポンスに含む。
+
+    チャット E2E(PW-08)の新規質問→根拠チップ生成経路を検証する(Task 7)。
+    モックは input に block_id を持つシステムプロンプトが含まれるとき、最初の block_id を
+    [[evidence:...]] マーカーとして本文に埋め込む。
+    """
+    app = build_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+        # E2E seed の実在 block_id をシステムプロンプトに含める
+        body = {
+            "model": "gpt-5.5",
+            "instructions": "blk-2-1-p1-9eca について説明してください。",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "explain"}]}],
+            "stream": True,
+            "output_config": {"include": ["output_text", "usage"], "evidence": True},
+        }
+        async with c.stream("POST", "/openai/v1/responses", json=body) as resp:
+            assert resp.status_code == 200
+            raw = await resp.aread()
+
+    text = raw.decode()
+    # ストリームのデルタをすべて連結して [[evidence:...]] が含まれるか確認
+    deltas: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("data: ") and line != "data: [DONE]":
+            try:
+                evt = json.loads(line[6:])
+            except json.JSONDecodeError:
+                continue
+            if evt.get("type") == "response.output_text.delta":
+                deltas.append(evt.get("delta", ""))
+    full_text = "".join(deltas)
+    assert "[[evidence:" in full_text, f"no evidence marker in streamed text: {full_text!r}"
 
 
 async def test_mock_anthropic_messages() -> None:

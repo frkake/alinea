@@ -143,16 +143,55 @@ def _openai_chat_sse(model: str, text: str, resp: LLMResponse) -> StreamingRespo
 
 # --- OpenAI Responses API ------------------------------------------------------
 
+import re as _re
+
+# block_id パターン(plans/03 §12 の命名規則)。
+_BLOCK_ID_RE = _re.compile(r"\b(blk-[A-Za-z0-9-]+)\b")
+
+
+def _extract_first_block_id(text: str) -> str | None:
+    """テキスト(システムプロンプト等)から最初の block_id を取り出す。"""
+    m = _BLOCK_ID_RE.search(text)
+    return m.group(1) if m else None
+
+
+def _responses_text(body: dict[str, Any]) -> str:
+    """Responses API リクエストから user テキストを抽出する。"""
+    raw_input = body.get("input", [])
+    if isinstance(raw_input, str):
+        return raw_input
+    return _last_user_text(raw_input)
+
+
+def _responses_output_text(body: dict[str, Any], base_text: str) -> str:
+    """output_config.evidence が true のとき block_id を [[evidence:...]] で付加する。
+
+    E2E チャット(PW-08)の新規質問→根拠チップ生成経路を通すため: リクエストの
+    `instructions` または `input` に block_id パターンが含まれる場合、最初の 1 件を
+    [[evidence:...]] マーカーとして末尾に付加する(stream_pipeline が抽出して evidence
+    イベントへ変換する)。
+    """
+    output_config = body.get("output_config") or {}
+    if not output_config.get("evidence"):
+        return base_text
+    # instructions または最初の user メッセージから block_id を探す
+    search_text = body.get("instructions", "") + " " + _responses_text(body)
+    block_id = _extract_first_block_id(search_text)
+    if block_id:
+        return f"{base_text}[[evidence:{block_id}]]"
+    return base_text
+
 
 async def openai_responses(request: Request) -> Response:
     body = await request.json()
     model = body.get("model", "mock-model")
-    raw_input = body.get("input", [])
-    if isinstance(raw_input, str):
-        text = raw_input
-    else:
-        text = _last_user_text(raw_input)
+    text = _responses_text(body)
     resp = await _afake_response(model, text)
+    output_text = _responses_output_text(body, resp.text)
+
+    if body.get("stream"):
+        return _openai_responses_sse(model, output_text, resp)
+
     payload = {
         "id": "resp-mock",
         "object": "response",
@@ -165,10 +204,10 @@ async def openai_responses(request: Request) -> Response:
                 "type": "message",
                 "role": "assistant",
                 "status": "completed",
-                "content": [{"type": "output_text", "text": resp.text, "annotations": []}],
+                "content": [{"type": "output_text", "text": output_text, "annotations": []}],
             }
         ],
-        "output_text": resp.text,
+        "output_text": output_text,
         "usage": {
             "input_tokens": resp.usage.input_tokens,
             "input_tokens_details": {"cached_tokens": 0},
@@ -178,6 +217,115 @@ async def openai_responses(request: Request) -> Response:
         },
     }
     return JSONResponse(payload)
+
+
+def _openai_responses_sse(model: str, text: str, resp: LLMResponse) -> StreamingResponse:
+    """Responses API ストリーミング(OpenAI SDK `responses.stream()` 互換)。
+
+    OpenAI SDK が期待する最小イベント列:
+      response.created → response.output_item.added → response.content_part.added
+      → response.output_text.delta × N → response.output_text.done
+      → response.output_item.done → response.completed
+    """
+
+    def _ev(event_type: str, data: dict[str, Any]) -> bytes:
+        return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode()
+
+    async def gen() -> AsyncIterator[bytes]:
+        response_obj: dict[str, Any] = {
+            "id": "resp-mock",
+            "object": "response",
+            "created_at": 0,
+            "model": model,
+            "status": "in_progress",
+            "output": [],
+            "usage": None,
+        }
+        yield _ev("response.created", {"type": "response.created", "response": response_obj})
+
+        output_item: dict[str, Any] = {
+            "id": "msg-mock",
+            "type": "message",
+            "role": "assistant",
+            "status": "in_progress",
+            "content": [],
+        }
+        yield _ev(
+            "response.output_item.added",
+            {"type": "response.output_item.added", "output_index": 0, "item": output_item},
+        )
+        yield _ev(
+            "response.content_part.added",
+            {
+                "type": "response.content_part.added",
+                "item_id": "msg-mock",
+                "output_index": 0,
+                "content_index": 0,
+                "part": {"type": "output_text", "text": "", "annotations": []},
+            },
+        )
+
+        for i in range(0, len(text), 20):
+            delta = text[i : i + 20]
+            yield _ev(
+                "response.output_text.delta",
+                {
+                    "type": "response.output_text.delta",
+                    "item_id": "msg-mock",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "delta": delta,
+                },
+            )
+
+        yield _ev(
+            "response.output_text.done",
+            {
+                "type": "response.output_text.done",
+                "item_id": "msg-mock",
+                "output_index": 0,
+                "content_index": 0,
+                "text": text,
+            },
+        )
+        yield _ev(
+            "response.output_item.done",
+            {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    **output_item,
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": text, "annotations": []}],
+                },
+            },
+        )
+        usage = {
+            "input_tokens": resp.usage.input_tokens,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens": resp.usage.output_tokens,
+            "output_tokens_details": {"reasoning_tokens": 0},
+            "total_tokens": resp.usage.input_tokens + resp.usage.output_tokens,
+        }
+        completed_response: dict[str, Any] = {
+            **response_obj,
+            "status": "completed",
+            "output": [
+                {
+                    **output_item,
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": text, "annotations": []}],
+                }
+            ],
+            "output_text": text,
+            "usage": usage,
+        }
+        yield _ev(
+            "response.completed",
+            {"type": "response.completed", "response": completed_response},
+        )
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 # --- Anthropic Messages --------------------------------------------------------

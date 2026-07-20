@@ -1,32 +1,42 @@
 /**
  * 匿名共有ページ(4c)の唯一のデータ取得(plans/09-screens/4c §2.1、plans/03 §14.1)。
  *
- * `@alinea/api-client` は本エンドポイント登録前の生成物のため型が存在しない(main.py への
- * `share.router` 登録待ち。followups 参照)。生成後に置き換えるまでの間、ここでレスポンス型を
- * 手書きし fetch を直書きする(厳守ルール6の許容範囲)。
+ * `@alinea/api-client` の生成型を使用する。fetch は Next.js Server Component 専用で
+ * `next: { revalidate: 60 }` キャッシュが必要なため、SDK の Fetch クライアントは使わず
+ * 直接 fetch する(@hey-api/client-fetch は Next.js `next` オプション非対応)。
+ *
+ * 生成型は OpenAPI "nullable optional" フィールドを `?: T | null` で生成するが、
+ * 呼び出し元は `T | null` を期待するため、ラッパー型で `undefined` を除去する。
  */
 
-/** plans/03 §14.1 `GET /api/share/collections/{token}` 200 の完全形。 */
-export interface ShareCollectionResponse {
-  collection: {
-    name: string;
-    description: string | null;
-    shared_by: string;
-    updated_at: string;
-    deadline: string | null;
-    item_count: number;
-  };
-  include_notes: boolean;
-  items: {
-    order: number;
-    title: string;
-    authors_short: string;
-    venue_year: string | null;
-    arxiv_url: string | null;
-    summary_3line: string[] | null;
-    shared_note: string | null;
-  }[];
-}
+import type {
+  ShareCollectionResponse as _ShareCollectionResponse,
+  ShareCollectionInfo as _ShareCollectionInfo,
+  ShareCollectionItem as _ShareCollectionItem,
+} from "@alinea/api-client";
+
+/** ShareCollectionInfo: nullable optional フィールドを `T | null` へ正規化。 */
+export type ShareCollectionInfo = Omit<_ShareCollectionInfo, "description" | "deadline"> & {
+  description: string | null;
+  deadline: string | null;
+};
+
+/** ShareCollectionItem: nullable optional フィールドを `T | null` へ正規化。 */
+export type ShareCollectionItem = Omit<
+  _ShareCollectionItem,
+  "venue_year" | "arxiv_url" | "summary_3line" | "shared_note"
+> & {
+  venue_year: string | null;
+  arxiv_url: string | null;
+  summary_3line: string[] | null;
+  shared_note: string | null;
+};
+
+/** ShareCollectionResponse: 正規化済み collection + items を持つ。 */
+export type ShareCollectionResponse = Omit<_ShareCollectionResponse, "collection" | "items"> & {
+  collection: ShareCollectionInfo;
+  items: ShareCollectionItem[];
+};
 
 /** token は 8 文字の英数(plans/03 §13.3)。 */
 const TOKEN_RE = /^[A-Za-z0-9]{8}$/;
