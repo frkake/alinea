@@ -932,6 +932,14 @@ def _is_missing_s3_object(exc: ClientError) -> bool:
 class IngestRun:
     """1 本の ingest ジョブの状態機械実行。段階ごとに冪等・再開可能。"""
 
+    # source 種別フラグの安全な既定値。通常経路では __init__ が payload から上書きする。
+    # 一部のテストは object.__new__ でインスタンス化して個別 seam だけを差し込むため、
+    # __init__ を経由しない場合でも属性参照(_structure の if self.is_jats 等)が壊れないよう
+    # クラス属性として定義しておく。
+    is_site: bool = False
+    is_jats: bool = False
+    is_pdf_upload: bool = False
+
     def __init__(self, session: AsyncSession, store: JobStore, job: Job, deps: IngestDeps) -> None:
         self.session = session
         self.store = store
