@@ -113,6 +113,18 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
+// 生成 SDK は `fetch(request)` を単一の `Request` で呼ぶ(url+init の 2 引数ではない)。
+// モックの第一引数(string / URL / Request)から URL・メソッドを取り出す。
+function calledUrl(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+function calledMethod(input: RequestInfo | URL, init?: RequestInit): string {
+  if (input instanceof Request) return input.method;
+  return (init?.method ?? "GET").toUpperCase();
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   push.mockClear();
@@ -131,10 +143,14 @@ describe("CollectionDetailPage (4b)", () => {
     expect(screen.getByText("1/2 読了")).toBeInTheDocument();
     expect(screen.getByText("Adversarial Diffusion Distillation")).toBeInTheDocument();
     expect(screen.getByText("Consistency Models")).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/collections/col_1",
-      expect.objectContaining({ credentials: "include" }),
-    );
+    const getCall = fetchMock.mock.calls.find(
+      ([input, init]) => calledMethod(input, init) === "GET",
+    ) as [RequestInfo | URL, RequestInit | undefined];
+    expect(calledUrl(getCall[0])).toContain("/api/collections/col_1");
+    // credentials は生成クライアントの config 経由で Request に載る(baseUrl と同様)。
+    if (getCall[0] instanceof Request) {
+      expect(getCall[0].credentials).toBe("include");
+    }
   });
 
   test("404 は「コレクションが見つかりません」EmptyState を表示し、ライブラリへ戻れる", async () => {
@@ -163,17 +179,19 @@ describe("CollectionDetailPage (4b)", () => {
       included_note_count: 0,
     };
     let issued = false;
-    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
-      if (url === "/api/collections/col_1" && (!init || init.method === undefined)) {
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = calledUrl(input);
+      const method = calledMethod(input, init);
+      if (url.endsWith("/api/collections/col_1") && method === "GET") {
         return Promise.resolve(
           jsonResponse(200, issued ? makeDetail({ share: activeShare }) : makeDetail()),
         );
       }
-      if (url === "/api/collections/col_1/share" && init?.method === "POST") {
+      if (url.endsWith("/api/collections/col_1/share") && method === "POST") {
         issued = true;
         return Promise.resolve(jsonResponse(201, activeShare));
       }
-      throw new Error(`unexpected fetch: ${url}`);
+      throw new Error(`unexpected fetch: ${method} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -183,12 +201,17 @@ describe("CollectionDetailPage (4b)", () => {
 
     await userEvent.click(screen.getByText("共有リンクを発行"));
 
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/collections/col_1/share",
-        expect.objectContaining({ method: "POST" }),
-      ),
-    );
+    await waitFor(() => {
+      const shareCall = fetchMock.mock.calls.find((call: unknown[]) => {
+        const input = call[0] as RequestInfo | URL;
+        const init = call[1] as RequestInit | undefined;
+        return (
+          calledUrl(input).endsWith("/api/collections/col_1/share") &&
+          calledMethod(input, init) === "POST"
+        );
+      });
+      expect(shareCall).toBeDefined();
+    });
     await waitFor(() => expect(screen.getByText("発行済み")).toBeInTheDocument());
   });
 });
