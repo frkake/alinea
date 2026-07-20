@@ -2813,6 +2813,96 @@ export type PositionResponse = {
 };
 
 /**
+ * PresentationArtifactOut
+ */
+export type PresentationArtifactOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+    /**
+     * Source Revision Id
+     */
+    source_revision_id: string;
+    /**
+     * Generation Job Id
+     */
+    generation_job_id?: string | null;
+    /**
+     * Preset
+     */
+    preset: string;
+    /**
+     * Audience
+     */
+    audience: string;
+    /**
+     * Instruction
+     */
+    instruction: string;
+    /**
+     * Model Provider
+     */
+    model_provider: string;
+    /**
+     * Model Id
+     */
+    model_id: string;
+    /**
+     * Ppt Master Revision
+     */
+    ppt_master_revision: string;
+    /**
+     * Generated At
+     */
+    generated_at: string;
+    /**
+     * Updated At
+     */
+    updated_at: string;
+};
+
+/**
+ * PresentationGenerateRequest
+ */
+export type PresentationGenerateRequest = {
+    /**
+     * Preset
+     */
+    preset: 'reading_group' | 'research_talk' | 'implementation';
+    /**
+     * Audience
+     */
+    audience?: string | null;
+    /**
+     * Instruction
+     */
+    instruction?: string | null;
+};
+
+/**
+ * PresentationJobResponse
+ */
+export type PresentationJobResponse = {
+    /**
+     * Job Id
+     */
+    job_id: string;
+};
+
+/**
+ * PresentationStatusResponse
+ */
+export type PresentationStatusResponse = {
+    artifact?: PresentationArtifactOut | null;
+    job?: JobOut | null;
+};
+
+/**
  * PrioritizeRequest
  */
 export type PrioritizeRequest = {
@@ -3743,8 +3833,16 @@ export type SearchFacets = {
 /**
  * SearchGroup
  * 論文単位グループ化(plans/03 §15.1 + plans/11 R-2)。
+ *
+ * ``match_type``(``_DropNullMatchType`` 由来)は S12 セマンティック検索の一致種別(全文=
+ * lexical / 意味=semantic / 両方=both)。フラグ off のときは常に ``None`` で、その場合は JSON
+ * に **一切現れない**(flag-off byte-identical の保証。§4)。
  */
 export type SearchGroup = {
+    /**
+     * Match Type
+     */
+    match_type?: ('lexical' | 'semantic' | 'both') | null;
     library_item: LibraryItemSummary;
     /**
      * Hit Count
@@ -4191,6 +4289,50 @@ export type SharePatchBody = {
      * Include Notes
      */
     include_notes: boolean;
+};
+
+/**
+ * SimilarPaper
+ * 「似た論文」の 1 件(S12 セマンティック検索。docs/10 §5・spec §6.3)。
+ *
+ * ``similarity`` は 0〜1 のコサイン類似度(``1 - cosine_distance``)。自分のライブラリ内の
+ * 論文だけを対象にし、``library_item_id`` で情報パネルからリンクする。
+ */
+export type SimilarPaper = {
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Authors
+     */
+    authors: Array<string>;
+    /**
+     * Similarity
+     */
+    similarity: number;
+};
+
+/**
+ * SimilarPapersResponse
+ * ``GET /api/library-items/{id}/similar`` レスポンス(spec §6.3)。
+ *
+ * ``indexing`` は対象論文の埋め込みが未生成のとき ``true``(空配列を返す)。フラグ off や
+ * 埋め込み未整備でも 200 で空配列を返し、検索導線を壊さない(P3)。
+ */
+export type SimilarPapersResponse = {
+    /**
+     * Items
+     */
+    items: Array<SimilarPaper>;
+    /**
+     * Indexing
+     */
+    indexing?: boolean;
 };
 
 /**
@@ -6900,6 +7042,36 @@ export type LibraryItemsUpdateResponses = {
 };
 
 export type LibraryItemsUpdateResponse = LibraryItemsUpdateResponses[keyof LibraryItemsUpdateResponses];
+
+export type LibraryItemsSimilarData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/similar';
+};
+
+export type LibraryItemsSimilarErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type LibraryItemsSimilarError = LibraryItemsSimilarErrors[keyof LibraryItemsSimilarErrors];
+
+export type LibraryItemsSimilarResponses = {
+    /**
+     * Successful Response
+     */
+    200: SimilarPapersResponse;
+};
+
+export type LibraryItemsSimilarResponse = LibraryItemsSimilarResponses[keyof LibraryItemsSimilarResponses];
 
 export type LibraryItemsBulkData = {
     body: BulkOperationBody;
@@ -10100,6 +10272,94 @@ export type PublicationCommentsRestoreResponses = {
 };
 
 export type PublicationCommentsRestoreResponse = PublicationCommentsRestoreResponses[keyof PublicationCommentsRestoreResponses];
+
+export type PresentationsGetData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/presentation';
+};
+
+export type PresentationsGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PresentationsGetError = PresentationsGetErrors[keyof PresentationsGetErrors];
+
+export type PresentationsGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: PresentationStatusResponse;
+};
+
+export type PresentationsGetResponse = PresentationsGetResponses[keyof PresentationsGetResponses];
+
+export type PresentationsGenerateData = {
+    body: PresentationGenerateRequest;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/presentation';
+};
+
+export type PresentationsGenerateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PresentationsGenerateError = PresentationsGenerateErrors[keyof PresentationsGenerateErrors];
+
+export type PresentationsGenerateResponses = {
+    /**
+     * Successful Response
+     */
+    202: PresentationJobResponse;
+};
+
+export type PresentationsGenerateResponse = PresentationsGenerateResponses[keyof PresentationsGenerateResponses];
+
+export type PresentationsDownloadData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/presentation/download';
+};
+
+export type PresentationsDownloadErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PresentationsDownloadError = PresentationsDownloadErrors[keyof PresentationsDownloadErrors];
+
+export type PresentationsDownloadResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
 
 export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});

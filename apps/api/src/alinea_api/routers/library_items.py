@@ -42,13 +42,14 @@ from alinea_core.db.revisions import (
 )
 from alinea_core.document.blocks import DocumentContent
 from alinea_core.storage.s3 import S3Storage, StorageKeys
+from alinea_llm.providers.openai_embeddings import DEFAULT_EMBEDDING_MODEL
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import Integer, and_, case, cast, delete, extract, func, or_, select, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
 
-from alinea_api.deps import CurrentUser, CurrentUserOrExt, DbDep, RedisDep
+from alinea_api.deps import CurrentUser, CurrentUserOrExt, DbDep, RedisDep, SettingsDep
 from alinea_api.errors import ProblemException
 from alinea_api.schemas.common import (
     CursorPage,
@@ -76,7 +77,14 @@ from alinea_api.schemas.library import (
     TagCount,
     TagsResponse,
     YearFacet,
+    author_names,
     build_paper_bib,
+)
+from alinea_api.schemas.search import SimilarPaper, SimilarPapersResponse
+from alinea_api.search_semantic import (
+    SIMILAR_TOP_K,
+    SemanticIndexFactory,
+    default_semantic_index_factory,
 )
 from alinea_api.services.reading_sessions import (
     ReadingHeartbeatBody,
@@ -94,6 +102,17 @@ def get_storage() -> S3Storage:
 
 
 StorageDep = Annotated[S3Storage, Depends(get_storage)]
+
+
+# ---------------------------------------------------------------------------
+# 似た論文(S12)のテスト注入点。既定は pgvector ANN(クエリ埋め込みは不要 = 種ベクトル利用)。
+# ---------------------------------------------------------------------------
+def get_semantic_index_factory() -> SemanticIndexFactory:
+    return default_semantic_index_factory()
+
+
+SemanticIndexFactoryDep = Annotated[SemanticIndexFactory, Depends(get_semantic_index_factory)]
+
 _ASSET_STORAGE_PREFIXES = ("figures/", "renders/", "thumbnails/")
 _ASSET_KEY_FIELDS = {"asset_key", "storage_key", "image_storage_key", "svg_storage_key"}
 
@@ -774,6 +793,72 @@ async def list_tags(
 async def get_item(item_id: str, user: CurrentUser, db: DbDep) -> LibraryItemSummary:
     item = await _get_owned(db, user.id, item_id)
     return await _summary_for(db, item)
+
+
+# ============================================================================
+# 似た論文(S12 セマンティック検索。docs/10 §5・spec §6.3)
+# ============================================================================
+@router.get(
+    "/api/library-items/{item_id}/similar",
+    response_model=SimilarPapersResponse,
+    operation_id="libraryItems_similar",
+)
+async def similar_items(
+    item_id: str,
+    user: CurrentUser,
+    db: DbDep,
+    settings: SettingsDep,
+    index_factory: SemanticIndexFactoryDep,
+) -> SimilarPapersResponse:
+    """対象論文に意味的に近い自分のライブラリ内の他論文(上位 10)。
+
+    - フラグ off / 空 index は 200・空配列・``indexing=false``(セマンティック経路に入らない)。
+    - 対象論文に埋め込みが無いときは ``indexing=false`` + 空配列(202 で index job を enqueue
+      しない・spec §6.3)。※将来 on-demand indexing を足すなら indexing=true を返す余地を残す。
+    - 自分自身を除外し、他ユーザーの論文は決して返さない(ANN が user_id で絞る)。
+    """
+    item = await _get_owned(db, user.id, item_id)
+    if not settings.semantic_search_enabled:
+        return SimilarPapersResponse(items=[], indexing=False)
+
+    index = index_factory(db)
+    neighbors = await index.paper_neighbors(
+        paper_id=str(item.paper_id),
+        user_id=str(user.id),
+        top_k=SIMILAR_TOP_K,
+        model=DEFAULT_EMBEDDING_MODEL,
+        exclude_library_item_id=str(item.id),
+    )
+    if neighbors is None:
+        # 対象論文の埋め込みが未生成 = indexing 待ち。enqueue も 202 もしない。
+        return SimilarPapersResponse(items=[], indexing=False)
+    if not neighbors:
+        return SimilarPapersResponse(items=[], indexing=False)
+
+    # 近傍 library_item の書誌をまとめて引く(論文タイトル・著者)。
+    rows = (
+        await db.execute(
+            select(LibraryItem.id, Paper.title, Paper.authors)
+            .join(Paper, Paper.id == LibraryItem.paper_id)
+            .where(LibraryItem.id.in_([n.library_item_id for n in neighbors]))
+        )
+    ).all()
+    meta = {str(lid): (title, authors) for lid, title, authors in rows}
+    items: list[SimilarPaper] = []
+    for n in neighbors:
+        info = meta.get(n.library_item_id)
+        if info is None:
+            continue  # 直前に削除された等(安全網)。
+        title, authors = info
+        items.append(
+            SimilarPaper(
+                library_item_id=n.library_item_id,
+                title=title,
+                authors=author_names(authors),
+                similarity=round(n.similarity, 4),
+            )
+        )
+    return SimilarPapersResponse(items=items, indexing=False)
 
 
 # ============================================================================
