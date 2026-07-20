@@ -116,9 +116,9 @@ async def test_post_creates_presentation_job_with_preset_and_default_audience(
     app = _build_app()
     async with await _client_for(app, owner_ctx["token"]) as ac:
         for preset, expected_audience in (
-            ("reading_group", "students"),
-            ("research_talk", "researchers"),
-            ("implementation", "practitioners"),
+            ("reading_group", "beginner"),
+            ("research_talk", "researcher"),
+            ("implementation", "implementer"),
         ):
             r = await ac.post(
                 f"/api/library-items/{owner_ctx['item_id']}/presentation",

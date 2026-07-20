@@ -21,9 +21,9 @@ Preset = Literal["reading_group", "research_talk", "implementation"]
 
 # preset → 既定 audience(ユーザーが body.audience で上書き可能)。
 PRESET_DEFAULT_AUDIENCE: dict[str, str] = {
-    "reading_group": "students",
-    "research_talk": "researchers",
-    "implementation": "practitioners",
+    "reading_group": "beginner",
+    "research_talk": "researcher",
+    "implementation": "implementer",
 }
 
 INSTRUCTION_MAX_LEN = 500
