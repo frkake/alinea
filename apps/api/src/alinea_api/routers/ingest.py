@@ -18,6 +18,7 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
 import structlog
 from alinea_core.adapters import SiteAdapter, SiteMeta, SiteRef, resolve_adapter
@@ -137,27 +138,28 @@ class SiteGateway:
         html = await fetch_html(adapter.landing_url(ref), allowed_hosts=allowed)
         return adapter.parse_metadata(html, ref)
 
-    async def fetch_pdf(self, meta: SiteMeta, settings: CoreSettings) -> bytes:
+    async def fetch_pdf(
+        self, adapter: SiteAdapter, ref: SiteRef, meta: SiteMeta, settings: CoreSettings
+    ) -> bytes:
         if not meta.pdf_url:
             raise SiteFetchError("source_not_found", "site metadata has no pdf url")
-        # allow-list は pdf_url 自身のホスト(アダプタ由来)に限定する。リダイレクトは
-        # fetch_pdf 内で同一 allow-list に照らして再検証される。
-        allowed = _pdf_host_allowlist(meta.pdf_url)
+        # SSRF: allow-list は「アダプタが宣言したホスト」だけから作る。meta.pdf_url は
+        # 取得済み landing HTML(citation_pdf_url)由来で攻撃者が操作し得るため、その
+        # ホストが adapter の allow-list に入っていることをフェッチ前に検証する
+        # (自己参照 allow-list を作らない)。リダイレクトも fetch_pdf 内で同一 allow-list
+        # に照らして再検証される。
+        allowed = adapter_allowed_hosts(adapter, ref)
+        pdf_host = urlsplit(meta.pdf_url).hostname
+        if pdf_host is None or pdf_host.lower() not in allowed:
+            raise SiteFetchError(
+                "source_not_found", "pdf url host is not in the adapter allow-list"
+            )
         return await fetch_site_pdf(
             meta.pdf_url,
             allowed_hosts=allowed,
             settings=settings,
             max_bytes=_MAX_SITE_PDF_BYTES,
         )
-
-
-def _pdf_host_allowlist(pdf_url: str) -> frozenset[str]:
-    from urllib.parse import urlsplit
-
-    host = urlsplit(pdf_url).hostname
-    if not host:
-        raise SiteFetchError("source_not_found", "site pdf url has no host")
-    return frozenset({host.lower()})
 
 
 def get_site_gateway() -> SiteGateway:
@@ -913,7 +915,7 @@ async def ingest_site(
     # landing メタと本文 PDF を SSRF 対策付きで取得する。
     try:
         meta = await site_gateway.fetch_metadata(adapter, ref)
-        pdf_bytes = await site_gateway.fetch_pdf(meta, settings)
+        pdf_bytes = await site_gateway.fetch_pdf(adapter, ref, meta, settings)
     except SiteFetchError as exc:
         raise ProblemException(
             "provider_error", detail=f"サイトからの取得に失敗しました({exc.kind})"
@@ -924,9 +926,11 @@ async def ingest_site(
     sha256 = hashlib.sha256(pdf_bytes).hexdigest()
 
     # 冪等化: DOI → (site, external_id) → PDF SHA-256 の順に既存 Paper を探す。
+    # 再利用は「public か自分の所有」に限る(他人の private には寄せない。§7.1)。
     paper = await _resolve_site_paper(
         db, meta=meta, existing_by_external_id=existing_paper, sha256=sha256, user_id=user_id
     )
+    created_new = paper is None
     is_public = is_public_shareable_license(meta.license)
     if paper is None:
         paper = Paper(
@@ -954,24 +958,27 @@ async def ingest_site(
         await db.commit()
         return await _duplicate_response(db, existing_item, instance="/api/ingest/site")
 
-    # 原本 PDF を S3 に先行保存し、解析前の PDF 表示を可能にする(pdf_upload と同じ規約)。
-    storage_key = StorageKeys.original_pdf(paper_id, "v1")
-    await storage.put(
-        storage.sources_bucket, storage_key, pdf_bytes, content_type="application/pdf"
-    )
-    db.add(
-        SourceAsset(
-            paper_id=paper_id,
-            kind="pdf",
-            source_url=landing_url,
-            source_version="v1",
-            storage_key=storage_key,
-            content_type="application/pdf",
-            byte_size=len(pdf_bytes),
-            sha256=sha256,
+    # 原本 PDF の保存は「新規作成した Paper」に対してのみ行う。再利用した(public または自分の)
+    # Paper は最初の取り込みで既に原本 PDF・リビジョンを持つため、上書き保存しない
+    # (他ユーザーの共有 Paper の原本 PDF を untrusted なサイト取得で破壊しない)。
+    if created_new:
+        storage_key = StorageKeys.original_pdf(paper_id, "v1")
+        await storage.put(
+            storage.sources_bucket, storage_key, pdf_bytes, content_type="application/pdf"
         )
-    )
-    await _ensure_pdf_placeholder_revision(db, paper, "v1")
+        db.add(
+            SourceAsset(
+                paper_id=paper_id,
+                kind="pdf",
+                source_url=landing_url,
+                source_version="v1",
+                storage_key=storage_key,
+                content_type="application/pdf",
+                byte_size=len(pdf_bytes),
+                sha256=sha256,
+            )
+        )
+        await _ensure_pdf_placeholder_revision(db, paper, "v1")
 
     item = LibraryItem(
         user_id=user_id,
@@ -1027,6 +1034,19 @@ def _site_date(published_on: str | None) -> Any:
         return None
 
 
+def _reusable_for_user(paper: Paper | None, user_id: str) -> Paper | None:
+    """他ユーザーの private Paper への name-match を禁止する(§7.1・arXiv 経路と同方針)。
+
+    再利用してよいのは「public」または「自分が所有する Paper」だけ。他人の private Paper に
+    寄せると、その論文へ LibraryItem を貼り原本 PDF を上書きしてしまう(情報漏えい・破壊)。
+    """
+    if paper is None:
+        return None
+    if paper.visibility == "public" or str(paper.owner_user_id) == user_id:
+        return paper
+    return None
+
+
 async def _resolve_site_paper(
     db: DbDep,
     *,
@@ -1035,15 +1055,20 @@ async def _resolve_site_paper(
     sha256: str,
     user_id: str,
 ) -> Paper | None:
-    """DOI → (site, external_id) → PDF SHA-256 の順に既存 Paper を探す(§7.1)。"""
+    """DOI → (site, external_id) → PDF SHA-256 の順に既存 Paper を探す(§7.1)。
+
+    いずれの一致でも「public か自分の所有」に限って再利用する(他人の private には寄せない)。
+    """
     if meta.doi:
         by_doi = (
             (await db.execute(select(Paper).where(Paper.doi == meta.doi))).scalars().first()
         )
-        if by_doi is not None:
-            return by_doi
-    if existing_by_external_id is not None:
-        return existing_by_external_id
+        reusable = _reusable_for_user(by_doi, user_id)
+        if reusable is not None:
+            return reusable
+    reusable = _reusable_for_user(existing_by_external_id, user_id)
+    if reusable is not None:
+        return reusable
     by_sha = (
         (
             await db.execute(

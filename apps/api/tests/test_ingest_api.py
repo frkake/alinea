@@ -149,7 +149,7 @@ class _FakeSiteGateway(SiteGateway):
             categories=[],
         )
 
-    async def fetch_pdf(self, meta: Any, settings: Any) -> bytes:
+    async def fetch_pdf(self, adapter: Any, ref: Any, meta: Any, settings: Any) -> bytes:
         return _MINIMAL_PDF
 
 
@@ -1054,6 +1054,200 @@ async def test_site_ingest_rejects_unsupported_url(
     r = await client.post("/api/ingest/site", json={"url": "https://example.com/not-a-paper"})
     assert r.status_code == 422
     assert r.json()["code"] == "validation_error"
+
+
+# ---------------------------------------------------------------------------
+# SSRF: PDF fetch allow-list must come from the adapter, not the landing HTML.
+# ---------------------------------------------------------------------------
+async def test_site_gateway_pdf_rejects_offhost_citation_pdf_url() -> None:
+    """landing HTML の citation_pdf_url が allow-list 外(169.254.169.254)を指しても、
+    アダプタ由来の allow-list で REJECT され、そのホストへは決して取得しに行かない。"""
+    import httpx
+    from alinea_core.adapters import AclAnthologyAdapter, SiteFetchError, SiteRef
+
+    adapter = AclAnthologyAdapter()
+    ref = SiteRef(site="acl_anthology", external_id="2023.acl-long.42")
+    # 攻撃者が操作した landing HTML: citation_pdf_url をメタデータエンドポイントへ向ける。
+    landing_html = (
+        '<html><head>'
+        '<meta name="citation_title" content="Evil">'
+        '<meta name="citation_pdf_url" content="http://169.254.169.254/latest/meta-data/">'
+        "</head><body></body></html>"
+    )
+
+    requested_hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_hosts.append(request.url.host)
+        if request.url.host == "aclanthology.org":
+            return httpx.Response(
+                200, text=landing_html, headers={"content-type": "text/html"}
+            )
+        raise AssertionError(f"must not fetch off-host: {request.url.host}")
+
+    transport = httpx.MockTransport(handler)
+
+    class _InjectedGateway(SiteGateway):
+        async def fetch_metadata(self, adapter: Any, ref: Any) -> Any:  # type: ignore[override]
+            from alinea_core.adapters import adapter_allowed_hosts, fetch_html
+
+            client = httpx.AsyncClient(transport=transport)
+            try:
+                html = await fetch_html(
+                    adapter.landing_url(ref),
+                    allowed_hosts=adapter_allowed_hosts(adapter, ref),
+                    client=client,
+                )
+            finally:
+                await client.aclose()
+            return adapter.parse_metadata(html, ref)
+
+        async def fetch_pdf(self, adapter: Any, ref: Any, meta: Any, settings: Any) -> bytes:  # type: ignore[override]
+            # 本物のホスト検証を通す(off-host は fetch 前に弾かれるはず)。
+            from urllib.parse import urlsplit
+
+            from alinea_core.adapters import adapter_allowed_hosts
+            from alinea_core.adapters import fetch_pdf as core_fetch_pdf
+
+            allowed = adapter_allowed_hosts(adapter, ref)
+            host = urlsplit(meta.pdf_url).hostname
+            if host is None or host.lower() not in allowed:
+                raise SiteFetchError("source_not_found", "pdf host not allowed")
+            client = httpx.AsyncClient(transport=transport)
+            try:
+                return await core_fetch_pdf(meta.pdf_url, allowed_hosts=allowed, client=client)
+            finally:
+                await client.aclose()
+
+    gateway = _InjectedGateway()
+    meta = await gateway.fetch_metadata(adapter, ref)
+    assert meta.pdf_url == "http://169.254.169.254/latest/meta-data/"  # HTML から採った悪性値
+    with pytest.raises(SiteFetchError) as exc:
+        await gateway.fetch_pdf(adapter, ref, meta, get_api_settings())
+    assert exc.value.kind == "source_not_found"
+    # メタデータエンドポイントへは一度もリクエストしていない。
+    assert "169.254.169.254" not in requested_hosts
+
+
+async def test_real_site_gateway_pdf_rejects_offhost_before_fetch() -> None:
+    """本番 SiteGateway.fetch_pdf は adapter allow-list 外の pdf_url をフェッチ前に弾く。"""
+    from alinea_core.adapters import AclAnthologyAdapter, SiteFetchError, SiteRef
+    from alinea_core.adapters.base import SiteMeta
+
+    adapter = AclAnthologyAdapter()
+    ref = SiteRef(site="acl_anthology", external_id="2023.acl-long.42")
+    meta = SiteMeta(
+        site="acl_anthology",
+        external_id="2023.acl-long.42",
+        title="Evil",
+        authors=[],
+        abstract="",
+        published_on=None,
+        venue=None,
+        doi=None,
+        pdf_url="http://169.254.169.254/latest/meta-data/",
+        license="unknown",
+        categories=[],
+    )
+    with pytest.raises(SiteFetchError) as exc:
+        await SiteGateway().fetch_pdf(adapter, ref, meta, get_api_settings())
+    assert exc.value.kind == "source_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Cross-user isolation: importing the same URL must not mutate another user's
+# private paper or overwrite its PDF.
+# ---------------------------------------------------------------------------
+async def test_site_ingest_does_not_reuse_foreign_private_paper(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+    seed_site_mock: _FakeSiteGateway,
+    fake_storage: Any,
+) -> None:
+    # User A imports the ACL URL → private paper owned by A.
+    user_a = await _login(client, db_session, redis_client, unique_email)
+    first = await client.post("/api/ingest/site", json={"url": _ACL_URL})
+    assert first.status_code == 202, first.text
+    a_paper_id = first.json()["paper_id"]
+    created_papers.append(a_paper_id)
+    paper_a = await db_session.get(Paper, a_paper_id)
+    assert paper_a is not None
+    assert paper_a.visibility == "private"
+    assert str(paper_a.owner_user_id) == str(user_a.id)
+    a_asset_count = await db_session.scalar(
+        text("SELECT count(*) FROM source_assets WHERE paper_id = :p"), {"p": a_paper_id}
+    )
+
+    # User B imports the SAME URL.
+    user_b = await _login(
+        client, db_session, redis_client, f"site-b-{uuid.uuid4().hex}@example.com"
+    )
+    second = await client.post("/api/ingest/site", json={"url": _ACL_URL})
+    assert second.status_code == 202, second.text
+    b_paper_id = second.json()["paper_id"]
+    if b_paper_id != a_paper_id:
+        created_papers.append(b_paper_id)
+
+    # B must NOT attach to A's private paper.
+    assert b_paper_id != a_paper_id
+    paper_b = await db_session.get(Paper, b_paper_id)
+    assert paper_b is not None
+    assert paper_b.visibility == "private"
+    assert str(paper_b.owner_user_id) == str(user_b.id)
+
+    # A's paper/PDF is untouched: same source_asset count, no extra LibraryItem for B on A.
+    await db_session.refresh(paper_a)
+    a_asset_count_after = await db_session.scalar(
+        text("SELECT count(*) FROM source_assets WHERE paper_id = :p"), {"p": a_paper_id}
+    )
+    assert a_asset_count_after == a_asset_count
+    b_items_on_a = await db_session.scalar(
+        text("SELECT count(*) FROM library_items WHERE paper_id = :p AND user_id = :u"),
+        {"p": a_paper_id, "u": str(user_b.id)},
+    )
+    assert b_items_on_a == 0
+
+
+async def test_site_ingest_reuses_public_paper_without_overwriting_pdf(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+    fake_storage: Any,
+) -> None:
+    """互換ライセンス(public)論文は共有再利用され、2 人目の取り込みは PDF を上書きしない。"""
+    gateway = _FakeSiteGateway(license_id="cc-by-4.0")
+    app.dependency_overrides[get_site_gateway] = lambda: gateway
+    try:
+        await _login(client, db_session, redis_client, unique_email)
+        first = await client.post("/api/ingest/site", json={"url": _ACL_URL})
+        assert first.status_code == 202, first.text
+        paper_id = first.json()["paper_id"]
+        created_papers.append(paper_id)
+        puts_after_first = len(fake_storage.puts)
+
+        user_b = await _login(
+            client, db_session, redis_client, f"site-pub-b-{uuid.uuid4().hex}@example.com"
+        )
+        second = await client.post("/api/ingest/site", json={"url": _ACL_URL})
+    finally:
+        app.dependency_overrides.pop(get_site_gateway, None)
+
+    assert second.status_code == 202, second.text
+    # 同一 public 論文を共有再利用(新規 paper を作らない)。
+    assert second.json()["paper_id"] == paper_id
+    # 2 人目の取り込みは原本 PDF を再保存しない(上書きしない)。
+    assert len(fake_storage.puts) == puts_after_first
+    # B は同じ public 論文へ自分の LibraryItem を持つ。
+    b_item = await db_session.scalar(
+        text("SELECT count(*) FROM library_items WHERE paper_id = :p AND user_id = :u"),
+        {"p": paper_id, "u": str(user_b.id)},
+    )
+    assert b_item == 1
 
 
 # ---------------------------------------------------------------------------
