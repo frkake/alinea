@@ -18,6 +18,7 @@ from alinea_core.db.models import (
     Annotation,
     Article,
     ArticleBlock,
+    ArticlePublication,
     ChatMessage,
     ChatThread,
     Collection,
@@ -164,6 +165,24 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
             type="heading",
             content={"heading": {"level": 2, "text": "はじめに"}},
             text_plain="はじめに",
+        )
+    )
+
+    # 記事公開スナップショット(Task 24)。公開 URL は public のまま保存され、
+    # 復元時には必ず unlisted に落ちる(import 側で検証)。
+    publication_id = str(uuid.uuid4())
+    publication_slug = f"yasashii-{uuid.uuid4().hex[:8]}"
+    db.add(
+        ArticlePublication(
+            id=publication_id,
+            article_id=article.id,
+            user_id=user.id,
+            slug=publication_slug,
+            visibility="public",
+            snapshot_version=2,
+            title="やさしい解説",
+            paper_meta={"title": "Flow Straight and Fast"},
+            blocks=[{"type": "heading", "content": {"heading": {"level": 2, "text": "はじめに"}}}],
         )
     )
 
@@ -341,6 +360,9 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
         "shared_set_id": str(shared_set.id),
         "paper_glossary_id": str(paper_glossary.id),
         "external_id": external_id,
+        "article_id": str(article.id),
+        "publication_id": publication_id,
+        "publication_slug": publication_slug,
     }
 
 
@@ -547,6 +569,24 @@ async def test_export_all_columns_present(db_session: AsyncSession) -> None:
     assert lib["suggested_tags"] == ["ml", "ot"]
     assert lib["reading_position"] == {"block_id": "blk-42", "offset": 10}
     assert lib["queue_order"] == 3
+
+
+async def test_export_includes_publication_snapshot(db_session: AsyncSession) -> None:
+    """記事公開スナップショット(Task 24)がエクスポートに含まれる。"""
+    ids = await _seed_user_data(db_session)
+    payload = await build_export_payload(db_session, ids["user_id"])
+
+    assert "publications" in payload
+    pubs = payload["publications"]
+    assert len(pubs) == 1
+    pub = pubs[0]
+    assert pub["id"] == ids["publication_id"]
+    assert pub["article_id"] == ids["article_id"]
+    assert pub["slug"] == ids["publication_slug"]
+    # エクスポートは可視性を保持する(復元時に unlisted へ落とすのは import 側の責務)。
+    assert pub["visibility"] == "public"
+    assert pub["snapshot_version"] == 2
+    assert pub["blocks"][0]["type"] == "heading"
 
 
 async def test_export_document_asset_keys_collected(db_session: AsyncSession) -> None:

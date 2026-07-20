@@ -29,6 +29,7 @@ from alinea_core.db.models import (
     Annotation,
     Article,
     ArticleBlock,
+    ArticlePublication,
     ChatMessage,
     ChatThread,
     Collection,
@@ -795,6 +796,41 @@ async def _serialize_explainer_figures(
     ]
 
 
+async def _serialize_publications(
+    session: AsyncSession, article_ids: list[str]
+) -> list[dict[str, Any]]:
+    """記事公開スナップショット(Task 24)。既にサニタイズ済みの安全な部分集合のみを保存する。"""
+    if not article_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(ArticlePublication)
+                .where(ArticlePublication.article_id.in_(article_ids))
+                .order_by(ArticlePublication.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "article_id": str(r.article_id),
+            "slug": r.slug,
+            "visibility": r.visibility,
+            "snapshot_version": r.snapshot_version,
+            "title": r.title,
+            "paper_meta": r.paper_meta,
+            "blocks": r.blocks,
+            "published_at": _iso(r.published_at),
+            "created_at": _iso(r.created_at),
+            "updated_at": _iso(r.updated_at),
+        }
+        for r in rows
+    ]
+
+
 async def _serialize_source_assets(
     session: AsyncSession, paper_ids: list[str]
 ) -> list[dict[str, Any]]:
@@ -939,6 +975,7 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
         "notifications": await _serialize_notifications(session, user_id),
         "overview_figures": await _serialize_overview_figures(session, article_ids),
         "explainer_figures": await _serialize_explainer_figures(session, article_ids),
+        "publications": await _serialize_publications(session, article_ids),
         "source_assets": await _serialize_source_assets(session, paper_ids),
         "paper_external_ids": await _serialize_paper_external_ids(session, paper_ids),
         "share_tokens": await _serialize_share_tokens(session, collection_ids),
