@@ -7,8 +7,10 @@ export interface ExportFormatCardProps {
   title: string;
   description: string;
   onExport: () => void;
-  /** null 以外なら「エクスポート ⤓」の代わりに表示(JSON 一括の「準備中…」用)。M1-17 では未使用。 */
+  /** null 以外なら「エクスポート ⤓」の代わりに表示(「準備中…」用)。 */
   busyLabel?: string | null;
+  /** ジョブ失敗時のエラーメッセージ。カード内に赤字で表示される。 */
+  errorLabel?: string | null;
 }
 
 export function ExportFormatCard({
@@ -16,11 +18,14 @@ export function ExportFormatCard({
   description,
   onExport,
   busyLabel = null,
+  errorLabel = null,
 }: ExportFormatCardProps) {
   const busy = busyLabel != null;
   const [hover, setHover] = useState(false);
   return (
     <div
+      role="article"
+      aria-label={title}
       style={{
         flex: 1,
         display: "flex",
@@ -59,6 +64,11 @@ export function ExportFormatCard({
       >
         {busy ? busyLabel : "エクスポート ⤓"}
       </button>
+      {errorLabel != null && (
+        <span style={{ fontSize: 10.5, color: "var(--pr-warn)", marginTop: 2 }}>
+          {errorLabel}
+        </span>
+      )}
     </div>
   );
 }

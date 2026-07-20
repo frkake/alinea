@@ -90,6 +90,16 @@ export function accentKeyForHex(hex: string): AccentKey {
   return ACCENT_SWATCHES.find((s) => s.hex === hex)?.key ?? "slate";
 }
 
+/** データ操作ジョブの状態(Task 4: エクスポート・インポート共通)。 */
+export type DataJobState = {
+  status: "queued" | "running" | "succeeded" | "failed";
+  error?: string | null;
+  summary?: ImportSummary | null;
+};
+
+/** インポートサマリ(Task 4)。 */
+export type ImportSummary = Record<string, unknown>;
+
 export type ProviderId = "openai" | "anthropic" | "google" | "deepseek" | "xai";
 
 /** LLM 用途(plans/03 §17.1 llm_routing)。 */
