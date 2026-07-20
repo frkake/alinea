@@ -21,6 +21,7 @@ from alinea_core.adapters.fetch import (
     fetch_pdf,
     make_site_client,
 )
+from alinea_core.adapters.openreview import OpenReviewAdapter
 from alinea_core.adapters.registry import (
     registered_adapters,
     resolve_adapter,
@@ -31,6 +32,7 @@ __all__ = [
     "MAX_SITE_PDF_BYTES",
     "AclAnthologyAdapter",
     "CitationMeta",
+    "OpenReviewAdapter",
     "SiteAdapter",
     "SiteFetchError",
     "SiteMeta",

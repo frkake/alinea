@@ -1,0 +1,20 @@
+{
+  "notes": [
+    {
+      "id": "abc123XYZ",
+      "forum": "abc123XYZ",
+      "content": {
+        "title": {"value": "Attention Is All You Need (Mock)"},
+        "authors": {"value": ["Alice Author", "Bob Builder"]},
+        "abstract": {"value": "We introduce a new mock architecture based entirely on attention mechanisms."},
+        "venue": {"value": "ICLR 2024"},
+        "venueid": {"value": "ICLR.cc/2024/Conference"},
+        "_bibtex": {"value": "@inproceedings{mock2024,title={Attention Is All You Need (Mock)}}"},
+        "license": {"value": "CC BY 4.0"}
+      },
+      "cdate": 1704067200000,
+      "pdate": 1704153600000
+    }
+  ],
+  "count": 1
+}

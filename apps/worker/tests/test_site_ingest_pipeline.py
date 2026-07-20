@@ -118,3 +118,95 @@ async def test_site_ingest_reaches_complete_quality_b(
     assert rev.quality_level == "B"
     assert rev.source_format == "pdf"
     assert rev.source_version == "v1"
+
+
+# --------------------------------------------------------------------------- #
+# OpenReview site ingest pipeline (Task 16)
+# --------------------------------------------------------------------------- #
+
+
+async def _seed_openreview_ingest_job(
+    db: AsyncSession,
+    *,
+    pdf_bytes: bytes,
+    external_id: str = "abc123XYZ",
+) -> dict[str, str]:
+    """OpenReview Paper + LibraryItem + `source='site'` ingest ジョブを作る。
+
+    `POST /api/ingest/site`(apps/api)が実際に行う最小セットアップを模す。
+    """
+    user = User(id=str(uuid.uuid4()), email=f"{uuid.uuid4().hex}@t.test")
+    db.add(user)
+    await db.flush()
+
+    paper = Paper(
+        id=str(uuid.uuid4()),
+        title=f"OpenReview paper {external_id}",
+        visibility="private",
+        owner_user_id=user.id,
+        pdf_sha256=uuid.uuid4().hex,
+        license="cc-by-4.0",
+    )
+    db.add(paper)
+    await db.flush()
+
+    li = LibraryItem(id=str(uuid.uuid4()), user_id=user.id, paper_id=paper.id, status="planned")
+    db.add(li)
+    await db.flush()
+    await db.commit()
+
+    storage = S3Storage()
+    await storage.put(
+        storage.sources_bucket,
+        StorageKeys.original_pdf(str(paper.id), "v1"),
+        pdf_bytes,
+        content_type="application/pdf",
+    )
+
+    store = JobStore(db)
+    job_id = await store.enqueue(
+        kind="ingest",
+        payload={
+            "mode": "initial",
+            "source": "site",
+            "site": "openreview",
+            "external_id": external_id,
+            "landing_url": f"https://openreview.net/forum?id={external_id}",
+            "library_item_id": str(li.id),
+        },
+        priority="bulk",
+        user_id=str(user.id),
+        paper_id=str(paper.id),
+        library_item_id=str(li.id),
+    )
+    return {
+        "job_id": job_id,
+        "paper_id": str(paper.id),
+        "library_item_id": str(li.id),
+        "user_id": str(user.id),
+    }
+
+
+async def test_openreview_site_ingest_reaches_complete_quality_b(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+) -> None:
+    """OpenReview の `source='site'` ジョブが品質 B で complete まで完走する。"""
+    pdf_bytes = _load_pdf("pdf_quality_b_sample.pdf")
+    ids = await _seed_openreview_ingest_job(db_session, pdf_bytes=pdf_bytes)
+    store = JobStore(db_session)
+
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(worker_ctx, store, job)
+
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    assert job.stage == "complete"
+    assert job.status == "succeeded"
+    assert job.progress == 100
+
+    rev = await _revision(db_session, ids["paper_id"])
+    assert rev.quality_level == "B"
+    assert rev.source_format == "pdf"
+    assert rev.source_version == "v1"
