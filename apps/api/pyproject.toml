@@ -30,3 +30,4 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/alinea_api"]
+artifacts = ["src/alinea_api/static/**"]

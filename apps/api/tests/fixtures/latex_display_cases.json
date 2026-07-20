@@ -1,0 +1,52 @@
+[
+  {
+    "description": "label command removed",
+    "input": "See Eq.~\\eqref{eq:main}.",
+    "output": "See Eq.."
+  },
+  {
+    "description": "notag command removed",
+    "input": "x = 1 \\notag extra",
+    "output": "x = 1 extra"
+  },
+  {
+    "description": "textbf unwrapped",
+    "input": "\\textbf{bold text} here",
+    "output": "bold text here"
+  },
+  {
+    "description": "top-level ampersand passthrough (no LaTeX)",
+    "input": "Smith & Jones",
+    "output": "Smith & Jones"
+  },
+  {
+    "description": "top-level ampersand in LaTeX context stripped",
+    "input": "a & b \\label{eq:1}",
+    "output": "a & b"
+  },
+  {
+    "description": "plain text unchanged",
+    "input": "This is plain text.",
+    "output": "This is plain text."
+  },
+  {
+    "description": "textit unwrapped",
+    "input": "\\textit{italic}",
+    "output": "italic"
+  },
+  {
+    "description": "emph unwrapped",
+    "input": "\\emph{emphasized}",
+    "output": "emphasized"
+  },
+  {
+    "description": "curly braces removed",
+    "input": "{bare braces}",
+    "output": "bare braces"
+  },
+  {
+    "description": "tilde in LaTeX context replaced with space",
+    "input": "\\textbf{Hello}~world",
+    "output": "Hello world"
+  }
+]

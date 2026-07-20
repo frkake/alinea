@@ -4,14 +4,22 @@
 (``schemas/export.py`` と同方針)。全ブロック種・全インライン種・HTML エスケープ・図 data URI・
 数式フォールバックマークアップ・訳優先フォールバック・対訳 2 カラム・記事 Markdown サブセットを
 DB なしで検証する。
+
+Task 10 拡張: KaTeX 埋め込み・LaTeX表示クリーニングの golden テスト。
 """
 
 from __future__ import annotations
 
+import json
+import pathlib
+import re
+
+from alinea_api.schemas.latex_display import clean_latex_display_text
 from alinea_api.schemas.standalone_html import (
     ArticleBlockView,
     StandaloneMeta,
     TranslationView,
+    build_katex_runtime,
     escape_html,
     render_article_html,
     render_block,
@@ -19,6 +27,8 @@ from alinea_api.schemas.standalone_html import (
     render_inline,
 )
 from alinea_core.document.blocks import Block, DocumentContent
+
+_FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
 
 META = StandaloneMeta(
     title="Flow <Straight> & Fast",
@@ -312,3 +322,138 @@ def test_render_article_html_figure_embed_data_uri() -> None:
     )
     assert "data:image/png;base64,QQQ" in out
     assert "図の説明" in out
+
+
+# ---------------------------------------------------------------------------
+# Task 10: KaTeX 埋め込み golden テスト
+# ---------------------------------------------------------------------------
+
+def test_katex_runtime_contains_no_external_urls() -> None:
+    """build_katex_runtime() の出力に外部リソース参照 (CDN/外部ホスト) が存在しないこと。
+
+    KaTeX JS 内の W3C 名前空間 URI (http://www.w3.org/...) は JS 文字列リテラルであり
+    ネットワーク参照ではないため除外する。src/href 属性や @import による外部ロードを検査する。
+    """
+    runtime = build_katex_runtime()
+    # HTML 属性による外部リソース参照がないか検査 (src=/href=/url() in CSS)
+    assert 'src="https://' not in runtime, "External https src found"
+    assert 'href="https://' not in runtime, "External https href found"
+    assert "@import url(http" not in runtime, "External @import found"
+    # CDN ドメインが含まれていないか
+    for cdn in ("cdn.jsdelivr.net", "cdnjs.cloudflare.com", "unpkg.com"):
+        assert cdn not in runtime, f"CDN reference to {cdn} found"
+
+
+def test_katex_runtime_contains_katex_js() -> None:
+    """build_katex_runtime() に KaTeX の JS コードが inline で含まれること。"""
+    runtime = build_katex_runtime()
+    # KaTeX minified JS の特徴的な文字列
+    assert "<script>" in runtime or "<script " in runtime
+    assert "katex" in runtime.lower()
+    # renderMathInElement or katex.render must be present
+    assert "renderMathInElement" in runtime or "katex.render" in runtime
+
+
+def test_katex_runtime_contains_css_inline() -> None:
+    """build_katex_runtime() に KaTeX CSS が inline <style> で含まれること。"""
+    runtime = build_katex_runtime()
+    assert "<style>" in runtime or '<style ' in runtime
+    # KaTeX CSS の特徴的なクラス名
+    assert ".katex" in runtime
+
+
+def test_katex_runtime_css_has_inline_fonts() -> None:
+    """KaTeX CSS 中のフォント参照が data: URI (base64) になっていること。"""
+    runtime = build_katex_runtime()
+    # WOFF2 font references should be data URIs
+    assert "data:font/woff2;base64," in runtime, (
+        "KaTeX fonts are not inlined as data URIs — external font references remain"
+    )
+    # No relative font paths like fonts/KaTeX_*.woff2
+    assert "fonts/KaTeX_" not in runtime, "Relative font path found — fonts not inlined"
+
+
+def test_document_with_katex_runtime_has_no_network_refs() -> None:
+    """KaTeX runtime を注入したスタンドアロン HTML に外部 URL 参照がないこと。"""
+    content = DocumentContent.model_validate({
+        "quality_level": "A",
+        "sections": [{
+            "id": "s1",
+            "heading": {"number": "1", "title": "Math"},
+            "blocks": [{"id": "e1", "type": "equation", "latex": r"\frac{a}{b}"}],
+        }],
+    })
+    runtime = build_katex_runtime()
+    out = render_document_html(
+        content, mode="source", units={}, image_data_uris={}, meta=META,
+        math_runtime=runtime,
+    )
+    # Check for any src= or href= pointing to external URL
+    external_refs = re.findall(r'(?:src|href)=["\']https?://', out)
+    assert external_refs == [], f"External network references found: {external_refs}"
+    # Also check @import in style and CDN refs
+    assert "@import url(http" not in out
+    for cdn in ("cdn.jsdelivr.net", "cdnjs.cloudflare.com", "unpkg.com"):
+        assert cdn not in out, f"CDN reference to {cdn} found"
+
+
+def test_document_with_katex_runtime_renders_math_markup() -> None:
+    """KaTeX runtime 注入後も alinea-math スパンが残ること(JS が削除しない)。"""
+    content = DocumentContent.model_validate({
+        "quality_level": "A",
+        "sections": [{
+            "id": "s1",
+            "heading": {"number": "1", "title": "Math"},
+            "blocks": [{"id": "e1", "type": "equation", "latex": r"E=mc^2"}],
+        }],
+    })
+    runtime = build_katex_runtime()
+    out = render_document_html(
+        content, mode="source", units={}, image_data_uris={}, meta=META,
+        math_runtime=runtime,
+    )
+    assert 'class="alinea-math"' in out
+    assert "E=mc^2" in out
+
+
+# ---------------------------------------------------------------------------
+# Task 10: LaTeX 表示クリーニング golden テスト (shared JSON fixtures)
+# ---------------------------------------------------------------------------
+
+def _load_latex_cases() -> list[dict]:
+    return json.loads((_FIXTURES_DIR / "latex_display_cases.json").read_text())
+
+
+def test_latex_clean_parity_with_shared_fixtures() -> None:
+    """shared JSON fixtures が Python clean_latex_display_text() で通ること。"""
+    cases = _load_latex_cases()
+    failures = []
+    for case in cases:
+        inp = case["input"]
+        expected = case["output"]
+        got = clean_latex_display_text(inp)
+        if got != expected:
+            failures.append(
+                f"\n  [{case['description']}]\n  input:    {inp!r}\n  expected: {expected!r}\n  got:      {got!r}"
+            )
+    assert not failures, "LaTeX clean parity failures:" + "".join(failures)
+
+
+def test_latex_clean_plain_text_passthrough() -> None:
+    """LaTeX マーカーがない平文はそのまま返すこと。"""
+    text = "This is plain text with no LaTeX."
+    assert clean_latex_display_text(text) == text
+
+
+def test_latex_clean_textbf_unwrapped() -> None:
+    assert clean_latex_display_text(r"\textbf{bold}") == "bold"
+
+
+def test_latex_clean_label_removed() -> None:
+    result = clean_latex_display_text(r"x = 1 \label{eq:main}")
+    assert r"\label" not in result
+
+
+def test_latex_clean_notag_removed() -> None:
+    result = clean_latex_display_text(r"x = 1 \notag")
+    assert r"\notag" not in result
