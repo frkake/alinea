@@ -385,6 +385,72 @@ async def test_import_forces_publication_unlisted(db_session: AsyncSession) -> N
     assert pub.blocks[0]["type"] == "heading"
 
 
+async def test_import_restores_presentation_artifact_repoints_ids(
+    db_session: AsyncSession,
+) -> None:
+    """Task 28: プレゼンテーション成果物が別ユーザーへ復元され library_item/revision/job が張り直る。"""
+    from alinea_core.db.models import PresentationArtifact
+
+    src = await _seed_user_data(db_session)
+    payload = await _detached_payload(db_session, src["user_id"])
+    assert len(payload["presentations"]) == 1
+    await _delete_source_user(db_session, src["user_id"])
+    target = await _make_user(db_session)
+
+    summary = await import_data_json(db_session, target["user_id"], payload)
+    assert summary["failed"] == [], summary["failed"]
+    assert summary["created"].get("presentations", 0) == 1
+
+    target_items = [
+        str(i.id)
+        for i in (
+            await db_session.execute(
+                select(LibraryItem).where(LibraryItem.user_id == target["user_id"])
+            )
+        ).scalars().all()
+    ]
+    artifact = await db_session.get(PresentationArtifact, src["presentation_artifact_id"])
+    assert artifact is not None
+    # library_item_id は移行先へ張り替え。
+    assert str(artifact.library_item_id) in target_items
+    # source_revision_id は id 保持で復元された revision を指す。
+    revision = await db_session.get(DocumentRevision, str(artifact.source_revision_id))
+    assert revision is not None
+    assert artifact.preset == "reading_group"
+    assert artifact.pptx_storage_key  # PPTX key は移行先専用へ再キー化されている
+
+
+async def test_import_presentation_second_import_reuses_existing(
+    db_session: AsyncSession,
+) -> None:
+    """Task 28: 同じバックアップの二回目は既存 artifact を再利用し、新しい成果物を上書きしない。"""
+    from alinea_core.db.models import PresentationArtifact
+
+    src = await _seed_user_data(db_session)
+    payload = await _detached_payload(db_session, src["user_id"])
+    await _delete_source_user(db_session, src["user_id"])
+    target = await _make_user(db_session)
+
+    summary1 = await import_data_json(db_session, target["user_id"], payload)
+    assert summary1["created"].get("presentations", 0) == 1
+
+    # 復元先で「より新しい成果物」に更新した状態を模す。
+    artifact = await db_session.get(PresentationArtifact, src["presentation_artifact_id"])
+    assert artifact is not None
+    artifact.model_id = "claude-opus-4-8"
+    artifact.pptx_storage_key = "presentations/newer/newer.pptx"
+    await db_session.commit()
+
+    # 二回目の取り込みは既存を skip(上書きしない)。
+    summary2 = await import_data_json(db_session, target["user_id"], payload)
+    assert summary2["created"].get("presentations", 0) == 0
+    assert summary2["skipped"].get("presentations", 0) >= 1
+
+    await db_session.refresh(artifact)
+    assert artifact.model_id == "claude-opus-4-8"
+    assert artifact.pptx_storage_key == "presentations/newer/newer.pptx"
+
+
 async def test_import_restores_own_publication_comment(db_session: AsyncSession) -> None:
     """Task 25: バックアップの本人 own コメントが移行先ユーザーへ復元される。
 

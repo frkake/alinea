@@ -737,6 +737,39 @@ class ReadingSession(Base):
     created_at: Mapped[dt.datetime] = _now()
 
 
+class PresentationArtifact(Base):
+    """論文→PPTX プレゼンテーション成果物のメタデータ(Task 28)。
+
+    library_item ごとに最新版のみを持つ(``library_item_id`` UNIQUE)。PPTX 本体は S3
+    (assets バケット)の job 別 key ``presentations/{library_item_id}/{job_id}.pptx`` を指す
+    (:meth:`StorageKeys.presentation_pptx`)。再生成時も既存 key を上書きせず、DB がコミットで
+    新 key を指すまで旧 key(旧成功)を保つ(no-overwrite key)。
+    """
+
+    __tablename__ = "presentation_artifacts"
+    id: Mapped[str] = _uuid_pk()
+    library_item_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("library_items.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    source_revision_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("document_revisions.id"), nullable=False
+    )
+    generation_job_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
+    preset: Mapped[str] = mapped_column(Text, nullable=False)
+    audience: Mapped[str] = mapped_column(Text, nullable=False)
+    instruction: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    model_provider: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    model_id: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    ppt_master_revision: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    pptx_storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    generated_at: Mapped[dt.datetime] = _now()
+    updated_at: Mapped[dt.datetime] = _now()
+    # library_item_id の UNIQUE は列定義(unique=True)= migration の inline UNIQUE と一致。
+
+
 class Job(Base):
     __tablename__ = "jobs"
     id: Mapped[str] = _uuid_pk()
@@ -872,6 +905,7 @@ __all__ = [
     "Paper",
     "PaperEmbedding",
     "PaperExternalId",
+    "PresentationArtifact",
     "PublicationComment",
     "QuotaLimit",
     "ReadingSession",

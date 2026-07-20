@@ -31,6 +31,7 @@ from alinea_core.db.models import (
     Notification,
     Paper,
     PaperExternalId,
+    PresentationArtifact,
     PublicationComment,
     ReadingSession,
     ResourceLink,
@@ -216,6 +217,12 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
         )
     )
 
+    # プレゼンテーション成果物(Task 28)。最新版のみ(library_item ごと unique)。PPTX は
+    # assets バケットの job 別 key を指す(上書きしない no-overwrite key)。
+    presentation_job_id = str(uuid.uuid4())
+    presentation_artifact_id = str(uuid.uuid4())
+    presentation_pptx_key = StorageKeys.presentation_pptx(str(item.id), presentation_job_id)
+
     collection = Collection(id=str(uuid.uuid4()), user_id=user.id, name="輪読会")
     db.add(collection)
     await db.flush()
@@ -377,12 +384,32 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
         )
     )
 
+    # プレゼンテーション成果物(Task 28)。revision 作成後に紐づける。
+    db.add(
+        PresentationArtifact(
+            id=presentation_artifact_id,
+            library_item_id=item.id,
+            source_revision_id=revision.id,
+            generation_job_id=presentation_job_id,
+            preset="reading_group",
+            audience="students",
+            instruction="要点だけスライドに",
+            model_provider="openai",
+            model_id="gpt-5.5",
+            ppt_master_revision="0c0bdaf0dd953afc2c00322e92f26dc02fc1c51f",
+            pptx_storage_key=presentation_pptx_key,
+        )
+    )
+
     await db.commit()
     return {
         "user_id": str(user.id),
         "paper_id": str(paper.id),
         "library_item_id": str(item.id),
         "paper_id": str(paper.id),
+        "presentation_artifact_id": presentation_artifact_id,
+        "presentation_job_id": presentation_job_id,
+        "presentation_pptx_key": presentation_pptx_key,
         "asset_key": f"assets/papers/{paper.id}/paper.pdf",
         "paper_thumbnail_key": thumbnail_key,
         "item_thumbnail_key": item_thumbnail_key,
@@ -642,6 +669,50 @@ async def test_export_includes_only_own_publication_comment(db_session: AsyncSes
     # 第三者コメントの id は決してエクスポートに現れない。
     exported_ids = {c["id"] for c in comments}
     assert ids["third_party_comment_id"] not in exported_ids
+
+
+async def test_export_includes_presentation_artifact(db_session: AsyncSession) -> None:
+    """プレゼンテーション成果物(Task 28)の metadata がエクスポートに含まれる。"""
+    ids = await _seed_user_data(db_session)
+    payload = await build_export_payload(db_session, ids["user_id"])
+
+    assert "presentations" in payload
+    rows = payload["presentations"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == ids["presentation_artifact_id"]
+    assert row["library_item_id"] == ids["library_item_id"]
+    assert row["source_revision_id"] == ids["revision_id"]
+    assert row["generation_job_id"] == ids["presentation_job_id"]
+    assert row["preset"] == "reading_group"
+    assert row["audience"] == "students"
+    assert row["model_provider"] == "openai"
+    assert row["model_id"] == "gpt-5.5"
+    assert row["pptx_storage_key"] == ids["presentation_pptx_key"]
+
+
+async def test_export_archive_bundles_presentation_pptx(db_session: AsyncSession) -> None:
+    """PPTX バイトが manifest + assets/ に含まれる(assets バケット)。"""
+    ids = await _seed_user_data(db_session)
+    storage = S3Storage()
+    await storage.put(
+        storage.assets_bucket,
+        ids["presentation_pptx_key"],
+        b"PK\x03\x04 fake pptx",
+        content_type=(
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        ),
+    )
+    archive = await build_export_archive(db_session, ids["user_id"], storage)
+    with zipfile.ZipFile(BytesIO(archive)) as zf:
+        names = set(zf.namelist())
+        assert f"assets/{ids['presentation_pptx_key']}" in names
+        assert zf.read(f"assets/{ids['presentation_pptx_key']}") == b"PK\x03\x04 fake pptx"
+        manifest = json.loads(zf.read("manifest.json"))
+        entry = next(
+            a for a in manifest["assets"] if a["storage_key"] == ids["presentation_pptx_key"]
+        )
+        assert entry["sha256"]
 
 
 async def test_export_document_asset_keys_collected(db_session: AsyncSession) -> None:

@@ -32,6 +32,7 @@ _ROUTING_KEY_TO_TASK: dict[str, str] = {
     "article": "article",
     "vocab": "vocab",
     "figure_dsl": "overview_figure_dsl",
+    "presentation": "presentation",
 }
 
 

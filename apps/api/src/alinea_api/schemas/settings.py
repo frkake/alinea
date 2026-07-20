@@ -104,6 +104,8 @@ class LlmRouting(_Strict):
     article: RouteEntry = RouteEntry(provider="anthropic", model="claude-opus-4-8")
     vocab: RouteEntry = RouteEntry(provider="anthropic", model="claude-haiku-4-5")
     figure_dsl: RouteEntry = RouteEntry(provider="anthropic", model="claude-opus-4-8")
+    # Task 28: 論文→PPTX(構造化出力)。既定は OpenAI(チェーン先頭)。
+    presentation: RouteEntry = RouteEntry(provider="openai", model="gpt-5.5")
     figure_image: ImageRouteEntry = ImageRouteEntry(
         provider="google", model="gemini-3.1-flash-image"
     )
