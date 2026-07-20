@@ -2594,6 +2594,50 @@ export type PaperBib = {
 };
 
 /**
+ * PaperExportRequest
+ * ``POST .../export/standalone`` の本文。複数選択した成果物(値域は Literal で検証)。
+ */
+export type PaperExportRequest = {
+    /**
+     * Artifacts
+     */
+    artifacts: Array<'source_html' | 'translation_html' | 'bilingual_html' | 'article_html' | 'pdf_original' | 'pdf_translated' | 'pdf_bilingual'>;
+};
+
+/**
+ * PaperExportStartResponse
+ * ``POST .../export/standalone`` のレスポンス。
+ *
+ * - ``mode="sync"``: 単一 HTML 選択。``download_url`` は同期 HTML エンドポイントの相対 URL。
+ * - ``mode="job"``: paper_export job を enqueue。``job_id`` を status でポーリングする。
+ */
+export type PaperExportStartResponse = {
+    /**
+     * Mode
+     */
+    mode: string;
+    /**
+     * Job Id
+     */
+    job_id?: string | null;
+    /**
+     * Download Url
+     */
+    download_url?: string | null;
+};
+
+/**
+ * PaperExportStatusResponse
+ */
+export type PaperExportStatusResponse = {
+    job: JobOut;
+    /**
+     * Download Url
+     */
+    download_url: string | null;
+};
+
+/**
  * PapersIngestLogEntry
  * §4.3 の処理ログ 1 行(joblog.project_ingest_log の射影と同型)。
  */
@@ -8023,6 +8067,76 @@ export type ExportStandaloneArticleHtmlResponses = {
      */
     200: unknown;
 };
+
+export type ExportStandaloneStartData = {
+    body: PaperExportRequest;
+    headers?: {
+        /**
+         * Idempotency-Key
+         */
+        'Idempotency-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone';
+};
+
+export type ExportStandaloneStartErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneStartError = ExportStandaloneStartErrors[keyof ExportStandaloneStartErrors];
+
+export type ExportStandaloneStartResponses = {
+    /**
+     * Successful Response
+     */
+    200: PaperExportStartResponse;
+};
+
+export type ExportStandaloneStartResponse = ExportStandaloneStartResponses[keyof ExportStandaloneStartResponses];
+
+export type ExportStandaloneStatusData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/{job_id}';
+};
+
+export type ExportStandaloneStatusErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneStatusError = ExportStandaloneStatusErrors[keyof ExportStandaloneStatusErrors];
+
+export type ExportStandaloneStatusResponses = {
+    /**
+     * Successful Response
+     */
+    200: PaperExportStatusResponse;
+};
+
+export type ExportStandaloneStatusResponse = ExportStandaloneStatusResponses[keyof ExportStandaloneStatusResponses];
 
 export type ArticlesGetData = {
     body?: never;

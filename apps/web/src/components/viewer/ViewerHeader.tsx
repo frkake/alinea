@@ -12,6 +12,7 @@ import { useViewerStore, type TranslationStyle } from "@/stores/viewer-store";
 import type { ViewerMode } from "@/components/viewer/ViewerShell";
 import { InPaperSearch } from "@/components/viewer/InPaperSearch";
 import { ArticleRegenerateButton } from "@/components/viewer/article/ArticleRegenerateButton";
+import { PaperExportModal } from "@/components/viewer/PaperExportModal";
 
 /** 表示モードの 5 タブ(plans/13 §1.5・M2-07 で「記事」を追加)。 */
 export const MODE_OPTIONS = [
@@ -189,6 +190,7 @@ export function ViewerHeader({
   const overflowAnchor = useRef<HTMLButtonElement>(null);
   const [styleOpen, setStyleOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
 
   const controlBtn: CSSProperties = {
     display: "inline-flex",
@@ -483,7 +485,36 @@ export function ViewerHeader({
         >
           {panelOpen ? "サイドパネルを隠す" : "サイドパネルを表示"}
         </button>
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            setExportOpen(true);
+            setOverflowOpen(false);
+          }}
+          style={{
+            display: "block",
+            width: "100%",
+            textAlign: "left",
+            border: "none",
+            background: "transparent",
+            cursor: "pointer",
+            fontFamily: "inherit",
+            fontSize: 11.5,
+            padding: "0 12px",
+            height: 30,
+            color: "var(--pr-text-mid)",
+          }}
+        >
+          エクスポート
+        </button>
       </Popover>
+
+      <PaperExportModal
+        open={exportOpen}
+        itemId={itemId}
+        onClose={() => setExportOpen(false)}
+      />
     </header>
   );
 }

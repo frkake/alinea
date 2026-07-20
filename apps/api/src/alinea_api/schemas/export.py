@@ -16,10 +16,32 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from typing import Literal
 
 import yaml  # type: ignore[import-untyped]  # PyYAML は uvicorn[standard] 経由(型スタブ未導入)
+from pydantic import BaseModel
 
 from alinea_api.schemas.common import PaperBib
+
+# ============================================================================
+# 論文単位スタンドアロンエクスポート API(Feature S3・Task 12)
+# ============================================================================
+# 選択可能な成果物(worker の ``export_paper._ALL_ARTIFACTS`` および availability API と 1:1)。
+StandaloneArtifact = Literal[
+    "source_html",
+    "translation_html",
+    "bilingual_html",
+    "article_html",
+    "pdf_original",
+    "pdf_translated",
+    "pdf_bilingual",
+]
+
+
+class PaperExportRequest(BaseModel):
+    """``POST .../export/standalone`` の本文。複数選択した成果物(値域は Literal で検証)。"""
+
+    artifacts: list[StandaloneArtifact]
 
 # ============================================================================
 # レンダリング入力(DB から解決済みの値のみを持つ、DB 非依存の値オブジェクト)
