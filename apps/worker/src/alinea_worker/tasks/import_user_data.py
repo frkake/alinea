@@ -84,6 +84,12 @@ _MAX_ZIP_MEMBER_BYTES = 100 * 1024 * 1024
 _MAX_ZIP_UNCOMPRESSED_BYTES = 500 * 1024 * 1024
 _MAX_ZIP_COMPRESSION_RATIO = 100
 
+# papers.license の DB check 制約で許可された値。モジュールレベルで定義してループ外に置く。
+_VALID_LICENSES: frozenset[str] = frozenset({
+    "cc-by-4.0", "cc-by-sa-4.0", "cc-by-nc-4.0", "cc-by-nc-sa-4.0",
+    "cc-by-nd-4.0", "cc-by-nc-nd-4.0", "cc0", "arxiv-nonexclusive", "unknown",
+})
+
 
 def _validated_members(zf: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
     """ZIP を展開する前にパスと展開リソースを検証する。"""
@@ -239,14 +245,14 @@ class _Importer:
             published_on = _date(entry.get("published_on"))
             if published_on is None and year:
                 published_on = dt.date(int(year), 1, 1)
-            # license は DB に check 制約あり。不正な値は "unknown" にフォールバック。
-            _VALID_LICENSES = {
-                "cc-by-4.0", "cc-by-sa-4.0", "cc-by-nc-4.0", "cc-by-nc-sa-4.0",
-                "cc-by-nd-4.0", "cc-by-nc-nd-4.0", "cc0", "arxiv-nonexclusive", "unknown",
-            }
-            license_val = entry.get("license") or "unknown"
-            if license_val not in _VALID_LICENSES:
+            # license は DB に check 制約あり。非 None 値が不正なら "unknown" にフォールバック。
+            # None は DB デフォルト("unknown")に任せるためそのまま渡す。
+            license_val = entry.get("license")
+            if isinstance(license_val, str) and license_val not in _VALID_LICENSES:
                 license_val = "unknown"
+            # bib_estimated: None は None のまま(DB サーバデフォルトに任せる)
+            bib_raw = entry.get("bib_estimated")
+            bib_estimated = bool(bib_raw) if bib_raw is not None else None
             paper = Paper(
                 id=new_id,
                 arxiv_id=arxiv_id,
@@ -261,7 +267,7 @@ class _Importer:
                 venue=entry.get("venue"),
                 arxiv_categories=list(entry.get("arxiv_categories") or []),
                 license=license_val,
-                bib_estimated=bool(entry.get("bib_estimated")),
+                bib_estimated=bib_estimated,
                 visibility="private",
                 latest_version=entry.get("latest_version"),
                 official_repo_url=entry.get("official_repo_url"),
