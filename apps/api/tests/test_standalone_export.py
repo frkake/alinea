@@ -191,6 +191,41 @@ async def test_availability_other_user_is_404(
     assert (await client.get(_AVAIL.format(item.id))).status_code == 404
 
 
+async def test_availability_translation_html_requires_source_ready(
+    ctx: tuple[AsyncClient, str, FastAPI, _FakeStorage],
+    db_session: AsyncSession,
+    factories: Any,
+) -> None:
+    """translation_html / bilingual_html は source_ready も必要(空コンテンツでは False)。
+
+    回帰テスト: DocumentRevision.content が空ブロックの場合に translation_complete でも
+    translation_html/bilingual_html が False になることを確認する。
+    """
+    client, uid, _app, _storage = ctx
+    user = await db_session.get(User, uid)
+    assert user is not None
+    paper = await factories.make_paper(db_session, owner=user, visibility="private")
+    # 空ブロックリスト → source_ready = False
+    rev = await factories.make_revision(
+        db_session,
+        paper=paper,
+        content={"quality_level": "A", "sections": []},
+    )
+    item = await factories.make_library_item(db_session, user=user, paper=paper)
+    tset = await factories.make_translation_set(
+        db_session, revision=rev, style="natural", scope="shared", status="complete"
+    )
+    await factories.make_translation_unit(
+        db_session, translation_set=tset, block_id="blk-p1", text_ja="テスト"
+    )
+    await db_session.commit()
+
+    body = (await client.get(_AVAIL.format(item.id))).json()
+    assert body["source_html"] is False
+    assert body["translation_html"] is False
+    assert body["bilingual_html"] is False
+
+
 # ---------------------------------------------------------------------------
 # source.html
 # ---------------------------------------------------------------------------

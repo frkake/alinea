@@ -526,7 +526,19 @@ async def export_vocab_markdown(
 # ============================================================================
 # Anki TSV エクスポート(§11.9。docs/11 §9・PY-VOC-10)
 # ============================================================================
+import html as _html  # noqa: E402
 import re as _re  # noqa: E402
+
+
+def _anki_cell(value: str) -> str:
+    """Anki TSV セル用文字列に変換する(#html:true モード前提)。
+
+    - タブ → 空白(セル境界の汚染を防ぐ)
+    - CR+LF / CR → LF に正規化してから <br> に変換(Anki 表示用改行)
+    - HTML 特殊文字をエスケープ(&, <, >, " → エンティティ)
+    """
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    return _html.escape(normalized.replace("\t", " ")).replace("\n", "<br>")
 
 
 def _paper_slug(title: str) -> str:
@@ -549,13 +561,13 @@ def _render_anki_tsv(entries: list[VocabEntryDetail]) -> str:
 
     for e in entries:
         # --- Front ---
-        # html:true モードなので改行は <br> を使い、1 行に収める
-        front_parts = [e.term]
+        # _anki_cell でセル内タブ・改行・HTML 特殊文字を正規化してから連結する
+        front_parts = [_anki_cell(e.term)]
         meta_parts: list[str] = []
         if e.pos_label:
-            meta_parts.append(e.pos_label)
+            meta_parts.append(_anki_cell(e.pos_label))
         if e.ipa:
-            meta_parts.append(e.ipa)
+            meta_parts.append(_anki_cell(e.ipa))
         if meta_parts:
             front_parts.append("  ".join(meta_parts))
         front = "<br>".join(front_parts)
@@ -564,21 +576,21 @@ def _render_anki_tsv(entries: list[VocabEntryDetail]) -> str:
         back_parts: list[str] = []
         if e.ai.context_meaning:
             if e.ai.context_meaning.short:
-                back_parts.append(e.ai.context_meaning.short)
+                back_parts.append(_anki_cell(e.ai.context_meaning.short))
             if e.ai.context_meaning.long:
-                back_parts.append(e.ai.context_meaning.long)
+                back_parts.append(_anki_cell(e.ai.context_meaning.long))
         back_parts.append("---")
-        back_parts.append(f"文脈: {e.context_sentence}")
+        back_parts.append(f"文脈: {_anki_cell(e.context_sentence)}")
         if e.ai.interpretation:
-            back_parts.append(f"解釈: {e.ai.interpretation}")
+            back_parts.append(f"解釈: {_anki_cell(e.ai.interpretation)}")
         if e.ai.etymology:
-            back_parts.append(f"語源: {e.ai.etymology}")
+            back_parts.append(f"語源: {_anki_cell(e.ai.etymology)}")
         if e.ai.mnemonic:
-            back_parts.append(f"覚えるコツ: {e.ai.mnemonic}")
-        back_parts.append(f"出典: {e.source.display}")
+            back_parts.append(f"覚えるコツ: {_anki_cell(e.ai.mnemonic)}")
+        back_parts.append(f"出典: {_anki_cell(e.source.display)}")
         back = "<br>".join(back_parts)
 
-        # --- Tags ---
+        # --- Tags(タグ列はタブを除去するだけ・HTML escape 不要) ---
         slug = _paper_slug(e.source.paper_title)
         tags = f"alinea {e.kind} {slug}"
 
