@@ -64,6 +64,7 @@ from alinea_core.db.models import (
     OverviewFigure,
     Paper,
     PaperExternalId,
+    PresentationArtifact,
     PublicationComment,
     ReadingSession,
     ResourceLink,
@@ -183,6 +184,9 @@ def _prepare_asset_destinations(data: dict[str, Any], user_id: str) -> dict[str,
     for row in data.get("explainer_figures") or []:
         if isinstance(row, dict):
             register(row, "image_storage_key", "assets", "explainer-image")
+    for row in data.get("presentations") or []:
+        if isinstance(row, dict):
+            register(row, "pptx_storage_key", "assets", "presentation-pptx")
     # LibraryItem / Paper のサムネイル
     for entry in data.get("library") or []:
         if isinstance(entry, dict):
@@ -1029,6 +1033,66 @@ class _Importer:
                 figure_id,
             )
 
+    async def restore_presentations(self, rows: list[dict[str, Any]]) -> None:
+        """プレゼンテーション成果物(Task 28)を別ユーザーへ復元する。
+
+        - id は保持する。2 回目以降は ``session.get`` が既存を検出して skip(冪等)。復元先に
+          より新しい成果物があってもここでは上書きしない(既存を尊重)。
+        - ``library_item_id`` は移行先へ張り替える(item_map)。``source_revision_id`` は
+          id 保持で復元された revision を指す(張り替え不要)。
+        - jobs はバックアップに含めないため ``generation_job_id`` は None に落とす
+          (来歴の軽微な劣化)。``pptx_storage_key`` は _prepare_asset_destinations で移行先
+          専用キーへ再キー化済み。
+        """
+        for row in rows:
+            artifact_id = str(row["id"])
+            if await self.session.get(PresentationArtifact, artifact_id) is not None:
+                # 既存(冪等再取り込み)。復元先の新しい成果物を上書きしない。
+                self.skipped["presentations"] += 1
+                continue
+            lib_id = self.item_map.get(str(row["library_item_id"]))
+            if lib_id is None:
+                self.failed.append(
+                    {
+                        "table": "presentations",
+                        "id": artifact_id,
+                        "error": "unmapped library_item_id",
+                    }
+                )
+                continue
+            # library_item ごとに最新版のみ(UNIQUE)。同一 item に別 id の成果物が既にあれば
+            # 復元先を尊重して skip(_insert の SAVEPOINT が UNIQUE 違反を隔離するが、
+            # 事前判定で明示的に skip する)。
+            existing_for_item = (
+                await self.session.execute(
+                    select(PresentationArtifact.id).where(
+                        PresentationArtifact.library_item_id == lib_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing_for_item is not None:
+                self.skipped["presentations"] += 1
+                continue
+            await self._insert(
+                "presentations",
+                PresentationArtifact(
+                    id=artifact_id,
+                    library_item_id=lib_id,
+                    source_revision_id=str(row["source_revision_id"]),
+                    generation_job_id=None,
+                    preset=row.get("preset") or "reading_group",
+                    audience=row.get("audience") or "",
+                    instruction=row.get("instruction") or "",
+                    model_provider=row.get("model_provider") or "",
+                    model_id=row.get("model_id") or "",
+                    ppt_master_revision=row.get("ppt_master_revision") or "",
+                    pptx_storage_key=row.get("pptx_storage_key") or "",
+                    generated_at=_dt(row.get("generated_at")),
+                    updated_at=_dt(row.get("updated_at")),
+                ),
+                artifact_id,
+            )
+
     async def restore_publications(self, rows: list[dict[str, Any]]) -> None:
         """記事公開スナップショット(Task 24)を復元する。
 
@@ -1237,6 +1301,7 @@ async def import_data_json(
     await imp.restore_explainer_figures(data.get("explainer_figures") or [])
     await imp.restore_publications(data.get("publications") or [])
     await imp.restore_publication_comments(data.get("publication_comments") or [])
+    await imp.restore_presentations(data.get("presentations") or [])
     await imp.restore_vocab_candidates(data.get("vocab_candidates") or [])
     await imp.restore_latest_revisions(library)
 

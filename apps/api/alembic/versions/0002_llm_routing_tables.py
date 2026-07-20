@@ -126,10 +126,30 @@ def _model_rows() -> list[dict[str, Any]]:
     return rows
 
 
+# このマイグレーション時点の llm_task_routes.task CHECK が許可するタスク(§8 の 8 種)。
+# routing.yaml に後発タスク(Task 28 の presentation 等)が増えても、このマイグレーションは
+# 自分の CHECK が許す範囲だけをシードする(後発タスクは各自のマイグレーションが CHECK を
+# 広げてシードする)。既存 DB は影響を受けない(シードは冪等 ON CONFLICT DO NOTHING)。
+_SEEDED_TASKS_0002: frozenset[str] = frozenset(
+    {
+        "translation",
+        "retranslation_escalation",
+        "chat",
+        "summary",
+        "article",
+        "overview_figure_dsl",
+        "vocab",
+        "explainer_image",
+    }
+)
+
+
 def _route_rows() -> list[dict[str, Any]]:
     data = _load_yaml("routing.yaml")
     rows: list[dict[str, Any]] = []
     for task, spec in (data.get("tasks") or {}).items():
+        if task not in _SEEDED_TASKS_0002:
+            continue  # 後発タスクは自分のマイグレーションでシードする(CHECK 違反を避ける)。
         params = {k: v for k, v in spec.items() if k != "chain"}
         rows.append({"task": task, "chain": list(spec["chain"]), "params": params})
     return rows

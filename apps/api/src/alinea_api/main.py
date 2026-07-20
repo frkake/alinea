@@ -37,6 +37,7 @@ from alinea_api.routers import (
     notes,
     notifications,
     papers,
+    presentations,
     publications,
     resources,
     search,
@@ -98,6 +99,7 @@ def create_app() -> FastAPI:
     app.include_router(vocab_candidates.router)
     app.include_router(resources.router)
     app.include_router(publications.router)
+    app.include_router(presentations.router)
 
     return app
 

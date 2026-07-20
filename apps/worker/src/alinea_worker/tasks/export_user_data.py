@@ -46,6 +46,7 @@ from alinea_core.db.models import (
     OverviewFigure,
     Paper,
     PaperExternalId,
+    PresentationArtifact,
     PublicationComment,
     ReadingSession,
     ResourceLink,
@@ -872,6 +873,47 @@ async def _serialize_publication_comments(
     ]
 
 
+async def _serialize_presentations(
+    session: AsyncSession, library_item_ids: list[str]
+) -> list[dict[str, Any]]:
+    """プレゼンテーション成果物(Task 28)。library_item ごとに最新版のみ。
+
+    PPTX 本体は assets バケットの ``pptx_storage_key`` を指し、collect_asset_keys で回収して
+    アーカイブへ束ねる。BYOK 秘密鍵は成果物に含まれない(model_provider / model_id のみ)。
+    """
+    if not library_item_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(PresentationArtifact)
+                .where(PresentationArtifact.library_item_id.in_(library_item_ids))
+                .order_by(PresentationArtifact.generated_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "library_item_id": str(r.library_item_id),
+            "source_revision_id": str(r.source_revision_id),
+            "generation_job_id": str(r.generation_job_id) if r.generation_job_id else None,
+            "preset": r.preset,
+            "audience": r.audience,
+            "instruction": r.instruction,
+            "model_provider": r.model_provider,
+            "model_id": r.model_id,
+            "ppt_master_revision": r.ppt_master_revision,
+            "pptx_storage_key": r.pptx_storage_key,
+            "generated_at": _iso(r.generated_at),
+            "updated_at": _iso(r.updated_at),
+        }
+        for r in rows
+    ]
+
+
 async def _serialize_source_assets(
     session: AsyncSession, paper_ids: list[str]
 ) -> list[dict[str, Any]]:
@@ -1026,6 +1068,7 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
         "source_assets": await _serialize_source_assets(session, paper_ids),
         "paper_external_ids": await _serialize_paper_external_ids(session, paper_ids),
         "share_tokens": await _serialize_share_tokens(session, collection_ids),
+        "presentations": await _serialize_presentations(session, library_item_ids),
     }
 
 
@@ -1054,6 +1097,10 @@ def collect_asset_keys(payload: dict[str, Any]) -> list[tuple[str, str]]:
     # explainer figures: raster 画像
     for f in payload.get("explainer_figures", []):
         add("assets", f.get("image_storage_key"))
+
+    # presentation 成果物: PPTX(assets バケット)
+    for p in payload.get("presentations", []):
+        add("assets", p.get("pptx_storage_key"))
 
     # DocumentRevision の本文ブロック内の figure/table asset_key
     for rev in payload.get("document_revisions", []):
