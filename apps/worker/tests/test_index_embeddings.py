@@ -24,6 +24,7 @@ from alinea_core.db.models import DocumentRevision, LibraryItem, Paper, User
 from alinea_core.document.blocks import Block, DocumentContent, Inline, Section, SectionHeading
 from alinea_core.jobs.store import JobStore
 from alinea_core.search.rebuild import rebuild_block_search_index
+from alinea_llm.errors import ErrorKind, ProviderError
 from alinea_llm.testing.fake_provider import FakeEmbeddingProvider
 from alinea_worker.tasks.index_embeddings import (
     EMBEDDING_JOB_KIND,
@@ -376,3 +377,85 @@ async def test_job_is_noop_when_flag_off(db_session: AsyncSession) -> None:
 
 def test_embedding_job_kind_constant() -> None:
     assert EMBEDDING_JOB_KIND == "index_embeddings"
+
+
+# --------------------------------------------------------------------------- #
+# fail-closed: 埋め込み失敗 → 部分失敗を記録して succeed(ハングさせない)
+# --------------------------------------------------------------------------- #
+class _FailingProvider:
+    name = "openai"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def embed(self, req: Any) -> Any:
+        self.calls += 1
+        raise ProviderError(ErrorKind.SERVER, self.name, req.model, "boom")
+
+
+async def test_job_records_partial_failure_and_still_succeeds(db_session: AsyncSession) -> None:
+    """埋め込み失敗(ProviderError)は保存せず部分失敗を記録し、ジョブは succeed 確定する。"""
+    ids = await _seed_paper_revision(db_session)
+    store_backend = InMemoryEmbeddingStore()
+    job_store = JobStore(db_session)
+    job_id = await job_store.enqueue(
+        kind="ingest",
+        payload={"scope": "revision", "revision_id": ids["revision_id"], "paper_id": ids["paper_id"]},
+        priority="bulk",
+        user_id=ids["user_id"],
+        paper_id=ids["paper_id"],
+    )
+    job = await job_store.claim(job_id)
+
+    ctx = {
+        "settings": _Settings(enabled=True),
+        "embedding_store": store_backend,
+        "embedding_provider": _FailingProvider(),
+        "embedding_model": _MODEL,
+        "embedding_dim": _DIM,
+    }
+    await run_index_embeddings_job(ctx, job_store, job)
+
+    # 失敗ベクトルは保存しない(fail-closed)。
+    assert store_backend.papers == {}
+    assert store_backend.blocks == {}
+    done = await job_store.get(job_id)
+    assert done.status == "succeeded"
+    # 部分失敗が可視化されている。
+    assert done.log and any(e.get("level") == "partial_failure" for e in done.log)
+
+
+async def test_job_succeeds_even_if_record_partial_failure_raises(
+    db_session: AsyncSession,
+) -> None:
+    """record_partial_failure(ログ用途)が例外を投げても succeed へ必ず進む(ハング防止)。"""
+    ids = await _seed_paper_revision(db_session)
+    store_backend = InMemoryEmbeddingStore()
+    job_store = JobStore(db_session)
+    job_id = await job_store.enqueue(
+        kind="ingest",
+        payload={"scope": "revision", "revision_id": ids["revision_id"], "paper_id": ids["paper_id"]},
+        priority="bulk",
+        user_id=ids["user_id"],
+        paper_id=ids["paper_id"],
+    )
+    job = await job_store.claim(job_id)
+
+    async def _boom(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("record failed")
+
+    # ログ記録を故障させる(succeed 遷移を隔離できているか検証)。
+    job_store.record_partial_failure = _boom  # type: ignore[method-assign]
+
+    ctx = {
+        "settings": _Settings(enabled=True),
+        "embedding_store": store_backend,
+        "embedding_provider": _FailingProvider(),
+        "embedding_model": _MODEL,
+        "embedding_dim": _DIM,
+    }
+    await run_index_embeddings_job(ctx, job_store, job)
+
+    done = await job_store.get(job_id)
+    assert done.status == "succeeded"
+    assert done.result["summary"]["partial_failure_log"] == "record_failed"

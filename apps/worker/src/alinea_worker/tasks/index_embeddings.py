@@ -41,8 +41,9 @@ from alinea_llm.types import EmbeddingRequest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# jobs.kind の値。Alembic 0016 は kind CHECK を触らない(段階導入)ため、統合時に
-# ck_jobs_kind へ 'index_embeddings' を union する後続 migration が必要(spec §9)。
+# jobs.kind の値。Alembic 0016_semantic_embeddings が ck_jobs_kind に 'index_embeddings' を
+# 追加済み(upgrade() で union)。後続 migration は不要(T32 でゴースト/重複 migration を
+# 作らないこと)。
 EMBEDDING_JOB_KIND = "index_embeddings"
 
 # 埋め込みの既定プロバイダ/モデル/次元(routing.yaml embedding: と一致)。
@@ -289,19 +290,23 @@ async def run_index_embeddings_job(ctx: dict[str, Any], store: JobStore, job: An
     未解決(キー無し)のときも可視 skip する。
     """
     session = store.session
+    # job.id / payload は rollback で ORM 属性が expire される前に確定させる(rollback 後の
+    # 属性アクセスは同期 lazy load → MissingGreenlet になる。_mark_failed と同方針)。
+    job_id = str(job.id)
+    payload = dict(job.payload or {})
+
     if not _feature_enabled(ctx):
-        await store.succeed(str(job.id), {"skipped": "semantic_search_disabled"})
+        await store.succeed(job_id, {"skipped": "semantic_search_disabled"})
         return
 
     provider: EmbeddingProvider | None = ctx.get("embedding_provider")
     if provider is None:
-        await store.succeed(str(job.id), {"skipped": "no_embedding_provider"})
+        await store.succeed(job_id, {"skipped": "no_embedding_provider"})
         return
 
     embed_store: EmbeddingStore = ctx.get("embedding_store") or PgVectorEmbeddingStore(session)
     model = ctx.get("embedding_model") or DEFAULT_EMBEDDING_MODEL
     dim = ctx.get("embedding_dim") or DEFAULT_EMBEDDING_DIM
-    payload = job.payload or {}
     summary: dict[str, Any] = {}
 
     try:
@@ -327,11 +332,17 @@ async def run_index_embeddings_job(ctx: dict[str, Any], store: JobStore, job: An
         # 埋め込み失敗は保存しない(fail-closed)。検索は落とさない設計のため、ジョブ自体は
         # 部分失敗として記録し可視化する(P3)。
         await session.rollback()
-        await store.record_partial_failure(
-            str(job.id), "index_embeddings", {"code": "embedding_failed", "detail": str(exc)}
-        )
-
-    await store.succeed(str(job.id), {"summary": summary})
+        failure = {"code": "embedding_failed", "detail": str(exc)}
+        summary["partial_failure"] = failure
+        # record_partial_failure はログ用途。ここが例外を投げても succeed へ必ず進むよう隔離する
+        # (さもないと job が in-progress のままハングする)。succeed への遷移を保証する。
+        try:
+            await store.record_partial_failure(job_id, "index_embeddings", failure)
+        except Exception:  # ログ記録失敗でジョブを未確定に残さない(succeed へ必ず進む)。
+            summary["partial_failure_log"] = "record_failed"
+    # ProviderError 経路でも succeed に到達する(上の except は再送出しない)。想定外の非
+    # ProviderError 例外はここまで来ず伝播し、main.py が job を failed 確定する(既存挙動)。
+    await store.succeed(job_id, {"summary": summary})
 
 
 __all__ = [
