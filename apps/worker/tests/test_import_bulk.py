@@ -391,3 +391,125 @@ def test_prepare_asset_destinations_rekeys_untrusted_storage_key() -> None:
     assert destination[0] == "sources"
     assert destination[1] != "sources/foreign/private/original.pdf"
     assert data["source_assets"][0]["storage_key"] == destination[1]
+
+
+# ---------------------------------------------------------------------------
+# Task 19: import 完了後、フラグ on なら復元 revision の index_embeddings を enqueue
+# ---------------------------------------------------------------------------
+def test_import_data_json_reports_restored_revision_ids() -> None:
+    """import_data_json は復元した(新規挿入の)revision id を summary に載せる。
+
+    バックアップに埋め込みは含めない(派生データ)。インポート後に feature flag が
+    有効なら index job を enqueue するため、復元された revision id が必要になる。
+    """
+    from alinea_worker.tasks.import_user_data import restored_revision_ids
+
+    summary = {"indexed_revision_ids": ["rev-1", "rev-2"]}
+    assert restored_revision_ids(summary) == ["rev-1", "rev-2"]
+    assert restored_revision_ids({}) == []
+
+
+class _FakeArqPool:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def enqueue_job(self, function: str, *args: Any, **kwargs: Any) -> None:
+        self.calls.append((function, args))
+
+
+class _Settings:
+    def __init__(self, *, enabled: bool) -> None:
+        self.semantic_search_enabled = enabled
+
+
+class _FakeStore:
+    """JobStore の enqueue のみを差し替えるフェイク(index_embeddings の kind を live DB に
+    書かない=head 0013 の ck_jobs_kind CHECK を避ける。実 DB 永続化は Task 32 で検証)。
+
+    session.get(DocumentRevision) は実 DB を使う(復元済み revision の paper 解決のため)。
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.enqueued: list[dict[str, Any]] = []
+
+    async def enqueue(self, *, kind: str, payload: dict[str, Any], **kwargs: Any) -> str:
+        self.enqueued.append({"kind": kind, "payload": payload, **kwargs})
+        return f"job-{len(self.enqueued)}"
+
+
+class _FakeJob:
+    def __init__(self, user_id: str) -> None:
+        self.user_id = user_id
+
+
+async def test_import_enqueues_index_when_flag_on(db_session: AsyncSession) -> None:
+    """フラグ on のとき、復元した revision ごとに index_embeddings ジョブを enqueue する。"""
+    from alinea_worker.tasks.import_user_data import _enqueue_embedding_index_jobs
+
+    # 実 DB に revision を用意して paper 解決を通す。
+    src = await _seed_user_data(db_session)
+    revision = (await db_session.execute(select(DocumentRevision))).scalars().first()
+    assert revision is not None
+    summary = {"indexed_revision_ids": [str(revision.id)]}
+
+    store = _FakeStore(db_session)
+    arq_pool = _FakeArqPool()
+    ctx = {"arq_pool": arq_pool, "settings": _Settings(enabled=True)}
+
+    enqueued = await _enqueue_embedding_index_jobs(ctx, store, _FakeJob(src["user_id"]), summary)
+
+    assert len(enqueued) == 1
+    assert store.enqueued[0]["kind"] == "index_embeddings"
+    assert store.enqueued[0]["payload"]["revision_id"] == str(revision.id)
+    assert store.enqueued[0]["payload"]["paper_id"] == str(revision.paper_id)
+    # arq へ run_job を投入している。
+    assert [c[0] for c in arq_pool.calls] == ["run_job"]
+
+
+async def test_import_does_not_enqueue_index_when_flag_off(db_session: AsyncSession) -> None:
+    """フラグ off のときは index_embeddings を enqueue しない(既存挙動を変えない)。"""
+    from alinea_worker.tasks.import_user_data import _enqueue_embedding_index_jobs
+
+    src = await _seed_user_data(db_session)
+    revision = (await db_session.execute(select(DocumentRevision))).scalars().first()
+    summary = {"indexed_revision_ids": [str(revision.id)]}
+
+    store = _FakeStore(db_session)
+    arq_pool = _FakeArqPool()
+    ctx = {"arq_pool": arq_pool, "settings": _Settings(enabled=False)}
+
+    enqueued = await _enqueue_embedding_index_jobs(ctx, store, _FakeJob(src["user_id"]), summary)
+
+    assert enqueued == []
+    assert store.enqueued == []
+    assert arq_pool.calls == []
+
+
+async def test_import_job_roundtrip_does_not_enqueue_index_by_default(
+    db_session: AsyncSession,
+) -> None:
+    """既定(フラグ無し ctx)の run_import_full_job は index を enqueue せず既存挙動のまま。"""
+    storage = S3Storage()
+    src = await _seed_user_data(db_session)
+    await storage.put(
+        storage.sources_bucket, src["asset_key"], b"%PDF-1.7 fake", content_type="application/pdf"
+    )
+    archive = await build_export_archive(db_session, src["user_id"], storage)
+    upload_key = f"imports/{uuid.uuid4()}.zip"
+    await storage.put(storage.assets_bucket, upload_key, archive, content_type="application/zip")
+
+    target = await _make_user(db_session)
+    store = JobStore(db_session)
+    job_id = await store.enqueue(
+        kind="import", priority="bulk", user_id=target["user_id"], payload={"upload_key": upload_key}
+    )
+    job = await store.claim(job_id)
+    arq_pool = _FakeArqPool()
+
+    # settings 無し ctx → フラグは False 扱い(既定 off)。
+    await run_import_full_job({"s3": storage, "arq_pool": arq_pool}, store, job)
+
+    done = await store.get(job_id)
+    assert done.status == "succeeded"
+    assert arq_pool.calls == []

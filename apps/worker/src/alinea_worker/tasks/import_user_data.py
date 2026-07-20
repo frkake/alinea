@@ -77,6 +77,8 @@ from alinea_core.storage.s3 import S3Storage
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from alinea_worker.tasks.index_embeddings import EMBEDDING_JOB_KIND
+
 # インポート zip のスキーマバージョン(エクスポート側の EXPORT_SCHEMA_VERSION と一致する)。
 IMPORT_SCHEMA_VERSION = 2
 _MAX_ZIP_ENTRIES = 2_000
@@ -1012,11 +1014,21 @@ async def import_data_json(
 
     await session.commit()
     # created/skipped は defaultdict(int) を返す(未計上テーブルへのアクセスは 0)。
+    # indexed_revision_ids: 今回新規挿入した document_revision の id。埋め込みはバックアップに
+    # 含めない派生データのため、インポート後にフラグが有効なら index_embeddings ジョブで
+    # 再生成する(_pending_index と同じ新規 revision 集合。Task 19)。
     return {
         "created": imp.created,
         "skipped": imp.skipped,
         "failed": imp.failed,
+        "indexed_revision_ids": [rev_id for rev_id, _content in imp._pending_index],
     }
+
+
+def restored_revision_ids(summary: dict[str, Any]) -> list[str]:
+    """import summary から、今回新規復元した document_revision id を取り出す(Task 19)。"""
+    ids = summary.get("indexed_revision_ids") or []
+    return [str(rid) for rid in ids if rid]
 
 
 async def run_import_full_job(ctx: dict[str, Any], store: JobStore, job: Any) -> None:
@@ -1102,4 +1114,45 @@ async def run_import_full_job(ctx: dict[str, Any], store: JobStore, job: Any) ->
         await store.fail_with_retry(str(job.id), {"code": "import_bad_archive", "detail": str(exc)})
         return
 
-    await store.succeed(str(job.id), {"summary": summary})
+    # 埋め込みはバックアップに含めない派生データ。インポート完了後、フラグが有効なら復元した
+    # revision ごとに index_embeddings ジョブを enqueue する(Task 19。フラグ off なら no-op)。
+    enqueued = await _enqueue_embedding_index_jobs(ctx, store, job, summary)
+    result: dict[str, Any] = {"summary": summary}
+    if enqueued:
+        result["index_jobs"] = enqueued
+    await store.succeed(str(job.id), result)
+
+
+async def _enqueue_embedding_index_jobs(
+    ctx: dict[str, Any], store: JobStore, job: Any, summary: dict[str, Any]
+) -> list[str]:
+    """フラグ on のとき、復元 revision ごとに index_embeddings ジョブを作って enqueue する。
+
+    フラグ off・復元 revision 0 件・arq プール無しのときは何もしない(空リストを返す)。
+    埋め込み自体は運営/BYOK キーで別ジョブが実行する。ここでは job 行の作成と run_job 投入だけ。
+    """
+    settings = ctx.get("settings")
+    if not bool(getattr(settings, "semantic_search_enabled", False)):
+        return []
+    revision_ids = restored_revision_ids(summary)
+    if not revision_ids:
+        return []
+    arq_pool = ctx.get("arq_pool")
+
+    # 復元 revision → 所属 paper を引く(paper 粒度も一緒に埋めるため payload に載せる)。
+    session = store.session
+    enqueued: list[str] = []
+    for revision_id in revision_ids:
+        revision = await session.get(DocumentRevision, revision_id)
+        paper_id = str(revision.paper_id) if revision is not None else None
+        index_job_id = await store.enqueue(
+            kind=EMBEDDING_JOB_KIND,
+            payload={"scope": "revision", "revision_id": revision_id, "paper_id": paper_id},
+            priority="bulk",
+            user_id=str(job.user_id) if job.user_id else None,
+            paper_id=paper_id,
+        )
+        enqueued.append(index_job_id)
+        if arq_pool is not None:
+            await arq_pool.enqueue_job("run_job", index_job_id, _queue_name="alinea:bulk")
+    return enqueued

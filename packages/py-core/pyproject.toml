@@ -18,6 +18,7 @@ dependencies = [
   "pillow>=10.0.0",
   "pymupdf>=1.24.0",
   "pdfplumber>=0.11.0",
+  "pgvector>=0.5.0",
 ]
 
 [build-system]
