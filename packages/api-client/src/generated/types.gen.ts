@@ -893,6 +893,69 @@ export type CollectionProgress = {
 };
 
 /**
+ * CommentCreateRequest
+ */
+export type CommentCreateRequest = {
+    /**
+     * Block Id
+     */
+    block_id: string;
+    /**
+     * Body
+     */
+    body: string;
+    /**
+     * Parent Id
+     */
+    parent_id?: string | null;
+};
+
+/**
+ * CommentOut
+ * コメント 1 件。hidden / deleted は本文を伏せて返す(status で状態を伝える)。
+ */
+export type CommentOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Block Id
+     */
+    block_id: string;
+    /**
+     * Parent Id
+     */
+    parent_id?: string | null;
+    /**
+     * Body
+     */
+    body: string;
+    /**
+     * Status
+     */
+    status: 'visible' | 'hidden' | 'deleted';
+    /**
+     * Created At
+     */
+    created_at?: string | null;
+    /**
+     * Updated At
+     */
+    updated_at?: string | null;
+};
+
+/**
+ * CommentUpdateRequest
+ */
+export type CommentUpdateRequest = {
+    /**
+     * Body
+     */
+    body: string;
+};
+
+/**
  * CursorPage[LibraryItemSummary]
  */
 export type CursorPageLibraryItemSummary = {
@@ -2834,6 +2897,112 @@ export type ProposalAcceptResponse = {
      * State
      */
     state: string;
+};
+
+/**
+ * PublicArticleOut
+ * slug 読み取り(認証不要)で返す公開スナップショット本体。
+ */
+export type PublicArticleOut = {
+    /**
+     * Slug
+     */
+    slug: string;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Visibility
+     */
+    visibility: 'unlisted' | 'public';
+    /**
+     * Snapshot Version
+     */
+    snapshot_version: number;
+    /**
+     * Noindex
+     */
+    noindex: boolean;
+    /**
+     * Paper Meta
+     */
+    paper_meta: {
+        [key: string]: unknown;
+    };
+    /**
+     * Blocks
+     */
+    blocks: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
+     * Published At
+     */
+    published_at?: string | null;
+};
+
+/**
+ * PublicationCreateRequest
+ */
+export type PublicationCreateRequest = {
+    /**
+     * Visibility
+     */
+    visibility?: 'unlisted' | 'public';
+    /**
+     * Slug
+     */
+    slug?: string | null;
+};
+
+/**
+ * PublicationOut
+ * 所有者向けの公開メタ(管理用)。
+ */
+export type PublicationOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Article Id
+     */
+    article_id: string;
+    /**
+     * Slug
+     */
+    slug: string;
+    /**
+     * Visibility
+     */
+    visibility: 'unlisted' | 'public';
+    /**
+     * Snapshot Version
+     */
+    snapshot_version: number;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Published At
+     */
+    published_at?: string | null;
+    /**
+     * Updated At
+     */
+    updated_at?: string | null;
+};
+
+/**
+ * PublicationUpdateRequest
+ */
+export type PublicationUpdateRequest = {
+    /**
+     * Visibility
+     */
+    visibility: 'unlisted' | 'public';
 };
 
 /**
@@ -9614,6 +9783,323 @@ export type ResourcesSuggestionDismissResponses = {
 };
 
 export type ResourcesSuggestionDismissResponse = ResourcesSuggestionDismissResponses[keyof ResourcesSuggestionDismissResponses];
+
+export type PublicationsUnpublishData = {
+    body?: never;
+    path: {
+        /**
+         * Article Id
+         */
+        article_id: string;
+    };
+    query?: never;
+    url: '/api/articles/{article_id}/publication';
+};
+
+export type PublicationsUnpublishErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationsUnpublishError = PublicationsUnpublishErrors[keyof PublicationsUnpublishErrors];
+
+export type PublicationsUnpublishResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type PublicationsUnpublishResponse = PublicationsUnpublishResponses[keyof PublicationsUnpublishResponses];
+
+export type PublicationsUpdateData = {
+    body: PublicationUpdateRequest;
+    path: {
+        /**
+         * Article Id
+         */
+        article_id: string;
+    };
+    query?: never;
+    url: '/api/articles/{article_id}/publication';
+};
+
+export type PublicationsUpdateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationsUpdateError = PublicationsUpdateErrors[keyof PublicationsUpdateErrors];
+
+export type PublicationsUpdateResponses = {
+    /**
+     * Successful Response
+     */
+    200: PublicationOut;
+};
+
+export type PublicationsUpdateResponse = PublicationsUpdateResponses[keyof PublicationsUpdateResponses];
+
+export type PublicationsCreateData = {
+    body: PublicationCreateRequest;
+    path: {
+        /**
+         * Article Id
+         */
+        article_id: string;
+    };
+    query?: never;
+    url: '/api/articles/{article_id}/publication';
+};
+
+export type PublicationsCreateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationsCreateError = PublicationsCreateErrors[keyof PublicationsCreateErrors];
+
+export type PublicationsCreateResponses = {
+    /**
+     * Successful Response
+     */
+    200: PublicationOut;
+};
+
+export type PublicationsCreateResponse = PublicationsCreateResponses[keyof PublicationsCreateResponses];
+
+export type PublicationsReadBySlugData = {
+    body?: never;
+    path: {
+        /**
+         * Slug
+         */
+        slug: string;
+    };
+    query?: never;
+    url: '/api/p/{slug}';
+};
+
+export type PublicationsReadBySlugErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationsReadBySlugError = PublicationsReadBySlugErrors[keyof PublicationsReadBySlugErrors];
+
+export type PublicationsReadBySlugResponses = {
+    /**
+     * Successful Response
+     */
+    200: PublicArticleOut;
+};
+
+export type PublicationsReadBySlugResponse = PublicationsReadBySlugResponses[keyof PublicationsReadBySlugResponses];
+
+export type PublicationCommentsListData = {
+    body?: never;
+    path: {
+        /**
+         * Slug
+         */
+        slug: string;
+    };
+    query?: never;
+    url: '/api/p/{slug}/comments';
+};
+
+export type PublicationCommentsListErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationCommentsListError = PublicationCommentsListErrors[keyof PublicationCommentsListErrors];
+
+export type PublicationCommentsListResponses = {
+    /**
+     * Response Publication Comments List
+     * Successful Response
+     */
+    200: Array<CommentOut>;
+};
+
+export type PublicationCommentsListResponse = PublicationCommentsListResponses[keyof PublicationCommentsListResponses];
+
+export type PublicationCommentsCreateData = {
+    body: CommentCreateRequest;
+    path: {
+        /**
+         * Slug
+         */
+        slug: string;
+    };
+    query?: never;
+    url: '/api/p/{slug}/comments';
+};
+
+export type PublicationCommentsCreateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationCommentsCreateError = PublicationCommentsCreateErrors[keyof PublicationCommentsCreateErrors];
+
+export type PublicationCommentsCreateResponses = {
+    /**
+     * Successful Response
+     */
+    200: CommentOut;
+};
+
+export type PublicationCommentsCreateResponse = PublicationCommentsCreateResponses[keyof PublicationCommentsCreateResponses];
+
+export type PublicationCommentsDeleteData = {
+    body?: never;
+    path: {
+        /**
+         * Slug
+         */
+        slug: string;
+        /**
+         * Comment Id
+         */
+        comment_id: string;
+    };
+    query?: never;
+    url: '/api/p/{slug}/comments/{comment_id}';
+};
+
+export type PublicationCommentsDeleteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationCommentsDeleteError = PublicationCommentsDeleteErrors[keyof PublicationCommentsDeleteErrors];
+
+export type PublicationCommentsDeleteResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type PublicationCommentsDeleteResponse = PublicationCommentsDeleteResponses[keyof PublicationCommentsDeleteResponses];
+
+export type PublicationCommentsUpdateData = {
+    body: CommentUpdateRequest;
+    path: {
+        /**
+         * Slug
+         */
+        slug: string;
+        /**
+         * Comment Id
+         */
+        comment_id: string;
+    };
+    query?: never;
+    url: '/api/p/{slug}/comments/{comment_id}';
+};
+
+export type PublicationCommentsUpdateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationCommentsUpdateError = PublicationCommentsUpdateErrors[keyof PublicationCommentsUpdateErrors];
+
+export type PublicationCommentsUpdateResponses = {
+    /**
+     * Successful Response
+     */
+    200: CommentOut;
+};
+
+export type PublicationCommentsUpdateResponse = PublicationCommentsUpdateResponses[keyof PublicationCommentsUpdateResponses];
+
+export type PublicationCommentsHideData = {
+    body?: never;
+    path: {
+        /**
+         * Slug
+         */
+        slug: string;
+        /**
+         * Comment Id
+         */
+        comment_id: string;
+    };
+    query?: never;
+    url: '/api/p/{slug}/comments/{comment_id}/hide';
+};
+
+export type PublicationCommentsHideErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationCommentsHideError = PublicationCommentsHideErrors[keyof PublicationCommentsHideErrors];
+
+export type PublicationCommentsHideResponses = {
+    /**
+     * Successful Response
+     */
+    200: CommentOut;
+};
+
+export type PublicationCommentsHideResponse = PublicationCommentsHideResponses[keyof PublicationCommentsHideResponses];
+
+export type PublicationCommentsRestoreData = {
+    body?: never;
+    path: {
+        /**
+         * Slug
+         */
+        slug: string;
+        /**
+         * Comment Id
+         */
+        comment_id: string;
+    };
+    query?: never;
+    url: '/api/p/{slug}/comments/{comment_id}/restore';
+};
+
+export type PublicationCommentsRestoreErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationCommentsRestoreError = PublicationCommentsRestoreErrors[keyof PublicationCommentsRestoreErrors];
+
+export type PublicationCommentsRestoreResponses = {
+    /**
+     * Successful Response
+     */
+    200: CommentOut;
+};
+
+export type PublicationCommentsRestoreResponse = PublicationCommentsRestoreResponses[keyof PublicationCommentsRestoreResponses];
 
 export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
