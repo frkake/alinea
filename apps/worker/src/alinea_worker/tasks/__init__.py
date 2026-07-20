@@ -5,6 +5,7 @@
 """
 
 from alinea_worker.main import HANDLERS
+from alinea_worker.tasks.analyze_code import run_analyze_code_job
 from alinea_worker.tasks.export_paper import run_export_paper_job
 from alinea_worker.tasks.export_user_data import run_export_full_job
 from alinea_worker.tasks.extract_vocab_candidates import run_extract_vocab_candidates
@@ -37,10 +38,14 @@ HANDLERS["import"] = run_import_full_job
 # kind='index_embeddings'(セマンティック検索の埋め込みインデクシング。S12・Task 19)。
 # フラグ off のときは no-op。統合時に ck_jobs_kind へ 'index_embeddings' を union する。
 HANDLERS[EMBEDDING_JOB_KIND] = run_index_embeddings_job
+# kind='code_analysis'(論文主張 → GitHub コード対応。Task 21)。router は自前解決するため
+# _LLM_REQUIRED_KINDS には入れない(vocab_extract と同方針)。
+HANDLERS["code_analysis"] = run_analyze_code_job
 
 __all__ = [
     "EMBEDDING_JOB_KIND",
     "ingest_paper",
+    "run_analyze_code_job",
     "run_export_full_job",
     "run_export_paper_job",
     "run_extract_vocab_candidates",

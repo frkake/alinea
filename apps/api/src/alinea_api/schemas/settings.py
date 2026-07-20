@@ -9,9 +9,10 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 # provider 値域(§17.1 / §17.3)。
 TextProvider = Literal["openai", "anthropic", "google", "deepseek"]
@@ -112,6 +113,26 @@ class LlmRouting(_Strict):
     overview_figure_raster_mode: bool = False
 
 
+class CodeAnalysisSettings(_Strict):
+    """GitHub コード対応解析の設定(Task 21・設計 §6-§7)。
+
+    - ``mode``: off(新規解析しない)/ on_demand(ボタンから見積確認後)/ automatic(取り込み後自動)。
+    - ``monthly_budget_usd``: 月額予算(USD)。0.00〜100.00。既定 5.00。予算超過時は外部 API を
+      呼ばず waiting_budget にする。JSONB 保存のため文字列へシリアライズする。
+    """
+
+    mode: Literal["off", "on_demand", "automatic"] = "on_demand"
+    monthly_budget_usd: Decimal = Field(
+        default=Decimal("5.00"), ge=Decimal("0.00"), le=Decimal("100.00")
+    )
+
+    @field_serializer("monthly_budget_usd")
+    def _ser_budget(self, value: Decimal) -> str:
+        # users.settings は JSONB。既定の json.dumps は Decimal を扱えないため文字列化する
+        # (deep_merge / model_dump(python mode) を経由しても JSON セーフに保つ)。
+        return format(value, "f")
+
+
 class FullSettings(_Strict):
     display: DisplaySettings = DisplaySettings()
     translation: TranslationSettings = TranslationSettings()
@@ -120,6 +141,7 @@ class FullSettings(_Strict):
     notifications: NotificationsSettings = NotificationsSettings()
     extension: ExtensionSettings = ExtensionSettings()
     llm_routing: LlmRouting = LlmRouting()
+    code_analysis: CodeAnalysisSettings = CodeAnalysisSettings()
 
 
 # §17.1 の既定値の逐語(deep merge のベース)。

@@ -20,6 +20,8 @@ dependencies = [
   "pymupdf>=1.24.0",
   "pdfplumber>=0.11.0",
   "pgvector>=0.5.0",
+  "tree-sitter>=0.26.0",
+  "tree-sitter-language-pack>=1.13.1",
 ]
 
 [build-system]

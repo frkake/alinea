@@ -21,6 +21,8 @@ from alinea_core.db.models import (
     ArticlePublication,
     ChatMessage,
     ChatThread,
+    CodeAnalysisRun,
+    CodeCorrespondence,
     Collection,
     CollectionEntry,
     DocumentRevision,
@@ -147,9 +149,10 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
         )
     )
 
+    resource_link_id = str(uuid.uuid4())
     db.add(
         ResourceLink(
-            id=str(uuid.uuid4()),
+            id=resource_link_id,
             library_item_id=item.id,
             kind="github",
             url="https://github.com/gnobitab/RectifiedFlow",
@@ -401,6 +404,42 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
         )
     )
 
+    # コード対応解析の run + correspondence(Task 21)。完全バックアップに含める。
+    code_run_id = str(uuid.uuid4())
+    code_corr_id = str(uuid.uuid4())
+    db.add(
+        CodeAnalysisRun(
+            id=code_run_id,
+            user_id=user.id,
+            library_item_id=item.id,
+            resource_id=resource_link_id,
+            revision_id=revision.id,
+            commit_sha="c0ffee0000000000000000000000000000000000",
+            analysis_version="ca-2026-07-17.1",
+            trigger="on_demand",
+            status="succeeded",
+            estimated_cost_usd="0.12",
+            actual_cost_usd="0.09876543",
+        )
+    )
+    await db.flush()
+    db.add(
+        CodeCorrespondence(
+            id=code_corr_id,
+            run_id=code_run_id,
+            position=0,
+            paper_anchor={"revision_id": str(revision.id), "block_id": "blk-1"},
+            claim_text="We train with the rectified flow loss.",
+            path="model.py",
+            symbol="train",
+            start_line=1,
+            end_line=4,
+            code_excerpt="loss = compute_loss(model, data)",
+            explanation_ja="学習ループの損失計算に対応。",
+            confidence="high",
+        )
+    )
+
     await db.commit()
     return {
         "user_id": str(user.id),
@@ -423,6 +462,9 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
         "own_comment_id": own_comment_id,
         "third_party_comment_id": third_party_comment_id,
         "other_user_id": str(other_user.id),
+        "resource_link_id": resource_link_id,
+        "code_run_id": code_run_id,
+        "code_corr_id": code_corr_id,
     }
 
 
@@ -762,3 +804,29 @@ async def test_export_document_asset_keys_collected(db_session: AsyncSession) ->
         assert thumb_entry is not None, "paper thumbnail not in manifest assets"
         assert thumb_entry["sha256"], "manifest sha256 must be non-empty"
         assert thumb_entry["byte_size"] == len(b"WEBP thumb")
+
+
+async def test_export_payload_includes_code_analysis(db_session: AsyncSession) -> None:
+    """コード対応解析の run + correspondence が完全バックアップに含まれる(Task 21)。"""
+    ids = await _seed_user_data(db_session)
+    payload = await build_export_payload(db_session, ids["user_id"])
+
+    assert "code_analysis_runs" in payload
+    assert "code_correspondences" in payload
+    runs = payload["code_analysis_runs"]
+    assert len(runs) == 1
+    run = runs[0]
+    assert run["id"] == ids["code_run_id"]
+    assert run["commit_sha"] == "c0ffee0000000000000000000000000000000000"
+    assert run["resource_id"] == ids["resource_link_id"]
+    assert run["revision_id"] == ids["revision_id"]
+    assert run["status"] == "succeeded"
+
+    corrs = payload["code_correspondences"]
+    assert len(corrs) == 1
+    assert corrs[0]["id"] == ids["code_corr_id"]
+    assert corrs[0]["run_id"] == ids["code_run_id"]
+    assert corrs[0]["path"] == "model.py"
+    assert corrs[0]["confidence"] == "high"
+    # 固定 commit URL を再利用できる(commit_sha が保持される)。
+    assert len(run["commit_sha"]) == 40

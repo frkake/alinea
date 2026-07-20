@@ -34,6 +34,7 @@ from alinea_core.db.models import LibraryItem, Paper
 from alinea_core.db.models import ResourceLink as ResourceLinkModel
 from alinea_core.db.revisions import get_latest_paper_revision
 from alinea_core.document.blocks import DocumentContent
+from alinea_core.jobs.store import JobStore
 from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
@@ -533,6 +534,45 @@ async def list_resources(item_id: str, user: CurrentUser, db: DbDep) -> Resource
 # --- §12.2 POST 追加 -------------------------------------------------------------------
 
 
+async def _maybe_enqueue_automatic_code_analysis(
+    db: DbDep, user: CurrentUser, item: LibraryItem, link: ResourceLinkModel
+) -> None:
+    """automatic モードなら、active GitHub Resource 追加時にコード対応解析を内部起動する(Task 21)。
+
+    条件(設計 §6): ユーザー設定 mode='automatic'、論文本文が ready(最新 revision あり)、
+    かつ active な GitHub Resource。commit 解決は endpoint では行わず(ネットワークを叩かない)、
+    commit 未解決の automatic ジョブを enqueue して worker が解決・見積り・予算チェックする。
+    """
+    if link.kind != "github" or link.status != "active":
+        return
+    settings = (user.settings or {}).get("code_analysis") or {}
+    if settings.get("mode") != "automatic":
+        return
+    paper = await db.get(Paper, item.paper_id)
+    if paper is None:
+        return
+    revision = await get_latest_paper_revision(db, paper)
+    if revision is None:
+        return  # 本文がまだ ready でない。
+
+    store = JobStore(db)
+    # commit 未解決のため idempotency は (user, item, resource) 粒度で粗く重複を防ぐ。
+    idem = f"code_analysis:auto:{user.id}:{item.id}:{link.id}"
+    await store.enqueue(
+        kind="code_analysis",
+        payload={
+            "resource_id": str(link.id),
+            "library_item_id": str(item.id),
+            "trigger": "automatic",
+        },
+        idempotency_key=idem,
+        priority="bulk",
+        user_id=str(user.id),
+        paper_id=str(item.paper_id),
+        library_item_id=str(item.id),
+    )
+
+
 @router.post(
     "/api/library-items/{item_id}/resources",
     response_model=ResourceLinkOut,
@@ -589,6 +629,8 @@ async def create_resource(
         if raced is not None:
             return _duplicate_response(raced, instance=f"/api/library-items/{item_id}/resources")
         raise
+    # automatic モードなら手動追加した active GitHub Resource でコード対応解析を起動する。
+    await _maybe_enqueue_automatic_code_analysis(db, user, item, link)
     return _to_out(link)
 
 
@@ -716,6 +758,8 @@ async def accept_suggestion(item_id: str, user: CurrentUser, db: DbDep) -> Resou
     )
     db.add(link)
     await db.commit()
+    # 候補 accept で active GitHub Resource になったら automatic 解析を起動する。
+    await _maybe_enqueue_automatic_code_analysis(db, user, item, link)
     return _to_out(link)
 
 

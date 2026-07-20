@@ -25,6 +25,7 @@ from alinea_core.db.models import (
     Job,
     LibraryItem,
     Paper,
+    ResourceLink,
     TranslationSet,
     TranslationUnit,
     User,
@@ -1294,3 +1295,129 @@ def test_apply_metadata_writes_repo_url_when_paper_has_none() -> None:
     run._apply_metadata(paper, meta)
 
     assert paper.official_repo_url == "https://github.com/auto/detected"
+
+
+# ===========================================================================
+# Task 21: automatic モードでの code_analysis 自動起動(readable 遷移)
+# ===========================================================================
+async def test_ingest_enqueues_code_analysis_when_automatic_and_active_github(
+    db_session: AsyncSession, worker_ctx: dict[str, Any], seed_ingest_job: Any
+) -> None:
+    """automatic モード + active GitHub Resource があると readable 遷移で解析ジョブが入る。"""
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    # ユーザーを automatic に設定し、active な GitHub Resource を追加する。
+    user = await db_session.get(User, ids["user_id"])
+    user.settings = {"code_analysis": {"mode": "automatic", "monthly_budget_usd": "5.00"}}
+    db_session.add(
+        ResourceLink(
+            id=str(uuid.uuid4()),
+            library_item_id=ids["library_item_id"],
+            kind="github",
+            url="https://github.com/gnobitab/RectifiedFlow",
+            url_normalized="https://github.com/gnobitab/rectifiedflow",
+            status="active",
+        )
+    )
+    await db_session.commit()
+
+    store = JobStore(db_session)
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(worker_ctx, store, job)
+
+    ca_jobs = (
+        (await db_session.execute(select(Job).where(Job.kind == "code_analysis"))).scalars().all()
+    )
+    mine = [j for j in ca_jobs if str(j.library_item_id) == ids["library_item_id"]]
+    assert len(mine) == 1
+    assert mine[0].payload["trigger"] == "automatic"
+
+
+async def test_ingest_no_code_analysis_when_on_demand(
+    db_session: AsyncSession, worker_ctx: dict[str, Any], seed_ingest_job: Any
+) -> None:
+    """既定(on_demand)では GitHub Resource があっても readable で自動起動しない。"""
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    db_session.add(
+        ResourceLink(
+            id=str(uuid.uuid4()),
+            library_item_id=ids["library_item_id"],
+            kind="github",
+            url="https://github.com/gnobitab/RectifiedFlow",
+            url_normalized="https://github.com/gnobitab/rectifiedflow",
+            status="active",
+        )
+    )
+    await db_session.commit()
+
+    store = JobStore(db_session)
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(worker_ctx, store, job)
+
+    ca_jobs = (
+        (await db_session.execute(select(Job).where(Job.kind == "code_analysis"))).scalars().all()
+    )
+    mine = [j for j in ca_jobs if str(j.library_item_id) == ids["library_item_id"]]
+    assert mine == []
+
+
+# ===========================================================================
+# Task 21: 新 revision が readable になると旧 revision の成功コード解析結果が stale になる
+# ===========================================================================
+async def test_ingest_marks_prior_code_analysis_stale_on_new_revision(
+    db_session: AsyncSession, worker_ctx: dict[str, Any], seed_ingest_job: Any
+) -> None:
+    """再取り込みで新 revision が readable になると、旧 revision の成功 run が stale=true になる。
+
+    削除はしない(結果は残す)。GitHub Resource / active は必要としない(本文が変われば全対応が古い)。
+    """
+    from alinea_core.code_analysis.contracts import ANALYSIS_VERSION
+    from alinea_core.db.models import CodeAnalysisRun, ResourceLink
+
+    ids = await seed_ingest_job(db_session, arxiv_id=_arxiv_id())
+    # 旧 revision(取り込みが作る新 revision とは別 id)を用意し、そこを指す成功 run を作る。
+    old_rev = DocumentRevision(
+        id=str(uuid.uuid4()),
+        paper_id=ids["paper_id"],
+        source_version="v0",
+        parser_version="old-parser",
+        quality_level="A",
+        source_format="arxiv_html",
+        content={"quality_level": "A", "sections": []},
+        stats={},
+    )
+    db_session.add(old_rev)
+    link = ResourceLink(
+        id=str(uuid.uuid4()),
+        library_item_id=ids["library_item_id"],
+        kind="github",
+        url="https://github.com/gnobitab/RectifiedFlow",
+        url_normalized="https://github.com/gnobitab/rectifiedflow",
+        status="active",
+    )
+    db_session.add(link)
+    await db_session.flush()
+    old_run = CodeAnalysisRun(
+        id=str(uuid.uuid4()),
+        user_id=ids["user_id"],
+        library_item_id=ids["library_item_id"],
+        resource_id=str(link.id),
+        revision_id=str(old_rev.id),
+        commit_sha="a" * 40,
+        analysis_version=ANALYSIS_VERSION,
+        status="succeeded",
+        stale=False,
+    )
+    db_session.add(old_run)
+    await db_session.commit()
+
+    store = JobStore(db_session)
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(worker_ctx, store, job)  # 新 revision が readable → stale hook
+
+    await db_session.refresh(old_run)
+    # 旧 revision の run が stale=true(削除されず残る)。
+    assert old_run.stale is True
+    assert await db_session.get(CodeAnalysisRun, str(old_run.id)) is not None

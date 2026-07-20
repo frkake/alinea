@@ -25,6 +25,8 @@ from alinea_core.db.models import (
     BlockSearchIndex,
     ChatMessage,
     ChatThread,
+    CodeAnalysisRun,
+    CodeCorrespondence,
     DocumentRevision,
     LibraryItem,
     Note,
@@ -1040,3 +1042,35 @@ async def test_import_job_roundtrip_does_not_enqueue_index_by_default(
     done = await store.get(job_id)
     assert done.status == "succeeded"
     assert arq_pool.calls == []
+
+
+async def test_import_roundtrips_code_analysis(db_session: AsyncSession) -> None:
+    """コード対応解析の run + correspondence が別ユーザーへ無損失復元される(Task 21)。
+
+    固定 commit URL(commit_sha)を保ち、復元後も再解析なしで結果を再利用できる。
+    """
+    src = await _seed_user_data(db_session)
+    payload = await _detached_payload(db_session, src["user_id"])
+    src_run_id = src["code_run_id"]
+    src_corr_id = src["code_corr_id"]
+    await _delete_source_user(db_session, src["user_id"])
+
+    target = await _make_user(db_session)
+    summary1 = await import_data_json(db_session, target["user_id"], payload)
+    assert summary1["failed"] == [], summary1["failed"]
+    assert summary1["created"]["code_analysis_runs"] >= 1
+    assert summary1["created"]["code_correspondences"] >= 1
+
+    run = await db_session.get(CodeAnalysisRun, src_run_id)
+    assert run is not None
+    assert str(run.user_id) == target["user_id"]  # user は移行先へ再マップ
+    assert run.commit_sha == "c0ffee0000000000000000000000000000000000"  # 固定 commit URL 保持
+    corr = await db_session.get(CodeCorrespondence, src_corr_id)
+    assert corr is not None
+    assert corr.path == "model.py"
+    assert corr.confidence == "high"
+
+    # 2 回目は全 skip(冪等)。
+    summary2 = await import_data_json(db_session, target["user_id"], payload)
+    assert summary2["created"]["code_analysis_runs"] == 0
+    assert summary2["created"]["code_correspondences"] == 0

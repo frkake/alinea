@@ -65,6 +65,12 @@ tasks:
     max_output_tokens: 32000
     timeout_s: 300
     structured: true                  # スライド/ノート構造 JSON(Task 29 で schema 定義)
+  code_analysis:                      # Task 21: 論文主張 → GitHub コード対応(構造化出力)
+    chain: [claude-sonnet-5, gpt-5.5]  # 既定 claude-sonnet-5(設計 §6)。構造化出力対応モデル
+    effort: high
+    max_output_tokens: 8192
+    timeout_s: 180
+    structured: true                  # code_correspondence_v1(alinea_core.code_analysis.contracts)
 
 # 埋め込み(S12 セマンティック検索)。tasks: の 8 タスク(DB の CHECK 制約と一致)には
 # 混ぜない。埋め込みはベクトル空間の非互換制約があり、フォールバックを同一次元・同一モデル

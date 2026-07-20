@@ -770,6 +770,129 @@ class PresentationArtifact(Base):
     # library_item_id の UNIQUE は列定義(unique=True)= migration の inline UNIQUE と一致。
 
 
+class CodeAnalysisEstimate(Base):
+    """コード対応解析の実行前見積り(Task 21・設計 §10-§11)。
+
+    commit SHA・対象規模・概算 token・概算費用・失効時刻を保持する。10 分で失効し、
+    開始 API が所有者・失効・commit・設定・残予算を再検証する。派生的だが短命なので
+    完全バックアップには含めない(runs / correspondences のみ含める)。
+    """
+
+    __tablename__ = "code_analysis_estimates"
+    id: Mapped[str] = _uuid_pk()
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    library_item_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("library_items.id", ondelete="CASCADE"), nullable=False
+    )
+    resource_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("resource_links.id", ondelete="CASCADE"), nullable=False
+    )
+    revision_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("document_revisions.id", ondelete="CASCADE"), nullable=False
+    )
+    commit_sha: Mapped[str] = mapped_column(Text, nullable=False)
+    analysis_version: Mapped[str] = mapped_column(Text, nullable=False)
+    files: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    estimated_input_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    estimated_output_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    estimated_embedding_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    estimated_cost_usd: Mapped[Any] = mapped_column(
+        Numeric(12, 4), nullable=False, server_default="0"
+    )
+    model_id: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    section_ids: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, server_default="{}"
+    )
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[dt.datetime] = _now()
+
+
+class CodeAnalysisRun(Base):
+    """コード対応解析の実行単位(Task 21・設計 §11)。
+
+    一意制約 ``(user_id, revision_id, resource_id, commit_sha, analysis_version)`` で同一対象の
+    成功結果を再利用し二重課金を防ぐ。revision / commit が変わった結果は削除せず ``stale`` に
+    する(再解析は設定モードに従う)。完全バックアップへ含め、復元後も固定 commit URL を再利用。
+    """
+
+    __tablename__ = "code_analysis_runs"
+    id: Mapped[str] = _uuid_pk()
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    library_item_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("library_items.id", ondelete="CASCADE"), nullable=False
+    )
+    resource_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("resource_links.id", ondelete="CASCADE"), nullable=False
+    )
+    revision_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("document_revisions.id", ondelete="CASCADE"), nullable=False
+    )
+    commit_sha: Mapped[str] = mapped_column(Text, nullable=False)
+    analysis_version: Mapped[str] = mapped_column(Text, nullable=False)
+    # on_demand | automatic | rerun
+    trigger: Mapped[str] = mapped_column(Text, nullable=False, server_default="on_demand")
+    # queued | running | succeeded | failed | canceled | waiting_budget
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
+    stale: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    estimated_cost_usd: Mapped[Any] = mapped_column(
+        Numeric(12, 4), nullable=False, server_default="0"
+    )
+    actual_cost_usd: Mapped[Any] = mapped_column(
+        Numeric(12, 8), nullable=False, server_default="0"
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    job_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
+    created_at: Mapped[dt.datetime] = _now()
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[dt.datetime] = _now()
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "revision_id",
+            "resource_id",
+            "commit_sha",
+            "analysis_version",
+            name="uq_code_analysis_runs_target",
+        ),
+    )
+
+
+class CodeCorrespondence(Base):
+    """検証済みの一対応(Task 21・設計 §5・§11)。
+
+    サーバーが LLM 出力を実バイトと照合し、paper anchor・path・行範囲・excerpt がすべて
+    一致したものだけを保存する(未検証は保存しない)。``code_excerpt`` は 500 文字以下、
+    ソース全文は保存しない。
+    """
+
+    __tablename__ = "code_correspondences"
+    id: Mapped[str] = _uuid_pk()
+    run_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("code_analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    paper_anchor: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    claim_text: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    start_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    code_excerpt: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    explanation_ja: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    confidence: Mapped[str] = mapped_column(Text, nullable=False, server_default="medium")
+    created_at: Mapped[dt.datetime] = _now()
+
+
 class Job(Base):
     __tablename__ = "jobs"
     id: Mapped[str] = _uuid_pk()
@@ -890,6 +1013,9 @@ __all__ = [
     "ByokApiKey",
     "ChatMessage",
     "ChatThread",
+    "CodeAnalysisEstimate",
+    "CodeAnalysisRun",
+    "CodeCorrespondence",
     "Collection",
     "CollectionEntry",
     "CollectionShareToken",
