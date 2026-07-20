@@ -118,3 +118,99 @@ async def test_site_ingest_reaches_complete_quality_b(
     assert rev.quality_level == "B"
     assert rev.source_format == "pdf"
     assert rev.source_version == "v1"
+
+
+# --------------------------------------------------------------------------- #
+# PMC JATS 品質 A 取り込み(Task 17)
+# --------------------------------------------------------------------------- #
+
+_JATS_FIXTURE = _FIXTURES / "pmc_article.xml"
+
+
+async def _seed_pmc_jats_ingest_job(db: AsyncSession, *, jats_bytes: bytes) -> dict[str, str]:
+    """PMC の `source='site'` + `source_format='jats'` ジョブを作る。
+
+    API(POST /api/ingest/site の PMC 経路)が行う最小セットアップを模す: NCBI から取得済みの
+    JATS XML を S3 に先行 PUT 済みで、worker は再取得せずローカル資産を構造化する。
+    """
+    # 本文 fixture の DOI は固定なので、共有 DB での再実行時に uq_papers_doi と衝突しないよう
+    # 先行実行が残した同 DOI の Paper を掃除する(本番は API が DOI で冪等化して衝突を避ける)。
+    from sqlalchemy import delete as _sa_delete
+
+    await db.execute(_sa_delete(Paper).where(Paper.doi == "10.1234/jdt.2019.42"))
+    await db.commit()
+
+    user = User(id=str(uuid.uuid4()), email=f"{uuid.uuid4().hex}@t.test")
+    db.add(user)
+    await db.flush()
+
+    paper = Paper(
+        id=str(uuid.uuid4()),
+        title="PMC article PMC6543210",
+        visibility="private",
+        owner_user_id=user.id,
+        license="cc-by-4.0",
+    )
+    db.add(paper)
+    await db.flush()
+
+    li = LibraryItem(id=str(uuid.uuid4()), user_id=user.id, paper_id=paper.id, status="planned")
+    db.add(li)
+    await db.flush()
+    await db.commit()
+
+    storage = S3Storage()
+    await storage.put(
+        storage.sources_bucket,
+        StorageKeys.jats_xml(str(paper.id), "v1"),
+        jats_bytes,
+        content_type="application/xml",
+    )
+
+    store = JobStore(db)
+    job_id = await store.enqueue(
+        kind="ingest",
+        payload={
+            "mode": "initial",
+            "source": "site",
+            "site": "pmc",
+            "source_format": "jats",
+            "external_id": "PMC6543210",
+            "landing_url": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6543210/",
+            "library_item_id": str(li.id),
+        },
+        priority="bulk",
+        user_id=str(user.id),
+        paper_id=str(paper.id),
+        library_item_id=str(li.id),
+    )
+    return {
+        "job_id": job_id,
+        "paper_id": str(paper.id),
+        "library_item_id": str(li.id),
+        "user_id": str(user.id),
+    }
+
+
+async def test_site_ingest_pmc_jats_reaches_complete_quality_a(
+    db_session: AsyncSession,
+    worker_ctx: dict[str, Any],
+) -> None:
+    jats_bytes = _JATS_FIXTURE.read_bytes()
+    ids = await _seed_pmc_jats_ingest_job(db_session, jats_bytes=jats_bytes)
+    store = JobStore(db_session)
+
+    job = await store.claim(ids["job_id"])
+    assert job is not None
+    await ingest_paper(worker_ctx, store, job)
+
+    job = await store.get(ids["job_id"])
+    assert job is not None
+    assert job.stage == "complete"
+    assert job.status == "succeeded"
+    assert job.progress == 100
+
+    rev = await _revision(db_session, ids["paper_id"])
+    assert rev.quality_level == "A"
+    assert rev.source_format == "jats"
+    assert rev.source_version == "v1"

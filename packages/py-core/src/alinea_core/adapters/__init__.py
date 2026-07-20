@@ -21,6 +21,16 @@ from alinea_core.adapters.fetch import (
     fetch_pdf,
     make_site_client,
 )
+from alinea_core.adapters.pubmed import (
+    NcbiClient,
+    NcbiConfig,
+    PmcAdapter,
+    PubMedAdapter,
+    ncbi_throttle,
+    ncbi_throttle_interval_ms,
+    normalize_pmcid,
+    normalize_pmid,
+)
 from alinea_core.adapters.registry import (
     registered_adapters,
     resolve_adapter,
@@ -31,6 +41,10 @@ __all__ = [
     "MAX_SITE_PDF_BYTES",
     "AclAnthologyAdapter",
     "CitationMeta",
+    "NcbiClient",
+    "NcbiConfig",
+    "PmcAdapter",
+    "PubMedAdapter",
     "SiteAdapter",
     "SiteFetchError",
     "SiteMeta",
@@ -41,6 +55,10 @@ __all__ = [
     "fetch_html",
     "fetch_pdf",
     "make_site_client",
+    "ncbi_throttle",
+    "ncbi_throttle_interval_ms",
+    "normalize_pmcid",
+    "normalize_pmid",
     "normalize_scholar_author",
     "registered_adapters",
     "resolve_adapter",

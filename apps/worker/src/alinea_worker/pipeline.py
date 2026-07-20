@@ -31,6 +31,7 @@ from typing import Any
 
 import httpx
 import structlog
+from alinea_core.adapters.pubmed import MAX_JATS_BYTES
 from alinea_core.arxiv.fetch import (
     FetchError,
     RedisLike,
@@ -74,6 +75,11 @@ from alinea_core.parsing.html_parser import (
 )
 from alinea_core.parsing.html_parser import (
     ParsedDocument,
+)
+from alinea_core.parsing.jats import (
+    JATS_PARSER_VERSION,
+    JatsParseError,
+    parse_jats,
 )
 from alinea_core.parsing.latex_parser import (
     PARSER_VERSION as LATEX_PARSER_VERSION,
@@ -570,6 +576,9 @@ class IngestJobPayload(BaseModel):
     site: str | None = None
     external_id: str | None = None
     landing_url: str | None = None
+    # source="site" かつ PMC(JATS)取り込みでは "jats" を渡す。API が NCBI から取得済みの
+    # JATS XML を S3(jats.xml)へ先行保存し、worker は再取得せず品質 A で構造化する。
+    source_format: str | None = None
     # Raise the per-document figure budget for this reingest so deferred figures
     # (marked `figure_deferred` on a prior degraded ingest) get materialized on
     # demand.  None keeps the default MAX_FIGURES_PER_DOCUMENT.
@@ -935,14 +944,17 @@ class IngestRun:
         self.payload = IngestJobPayload.model_validate(job.payload or {})
         self.ckpt = JobStore.get_checkpoint(job)
         self.is_site = self.payload.source == "site"
+        # PMC の JATS 取り込みは API が NCBI から JATS XML を取得し S3(jats.xml)へ先行保存済み。
+        # worker は再取得せず品質 A(html_parser 相当)経路で構造化する。
+        self.is_jats = self.is_site and self.payload.source_format == "jats"
         # site 取り込み(他サイトアダプタ)は API が landing→PDF を取得し原本 PDF を S3 に
         # 先行保存済みなので、worker からは pdf_upload と同一のローカル PDF 経路として扱う
-        # (arXiv 系の HTML/PDF 再取得・レート制限を一切経由しない)。
-        self.is_pdf_upload = self.payload.source in ("pdf_upload", "site")
+        # (arXiv 系の HTML/PDF 再取得・レート制限を一切経由しない)。JATS は例外(下記)。
+        self.is_pdf_upload = self.payload.source in ("pdf_upload", "site") and not self.is_jats
         # pdf_upload / site には arxiv_id/url が無い(plans/05 §9.1)。arXiv 系のみ ID 正規化する。
         self.ref: ArxivId | None = (
             None
-            if self.is_pdf_upload
+            if (self.is_pdf_upload or self.is_site)
             else normalize_arxiv_id(self.payload.arxiv_id or self.payload.url or "")
         )
         self._allow_latest_pdf_alias = (
@@ -951,7 +963,12 @@ class IngestRun:
             and self.payload.requested_version is None
         )
         self.source_version: str = ""
-        self.source_format: str = "pdf_upload" if self.is_pdf_upload else "arxiv_html"
+        if self.is_jats:
+            self.source_format = "jats"
+        elif self.is_pdf_upload:
+            self.source_format = "pdf_upload"
+        else:
+            self.source_format = "arxiv_html"
         self.revision_id: str | None = None
         self.set_id: str | None = None
         self.content: DocumentContent | None = None
@@ -963,6 +980,7 @@ class IngestRun:
         self._latex_archive_bytes: bytes | None = None
         self._pdf_bytes: bytes | None = None
         self._pdf_text: str | None = None
+        self._jats_bytes: bytes | None = None
         self._candidate_failures: list[dict[str, Any]] = []
         self._candidate_diagnostics: list[dict[str, Any]] = []
         self._candidate_identity: dict[str, str] | None = None
@@ -988,6 +1006,8 @@ class IngestRun:
         ``source_format`` は候補受理時に確定するため、structuring から読む本プロパティは
         常に実際に使ったパーサと一致する。
         """
+        if self.is_jats:
+            return JATS_PARSER_VERSION
         if self.is_pdf_upload:
             return PDF_PARSER_VERSION
         if self.source_format == "latex":
@@ -1178,6 +1198,9 @@ class IngestRun:
         if fetch_ck and fetch_ck.get("source_version"):
             self.source_version = str(fetch_ck["source_version"])
             self.source_format = str(fetch_ck.get("source_format", "arxiv_html"))
+            if self.is_jats:
+                await self._load_jats_bytes()
+                return
             if self.is_pdf_upload:
                 await self._load_pdf_upload_bytes()
                 return
@@ -1210,6 +1233,9 @@ class IngestRun:
 
         await self.store.set_progress(self.job_id, 10, stage="fetching")
         await self._publish_stage("fetching", 10)
+        if self.is_jats:
+            await self._stage_fetching_jats()
+            return
         if self.is_pdf_upload:
             await self._stage_fetching_pdf()
             return
@@ -1499,6 +1525,47 @@ class IngestRun:
         self.source_format = "pdf_upload"
         data = await self._load_pdf_upload_bytes()
 
+        await self._log(
+            "fetching",
+            "info",
+            joblog.fetch_timeline_message(self.source_format),
+            detail={"format": self.source_format, "bytes": len(data)},
+            timeline=True,
+        )
+        await self.store.checkpoint(
+            self.job_id,
+            "fetching",
+            {"source_version": self.source_version, "source_format": self.source_format},
+            progress=10,
+        )
+
+    async def _load_jats_bytes(self) -> bytes:
+        """API が先行保存した JATS XML(jats.xml)を S3 から取得する。"""
+        assert self.paper_id is not None
+        try:
+            data = await self.deps.s3.get_bounded(
+                self.deps.s3.sources_bucket,
+                StorageKeys.jats_xml(self.paper_id, self.source_version or "v1"),
+                max_bytes=MAX_JATS_BYTES,
+            )
+        except S3ObjectTooLargeError as exc:
+            raise FetchError("source_too_large", "stored JATS XML exceeds size limit") from exc
+        except ClientError as exc:
+            if _is_missing_s3_object(exc):
+                raise FetchError("source_not_found", "JATS XML is missing") from exc
+            raise FetchError("storage_error", "JATS XML storage is unavailable") from exc
+        except FetchError:
+            raise
+        except Exception as exc:
+            raise FetchError("storage_error", "JATS XML storage is unavailable") from exc
+        self._jats_bytes = data
+        return data
+
+    async def _stage_fetching_jats(self) -> None:
+        """PMC JATS: API が S3 へ先行保存した JATS XML の存在確認のみで完了する。"""
+        self.source_version = "v1"
+        self.source_format = "jats"
+        data = await self._load_jats_bytes()
         await self._log(
             "fetching",
             "info",
@@ -3184,6 +3251,9 @@ class IngestRun:
         await self._verify_or_repair_existing_revision_assets(revision, candidate)
 
     async def _stage_parse_and_structure(self) -> None:
+        if self.is_jats:
+            await self._parse_and_structure_jats()
+            return
         original_pdf = await self._get_pdf_bytes()
         await self._ensure_pdf_text_evidence(original_pdf)
         checkpoint_revision = await self._checkpoint_revision()
@@ -3392,6 +3462,122 @@ class IngestRun:
         created_revision = await self.session.get(DocumentRevision, self.revision_id)
         assert created_revision is not None
         await self._finalize_revision(created_revision, adopt_from_revision_id=old_revision_id)
+
+    async def _parse_and_structure_jats(self) -> None:
+        """PMC JATS を品質 A で構造化する(html_parser 経路と同じ structuring を再利用)。
+
+        JATS 本文があれば品質 A リビジョンを作る。本文が無い(PubMed で JATS 未提供)場合は
+        abstract メタだけを Paper に載せ、本文取得不可としてリビジョンを作らずに終える
+        (P3: 黙って壊れない — abstract-only メタ保存)。
+        """
+        assert self.paper_id is not None
+        data = self._jats_bytes if self._jats_bytes is not None else await self._load_jats_bytes()
+        try:
+            result = parse_jats(data)
+        except JatsParseError as exc:
+            raise FetchError(exc.kind, f"JATS parse failed: {exc}") from exc
+
+        # front メタ(タイトル・著者・abstract・日付・ライセンス)を Paper に載せる。
+        paper = await self._get_paper()
+        self._apply_jats_meta(paper, result.meta)
+
+        if not result.body_available:
+            # 本文欠落: abstract メタのみで完了扱いにし、本文取得不可を明示する。
+            await self.session.commit()
+            await self._log(
+                "structuring",
+                "warn",
+                "JATS 本文が取得できないため abstract メタのみ保存しました",
+                detail={"event": "jats_body_unavailable", "format": "jats"},
+            )
+            raise FetchError(
+                "source_not_found", "JATS body unavailable; abstract-only metadata kept"
+            )
+
+        self.source_format = "jats"
+        self.parsed = ParsedDocument(
+            quality_level="A",
+            source_format="jats",
+            parser_version=JATS_PARSER_VERSION,
+            sections=result.document.sections,
+            warnings=list(result.document.warnings),
+        )
+        # 図アセットは worker が境界付きで取得する(パースは純粋)。取得失敗時は
+        # _save_figures が block 単位で deferred placeholder へ縮退する(P3)。
+        self._jats_deferred_figures = {ref["figure_label"]: ref["href"] for ref in
+                                       result.deferred_figures if ref.get("figure_label")}
+
+        content = self.parsed.to_document_content()
+        report = assess_document_completeness(
+            content,
+            pdf_text="",
+            source_manifest={},
+        )
+        self._candidate_completeness = report.as_dict()
+        self._candidate_failures = []
+        # 選択ソースの同一性(stats["selected_source"] / parsed_content_sha256 用)。
+        self._candidate_storage_key = StorageKeys.jats_xml(
+            self.paper_id, self.source_version or "v1"
+        )
+        self._candidate_sha256 = hashlib.sha256(data).hexdigest()
+        self._candidate_parsed_content_sha256 = _canonical_content_sha256(content.model_dump())
+        if not report.accepted:
+            raise FetchError(
+                "document_incomplete",
+                json.dumps(
+                    {"format": "jats", "completeness": report.as_dict()},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+
+        latest_revision = await get_latest_paper_revision(self.session, paper)
+        old_revision_id = str(latest_revision.id) if latest_revision is not None else None
+
+        await self.store.set_progress(self.job_id, 20, stage="parsing")
+        await self._publish_stage("parsing", 20)
+        await self.store.checkpoint(
+            self.job_id,
+            "parsing",
+            {
+                "source_format": "jats",
+                "parser_version": self.parser_version,
+                "candidate_failures": self._candidate_failures,
+                "completeness": self._candidate_completeness,
+                "adopt_from_revision_id": old_revision_id,
+            },
+            progress=20,
+        )
+
+        await self.store.set_progress(self.job_id, 35, stage="structuring")
+        await self._publish_stage("structuring", 35)
+        await self._structure()
+        assert self.revision_id is not None
+        created_revision = await self.session.get(DocumentRevision, self.revision_id)
+        assert created_revision is not None
+        # JATS は PDF/OCR/embedded 由来の provenance を持たないため検証は不要。
+        self._candidate_provenance_validation_required = False
+        await self._finalize_revision(created_revision, adopt_from_revision_id=old_revision_id)
+
+    def _apply_jats_meta(self, paper: Paper, meta: Any) -> None:
+        """JATS front メタを Paper に反映する(手動設定値は保護)。"""
+        if meta.title:
+            paper.title = sanitize_untrusted_text(meta.title)
+        if meta.authors:
+            paper.authors = [
+                {"name": sanitize_untrusted_text(str(a.get("name", "")))} for a in meta.authors
+            ]
+        if meta.abstract and not paper.abstract:
+            paper.abstract = sanitize_untrusted_text(meta.abstract)
+        if meta.published_on and paper.published_on is None:
+            paper.published_on = _to_date(meta.published_on)
+        if meta.journal and not paper.venue:
+            paper.venue = sanitize_untrusted_text(meta.journal)
+        if meta.doi and not paper.doi:
+            paper.doi = meta.doi
+        # ライセンスは JATS が明示 CC/CC0 を出したときのみ上書き(unknown は保護)。
+        if meta.license and meta.license != "unknown" and paper.license == "unknown":
+            paper.license = meta.license
 
     async def _structure(self) -> None:
         assert self.parsed is not None and self.paper_id is not None
