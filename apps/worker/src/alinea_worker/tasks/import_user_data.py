@@ -129,7 +129,8 @@ def _prepare_asset_destinations(data: dict[str, Any], user_id: str) -> dict[str,
     """アーカイブ由来のキーを、移行先専用キーへ置換して許可表を返す。"""
     destinations: dict[str, tuple[str, str]] = {}
 
-    def register(row: dict[str, Any], field: str, bucket: str, kind: str) -> None:
+    def register(row: dict[str, Any], field: str, bucket: str, kind: str,
+                 entity_id_field: str = "id") -> None:
         old_key = row.get(field)
         if not isinstance(old_key, str) or not old_key:
             return
@@ -139,7 +140,8 @@ def _prepare_asset_destinations(data: dict[str, Any], user_id: str) -> dict[str,
                 raise ValueError("conflicting_asset_reference")
             row[field] = existing[1]
             return
-        new_key = _restored_asset_key(user_id, kind, str(row["id"]), old_key)
+        entity_id = str(row.get(entity_id_field) or old_key)
+        new_key = _restored_asset_key(user_id, kind, entity_id, old_key)
         destinations[old_key] = (bucket, new_key)
         row[field] = new_key
 
@@ -153,6 +155,13 @@ def _prepare_asset_destinations(data: dict[str, Any], user_id: str) -> dict[str,
     for row in data.get("explainer_figures") or []:
         if isinstance(row, dict):
             register(row, "image_storage_key", "assets", "explainer-image")
+    # LibraryItem / Paper のサムネイル
+    for entry in data.get("library") or []:
+        if isinstance(entry, dict):
+            register(entry, "thumbnail_key", "assets", "item-thumbnail",
+                     entity_id_field="library_item_id")
+            register(entry, "paper_thumbnail_key", "assets", "paper-thumbnail",
+                     entity_id_field="paper_id")
     return destinations
 
 
@@ -227,16 +236,38 @@ class _Importer:
                 continue
             year = entry.get("year")
             new_id = str(uuid.uuid4())
+            published_on = _date(entry.get("published_on"))
+            if published_on is None and year:
+                published_on = dt.date(int(year), 1, 1)
+            # license は DB に check 制約あり。不正な値は "unknown" にフォールバック。
+            _VALID_LICENSES = {
+                "cc-by-4.0", "cc-by-sa-4.0", "cc-by-nc-4.0", "cc-by-nc-sa-4.0",
+                "cc-by-nd-4.0", "cc-by-nc-nd-4.0", "cc0", "arxiv-nonexclusive", "unknown",
+            }
+            license_val = entry.get("license") or "unknown"
+            if license_val not in _VALID_LICENSES:
+                license_val = "unknown"
             paper = Paper(
                 id=new_id,
                 arxiv_id=arxiv_id,
                 doi=doi,
+                pdf_sha256=entry.get("pdf_sha256"),
                 title=entry.get("title") or "(untitled)",
                 authors=[{"name": n} for n in (entry.get("authors") or [])],
+                abstract=entry.get("abstract") or "",
+                abstract_ja=entry.get("abstract_ja"),
+                summary_lines=entry.get("summary_lines"),
+                published_on=published_on,
                 venue=entry.get("venue"),
-                published_on=dt.date(int(year), 1, 1) if year else None,
-                owner_user_id=self.uid,
+                arxiv_categories=list(entry.get("arxiv_categories") or []),
+                license=license_val,
+                bib_estimated=bool(entry.get("bib_estimated")),
                 visibility="private",
+                latest_version=entry.get("latest_version"),
+                official_repo_url=entry.get("official_repo_url"),
+                extracted_terms=list(entry.get("extracted_terms") or []),
+                thumbnail_key=entry.get("paper_thumbnail_key"),
+                owner_user_id=self.uid,
             )
             if await self._insert("papers", paper, old_id):
                 self.paper_map[old_id] = new_id
@@ -333,10 +364,14 @@ class _Importer:
                     priority=entry.get("priority"),
                     deadline=_date(entry.get("deadline")),
                     tags=list(entry.get("tags") or []),
+                    suggested_tags=list(entry.get("suggested_tags") or []),
                     one_line_note=entry.get("one_line_note") or "",
                     understanding=entry.get("understanding"),
                     importance=entry.get("importance"),
+                    reading_position=entry.get("reading_position"),
+                    queue_order=entry.get("queue_order"),
                     total_active_seconds=entry.get("total_active_seconds") or 0,
+                    thumbnail_key=entry.get("thumbnail_key"),
                     added_at=_dt(entry.get("added_at")),
                     finished_at=_dt(entry.get("finished_at")),
                 ),
@@ -614,6 +649,9 @@ class _Importer:
                 )
                 continue
             url = r.get("url") or ""
+            # url_normalized はエクスポートに含まれる場合はそれを使い、
+            # 無ければ raw url で代替する(後方互換)。
+            url_normalized = r.get("url_normalized") or url
             await self._insert(
                 "resources",
                 ResourceLink(
@@ -622,9 +660,7 @@ class _Importer:
                     status=r.get("status") or "active",
                     kind=r["kind"],
                     url=url,
-                    # url_normalized はエクスポートに無い。一意制約 (item, url_normalized) を
-                    # 満たすため raw url を流用する(軽微な劣化: 正規化重複判定が緩む)。
-                    url_normalized=url,
+                    url_normalized=url_normalized,
                     official=bool(r.get("official")),
                     title=r.get("title") or "",
                     note_md=r.get("note_md") or "",

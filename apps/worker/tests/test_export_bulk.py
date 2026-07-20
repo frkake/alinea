@@ -57,19 +57,40 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
     db.add(user)
     await db.flush()
 
+    paper_id = str(uuid.uuid4())
+    thumbnail_key = f"thumbnails/{paper_id}/card.webp"
     paper = Paper(
-        id=str(uuid.uuid4()),
+        id=paper_id,
         title="Flow Straight and Fast",
         authors=[{"name": "Xingchang Liu"}],
         arxiv_id=f"2209.{uuid.uuid4().int % 100000:05d}",
-        owner_user_id=user.id,
+        abstract="We propose rectified flow.",
+        abstract_ja="整流フローを提案する。",
+        summary_lines=["整流フロー", "直線軌道"],
+        arxiv_categories=["cs.LG", "cs.CV"],
+        license="arxiv-nonexclusive",
+        bib_estimated=False,
         visibility="private",
+        latest_version="v2",
+        official_repo_url="https://github.com/gnobitab/RectifiedFlow",
+        extracted_terms=[{"term": "rectified flow"}],
+        thumbnail_key=thumbnail_key,
+        owner_user_id=user.id,
     )
     db.add(paper)
     await db.flush()
 
+    item_thumbnail_key = f"thumbnails/{paper_id}/item-card.webp"
     item = LibraryItem(
-        id=str(uuid.uuid4()), user_id=user.id, paper_id=paper.id, status="reading", tags=["flow"]
+        id=str(uuid.uuid4()),
+        user_id=user.id,
+        paper_id=paper.id,
+        status="reading",
+        tags=["flow"],
+        suggested_tags=["ml", "ot"],
+        reading_position={"block_id": "blk-42", "offset": 10},
+        queue_order=3,
+        thumbnail_key=item_thumbnail_key,
     )
     db.add(item)
     await db.flush()
@@ -253,8 +274,11 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
     await db.commit()
     return {
         "user_id": str(user.id),
+        "paper_id": str(paper.id),
         "library_item_id": str(item.id),
         "asset_key": f"assets/papers/{paper.id}/paper.pdf",
+        "paper_thumbnail_key": thumbnail_key,
+        "item_thumbnail_key": item_thumbnail_key,
     }
 
 
@@ -373,3 +397,78 @@ async def test_export_archive_bundles_assets_and_manifest(db_session: AsyncSessi
         entry = next(a for a in manifest["assets"] if a["storage_key"] == ids["asset_key"])
         assert entry["sha256"]
         assert zf.read(f"assets/{ids['asset_key']}") == b"%PDF-1.7 fake"
+
+
+async def test_export_all_columns_present(db_session: AsyncSession) -> None:
+    """PAPER_EXPORT_FIELDS と LIBRARY_EXPORT_FIELDS の全列がペイロードに含まれることを検証する。"""
+    ids = await _seed_user_data(db_session)
+    payload = await build_export_payload(db_session, ids["user_id"])
+
+    lib = payload["library"][0]
+    # Paper フィールド
+    for field in (
+        "arxiv_id", "doi", "pdf_sha256", "title", "authors", "abstract", "abstract_ja",
+        "summary_lines", "published_on", "venue", "arxiv_categories", "license",
+        "bib_estimated", "visibility", "latest_version", "official_repo_url",
+        "extracted_terms", "thumbnail_key",
+    ):
+        assert field in lib, f"library entry missing paper field: {field}"
+
+    # LibraryItem フィールド
+    for field in (
+        "status", "priority", "deadline", "tags", "suggested_tags", "one_line_note",
+        "understanding", "importance", "reading_position", "queue_order",
+        "total_active_seconds", "thumbnail_key", "added_at", "finished_at",
+    ):
+        assert field in lib, f"library entry missing library_item field: {field}"
+
+    # 値が実際に入っている
+    assert lib["abstract_ja"] == "整流フローを提案する。"
+    assert lib["summary_lines"] == ["整流フロー", "直線軌道"]
+    assert lib["arxiv_categories"] == ["cs.LG", "cs.CV"]
+    assert lib["license"] == "arxiv-nonexclusive"
+    assert lib["official_repo_url"] == "https://github.com/gnobitab/RectifiedFlow"
+    assert lib["thumbnail_key"] == ids["item_thumbnail_key"]
+    assert lib["suggested_tags"] == ["ml", "ot"]
+    assert lib["reading_position"] == {"block_id": "blk-42", "offset": 10}
+    assert lib["queue_order"] == 3
+
+
+async def test_export_document_asset_keys_collected(db_session: AsyncSession) -> None:
+    """DocumentRevision の figure/table block の asset_key が manifest に収集されることを検証する。"""
+    ids = await _seed_user_data(db_session)
+    storage = S3Storage()
+
+    # figure block が参照する asset_key を S3 に置く
+    figure_asset_key = f"figures/{ids['paper_id']}/rev1/blk-fig.png"
+    await storage.put(storage.assets_bucket, figure_asset_key, b"\x89PNG fake figure",
+                      content_type="image/png")
+    # paper thumbnail を S3 に置く
+    await storage.put(storage.assets_bucket, ids["paper_thumbnail_key"], b"WEBP thumb",
+                      content_type="image/webp")
+    # item thumbnail を S3 に置く
+    await storage.put(storage.assets_bucket, ids["item_thumbnail_key"], b"WEBP item thumb",
+                      content_type="image/webp")
+
+    # DocumentRevision の content に figure block を追加する
+    from alinea_core.db.models import DocumentRevision as DR
+    from sqlalchemy import select
+    revs = (await db_session.execute(select(DR))).scalars().all()
+    for rev in revs:
+        rev.content = {
+            "quality_level": "A",
+            "sections": [{
+                "id": "s1",
+                "blocks": [
+                    {"id": "blk-fig", "type": "figure", "asset_key": figure_asset_key},
+                ],
+            }],
+        }
+    await db_session.commit()
+
+    archive = await build_export_archive(db_session, ids["user_id"], storage)
+    with zipfile.ZipFile(BytesIO(archive)) as zf:
+        names = set(zf.namelist())
+        assert f"assets/{figure_asset_key}" in names, "figure asset_key missing from archive"
+        assert f"assets/{ids['paper_thumbnail_key']}" in names, "paper thumbnail missing"
+        assert f"assets/{ids['item_thumbnail_key']}" in names, "item thumbnail missing"
