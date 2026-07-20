@@ -44,6 +44,7 @@ from alinea_core.db.models import (
     Notification,
     OverviewFigure,
     Paper,
+    PaperExternalId,
     ReadingSession,
     ResourceLink,
     SavedFilter,
@@ -784,6 +785,36 @@ async def _serialize_source_assets(
     ]
 
 
+async def _serialize_paper_external_ids(
+    session: AsyncSession, paper_ids: list[str]
+) -> list[dict[str, Any]]:
+    """サイト取り込み由来の外部識別子(名寄せ用)。完全バックアップに含める。"""
+    if not paper_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(PaperExternalId)
+                .where(PaperExternalId.paper_id.in_(paper_ids))
+                .order_by(PaperExternalId.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "paper_id": str(r.paper_id),
+            "site": r.site,
+            "external_id": r.external_id,
+            "canonical_url": r.canonical_url,
+            "created_at": _iso(r.created_at),
+        }
+        for r in rows
+    ]
+
+
 async def _serialize_share_tokens(
     session: AsyncSession, collection_ids: list[str]
 ) -> list[dict[str, Any]]:
@@ -862,6 +893,7 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
         "overview_figures": await _serialize_overview_figures(session, article_ids),
         "explainer_figures": await _serialize_explainer_figures(session, article_ids),
         "source_assets": await _serialize_source_assets(session, paper_ids),
+        "paper_external_ids": await _serialize_paper_external_ids(session, paper_ids),
         "share_tokens": await _serialize_share_tokens(session, collection_ids),
     }
 

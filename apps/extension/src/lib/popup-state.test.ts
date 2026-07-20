@@ -26,8 +26,10 @@ test("saved item resolves to existing regardless of kind", () => {
   expect(resolvePopupState({ authed: true, check: c })).toBe("existing");
 });
 
-test("arxiv/pdf/unsupported branch to the right states", () => {
+test("arxiv/site/pdf/unsupported branch to the right states", () => {
   expect(resolvePopupState({ authed: true, check: check({ kind: "arxiv" }) })).toBe("saveform");
+  // site(ACL Anthology 等)も保存前フォームへ。
+  expect(resolvePopupState({ authed: true, check: check({ kind: "site" }) })).toBe("saveform");
   expect(resolvePopupState({ authed: true, check: check({ kind: "pdf" }) })).toBe("pdf");
   expect(resolvePopupState({ authed: true, check: check({ kind: "unsupported" }) })).toBe(
     "unsupported",

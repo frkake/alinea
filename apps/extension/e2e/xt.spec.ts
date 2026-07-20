@@ -60,6 +60,18 @@ test.describe.serial("拡張 E2E", () => {
     await page.close();
   });
 
+  // XT-SITE: ACL Anthology 等の対応サイト URL は保存前フォーム(site 検出バッジ)を出す。
+  // 既定 skip: サーバの ingest_check がサイト landing を取得する必要があり、ローカル E2E では
+  // 外部ネットワークに接続しないため(Task 15 の hard constraint)。バックエンドに ACL フィクスチャ
+  // を配線した環境でのみ有効化する。
+  test.skip("XT-SITE 対応サイト URL は保存前フォームを出す", async ({ extContext, extensionId }) => {
+    await ensureLoggedIn(extContext);
+    const page = await extContext.newPage();
+    await page.goto(popupUrl(extensionId, "https://aclanthology.org/2023.acl-long.42/"));
+    await expect(page.getByText("対応サイトの論文を検出")).toBeVisible();
+    await page.close();
+  });
+
   test("XT-03/04 保存操作(Enter)→ 状態2(保存直後)進捗 + サイトで開く", async ({
     extContext,
     extensionId,

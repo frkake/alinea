@@ -560,11 +560,16 @@ class IngestJobPayload(BaseModel):
     """ingest ジョブの payload(plans/05 §2.7)。"""
 
     mode: str = "initial"  # initial | reingest
-    source: str = "arxiv"  # arxiv | pdf_upload
+    source: str = "arxiv"  # arxiv | pdf_upload | site
     arxiv_id: str | None = None
     requested_version: str | None = None
     url: str | None = None
     library_item_id: str | None = None
+    # source="site"(他サイト取り込み。ACL Anthology 等)の識別子。API が landing→PDF を取得し
+    # 原本 PDF を S3 に先行保存済みなので、worker は pdf_upload と同じくローカル資産だけを扱う。
+    site: str | None = None
+    external_id: str | None = None
+    landing_url: str | None = None
     # Raise the per-document figure budget for this reingest so deferred figures
     # (marked `figure_deferred` on a prior degraded ingest) get materialized on
     # demand.  None keeps the default MAX_FIGURES_PER_DOCUMENT.
@@ -929,8 +934,12 @@ class IngestRun:
         self.user_id: str | None = str(job.user_id) if job.user_id else None
         self.payload = IngestJobPayload.model_validate(job.payload or {})
         self.ckpt = JobStore.get_checkpoint(job)
-        self.is_pdf_upload = self.payload.source == "pdf_upload"
-        # pdf_upload には arxiv_id/url が無い(plans/05 §9.1)。arXiv 系のみ ID 正規化する。
+        self.is_site = self.payload.source == "site"
+        # site 取り込み(他サイトアダプタ)は API が landing→PDF を取得し原本 PDF を S3 に
+        # 先行保存済みなので、worker からは pdf_upload と同一のローカル PDF 経路として扱う
+        # (arXiv 系の HTML/PDF 再取得・レート制限を一切経由しない)。
+        self.is_pdf_upload = self.payload.source in ("pdf_upload", "site")
+        # pdf_upload / site には arxiv_id/url が無い(plans/05 §9.1)。arXiv 系のみ ID 正規化する。
         self.ref: ArxivId | None = (
             None
             if self.is_pdf_upload
@@ -3817,7 +3826,9 @@ class IngestRun:
                 abstract_text = _extract_pdf_abstract(content)
                 if abstract_text and not paper.abstract:
                     paper.abstract = abstract_text
-                if self.is_pdf_upload:
+                # 書誌推定はアップロード PDF のみ。site は API が landing メタで既に補完済み
+                # (推定で上書きすると正確なサイト書誌を粗いヒューリスティクスで劣化させる)。
+                if self.is_pdf_upload and not self.is_site:
                     await self._apply_bib_estimate(paper, data)
 
                 await rebuild_block_search_index(self.session, self.revision_id, content)

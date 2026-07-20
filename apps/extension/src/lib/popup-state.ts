@@ -22,14 +22,15 @@ export interface ResolveArgs {
  * 2. 未ログイン → login
  * 3. check 未取得 → loading
  * 4. saved != null → existing
- * 5. kind==="arxiv" → saveform / "pdf" → pdf / それ以外 → unsupported
+ * 5. kind==="arxiv"|"site" → saveform / "pdf" → pdf / それ以外 → unsupported
  */
 export function resolvePopupState({ authed, check }: ResolveArgs): PopupState {
   if (authed === null) return "loading";
   if (authed === false) return "login";
   if (check === null) return "loading";
   if (check.saved != null) return "existing";
-  if (check.kind === "arxiv") return "saveform";
+  // arxiv と site(ACL Anthology 等)はどちらも保存前フォームへ(書誌プレビュー + 保存)。
+  if (check.kind === "arxiv" || check.kind === "site") return "saveform";
   if (check.kind === "pdf") return "pdf";
   return "unsupported";
 }

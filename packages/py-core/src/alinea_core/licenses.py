@@ -125,3 +125,29 @@ _MATRIX: dict[str, LicensePolicy] = {
 def classify_license(license_id: str) -> LicensePolicy:
     """ライセンス ID からポリシーを返す。未知の値は 'unknown' 相当に落とす(安全側)。"""
     return _MATRIX.get(license_id, _MATRIX["unknown"])
+
+
+# 本文の公開(共有)を許す「機械判定可能な互換ライセンス」の集合(docs/09 §5.2)。
+# CC 系(および CC0)のみ本文公開に足る互換性がある。arxiv-nonexclusive / unknown / 出版社
+# PDF は再配布権が明示されないため公開しない(private 既定・安全側)。
+_SHAREABLE_LICENSES: frozenset[str] = frozenset(
+    {
+        "cc-by-4.0",
+        "cc-by-sa-4.0",
+        "cc-by-nc-4.0",
+        "cc-by-nc-sa-4.0",
+        "cc-by-nd-4.0",
+        "cc-by-nc-nd-4.0",
+        "cc0",
+    }
+)
+
+
+def is_public_shareable_license(license_id: str | None) -> bool:
+    """機械判定可能な互換ライセンスが明示された場合のみ True(=本文の公開を許可)。
+
+    サイト取り込みの既定は private。この関数が True を返す(明示的な CC/CC0)ときだけ
+    ``visibility="public"`` を許す。``None`` / ``"unknown"`` / ``"arxiv-nonexclusive"`` は False。
+    """
+
+    return bool(license_id) and license_id in _SHAREABLE_LICENSES

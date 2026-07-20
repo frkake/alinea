@@ -23,11 +23,13 @@ import pytest_asyncio
 from alinea_api.main import app
 from alinea_api.routers.ingest import (
     ArxivGateway,
+    SiteGateway,
     _ensure_arxiv_pdf_available,
     _ensure_pdf_placeholder_revision,
     get_arxiv_gateway,
     get_job_wakeup,
     get_pdf_storage,
+    get_site_gateway,
 )
 from alinea_api.routers.papers import get_storage
 from alinea_api.schemas.assets import encode_asset_id
@@ -45,6 +47,7 @@ from alinea_core.db.models import (
     Job,
     LibraryItem,
     Paper,
+    PaperExternalId,
     SourceAsset,
     TranslationSet,
     User,
@@ -115,6 +118,47 @@ def seed_arxiv_mock() -> Iterator[None]:
     app.dependency_overrides[get_arxiv_gateway] = lambda: _FakeGateway()
     yield
     app.dependency_overrides.pop(get_arxiv_gateway, None)
+
+
+# --- site (ACL Anthology) ingest fixtures -----------------------------------
+_ACL_URL = "https://aclanthology.org/2023.acl-long.42/"
+_ACL_EXTERNAL_ID = "2023.acl-long.42"
+
+
+class _FakeSiteGateway(SiteGateway):
+    """No-network SiteGateway. Returns a deterministic SiteMeta + minimal PDF."""
+
+    def __init__(self, *, license_id: str = "unknown", doi: str | None = None) -> None:
+        self.license_id = license_id
+        self.doi = doi
+
+    async def fetch_metadata(self, adapter: Any, ref: Any) -> Any:
+        from alinea_core.adapters.base import SiteMeta
+
+        return SiteMeta(
+            site=ref.site,
+            external_id=ref.external_id,
+            title=f"ACL paper {ref.external_id}",
+            authors=[{"name": "Jacob Devlin"}, {"name": "Ming-Wei Chang"}],
+            abstract="A deterministic ACL abstract.",
+            published_on="2023-07-01",
+            venue="ACL 2023",
+            doi=self.doi,
+            pdf_url=f"https://aclanthology.org/{ref.external_id}.pdf",
+            license=self.license_id,
+            categories=[],
+        )
+
+    async def fetch_pdf(self, meta: Any, settings: Any) -> bytes:
+        return _MINIMAL_PDF
+
+
+@pytest.fixture
+def seed_site_mock() -> Iterator[_FakeSiteGateway]:
+    gateway = _FakeSiteGateway()
+    app.dependency_overrides[get_site_gateway] = lambda: gateway
+    yield gateway
+    app.dependency_overrides.pop(get_site_gateway, None)
 
 
 @pytest.fixture
@@ -858,6 +902,156 @@ async def test_arxiv_ingest_rejects_non_arxiv(
 ) -> None:
     await _login(client, db_session, redis_client, unique_email)
     r = await client.post("/api/ingest/arxiv", json={"url": "https://example.com/x.pdf"})
+    assert r.status_code == 422
+    assert r.json()["code"] == "validation_error"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingest/check — site (ACL Anthology) 分岐
+# ---------------------------------------------------------------------------
+async def test_check_acl_url_returns_site(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    seed_site_mock: _FakeSiteGateway,
+) -> None:
+    await _login(client, db_session, redis_client, unique_email)
+    r = await client.get("/api/ingest/check", params={"url": _ACL_URL})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["kind"] == "site"
+    assert body["site"] == "acl_anthology"
+    assert body["external_id"] == _ACL_EXTERNAL_ID
+    assert body["saved"] is None
+    assert body["bib"]["title"] == f"ACL paper {_ACL_EXTERNAL_ID}"
+    assert body["bib"]["authors_short"] == "Devlin, Chang"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/ingest/site
+# ---------------------------------------------------------------------------
+async def test_site_ingest_creates_job(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+    wakeups: list[str],
+    seed_site_mock: _FakeSiteGateway,
+    fake_storage: Any,
+) -> None:
+    await _login(client, db_session, redis_client, unique_email)
+    r = await client.post("/api/ingest/site", json={"url": _ACL_URL})
+    assert r.status_code == 202, r.text
+    body = r.json()
+    created_papers.append(body["paper_id"])
+    assert body["job_id"] in wakeups
+
+    job = await db_session.get(Job, body["job_id"])
+    assert job is not None
+    assert job.kind == "ingest"
+    assert job.payload["source"] == "site"
+    assert job.payload["site"] == "acl_anthology"
+    assert job.payload["external_id"] == _ACL_EXTERNAL_ID
+    assert job.payload["landing_url"]
+
+    paper = await db_session.get(Paper, body["paper_id"])
+    assert paper is not None
+    # 互換ライセンス未検出 → private + owner。
+    assert paper.visibility == "private"
+    assert str(paper.owner_user_id) is not None
+    assert paper.latest_revision_id is not None
+
+    revision = await db_session.get(DocumentRevision, paper.latest_revision_id)
+    assert revision is not None
+    assert revision.source_format == "pdf"
+    assert revision.quality_level == "B"
+
+    # external-id row を作る((site, external_id) unique)。
+    ext = (
+        (
+            await db_session.execute(
+                select(PaperExternalId).where(PaperExternalId.paper_id == body["paper_id"])
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(ext) == 1
+    assert ext[0].site == "acl_anthology"
+    assert ext[0].external_id == _ACL_EXTERNAL_ID
+
+    # landing URL を source_url に記録した kind="pdf" 資産。
+    asset = (
+        (
+            await db_session.execute(
+                select(SourceAsset).where(
+                    SourceAsset.paper_id == body["paper_id"], SourceAsset.kind == "pdf"
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert asset.source_url == _ACL_URL
+
+
+async def test_site_ingest_public_when_license_compatible(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+    fake_storage: Any,
+) -> None:
+    gateway = _FakeSiteGateway(license_id="cc-by-4.0")
+    app.dependency_overrides[get_site_gateway] = lambda: gateway
+    try:
+        await _login(client, db_session, redis_client, unique_email)
+        r = await client.post("/api/ingest/site", json={"url": _ACL_URL})
+    finally:
+        app.dependency_overrides.pop(get_site_gateway, None)
+    assert r.status_code == 202, r.text
+    body = r.json()
+    created_papers.append(body["paper_id"])
+    paper = await db_session.get(Paper, body["paper_id"])
+    assert paper is not None
+    assert paper.visibility == "public"
+    assert paper.license == "cc-by-4.0"
+
+
+async def test_site_ingest_idempotent_by_external_id(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+    seed_site_mock: _FakeSiteGateway,
+    fake_storage: Any,
+) -> None:
+    await _login(client, db_session, redis_client, unique_email)
+    first = await client.post("/api/ingest/site", json={"url": _ACL_URL})
+    assert first.status_code == 202, first.text
+    created_papers.append(first.json()["paper_id"])
+
+    dup = await client.post("/api/ingest/site", json={"url": _ACL_URL})
+    assert dup.status_code == 409
+    assert dup.json()["code"] == "duplicate"
+
+    # 外部識別子行は 1 件のまま(重複作成しない)。
+    count = await db_session.scalar(
+        text("SELECT count(*) FROM paper_external_ids WHERE external_id = :e"),
+        {"e": _ACL_EXTERNAL_ID},
+    )
+    assert count == 1
+
+
+async def test_site_ingest_rejects_unsupported_url(
+    client: AsyncClient, db_session: AsyncSession, redis_client: Any, unique_email: str
+) -> None:
+    await _login(client, db_session, redis_client, unique_email)
+    r = await client.post("/api/ingest/site", json={"url": "https://example.com/not-a-paper"})
     assert r.status_code == 422
     assert r.json()["code"] == "validation_error"
 

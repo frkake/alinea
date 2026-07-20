@@ -1698,7 +1698,7 @@ export type IngestCheckResponse = {
     /**
      * Kind
      */
-    kind: 'arxiv' | 'pdf' | 'unsupported';
+    kind: 'arxiv' | 'site' | 'pdf' | 'unsupported';
     /**
      * Arxiv Id
      */
@@ -1707,6 +1707,14 @@ export type IngestCheckResponse = {
      * Arxiv Version
      */
     arxiv_version?: string | null;
+    /**
+     * Site
+     */
+    site?: string | null;
+    /**
+     * External Id
+     */
+    external_id?: string | null;
     bib?: IngestCheckBib | null;
     /**
      * Latex Available
@@ -3973,6 +3981,56 @@ export type SharePatchBody = {
 };
 
 /**
+ * SiteIngestRequest
+ * POST /api/ingest/site のリクエスト本文(ACL Anthology 等の論文ページ URL)。
+ */
+export type SiteIngestRequest = {
+    /**
+     * Url
+     */
+    url: string;
+    /**
+     * Status
+     */
+    status?: string | null;
+    /**
+     * Tags
+     */
+    tags?: Array<string> | null;
+    /**
+     * Collection Id
+     */
+    collection_id?: string | null;
+    /**
+     * Quick Note
+     */
+    quick_note?: string | null;
+};
+
+/**
+ * SiteIngestResponse
+ * POST /api/ingest/site の 202 応答(§3.2 と同型 + duplicate)。
+ */
+export type SiteIngestResponse = {
+    /**
+     * Job Id
+     */
+    job_id: string;
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+    /**
+     * Paper Id
+     */
+    paper_id: string;
+    /**
+     * Duplicate
+     */
+    duplicate?: boolean;
+};
+
+/**
  * StandaloneAvailability
  * 成果物ごとの生成有無(UI の選択可否判定に使う。最新リビジョン基準)。
  */
@@ -5244,6 +5302,37 @@ export type IngestArxivResponses = {
 };
 
 export type IngestArxivResponse2 = IngestArxivResponses[keyof IngestArxivResponses];
+
+export type IngestSiteData = {
+    body: SiteIngestRequest;
+    headers?: {
+        /**
+         * Idempotency-Key
+         */
+        'Idempotency-Key'?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/ingest/site';
+};
+
+export type IngestSiteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type IngestSiteError = IngestSiteErrors[keyof IngestSiteErrors];
+
+export type IngestSiteResponses = {
+    /**
+     * Successful Response
+     */
+    202: SiteIngestResponse;
+};
+
+export type IngestSiteResponse = IngestSiteResponses[keyof IngestSiteResponses];
 
 export type IngestPdfData = {
     body: BodyIngestPdf;

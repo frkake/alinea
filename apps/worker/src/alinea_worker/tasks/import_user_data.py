@@ -60,6 +60,7 @@ from alinea_core.db.models import (
     Notification,
     OverviewFigure,
     Paper,
+    PaperExternalId,
     ReadingSession,
     ResourceLink,
     SavedFilter,
@@ -204,7 +205,19 @@ class _Importer:
         return True
 
     # -- 各テーブル ----------------------------------------------------------
-    async def restore_papers(self, library: list[dict[str, Any]]) -> None:
+    async def restore_papers(
+        self,
+        library: list[dict[str, Any]],
+        external_ids: list[dict[str, Any]] | None = None,
+    ) -> None:
+        # 名寄せ用: OLD paper_id → [(site, external_id), ...]。arxiv_id / doi で当たらない場合に
+        # (site, external_id) で既存 Paper を探し、サイト取り込み論文の重複作成を防ぐ。
+        ext_by_old_paper: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for row in external_ids or []:
+            if isinstance(row, dict) and row.get("site") and row.get("external_id"):
+                ext_by_old_paper[str(row["paper_id"])].append(
+                    (str(row["site"]), str(row["external_id"]))
+                )
         for entry in library:
             old_id = str(entry["paper_id"])
             if old_id in self.paper_map:
@@ -220,6 +233,21 @@ class _Importer:
                 existing = (
                     await self.session.execute(select(Paper).where(Paper.doi == doi))
                 ).scalar_one_or_none()
+            if existing is None:
+                for site, external_id in ext_by_old_paper.get(old_id, []):
+                    match = (
+                        await self.session.execute(
+                            select(Paper)
+                            .join(PaperExternalId, PaperExternalId.paper_id == Paper.id)
+                            .where(
+                                PaperExternalId.site == site,
+                                PaperExternalId.external_id == external_id,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if match is not None:
+                        existing = match
+                        break
             if existing is not None:
                 # 共有エンティティを再利用(所有者は書き換えない)。
                 self.paper_map[old_id] = str(existing.id)
@@ -241,6 +269,44 @@ class _Importer:
             if await self._insert("papers", paper, old_id):
                 self.paper_map[old_id] = new_id
                 self.created_paper_ids.add(new_id)
+
+    async def restore_paper_external_ids(self, rows: list[dict[str, Any]]) -> None:
+        for r in rows:
+            old_id = str(r["id"])
+            if await self.session.get(PaperExternalId, old_id) is not None:
+                self.skipped["paper_external_ids"] += 1
+                continue
+            paper_id = self.paper_map.get(str(r["paper_id"]))
+            if paper_id is None:
+                self.failed.append(
+                    {"table": "paper_external_ids", "id": old_id, "error": "unmapped paper_id"}
+                )
+                continue
+            # (site, external_id) は global unique。名寄せで既存 Paper を再利用した場合、
+            # その識別子行は既に存在するため二重作成しない(冪等)。
+            existing = (
+                await self.session.execute(
+                    select(PaperExternalId).where(
+                        PaperExternalId.site == r["site"],
+                        PaperExternalId.external_id == r["external_id"],
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                self.skipped["paper_external_ids"] += 1
+                continue
+            await self._insert(
+                "paper_external_ids",
+                PaperExternalId(
+                    id=old_id,
+                    paper_id=paper_id,
+                    site=r["site"],
+                    external_id=r["external_id"],
+                    canonical_url=r.get("canonical_url") or "",
+                    created_at=_dt(r.get("created_at")),
+                ),
+                old_id,
+            )
 
     async def restore_source_assets(self, rows: list[dict[str, Any]]) -> None:
         for r in rows:
@@ -976,8 +1042,10 @@ async def import_data_json(
     """
     imp = _Importer(session, target_user_id)
     library = data.get("library") or []
+    paper_external_ids = data.get("paper_external_ids") or []
 
-    await imp.restore_papers(library)
+    await imp.restore_papers(library, paper_external_ids)
+    await imp.restore_paper_external_ids(paper_external_ids)
     await imp.restore_source_assets(data.get("source_assets") or [])
     await imp.restore_document_revisions(data.get("document_revisions") or [])
     await imp.restore_library(library)

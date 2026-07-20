@@ -29,6 +29,7 @@ from alinea_core.db.models import (
     Note,
     Notification,
     Paper,
+    PaperExternalId,
     ReadingSession,
     ResourceLink,
     SavedFilter,
@@ -250,11 +251,25 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
         )
     )
 
+    # PaperExternalId(サイト取り込み由来の名寄せ識別子。完全バックアップに含める)。
+    external_id = f"2023.acl-long.{uuid.uuid4().int % 1000}"
+    db.add(
+        PaperExternalId(
+            id=str(uuid.uuid4()),
+            paper_id=paper.id,
+            site="acl_anthology",
+            external_id=external_id,
+            canonical_url=f"https://aclanthology.org/{external_id}/",
+        )
+    )
+
     await db.commit()
     return {
         "user_id": str(user.id),
         "library_item_id": str(item.id),
+        "paper_id": str(paper.id),
         "asset_key": f"assets/papers/{paper.id}/paper.pdf",
+        "external_id": external_id,
     }
 
 
@@ -354,6 +369,21 @@ async def test_export_payload_includes_generated_content(db_session: AsyncSessio
         assert key in payload, key
     # source_asset メタは storage_key/sha256/byte_size を持つ
     assert payload["source_assets"][0]["storage_key"]
+
+
+async def test_export_includes_paper_external_id(db_session: AsyncSession) -> None:
+    """完全バックアップはサイト取り込み由来の外部識別子(名寄せ用)を含める。"""
+    ids = await _seed_user_data(db_session)
+    payload = await build_export_payload(db_session, ids["user_id"])
+
+    assert "paper_external_ids" in payload
+    rows = payload["paper_external_ids"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["paper_id"] == ids["paper_id"]
+    assert row["site"] == "acl_anthology"
+    assert row["external_id"] == ids["external_id"]
+    assert row["canonical_url"] == f"https://aclanthology.org/{ids['external_id']}/"
 
 
 async def test_export_archive_bundles_assets_and_manifest(db_session: AsyncSession) -> None:
