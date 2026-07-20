@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   vocabCandidatesAccept,
@@ -10,20 +11,32 @@ import {
   type VocabCandidateOut,
 } from "@alinea/api-client";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { useJobEvents } from "@/hooks/useJobEvents";
 import { useViewerStore } from "@/stores/viewer-store";
 
-/** キャッシュに保存するローカル拡張型(extractedフラグ付き)。 */
+/** キャッシュに保存するローカル拡張型(extractedフラグ付き)。
+ * NOTE: `extracted` はクライアント側のフラグのみ。ページリロードで失われる。
+ * バックエンド側が `extracted_at` などを返すようになれば list.data から読む形に移行する。
+ */
 type CandidateCache = VocabCandidateListResponse & { extracted?: boolean };
 
 /**
  * 単語候補タブ本体(viewer-shell §6.5: props なし)。
  * AI が提案する語彙候補を抽出・採用・破棄できる。
+ *
+ * 抽出フロー: POST /extract → 202 + job_id → useJobEvents が done を待ち → invalidate。
+ * (直後に invalidate すると空リストが返って not-extracted 状態に戻るため、waitThenInvalidate が必須)
  */
 export function VocabCandidatesPanel() {
   const itemId = useViewerStore((s) => s.itemId);
   const qc = useQueryClient();
 
   const candidatesKey = ["vocab-candidates", itemId] as const;
+
+  // extraction job state
+  const [extractJobId, setExtractJobId] = useState<string | null>(null);
+  const [extracting, setExtracting] = useState(false);
+  const [extractError, setExtractError] = useState<string | null>(null);
 
   const list = useQuery<CandidateCache>({
     queryKey: candidatesKey,
@@ -38,15 +51,46 @@ export function VocabCandidatesPanel() {
     staleTime: 0,
   });
 
-  const extract = useMutation({
-    mutationFn: () =>
-      vocabCandidatesExtract({ path: { item_id: itemId as string }, throwOnError: true }),
-    onSuccess: () => {
-      // Mark as extracted in cache, then invalidate to refetch
+  // waitThenInvalidate: wait for the extraction job to complete via SSE, then invalidate
+  useJobEvents(extractJobId, {
+    onDone: () => {
+      setExtractJobId(null);
+      setExtracting(false);
+      // Mark as extracted in cache before invalidating so that an empty result
+      // shows "候補がありません" instead of the extract button.
       qc.setQueryData<CandidateCache>(candidatesKey, (prev) =>
         prev ? { ...prev, extracted: true } : { items: [], count: 0, extracted: true },
       );
       void qc.invalidateQueries({ queryKey: candidatesKey });
+    },
+    onError: (problem) => {
+      setExtractJobId(null);
+      setExtracting(false);
+      setExtractError(
+        (problem as { title?: string } | undefined)?.title ?? "抽出に失敗しました。もう一度お試しください。",
+      );
+    },
+  });
+
+  const extract = useMutation({
+    mutationFn: () =>
+      vocabCandidatesExtract({ path: { item_id: itemId as string }, throwOnError: true }),
+    onSuccess: (res) => {
+      const jobId = (res.data as { job_id?: string } | undefined)?.job_id ?? null;
+      setExtractError(null);
+      if (jobId) {
+        setExtractJobId(jobId);
+        setExtracting(true);
+      } else {
+        // No job_id in response (unexpected): fall back to immediate invalidate
+        qc.setQueryData<CandidateCache>(candidatesKey, (prev) =>
+          prev ? { ...prev, extracted: true } : { items: [], count: 0, extracted: true },
+        );
+        void qc.invalidateQueries({ queryKey: candidatesKey });
+      }
+    },
+    onError: () => {
+      setExtractError("抽出に失敗しました。もう一度お試しください。");
     },
   });
 
@@ -120,6 +164,7 @@ export function VocabCandidatesPanel() {
   const data = list.data;
   const items: VocabCandidateOut[] = data?.items ?? [];
   const extracted = Boolean(data?.extracted);
+  const isExtracting = extracting || extract.isPending;
 
   // not-extracted state: empty + not yet extracted
   if (items.length === 0 && !extracted) {
@@ -128,7 +173,7 @@ export function VocabCandidatesPanel() {
         <p style={{ fontSize: 12, color: "var(--pr-text-sub)", margin: 0, lineHeight: 1.6 }}>
           AI がこの論文から覚えるべき英単語・コロケーションの候補を抽出します。
         </p>
-        {extract.isPending ? (
+        {isExtracting ? (
           <span
             style={{
               fontSize: 13,
@@ -147,10 +192,8 @@ export function VocabCandidatesPanel() {
             単語候補を抽出
           </button>
         )}
-        {extract.isError ? (
-          <span style={{ fontSize: 11, color: "var(--pr-error, #c0392b)" }}>
-            抽出に失敗しました。もう一度お試しください。
-          </span>
+        {extractError ? (
+          <span style={{ fontSize: 11, color: "var(--pr-error, #c0392b)" }}>{extractError}</span>
         ) : null}
       </div>
     );

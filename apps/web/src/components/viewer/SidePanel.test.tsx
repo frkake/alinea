@@ -223,4 +223,13 @@ describe("SidePanel tabs milestone=M3", () => {
     renderWithClient(<SidePanel milestone="M3" />);
     await screen.findByRole("button", { name: "単語候補を抽出" });
   });
+
+  test("単語候補 tab shows pending count badge when counts prop has vocab-candidates", () => {
+    renderWithClient(<SidePanel milestone="M3" counts={{ "vocab-candidates": 3 }} />);
+    // The tab button contains the label and CountBadge renders the number as text
+    const tab = screen.getByRole("tab", { name: /単語候補/ });
+    expect(tab).toBeInTheDocument();
+    // CountBadge renders the count as inline text within the tab button
+    expect(tab.textContent).toContain("3");
+  });
 });

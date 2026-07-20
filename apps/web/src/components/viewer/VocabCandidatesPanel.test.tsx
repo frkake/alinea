@@ -2,9 +2,10 @@
  * VocabCandidatesPanel — TDD tests
  * Five UI states: not-extracted, extracting, has-candidates, empty, failed.
  * Accept/dismiss remove item immediately; accept also invalidates vocab query.
+ * waitThenInvalidate: extract invalidates only AFTER the job completes via useJobEvents.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
@@ -14,6 +15,7 @@ import {
   vocabCandidatesDismiss,
 } from "@alinea/api-client";
 import type { VocabCandidateOut } from "@alinea/api-client";
+import { type UseJobEventsOptions } from "@/hooks/useJobEvents";
 import { VocabCandidatesPanel } from "@/components/viewer/VocabCandidatesPanel";
 import { useViewerStore } from "@/stores/viewer-store";
 
@@ -27,6 +29,11 @@ vi.mock("@alinea/api-client", async (importOriginal) => {
     vocabCandidatesDismiss: vi.fn(),
   };
 });
+
+vi.mock("@/hooks/useJobEvents", () => ({ useJobEvents: vi.fn() }));
+
+// Import AFTER mock so we get the mock version
+import { useJobEvents } from "@/hooks/useJobEvents";
 
 function candidate(overrides: Partial<VocabCandidateOut> = {}): VocabCandidateOut {
   return {
@@ -49,9 +56,15 @@ function renderWithClient(ui: ReactNode) {
 }
 
 describe("VocabCandidatesPanel", () => {
+  let capturedJobEvents: UseJobEventsOptions | null = null;
+
   beforeEach(() => {
     useViewerStore.setState({ itemId: "li_test" });
     vi.clearAllMocks();
+    capturedJobEvents = null;
+    vi.mocked(useJobEvents).mockImplementation((_jobId, options) => {
+      capturedJobEvents = options;
+    });
   });
 
   // State 1: not-extracted — list returns empty with no extraction done
@@ -66,21 +79,14 @@ describe("VocabCandidatesPanel", () => {
     expect(screen.getByRole("button", { name: "単語候補を抽出" })).toBeInTheDocument();
   });
 
-  // State 2: extracting — button is disabled while mutation is in-flight
-  test("extracting state: disables extract button while extracting", async () => {
+  // State 2: extracting — shows "抽出中…" while job is in-flight (job_id returned, useJobEvents active)
+  test("extracting state: shows 抽出中… after extract is called and job_id is returned", async () => {
     vi.mocked(vocabCandidatesList).mockResolvedValue({
       data: { items: [], count: 0 },
     } as Awaited<ReturnType<typeof vocabCandidatesList>>);
-
-    let resolveExtract!: () => void;
-    vi.mocked(vocabCandidatesExtract).mockReturnValue(
-      new Promise<Awaited<ReturnType<typeof vocabCandidatesExtract>>>((res) => {
-        resolveExtract = () =>
-          res({
-            data: { job_id: "job_1" },
-          } as Awaited<ReturnType<typeof vocabCandidatesExtract>>);
-      }),
-    );
+    vi.mocked(vocabCandidatesExtract).mockResolvedValue({
+      data: { job_id: "job_1" },
+    } as Awaited<ReturnType<typeof vocabCandidatesExtract>>);
 
     renderWithClient(<VocabCandidatesPanel />);
 
@@ -89,8 +95,54 @@ describe("VocabCandidatesPanel", () => {
 
     await screen.findByText("抽出中…");
     expect(screen.queryByRole("button", { name: "単語候補を抽出" })).toBeNull();
+  });
 
-    resolveExtract();
+  // waitThenInvalidate: invalidation happens ONLY after job done event, not immediately after POST
+  test("waitThenInvalidate: extract invalidates candidates only after useJobEvents onDone fires", async () => {
+    const cand = candidate();
+    let listCallCount = 0;
+
+    vi.mocked(vocabCandidatesList).mockImplementation(async () => {
+      listCallCount += 1;
+      // After job done, server returns the candidates
+      return {
+        data: { items: listCallCount > 1 ? [cand] : [], count: listCallCount > 1 ? 1 : 0 },
+      } as Awaited<ReturnType<typeof vocabCandidatesList>>;
+    });
+    vi.mocked(vocabCandidatesExtract).mockResolvedValue({
+      data: { job_id: "job_extract" },
+    } as Awaited<ReturnType<typeof vocabCandidatesExtract>>);
+
+    const { client } = renderWithClient(<VocabCandidatesPanel />);
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+
+    await screen.findByRole("button", { name: "単語候補を抽出" });
+
+    // Click extract — POST returns 202 + job_id
+    fireEvent.click(screen.getByRole("button", { name: "単語候補を抽出" }));
+
+    // Wait for extracting state
+    await screen.findByText("抽出中…");
+
+    // No invalidation yet — still waiting for job
+    expect(invalidateSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ["vocab-candidates", "li_test"] }),
+    );
+
+    // Simulate job completion via useJobEvents.onDone
+    await act(async () => {
+      capturedJobEvents?.onDone?.(null);
+    });
+
+    // Now invalidation should have fired
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: ["vocab-candidates", "li_test"] }),
+      ),
+    );
+
+    // Candidates appear after refetch
+    await screen.findAllByText("rectified flow");
   });
 
   // State 3: has-candidates — shows candidate cards with term, kind, reason, context highlight
