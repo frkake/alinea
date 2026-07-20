@@ -22,6 +22,7 @@ import xml.parsers.expat as expat
 from dataclasses import dataclass, field
 from typing import Any
 
+from alinea_core.adapters.pubmed import normalize_pmcid, normalize_pmid
 from alinea_core.arxiv.licenses import normalize_license_url
 from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
 from alinea_core.document.inlines import Inline
@@ -38,6 +39,22 @@ _INLINE_EMPHASIS_TAGS = frozenset({"bold", "italic", "sc", "underline", "strong"
 _INLINE_CODE_TAGS = frozenset({"monospace", "code", "tt"})
 _INLINE_MATH_TAGS = frozenset({"inline-formula"})
 _SKIP_INLINE_TAGS = frozenset({"label"})  # fig/table のラベルは block 側で扱う
+
+# url インラインとして許可する href スキーム(html_parser.py と同じ allow-list。
+# javascript:/data: 等の危険スキームは url にせずテキストへ縮退させる)。
+_SAFE_URL_SCHEMES = ("http://", "https://", "mailto:", "ftp://")
+
+
+def _is_safe_url_scheme(href: str) -> bool:
+    """href が安全なスキーム(http/https/mailto/ftp)か、あるいはスキームなし相対かを判定する。"""
+    value = href.strip()
+    if not value:
+        return False
+    lowered = value.lower()
+    if lowered.startswith(_SAFE_URL_SCHEMES):
+        return True
+    # スキームを持たない(相対/フラグメント)URL は安全側で許可する。危険なのは明示スキームのみ。
+    return ":" not in value.split("/", 1)[0]
 
 
 class JatsParseError(Exception):
@@ -321,30 +338,6 @@ def _extract_license(article_meta: _Node) -> LicenseId:
 
 
 # --------------------------------------------------------------------------- #
-# ID 正規化
-# --------------------------------------------------------------------------- #
-
-_PMID_RE = re.compile(r"^\d+$")
-_PMCID_RE = re.compile(r"^PMC\d+$")
-
-
-def normalize_pmid(raw: str) -> str | None:
-    """PubMed の PMID を正規化する(数字列のみ)。"""
-    value = raw.strip()
-    return value if _PMID_RE.match(value) else None
-
-
-def normalize_pmcid(raw: str) -> str | None:
-    """PMCID を ``PMC<digits>`` へ正規化する(大文字化・接頭辞補完)。"""
-    value = raw.strip().upper()
-    if not value:
-        return None
-    if value.isdigit():
-        value = f"PMC{value}"
-    return value if _PMCID_RE.match(value) else None
-
-
-# --------------------------------------------------------------------------- #
 # 本文構造化
 # --------------------------------------------------------------------------- #
 
@@ -438,7 +431,13 @@ class _BodyBuilder:
             return
         if tag == "ext-link" or tag == "uri":
             href = node.attrib.get("href") or node.attrib.get("xlink:href") or ""
-            out.append(Inline(t="url", v=_clean(_all_text(node)) or href, href=href))
+            text = _clean(_all_text(node))
+            if _is_safe_url_scheme(href):
+                out.append(Inline(t="url", v=text or href, href=href))
+            else:
+                # javascript:/data: 等の危険スキームは url インラインにせずテキストへ縮退する
+                # (html_parser と同じ allow-list。stored-XSS 対策)。
+                self._emit_text(out, text or href)
             return
         if tag in _INLINE_EMPHASIS_TAGS:
             out.append(Inline(t="emphasis", v=_clean(_all_text(node))))

@@ -50,6 +50,7 @@ from alinea_core.document.blocks import DocumentContent
 from alinea_core.ingest.dedupe import detect_duplicate
 from alinea_core.jobs.store import JobStore
 from alinea_core.licenses import is_public_shareable_license
+from alinea_core.parsing.source_candidates import site_source_candidates
 from alinea_core.settings import CoreSettings
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from fastapi import APIRouter, Depends, Form, Header, Query, Request, UploadFile
@@ -298,6 +299,22 @@ async def _library_item_for_paper(db: DbDep, paper_id: str, user_id: str) -> Lib
         .scalars()
         .first()
     )
+
+
+def _site_body_unavailable(adapter: SiteAdapter, ref: SiteRef) -> bool:
+    """本文取得経路が無いサイト参照か(PubMed 単体など)を判定する。
+
+    候補順(source_candidates)が JATS を含めば OK(PMC)。PDF のみのサイトは、アダプタが
+    PDF 直リンク(または landing の citation_pdf_url)を出せる限り OK(ACL Anthology 等)。
+    PubMed は JATS 本文が無く pdf_url も None のため、この経路では本文へ到達できない。
+    JATS/NCBI 経路が API に配線されるまでは終端シグナル(415)を返すためのゲート。
+    """
+    candidates = site_source_candidates(adapter.site)
+    if "jats" in candidates:
+        # JATS を第一候補にするサイト(PMC)。JATS/PDF いずれかで本文へ到達可能。
+        return False
+    # PDF のみのサイト。PDF 直リンクを予測できないアダプタ(PubMed: pdf_url=None)は本文取得不可。
+    return adapter.pdf_url(ref) is None
 
 
 async def _site_check(
@@ -904,6 +921,16 @@ async def ingest_site(
         )
 
     landing_url = adapter.landing_url(ref)
+
+    # 本文取得経路が無いサイト(PubMed 単体: JATS 本文なし・PDF 直リンクなし)は、常に失敗する
+    # provider_error(502=リトライ示唆)ではなく、明確な終端シグナル(415=未対応)を返す。
+    # JATS/NCBI エンドツーエンド経路が API に配線されるまでの暫定ゲート(silent always-500 回避)。
+    if _site_body_unavailable(adapter, ref):
+        raise ProblemException(
+            "unsupported_media_type",
+            detail="このサイトの本文取得はまだ対応していません(書誌のみ取得可能)",
+            errors=[ProblemError(field="url", message="本文取得は未対応です")],
+        )
 
     # (site, external_id) の既存 Paper があり、かつユーザーが既に所有していれば duplicate。
     existing_paper = await _find_paper_by_external_id(db, adapter.site, ref.external_id)

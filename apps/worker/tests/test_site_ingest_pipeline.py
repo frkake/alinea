@@ -214,3 +214,18 @@ async def test_site_ingest_pmc_jats_reaches_complete_quality_a(
     assert rev.quality_level == "A"
     assert rev.source_format == "jats"
     assert rev.source_version == "v1"
+
+    # 図ブロックは content に残り(黙って消えない)、実体未取得は deferred placeholder として
+    # stats.figure_asset_failures に記録される(Step 5: 失敗時は deferred placeholder)。
+    from alinea_core.document.blocks import DocumentContent
+
+    content = DocumentContent.model_validate(rev.content)
+    figure_blocks = [b for _sec, b in content.iter_blocks() if b.type == "figure"]
+    assert figure_blocks, "JATS figure block must survive structuring"
+    deferred = [
+        f
+        for f in (rev.stats.get("figure_asset_failures") or [])
+        if f.get("code") == "figure_deferred"
+    ]
+    assert deferred, "JATS figure must be recorded as a deferred placeholder, not silently dropped"
+    assert all(b.asset_key is None for b in figure_blocks)

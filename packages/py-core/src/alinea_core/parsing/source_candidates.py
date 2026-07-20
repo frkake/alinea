@@ -33,13 +33,7 @@ def site_source_candidates(site: str) -> tuple[SiteSourceFormat, ...]:
     return ("pdf",)
 
 
-def prefers_jats(site: str) -> bool:
-    """このサイトが JATS 本文(品質 A)を第一候補にするか。"""
-    return "jats" in site_source_candidates(site)
-
-
 __all__ = [
     "SiteSourceFormat",
-    "prefers_jats",
     "site_source_candidates",
 ]

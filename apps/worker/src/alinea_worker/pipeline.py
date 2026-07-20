@@ -3502,10 +3502,10 @@ class IngestRun:
             sections=result.document.sections,
             warnings=list(result.document.warnings),
         )
-        # 図アセットは worker が境界付きで取得する(パースは純粋)。取得失敗時は
-        # _save_figures が block 単位で deferred placeholder へ縮退する(P3)。
-        self._jats_deferred_figures = {ref["figure_label"]: ref["href"] for ref in
-                                       result.deferred_figures if ref.get("figure_label")}
+        # JATS 図の実体(graphic/@xlink:href)は PMC OA パッケージ側にあり、この経路(API が
+        # jats.xml のみを先行保存する)では取得しない。よって _structure → _save_figures が
+        # 各図を `figure_deferred` プレースホルダとして必ず記録する(黙って消さない。P3・Step 5)。
+        # 図の href は block.href に温存済み(将来のオンデマンド取得で materialize 可能)。
 
         content = self.parsed.to_document_content()
         report = assess_document_completeness(
@@ -3705,6 +3705,26 @@ class IngestRun:
         failures: list[dict[str, str]] = []
         materialized_bytes = 0
         if self.parsed is None or self.paper_id is None:
+            return out, warnings, failures
+        if self.source_format == "jats":
+            # JATS 図の実体は PMC OA パッケージ側にあり本経路では取得しない。href を宣言する図は
+            # 黙って消さず、必ず `figure_deferred` プレースホルダとして記録する(P3・Step 5)。
+            for fig in self.parsed.blocks:
+                if fig.type != "figure":
+                    continue
+                href = str(getattr(fig, "href", "") or "").strip()
+                if not href:
+                    continue
+                fig.asset_key = None
+                failures.append(
+                    {
+                        "code": "figure_deferred",
+                        "figure_id": fig.id,
+                        "source": "jats",
+                        "href": href,
+                    }
+                )
+                warnings.append(f"図の実体は未取得のため保留しました(deferred): {fig.id}")
             return out, warnings, failures
         display_assets = [
             block for block in self.parsed.blocks if _candidate_requires_materialized_asset(block)

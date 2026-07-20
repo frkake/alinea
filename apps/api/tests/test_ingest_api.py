@@ -1056,6 +1056,24 @@ async def test_site_ingest_rejects_unsupported_url(
     assert r.json()["code"] == "validation_error"
 
 
+_PUBMED_URL = "https://pubmed.ncbi.nlm.nih.gov/31000000/"
+
+
+async def test_site_ingest_pubmed_without_body_returns_clear_terminal_signal(
+    client: AsyncClient, db_session: AsyncSession, redis_client: Any, unique_email: str
+) -> None:
+    """PubMed 単体(JATS 本文なし・PDF 直リンクなし)は provider_error(502=リトライ示唆)ではなく、
+    明確な終端シグナル(415 unsupported_media_type=本文取得は未対応)を返す(silent always-500 回避)。
+    """
+    await _login(client, db_session, redis_client, unique_email)
+    r = await client.post("/api/ingest/site", json={"url": _PUBMED_URL})
+    assert r.status_code == 415, r.text
+    body = r.json()
+    assert body["code"] == "unsupported_media_type"
+    # 502 provider_error にはしない(リトライループを誘発しない終端シグナル)。
+    assert body["code"] != "provider_error"
+
+
 # ---------------------------------------------------------------------------
 # SSRF: PDF fetch allow-list must come from the adapter, not the landing HTML.
 # ---------------------------------------------------------------------------

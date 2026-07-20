@@ -95,6 +95,36 @@ def test_parse_jats_figure_deferred_when_asset_unfetched() -> None:
     # asset_key を持たず deferred placeholder として href を控える。
     assert figures[0].asset_key is None
     assert any(ref.get("href", "").endswith("6543210f1.jpg") for ref in result.deferred_figures)
+    # 図の href は block 側にも温存され、worker が deferred placeholder 化・将来取得に使える。
+    assert getattr(figures[0], "href", "").endswith("6543210f1.jpg")
+
+
+# --------------------------------------------------------------------------- #
+# href スキーム allow-list(stored-XSS 対策。html_parser と同一)
+# --------------------------------------------------------------------------- #
+
+_XSS_LINKS = b"""<?xml version="1.0"?>
+<article xmlns:xlink="http://www.w3.org/1999/xlink"><body><sec><title>Links</title>
+  <p>Safe <ext-link xlink:href="https://example.org/ok">external</ext-link> link,
+  bad <ext-link xlink:href="javascript:alert(1)">script</ext-link> link,
+  and <ext-link xlink:href="data:text/html;base64,PHNjcmlwdD4=">data</ext-link> link.</p>
+</sec></body></article>
+"""
+
+
+def test_parse_jats_drops_unsafe_url_schemes() -> None:
+    result = parse_jats(_XSS_LINKS)
+    urls = [il for _sec, b in result.document.iter_blocks() for il in b.inlines if il.t == "url"]
+    hrefs = [il.href or "" for il in urls]
+    # 安全な http(s) だけが url インラインに残る。
+    assert "https://example.org/ok" in hrefs
+    # javascript:/data: は url にせずテキストへ縮退(a[href] に到達させない)。
+    assert not any(h.lower().startswith(("javascript:", "data:")) for h in hrefs)
+    all_text = " ".join(
+        il.v for _sec, b in result.document.iter_blocks() for il in b.inlines if il.t == "text"
+    )
+    # リンクテキスト自体は失わない(縮退はプレーンテキスト化)。
+    assert "script" in all_text and "data" in all_text
 
 
 # --------------------------------------------------------------------------- #
