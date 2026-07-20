@@ -13,12 +13,23 @@
 
 from __future__ import annotations
 
+import base64
+import functools
 import html
+import pathlib
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from alinea_core.document.blocks import Block, DocumentContent
+
+# KaTeX static assets are stored relative to this file
+_KATEX_DIR = pathlib.Path(__file__).parent.parent / "static" / "katex"
+
+# Regex to match font-face src url() references for .woff2 (to inline as data URI)
+_FONT_WOFF2_RE = re.compile(r"url\((?:\.\/)?fonts/(KaTeX_[^)]+\.woff2)\)")
+# Regex to strip non-woff2 font urls (woff, ttf) — modern browsers support woff2
+_FONT_OTHER_RE = re.compile(r",\s*url\((?:\.\/)?fonts/KaTeX_[^)]+\.(?:woff|ttf)\)\s*format\([^)]*\)")
 
 Mode = Literal["source", "translation", "bilingual"]
 
@@ -243,6 +254,66 @@ def _render_figure_table(block: Block, image_data_uris: dict[str, str]) -> str:
         )
     image = _figure_image(block.asset_key, image_data_uris)
     return f'<figure class="alinea-figure">{image}{caption}</figure>'
+
+
+# ============================================================================
+# KaTeX ランタイム構築(外部参照ゼロ)
+# ============================================================================
+
+def _inline_katex_css() -> str:
+    """KaTeX CSS を読み込み、フォント参照を base64 data URI に置換して返す。
+
+    - .woff2 フォント → data:font/woff2;base64,... に置換
+    - .woff / .ttf フォント参照 → 削除 (woff2 のみで十分)
+    """
+    css_path = _KATEX_DIR / "katex.min.css"
+    css = css_path.read_text(encoding="utf-8")
+
+    # まず .woff / .ttf の fallback を削除 (モダンブラウザは woff2 のみで十分)
+    css = _FONT_OTHER_RE.sub("", css)
+
+    def _replace_woff2(m: re.Match) -> str:
+        font_name = m.group(1)
+        font_path = _KATEX_DIR / "fonts" / font_name
+        try:
+            data = base64.b64encode(font_path.read_bytes()).decode("ascii")
+            return f"url(data:font/woff2;base64,{data})"
+        except FileNotFoundError:
+            # フォントが見つからない場合はそのまま (degraded)
+            return m.group(0)
+
+    return _FONT_WOFF2_RE.sub(_replace_woff2, css)
+
+
+@functools.lru_cache(maxsize=1)
+def build_katex_runtime() -> str:
+    """KaTeX JS・CSS・フォントをすべて inline/data-URI 化した HTML スニペットを返す。
+
+    外部 CDN への参照は一切含まない。lru_cache でプロセスごとに 1 回だけ構築する。
+    返値は ``render_document_html`` / ``render_article_html`` の ``math_runtime`` 引数に渡す。
+    """
+    js_path = _KATEX_DIR / "katex.min.js"
+    js_code = js_path.read_text(encoding="utf-8")
+    css_code = _inline_katex_css()
+
+    # renderMathInElement を auto-render する初期化スクリプト
+    init_script = (
+        "document.addEventListener('DOMContentLoaded',function(){"
+        "  document.querySelectorAll('.alinea-math').forEach(function(el){"
+        "    var tex=el.textContent||'';"
+        "    var disp=el.getAttribute('data-display')==='true';"
+        "    try{"
+        "      katex.render(tex,el,{displayMode:disp,throwOnError:false,strict:false});"
+        "    }catch(e){}"
+        "  });"
+        "});"
+    )
+
+    return (
+        f"<style>{css_code}</style>\n"
+        f"<script>{js_code}</script>\n"
+        f"<script>{init_script}</script>\n"
+    )
 
 
 # ============================================================================
