@@ -8,6 +8,17 @@ import { SidePanel } from "@/components/viewer/SidePanel";
 import { TocTree } from "@/components/viewer/TocTree";
 import { useViewerStore } from "@/stores/viewer-store";
 
+// Task 30: ヘッダの「✦ ツール」→ 生成ダイアログが開くと presentationsGet を叩くため、
+// ネットワークを持たないユニットではスタブへ差し替える(未生成=空ステータスを返す)。
+vi.mock("@alinea/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alinea/api-client")>();
+  return {
+    ...actual,
+    presentationsGet: vi.fn().mockResolvedValue({ data: { artifact: null, job: null } }),
+    presentationsGenerate: vi.fn(),
+  };
+});
+
 function resetStore() {
   useViewerStore.setState({
     panelOpen: true,
@@ -75,6 +86,19 @@ describe("ViewerHeader modes (VT-VIEW-01)", () => {
   test("mounts the real InPaperSearch box (この論文内を検索 placeholder)", () => {
     renderWithClient(<ViewerHeader {...baseProps} />);
     expect(screen.getByPlaceholderText("この論文内を検索")).toBeInTheDocument();
+  });
+
+  // Task 30: デスクトップは「✦ ツール」メニューを持ち、「論文からスライドを生成」で
+  // 生成ダイアログを開く。
+  test("desktop shows the ✦ ツール menu that opens the presentation dialog", () => {
+    renderWithClient(<ViewerHeader {...baseProps} />);
+    const tools = screen.getByRole("button", { name: /ツール/ });
+    fireEvent.click(tools);
+    expect(
+      screen.getByRole("menuitem", { name: /論文からスライドを生成/ }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: /論文からスライドを生成/ }));
+    expect(screen.getByRole("dialog", { name: /スライドを生成/ })).toBeInTheDocument();
   });
 });
 

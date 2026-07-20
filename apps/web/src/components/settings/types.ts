@@ -124,6 +124,7 @@ export type LlmUseCase =
   | "article"
   | "vocab"
   | "figure_dsl"
+  | "presentation"
   | "figure_image";
 
 export type ByokProvider = ProviderId;
@@ -148,9 +149,17 @@ export interface LlmRouting {
   article: RouteEntry;
   vocab: RouteEntry;
   figure_dsl: RouteEntry;
+  presentation: RouteEntry;
   figure_image: RouteEntry;
   overview_figure_raster_mode: boolean;
 }
+
+/**
+ * presentation ルートで使えるプロバイダ(設計 §LLM ルーティング)。既定チェーンは
+ * OpenAI と Anthropic の両方を含み、鍵の有無で片方だけになる。Web には API キー値は
+ * 一切返さず、この 2 プロバイダの利用可否(available_models の有無)だけで表示を決める。
+ */
+export const PRESENTATION_PROVIDERS: readonly ProviderId[] = ["openai", "anthropic"];
 
 /** GET /api/settings のレスポンス(4f 全カテゴリで参照する部分)。 */
 export interface SettingsData {

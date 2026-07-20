@@ -96,11 +96,13 @@ function fullSettings(overrides: Partial<SettingsData> = {}): SettingsData {
       article: routeEntry,
       vocab: routeEntry,
       figure_dsl: routeEntry,
+      presentation: { provider: "openai", model: "gpt-5.5" },
       figure_image: { provider: "google", model: "gemini-3.1-flash-image" },
       overview_figure_raster_mode: false,
     },
     code_analysis: { mode: "on_demand", monthly_budget_usd: 5 },
     available_models: {
+      openai: [{ model: "gpt-5.5", label: "GPT-5.5" }],
       anthropic: [{ model: "claude-opus-4-8", label: "Claude Opus 4.8" }],
       deepseek: [{ model: "deepseek-v4-flash", label: "DeepSeek v4 Flash" }],
       google: [{ model: "gemini-3.1-flash-image", label: "Gemini 3.1 Flash Image" }],
@@ -332,6 +334,47 @@ describe("SettingsClient (4f)", () => {
         expect.objectContaining({ body: { confirm: "delete" } }),
       ),
     );
+  });
+
+  // Task 30 §6: スライド生成モデルのルート表示。選択中 model id + 利用可否だけを表示し、
+  // API キー値は一切扱わない。available_models の openai/anthropic の有無で可否を出す。
+  test("account category shows the presentation route with the selected model and both-available note", async () => {
+    renderSettings("account");
+    await screen.findByText("スライド生成");
+    // 選択中の model id を表示する。
+    expect(screen.getByText(/gpt-5\.5/)).toBeInTheDocument();
+    // 両方(OpenAI と Anthropic)利用可能。
+    expect(screen.getByText(/OpenAI・Anthropic が利用できます/)).toBeInTheDocument();
+  });
+
+  test("presentation route shows OpenAI-only availability when anthropic has no models", async () => {
+    const s = fullSettings();
+    delete (s.available_models as Record<string, unknown>).anthropic;
+    renderSettings("account", s);
+    await screen.findByText("スライド生成");
+    expect(screen.getByText(/OpenAI が利用できます/)).toBeInTheDocument();
+  });
+
+  test("presentation route shows Anthropic-only availability when openai has no models", async () => {
+    const s = fullSettings({
+      llm_routing: {
+        ...fullSettings().llm_routing,
+        presentation: { provider: "anthropic", model: "claude-opus-4-8" },
+      },
+    });
+    delete (s.available_models as Record<string, unknown>).openai;
+    renderSettings("account", s);
+    await screen.findByText("スライド生成");
+    expect(screen.getByText(/Anthropic が利用できます/)).toBeInTheDocument();
+  });
+
+  test("presentation route shows a none-available warning when neither provider has models", async () => {
+    const s = fullSettings();
+    delete (s.available_models as Record<string, unknown>).openai;
+    delete (s.available_models as Record<string, unknown>).anthropic;
+    renderSettings("account", s);
+    await screen.findByText("スライド生成");
+    expect(screen.getByText(/利用できるモデルがありません/)).toBeInTheDocument();
   });
 });
 
