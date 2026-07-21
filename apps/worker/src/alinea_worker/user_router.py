@@ -17,10 +17,45 @@ DB/暗号化ロジックは apps 間 import を避けるため共有層に置く
 
 from __future__ import annotations
 
+from typing import Any
+
 import redis.asyncio as redis
 from alinea_core.llm import LLMRuntimeConfig, ProviderFactory, build_user_router
 from alinea_llm.router import LLMRouter
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+
+class TaskAwareLLMRouter:
+    """task 文字列ごとに構築済み ``LLMRouter`` へ委譲するルータ。
+
+    ``LLMRouter`` 自体は渡された chain を順に試すだけで ``task`` では route を切り替えない。
+    ingest / section ジョブは 1 本の router から translation・summary・
+    retranslation_escalation など**複数 task** を ``complete(task, ...)`` で呼ぶため、
+    単一 task に束ねた router を使うと task が取り違えられる(要約が翻訳チェーンで生成される、
+    エスカレーションが同一チェーンに再送され no-op になる等)。ここで task 別 chain を選ぶ。
+
+    ``LLMRouter`` と同じ ``complete(task, ...)`` / ``count_tokens(task, ...)`` インターフェースを
+    持つため、``deps.router`` の差し替え先として透過的に使える。
+    """
+
+    def __init__(self, routers: dict[str, LLMRouter]) -> None:
+        self._routers = routers
+
+    @property
+    def tasks(self) -> tuple[str, ...]:
+        return tuple(sorted(self._routers))
+
+    def _router_for(self, task: str) -> LLMRouter:
+        try:
+            return self._routers[task]
+        except KeyError:
+            raise RuntimeError(f"no LLM route configured for task={task}") from None
+
+    async def complete(self, task: str, *args: Any, **kwargs: Any) -> Any:
+        return await self._router_for(task).complete(task, *args, **kwargs)
+
+    async def count_tokens(self, task: str, *args: Any, **kwargs: Any) -> int:
+        return await self._router_for(task).count_tokens(task, *args, **kwargs)
 
 
 class UserRouterFactory:
@@ -65,6 +100,30 @@ class UserRouterFactory:
                 attach_meter=False,
             )
 
+    async def for_job_tasks(
+        self, *, user_id: str, tasks: tuple[str, ...]
+    ) -> TaskAwareLLMRouter:
+        """複数 task 用の per-user ルータを 1 セッションで構築し task 対応でまとめて返す。
+
+        ingest / section ジョブは 1 本の ``deps.router`` から複数 task を呼ぶため、単一 task の
+        :meth:`for_job` ではなくこれを使う。各 task の chain は同一ユーザーの BYOK / 上書きで
+        解決され、``TaskAwareLLMRouter`` が ``complete(task, ...)`` を task 別 chain へ振り分ける。
+        """
+        async with self.sessionmaker() as session:
+            routers = {
+                task: await build_user_router(
+                    session=session,
+                    cache=self.redis,
+                    config=self.runtime_config,
+                    user_id=str(user_id),
+                    task=task,
+                    provider_factory=self._provider_factory,
+                    attach_meter=False,
+                )
+                for task in tasks
+            }
+        return TaskAwareLLMRouter(routers)
+
     async def invalidate(self, *, task: str, user_id: str | None = None) -> None:
         """route chain metadata のキャッシュを破棄する(設定変更後などに次ジョブへ反映)。"""
         if self.redis is None:
@@ -78,4 +137,4 @@ class UserRouterFactory:
             await store.invalidate(task, user_id)
 
 
-__all__ = ["UserRouterFactory"]
+__all__ = ["TaskAwareLLMRouter", "UserRouterFactory"]

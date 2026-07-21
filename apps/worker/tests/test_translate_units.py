@@ -39,6 +39,7 @@ from alinea_core.translation import TranslationSettings, build_translation_plan
 from alinea_llm.router import LLMRouter
 from alinea_llm.types import LLMRequest, LLMResponse, StreamEvent
 from alinea_worker.tasks.translate import run_translation_job
+from alinea_worker.user_router import TaskAwareLLMRouter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,6 +52,9 @@ class _FakeFactory:
 
     async def for_job(self, *, user_id: str, task: str) -> LLMRouter:
         return self._router
+
+    async def for_job_tasks(self, *, user_id: str, tasks: tuple[str, ...]) -> TaskAwareLLMRouter:
+        return TaskAwareLLMRouter({t: self._router for t in tasks})
 
 
 def _uid() -> str:

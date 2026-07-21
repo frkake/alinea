@@ -36,6 +36,7 @@ from alinea_llm.router import LLMRouter
 from alinea_llm.structured import attach_parsed
 from alinea_llm.testing.fake_provider import FakeLLMProvider, FakeImageProvider
 from alinea_llm.types import LLMRequest, LLMResponse, StreamEvent
+from alinea_worker.user_router import TaskAwareLLMRouter
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # --------------------------------------------------------------------------- #
@@ -44,15 +45,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class FakeUserRouterFactory:
-    """for_job の呼び出しを記録し、固定の LLMRouter を返すフェイク。"""
+    """for_job / for_job_tasks の呼び出しを記録し、固定の LLMRouter を返すフェイク。"""
 
     def __init__(self, router: LLMRouter) -> None:
         self._router = router
         self.calls: list[tuple[str, str]] = []  # [(user_id, task), ...]
+        self.task_set_calls: list[tuple[str, tuple[str, ...]]] = []  # [(user_id, tasks), ...]
 
     async def for_job(self, *, user_id: str, task: str) -> LLMRouter:
         self.calls.append((user_id, task))
         return self._router
+
+    async def for_job_tasks(
+        self, *, user_id: str, tasks: tuple[str, ...]
+    ) -> "TaskAwareLLMRouter":
+        self.task_set_calls.append((user_id, tuple(tasks)))
+        # 各 task を同じ固定 router に束ねた task-aware ルータを返す(complete(task,...) は委譲)。
+        return TaskAwareLLMRouter({t: self._router for t in tasks})
 
 
 # --------------------------------------------------------------------------- #
@@ -470,3 +479,52 @@ async def test_user_route_fetched_via_for_job_once_per_job(
         assert uid == str(job.user_id), (
             f"{handler_name}: wrong user_id {uid!r} in calls {factory.calls}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# 回帰: section 翻訳ジョブは task 別 router を要求する(統合レビュー F2)
+# --------------------------------------------------------------------------- #
+
+
+async def test_section_translation_uses_task_aware_router_for_escalation(
+    db_session: AsyncSession,
+) -> None:
+    """run_translation_job(section)は translation + retranslation_escalation を含む
+    task-aware router を要求する。
+
+    translate_section は検証失敗時に task="retranslation_escalation" へ昇格する。単一 task の
+    for_job(task="translation") を渡すと、その昇格が同じ翻訳チェーンへ再送され no-op になる
+    (統合レビュー F2)。ハンドラが for_job_tasks を使い、両 task を解決していることを固定する。
+    """
+    from alinea_worker.tasks.translate import run_translation_job
+    from conftest import ScriptProvider
+
+    seed = await _seed_translation(db_session)
+    router = LLMRouter([("fake", "deepseek-v4-flash", ScriptProvider())])
+    factory = FakeUserRouterFactory(router)
+    store = JobStore(db_session)
+    job_id = await store.enqueue(
+        kind="translation",
+        priority="interactive",
+        user_id=str(seed["user"].id),
+        library_item_id=str(seed["item"].id),
+        payload={
+            "reason": "initial",  # section reason(_SECTION_REASONS)
+            "set_id": str(seed["tset"].id),
+            "section_id": "sec-1",
+            "block_ids": ["blk-p1"],
+        },
+    )
+    job = await store.claim(job_id)
+    assert job is not None
+    await run_translation_job({"user_router_factory": factory}, store, job)
+
+    # 単一 task の for_job ではなく for_job_tasks が使われ、escalation task を含む。
+    assert factory.task_set_calls, (
+        f"section job must request a task-aware router; got for_job calls={factory.calls}"
+    )
+    uid, tasks = factory.task_set_calls[0]
+    assert uid == str(seed["user"].id)
+    assert "translation" in tasks and "retranslation_escalation" in tasks, (
+        f"section router must cover translation + escalation, got {tasks}"
+    )

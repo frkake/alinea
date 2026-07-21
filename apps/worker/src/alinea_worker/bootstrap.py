@@ -47,7 +47,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from alinea_worker.settings import redis_settings
-from alinea_worker.user_router import UserRouterFactory
+from alinea_worker.user_router import TaskAwareLLMRouter, UserRouterFactory
 
 log = structlog.get_logger("alinea.worker")
 
@@ -128,34 +128,6 @@ def operator_keys_from_env() -> dict[str, str]:
 
 def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-class TaskAwareLLMRouter:
-    """DB の task route ごとに構築した LLMRouter へ委譲する worker 用ルータ。
-
-    LLMRouter 自体は渡された chain を順番に試すだけで、``task`` 文字列では route を
-    切り替えない。worker は translation / summary / article など複数タスクを同じ
-    ``ctx["router"]`` から呼ぶため、ここで task 別 chain を選ぶ。
-    """
-
-    def __init__(self, routers: dict[str, LLMRouter]) -> None:
-        self._routers = routers
-
-    @property
-    def tasks(self) -> tuple[str, ...]:
-        return tuple(sorted(self._routers))
-
-    def _router_for(self, task: str) -> LLMRouter:
-        try:
-            return self._routers[task]
-        except KeyError:
-            raise RuntimeError(f"no LLM route configured for task={task}") from None
-
-    async def complete(self, task: str, *args: Any, **kwargs: Any) -> Any:
-        return await self._router_for(task).complete(task, *args, **kwargs)
-
-    async def count_tokens(self, task: str, *args: Any, **kwargs: Any) -> int:
-        return await self._router_for(task).count_tokens(task, *args, **kwargs)
 
 
 async def _resolve_chain(session: AsyncSession, task: str) -> list[tuple[str, str]]:

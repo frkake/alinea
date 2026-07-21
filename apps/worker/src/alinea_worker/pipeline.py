@@ -5100,11 +5100,18 @@ def _summary_numbers_ok(lines: list[Any], material: str) -> bool:
     return True
 
 
+#: ingest の deps.router が 1 本で受け持つ task 集合。translate_block(要旨・本文)=translation、
+#: 3 行要約=summary、ブロッキング検証失敗時のエスカレーション再翻訳=retranslation_escalation。
+#: 単一 task の for_job だと summary が翻訳チェーンで生成され、escalation が同一チェーンへ
+#: 再送されて no-op になる(統合レビュー F1/F2)。task 別に解決する。
+_INGEST_ROUTER_TASKS = ("translation", "summary", "retranslation_escalation")
+
+
 async def run_ingest(ctx: dict[str, Any], store: JobStore, job: Job) -> None:
     """ingest ジョブの本体(arq ハンドラから呼ばれる)。"""
     if ctx.get("user_router_factory") is not None and job.user_id:
-        router = await ctx["user_router_factory"].for_job(
-            user_id=str(job.user_id), task="translation"
+        router = await ctx["user_router_factory"].for_job_tasks(
+            user_id=str(job.user_id), tasks=_INGEST_ROUTER_TASKS
         )
         ctx = {**ctx, "router": router}
     deps = deps_from_ctx(ctx)
