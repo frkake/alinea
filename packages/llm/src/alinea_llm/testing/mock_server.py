@@ -331,12 +331,35 @@ def _openai_responses_sse(model: str, text: str, resp: LLMResponse) -> Streaming
 # --- Anthropic Messages --------------------------------------------------------
 
 
+def _anthropic_evidence_suffix(body: dict[str, Any]) -> str:
+    """チャット文脈(system + messages)に block_id があれば [[evidence:...]] を返す。
+
+    チャット(PW-08)は既定で Anthropic チェーン先頭に解決され、モデルは system プロンプトの
+    指示(chat/prompts.py: "[[evidence:ブロックID]]")に従って根拠を引用する。モックは実モデルの
+    その挙動を再現するため、文脈に登場する最初の block_id を末尾に付加する。OpenAI Responses 経路
+    の :func:`_responses_output_text` と対になる(あちらは output_config.evidence フラグで判定)。
+    """
+    system = body.get("system")
+    if isinstance(system, list):
+        system_text = " ".join(
+            str(b.get("text", "")) for b in system if isinstance(b, dict)
+        )
+    else:
+        system_text = str(system or "")
+    messages_text = " ".join(
+        _flatten_content(m.get("content")) for m in body.get("messages", [])
+    )
+    block_id = _extract_first_block_id(system_text + " " + messages_text)
+    return f"[[evidence:{block_id}]]" if block_id else ""
+
+
 async def anthropic_messages(request: Request) -> Response:
     body = await request.json()
     model = body.get("model", "mock-model")
     messages = body.get("messages", [])
     text = _last_user_text(messages)
     resp = await _afake_response(model, text)
+    resp.text = f"{resp.text}{_anthropic_evidence_suffix(body)}"
     if body.get("stream"):
         return _anthropic_sse(model, resp.text, resp)
     payload = {

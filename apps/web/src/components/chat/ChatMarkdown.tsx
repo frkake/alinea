@@ -177,6 +177,7 @@ export function ChatMarkdown({ text, evidence, onEvidenceJump }: ChatMarkdownPro
             anchor={{ type: "section", sectionNumber: item.display }}
             label={item.display}
             size="inline"
+            evidenceRef={String(item.ref)}
             onJump={() => onEvidenceJump?.(item.anchor)}
           />
         );

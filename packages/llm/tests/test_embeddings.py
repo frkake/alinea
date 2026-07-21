@@ -295,7 +295,7 @@ def test_routing_yaml_registers_embedding_task() -> None:
     assert embedding.get("provider") == "openai"
     assert embedding.get("dimensions") == DEFAULT_EMBEDDING_DIM
     # 生成タスクは tasks: 配下(embedding は tasks に混ぜない = CHECK 制約を壊さない)。
-    # Task 28 で presentation を追加(8→9 タスク)。
+    # Task 28 で presentation を追加(8→9)、Task 21 で code_analysis を追加(9→10 タスク)。
     assert set(data.get("tasks", {})) == {
         "translation",
         "retranslation_escalation",
@@ -306,4 +306,5 @@ def test_routing_yaml_registers_embedding_task() -> None:
         "vocab",
         "explainer_image",
         "presentation",
+        "code_analysis",
     }

@@ -85,10 +85,13 @@ test.describe("PW-08 チャット(選択→AIに質問→チャットタブ)", (
     const chatTab = page.getByRole("tab", { name: "チャット" });
     await expect(chatTab).toHaveAttribute("aria-selected", "true");
 
+    // シード(chat.json)の 2 番目の assistant 回答に固有の本文で絞る。
+    // 「整流フローの学習目的」は PW-08 の新規質問(line 48)の echo とも一致してしまい、
+    // その質問が成功して回答が残ると strict-mode 違反になるため、固有句を使う。
     const assistantMsg = page
       .locator("[data-message-id]")
       .filter({ hasText: "アシスタント" })
-      .filter({ hasText: "整流フローの学習目的" });
+      .filter({ hasText: "最小二乗回帰に帰着します" });
     await expect(assistantMsg).toBeVisible();
 
     // 根拠チップ(display は block_search_index から決定的に導出。式(2) = blk-2-1-eq2-2dfc)。

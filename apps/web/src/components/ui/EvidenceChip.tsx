@@ -19,10 +19,18 @@ export interface EvidenceChipProps {
    * (概要図フッタ・原文引用の位置チップなど 1h 実測値専用)。
    */
   size?: "inline" | "header" | "figure-footer";
+  /** 根拠参照の識別子(テスト・計測用の data 属性。指定時のみ付与)。 */
+  evidenceRef?: string;
   onJump: (anchor: EvidenceAnchor) => void;
 }
 
-export function EvidenceChip({ anchor, label, size = "inline", onJump }: EvidenceChipProps) {
+export function EvidenceChip({
+  anchor,
+  label,
+  size = "inline",
+  evidenceRef,
+  onJump,
+}: EvidenceChipProps) {
   const style: CSSProperties =
     size === "figure-footer"
       ? {
@@ -63,6 +71,7 @@ export function EvidenceChip({ anchor, label, size = "inline", onJump }: Evidenc
     <button
       type="button"
       style={style}
+      data-evidence-ref={evidenceRef}
       onClick={() => {
         onJump(anchor);
       }}

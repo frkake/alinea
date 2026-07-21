@@ -87,22 +87,29 @@ class AnthropicProvider:
         return blocks
 
     def _kwargs(self, req: LLMRequest) -> dict[str, Any]:
+        # ``output_config`` / ``effort`` / adaptive ``thinking`` は新しい Messages API の項目で、
+        # ピン留めした anthropic==0.57.1 の ``messages.create`` は名前付き引数として受け付けない
+        # (未知 kwarg で TypeError → 全 Anthropic 呼び出しが provider_error で落ちる)。
+        # SDK を上げずに新項目をワイヤに載せるため ``extra_body`` に入れる(claude-api skill の
+        # 「pinned SDK には extra_body で渡す」指針)。SDK が理解する引数(model/system/messages/
+        # max_tokens/timeout/stop_sequences)は名前付きのまま渡す。
         output_config: dict[str, Any] = {"effort": _EFFORT[req.effort]}
         if req.json_schema:
             output_config["format"] = {
                 "type": "json_schema",
                 "schema": req.json_schema.json_schema,
             }
+        extra_body: dict[str, Any] = {"output_config": output_config}
+        if req.effort in ("medium", "high"):
+            extra_body["thinking"] = {"type": "adaptive"}
         kw: dict[str, Any] = {
             "model": req.model,
             "system": self._system_blocks(req),
             "messages": to_anthropic_messages(req.messages),
             "max_tokens": req.max_output_tokens,
-            "output_config": output_config,
             "timeout": req.timeout_s,
+            "extra_body": extra_body,
         }
-        if req.effort in ("medium", "high"):
-            kw["thinking"] = {"type": "adaptive"}
         if req.stop_sequences:
             kw["stop_sequences"] = req.stop_sequences
         return kw

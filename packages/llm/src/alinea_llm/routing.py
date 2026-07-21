@@ -36,6 +36,7 @@ TASKS: tuple[str, ...] = (
     "vocab",
     "explainer_image",
     "presentation",
+    "code_analysis",
 )
 
 
