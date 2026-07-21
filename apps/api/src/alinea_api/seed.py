@@ -52,6 +52,11 @@ from alinea_core.parsing.block_ids import assign_block_ids
 from alinea_core.search.rebuild import rebuild_block_search_index
 from alinea_core.settings import get_settings
 from alinea_core.storage.s3 import S3Storage, StorageKeys
+from alinea_core.translation.pipeline import (
+    TranslationSettings,
+    build_translation_plan,
+    compute_translation_scope,
+)
 from alinea_core.translation.placeholder import encode_block
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import (
@@ -223,6 +228,38 @@ def _glossary_snapshot() -> list[dict[str, Any]]:
     ]
 
 
+def _narrow_default_scope_plan(content: DocumentContent) -> dict[str, Any]:
+    """既定翻訳スコープ(sec-0/sec-1 のみ)に絞った正準 TranslationPlan を JSON で返す。
+
+    ``TranslationSet.plan`` を明示することで、ビューア目次の ``on_demand`` 判定
+    (viewer.py: eligible だが requested_ids 外なら「— 未翻訳」+一括翻訳導線)が
+    成立する。plan=None のままだと ``resolve_translation_plan`` が全文スコープに
+    フォールバックし(pipeline.py)、どのセクションも on_demand にならない。
+
+    ``build_translation_plan`` の正準 target を DEFAULT_TRANSLATED_TOP_SECTIONS の
+    ブロックだけに絞って再構成する(セクション順・ブロック順は保持)。この形は
+    ``resolve_translation_plan`` の正準検証(_canonical_plan_targets 一致)を満たす。
+    """
+    full_plan = build_translation_plan(content, TranslationSettings(), pages=None)
+    top = _block_top_section(content)
+    scope = compute_translation_scope(content)
+    section_ids: list[str] = []
+    block_ids: list[str] = []
+    for section in scope.sections:
+        selected = [
+            str(bid)
+            for bid in section["block_ids"]
+            if top.get(str(bid)) in DEFAULT_TRANSLATED_TOP_SECTIONS
+        ]
+        if selected:
+            section_ids.append(str(section["section_id"]))
+            block_ids.extend(selected)
+    narrowed = full_plan.model_copy(
+        update={"target_section_ids": section_ids, "target_block_ids": block_ids}
+    )
+    return narrowed.model_dump(mode="json")
+
+
 def _make_unit(
     set_id: str, block: Block, payload: dict[str, Any], *, state: str
 ) -> TranslationUnit:
@@ -258,12 +295,17 @@ async def _insert_translations(
     # --- natural shared ---
     covered = [bid for bid in natural if bid in blocks and in_default_scope(bid)]
     natural_status = "complete" if full else "partial"
+    # 部分翻訳(既定)では plan を sec-0/sec-1 に絞る。これで sec-2 以降が「オンデマンド未翻訳」
+    # としてビューア目次に出る(pw-17 の未翻訳導線・PY-TR-08)。full 翻訳では全文が対象なので
+    # plan=None(全文フォールバック)のまま。
+    narrow_plan = None if full else _narrow_default_scope_plan(content)
     natural_set = TranslationSet(
         revision_id=revision_id,
         style="natural",
         scope="shared",
         glossary_snapshot=snapshot,
         status=natural_status,
+        plan=narrow_plan,
     )
     session.add(natural_set)
     await session.flush()
@@ -295,6 +337,7 @@ async def _insert_translations(
             base_set_id=natural_set.id,
             glossary_snapshot=snapshot,
             status="partial",
+            plan=narrow_plan,
         )
         session.add(personal_set)
         await session.flush()

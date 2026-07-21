@@ -281,6 +281,8 @@ def build_user_router_factory(
     maker: async_sessionmaker[AsyncSession],
     redis_client: redis.Redis,
     settings: CoreSettings,
+    *,
+    fake_llm: bool = False,
 ) -> UserRouterFactory:
     """ジョブ単位のユーザー別 LLM ルーターファクトリを構築する(Task 13)。
 
@@ -288,16 +290,29 @@ def build_user_router_factory(
     (BYOK 復号)を ``LLMRuntimeConfig`` に束ね、共有層の ``build_user_router`` を per-user・
     per-job で呼べるようにする。60 秒キャッシュ(Redis)は route chain metadata のみ。
     秘密鍵はジョブ終了後に保持しない(ファクトリは不変の依存だけを持つ)。
+
+    ``fake_llm=True``(``ALINEA_FAKE_LLM=1`` の E2E/開発)のときは、共有 ``build_fake_router``
+    と同じく実プロバイダを構築せず ``FakeLLMProvider`` を注入する(``provider_factory``)。
+    これがないと factory 経由(Task 14 以降の article/vocab/overview_figure/presentation/
+    code_analysis など)のジョブが運営キーで実 API を叩いてしまい、E2E の決定性と
+    「テストで実外部通信を行わない」制約(plans §4)を破る。DB のルートチェーンはそのまま
+    解決されるが、各エントリの provider インスタンスだけが Fake に差し替わる。
     """
     config = LLMRuntimeConfig(
         operator_api_keys=operator_keys_from_env(),
         key_encryption_secret=settings.alinea_key_encryption_secret,
         route_cache_ttl_s=60,
     )
+    provider_factory: Callable[[str, str], Any] | None = None
+    if fake_llm:
+        _fake_provider = FakeLLMProvider()
+        # provider 名 / api_key を問わず決定的 Fake を返す(実 API は絶対に叩かない)。
+        provider_factory = lambda _provider, _api_key: _fake_provider  # noqa: E731
     return UserRouterFactory(
         sessionmaker=maker,
         redis=redis_client,
         config=config,
+        provider_factory=provider_factory,
     )
 
 
@@ -387,7 +402,9 @@ async def on_startup(ctx: dict[str, Any]) -> None:
     # 移行期間: 共有 ``router``(全ジョブ共通・運営キーのみ)は残しつつ、新規コードは per-user・
     # per-job の ``user_router_factory`` を使う(Task 13)。ジョブ本体の移行は Task 14+。
     ctx["router"] = router
-    ctx["user_router_factory"] = build_user_router_factory(maker, redis_client, settings)
+    ctx["user_router_factory"] = build_user_router_factory(
+        maker, redis_client, settings, fake_llm=fake_llm
+    )
     ctx["image_router"] = image_router
     ctx["redis"] = redis_client
     ctx["arq_pool"] = arq_pool

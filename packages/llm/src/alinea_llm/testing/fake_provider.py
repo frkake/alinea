@@ -101,33 +101,119 @@ _DEFAULT_STRUCTURED: dict[str, dict[str, Any]] = {
             }
         ]
     },
+    # article_v1: 各ブロックは schema(ARTICLE_V1_JSON_SCHEMA)の required 全キー
+    # {type, heading, markdown, quote, figure, explainer, discussion, evidence} を持つ
+    # 判別共用体(適用外は null / evidence は空配列)。schema を締めた際にこの fixture が
+    # 追随していないと attach_parsed が schema_validation で落ちるため、形は schema に合わせる。
     "article_v1": {
         "title": "Rectified Flow を読む",
         "blocks": [
-            {"type": "heading", "heading": {"level": 2, "text": "概要"}},
-            {"type": "paragraph", "markdown": "本稿は Rectified Flow を解説する。"},
-            {"type": "heading", "heading": {"level": 2, "text": "手法"}},
+            {
+                "type": "heading",
+                "heading": {"level": 2, "text": "概要"},
+                "markdown": None,
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
+                "evidence": [],
+            },
             {
                 "type": "paragraph",
+                "heading": None,
+                "markdown": "本稿は Rectified Flow を解説する。",
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
+                "evidence": [],
+            },
+            {
+                "type": "heading",
+                "heading": {"level": 2, "text": "手法"},
+                "markdown": None,
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
+                "evidence": [],
+            },
+            {
+                "type": "paragraph",
+                "heading": None,
                 "markdown": "確率フローを直線化する。",
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
                 # E2E(rectified-flow シード)の実セクション ID。根拠チップ→原文ジャンプの
                 # 検証対象(PW-13)。§4.5 step2 は未知参照を無害に落とすため、シード以外の
                 # コンテキストで使っても記事生成自体は失敗しない。
                 "evidence": ["sec-2"],
             },
-            {"type": "heading", "heading": {"level": 2, "text": "結果"}},
-            {"type": "paragraph", "markdown": "少ステップで高品質を得る。"},
+            {
+                "type": "heading",
+                "heading": {"level": 2, "text": "結果"},
+                "markdown": None,
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
+                "evidence": [],
+            },
+            {
+                "type": "paragraph",
+                "heading": None,
+                "markdown": "少ステップで高品質を得る。",
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
+                "evidence": [],
+            },
             {
                 "type": "discussion",
+                "heading": None,
+                "markdown": None,
+                "quote": None,
+                "figure": None,
+                "explainer": None,
                 "discussion": {
                     "items": [
-                        {"text": "少ないステップでの生成品質はどこまで改善するか?", "origin": "ai"},
-                        {"text": "他のドメインへの応用可能性は?", "origin": "ai"},
+                        {
+                            "text": "少ないステップでの生成品質はどこまで改善するか?",
+                            "origin": "ai",
+                            "annotation_id": None,
+                        },
+                        {
+                            "text": "他のドメインへの応用可能性は?",
+                            "origin": "ai",
+                            "annotation_id": None,
+                        },
                     ]
                 },
+                "evidence": [],
             },
-            {"type": "heading", "heading": {"level": 2, "text": "まとめ"}},
-            {"type": "paragraph", "markdown": "本稿の要点を振り返る。"},
+            {
+                "type": "heading",
+                "heading": {"level": 2, "text": "まとめ"},
+                "markdown": None,
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
+                "evidence": [],
+            },
+            {
+                "type": "paragraph",
+                "heading": None,
+                "markdown": "本稿の要点を振り返る。",
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
+                "evidence": [],
+            },
         ],
     },
     "chat_answer_v1": {

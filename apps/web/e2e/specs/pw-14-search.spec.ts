@@ -97,7 +97,8 @@ test.describe("PW-14 横断検索", () => {
     await expect(page.getByText(new RegExp(`「${q}」の結果`))).toBeVisible();
 
     // 「記事」ソースへ絞り込む(facet rail)。
-    await page.getByRole("button", { name: "記事", exact: true }).click();
+    // ヒット源ボタンはラベル+件数の 2 span(アクセシブル名は "記事 0" 等)。
+    await page.getByRole("button", { name: /^記事\s*\d+$/ }).click();
 
     // 記事ヒット行: 「記事」バッジ + 「記事モードで開く →」ジャンプ。
     await expect(page.getByText("記事", { exact: true }).first()).toBeVisible();

@@ -8,7 +8,7 @@ import { expect, test } from "@playwright/test";
 test.describe("PW-16 エクスポート", () => {
   test("Markdown/BibTeX/CSV ダウンロード + JSON 一括", async ({ page }) => {
     await page.goto("/settings");
-    await page.getByRole("navigation", { name: "設定カテゴリ" }).getByRole("button", { name: "エクスポート" }).click();
+    await page.getByRole("navigation", { name: "設定カテゴリ" }).getByRole("button", { name: "データ" }).click();
     await expect(page.getByText("論文単位 Markdown")).toBeVisible();
 
     // 1) 論文単位 Markdown: ピッカーで論文を選び、ダウンロードが発生する。
@@ -44,10 +44,12 @@ test.describe("PW-16 エクスポート", () => {
     ]);
     expect(csvDownload.suggestedFilename()).toMatch(/\.csv$/);
 
-    // 4) JSON 一括(export_full ジョブ→ download_url →自動ダウンロード)。
+    // 4) 完全バックアップ(export_full ジョブ→ download_url →自動 .zip ダウンロード)。
+    //    旧「JSON 一括」カードは「完全バックアップ」に置き換わった(ExportSettings.tsx)。
+    //    BulkWorker(globalSetup が spawn)がジョブを処理して download_url を返す。
     const [jsonDownload] = await Promise.all([
       page.waitForEvent("download", { timeout: 30_000 }),
-      page.getByRole("button", { name: "JSON 一括 をエクスポート" }).click(),
+      page.getByRole("button", { name: "完全バックアップ をエクスポート" }).click(),
     ]);
     expect(jsonDownload.suggestedFilename()).toMatch(/\.zip$/);
   });

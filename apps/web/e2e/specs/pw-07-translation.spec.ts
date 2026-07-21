@@ -64,7 +64,10 @@ test.describe("PW-07 翻訳操作(M0)", () => {
     const dismiss = page.getByRole("button", { name: "閉じる" });
     if (await dismiss.isVisible().catch(() => false)) await dismiss.click();
 
-    const para = page.locator(".alinea-paragraph[data-block-id]").first();
+    // .first() は Abstract ¶1(seed が state="edited" に固定)。指示なし再翻訳は
+    // discard_edit を送らないため 409 edit_protected になり proposal が出ない。
+    // state="machine" の Introduction ¶1(nth(1))を対象にする。
+    const para = page.locator(".alinea-paragraph[data-block-id]").nth(1);
     await expect(para).toBeVisible();
     await para.scrollIntoViewIfNeeded();
     await para.hover();

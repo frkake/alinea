@@ -25,7 +25,7 @@ test.describe("PW-17 設定", () => {
 
     const nav = page.getByRole("navigation", { name: "設定カテゴリ" });
     await expect(nav).toBeVisible();
-    const categories = ["アカウント", "表示", "翻訳", "読書の計測と提案", "チャット", "通知", "エクスポート", "ブラウザ拡張"];
+    const categories = ["アカウント", "表示", "翻訳", "読書の計測と提案", "チャット", "通知", "データ", "ブラウザ拡張"];
     for (const label of categories) {
       await expect(nav.getByRole("button", { name: label })).toBeVisible();
     }

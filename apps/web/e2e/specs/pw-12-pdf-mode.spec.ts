@@ -114,7 +114,10 @@ test.describe("PW-12 PDFモード", () => {
     const box = await pageLayer.boundingBox();
     if (!box) throw new Error("PDF page layer has no bounding box");
     // 本文が載る上部 1/3 付近を単クリック(ドラッグ >4px はテキスト選択扱いになるため単発)。
-    await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.28);
+    // sample.pdf は本文ブロックが上部 ~7-16% にしかない(合成フィクスチャ)。
+    // 0.28 だと唯一のブロックより下=空白に当たり blockAtPoint が null になるため、
+    // ブロック中心(≒ページ高 11%)を狙う。
+    await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.12);
 
     // 同期ハイライト + チップ(≒ … — 訳文で見る →)が現れる。
     const highlight = page.getByTestId("pdf-bbox-highlight");

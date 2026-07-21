@@ -467,6 +467,56 @@ async def test_on_startup_configures_ctx_with_fake_llm(
         await on_shutdown(ctx)
 
 
+async def test_fake_llm_factory_never_builds_real_providers(
+    maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ALINEA_FAKE_LLM=1 のとき build_user_router_factory も Fake を注入する(回帰)。
+
+    Task 14 以降、article/vocab/overview_figure/presentation/code_analysis は
+    共有 ``ctx['router']`` ではなく ``ctx['user_router_factory'].for_job`` を通る。
+    以前は ``build_user_router_factory`` が fake フラグを受け取らず、運営キー(.env の実
+    OPENAI_API_KEY 等)で実プロバイダを構築していたため、``ALINEA_FAKE_LLM=1`` でも article 等が
+    実 API を叩いていた(E2E 非決定 + 実外部通信)。fake_llm=True で全 factory ルートの
+    provider インスタンスが FakeLLMProvider になることを固定する。
+
+    ``on_startup`` を通さず ``maker`` フィクスチャ(適切に teardown される sessionmaker)で
+    factory を直接構築する。実運営キーの有無に依存しないよう ``operator_keys_from_env`` を
+    スタブする(fake モードではキー値は provider 構築に使われないが、チェーン解決の
+    available 判定には provider 名が要る)。
+    """
+    monkeypatch.setattr(
+        worker_bootstrap,
+        "operator_keys_from_env",
+        lambda: {"openai": "sk-stub", "anthropic": "sk-stub", "google": "sk-stub"},
+    )
+    settings = worker_bootstrap.get_settings()
+    factory = worker_bootstrap.build_user_router_factory(
+        maker, None, settings, fake_llm=True
+    )
+    assert isinstance(factory, UserRouterFactory)
+
+    async with maker() as session:
+        user_id = await _seed_user(session)
+        await session.commit()
+
+    for task in (
+        "translation",
+        "article",
+        "vocab",
+        "overview_figure_dsl",
+        "presentation",
+        "code_analysis",
+    ):
+        router = await factory.for_job(user_id=user_id, task=task)
+        instances = [inst for (_provider, _model, inst) in router._chain]
+        # チェーンは空でなく、各エントリの provider インスタンスはすべて Fake。
+        assert instances, f"empty chain for task={task}"
+        assert all(
+            isinstance(inst, FakeLLMProvider) for inst in instances
+        ), f"non-fake provider leaked for task={task}: {[type(i).__name__ for i in instances]}"
+
+
 async def test_on_startup_reports_ocr_unavailable_without_failing_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
