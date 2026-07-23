@@ -21,6 +21,8 @@ import httpx
 from alinea_core.code_analysis.archive import (
     CODE_EXTENSIONS,
     MAX_COMPRESSED_BYTES,
+    MAX_TARGET_CODE_BYTES,
+    MAX_TARGET_FILES,
     is_target_code_file,
 )
 
@@ -106,6 +108,13 @@ async def resolve_repo_metadata(
             size = entry.get("size")
             if isinstance(size, int):
                 total += size
+    # 見積り段階で対象コードの上限(§8: 10 MiB / 2,000 files)を強制する。ここで弾かないと
+    # estimate は費用を返して保存し、ユーザーが確定・課金した後に worker の extract_repository が
+    # ``target_code_too_large`` / ``too_many_files`` で必ず落ちる(estimate と extract で同じ
+    # is_target_code_file を使うが、上限は extract 側にしか無かった)。tree_truncated と同じく
+    # 「大きすぎる」として見積りを拒否し、確定前にユーザーへ返す。
+    if total > MAX_TARGET_CODE_BYTES or len(files) > MAX_TARGET_FILES:
+        raise GitHubError("repo_too_large", "target code exceeds analysis limit")
     return RepoMetadata(
         owner=owner,
         repo=repo,

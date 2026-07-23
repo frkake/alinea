@@ -304,7 +304,9 @@ async def _gather_metadata(
     fallback_title = _strip_scheme(url)
     domain_label = _domain_label(url)
     try:
-        async with httpx.AsyncClient(trust_env=False, timeout=_FETCH_TIMEOUT) as client:
+        # プロキシ設定は環境に委ねる(trust_env 既定 True)。企業プロキシ配下では GitHub/一般 URL の
+        # メタ取得に proxy が要る(trust_env=False だと直接 egress が塞がれ失敗する)。
+        async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT) as client:
             if kind == "github" and gh is not None:
                 owner, repo = gh
                 meta = await _fetch_github_meta(client, owner, repo)

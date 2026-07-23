@@ -79,7 +79,10 @@ RepoResolver = Callable[[str, str], Coroutine[Any, Any, RepoMetadata]]
 
 
 async def _default_repo_resolver(owner: str, repo: str) -> RepoMetadata:
-    async with httpx.AsyncClient(trust_env=False, timeout=httpx.Timeout(30.0, connect=10.0)) as c:
+    # プロキシ設定は環境に委ねる(trust_env 既定 True)。企業プロキシ配下では
+    # api.github.com へ proxy 経由でしか到達できず、trust_env=False だと
+    # DNS/connect に失敗する(github_archive.py と同方針)。
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as c:
         return await resolve_repo_metadata(c, owner, repo)
 
 
@@ -285,7 +288,7 @@ async def estimate(
             raise ProblemException(
                 "not_found", detail="公開リポジトリのみ対応しています"
             ) from exc
-        if exc.code == "tree_truncated":
+        if exc.code in ("tree_truncated", "repo_too_large"):
             raise ProblemException(
                 "validation_error", detail="リポジトリが大きすぎます"
             ) from exc

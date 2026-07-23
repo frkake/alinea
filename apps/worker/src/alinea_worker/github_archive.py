@@ -24,7 +24,10 @@ _TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 
 async def fetch_repo_metadata(owner: str, repo: str) -> RepoMetadata:
     """default branch commit・対象コードファイル一覧・概算 byte 数を取得する。"""
-    async with httpx.AsyncClient(trust_env=False, timeout=_TIMEOUT) as client:
+    # プロキシ設定は環境に委ねる(trust_env 既定 True)。企業プロキシ配下の環境では
+    # 直接 egress が塞がれ api.github.com へは proxy 経由でしか到達できないため、
+    # trust_env=False で proxy を無視すると DNS/connect に失敗する(arxiv/fetch.py と同方針)。
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         return await resolve_repo_metadata(client, owner, repo)
 
 
@@ -38,7 +41,8 @@ async def fetch_and_extract(
     失敗・cancel でも一時データは残らない。
     """
     own = client is None
-    c = client or httpx.AsyncClient(trust_env=False, timeout=_TIMEOUT)
+    # プロキシ設定は環境に委ねる(trust_env 既定 True)。fetch_repo_metadata と同理由。
+    c = client or httpx.AsyncClient(timeout=_TIMEOUT)
     try:
         tar_bytes = await download_archive(c, owner, repo, commit_sha)
     finally:

@@ -187,6 +187,13 @@ _EXCLUDED_DIRS: frozenset[str] = frozenset(
         ".mypy_cache",
         ".pytest_cache",
         "bower_components",
+        # デモ/使用例ツリーは「論文の実装そのもの」ではない(コード対応は method の実装へ
+        # claim を対応づける)。加えて実在論文 repo は example 配下に依存を丸ごと vendor する
+        # ことがある(例: microsoft/LoRA は examples/NLU/src/transformers/ に HuggingFace
+        # transformers を同梱し 8 MiB 超)。build/dist/vendor と同じく対象コードから除外し、
+        # loralib/ など repo 直下の実装だけを解析対象にする(§8 の vendor 除外方針の一般化)。
+        "examples",
+        "example",
     }
 )
 
@@ -333,9 +340,14 @@ def extract_repository(
                 break
 
             raw_name = member.name
-            # 安全でないメンバ型(symlink/hardlink/device 等)は即拒否。
+            # symlink / hardlink は **静かに除外** する(実在リポジトリは docs 等で普通に symlink を
+            # 含む。例: microsoft/LoRA の examples/NLU/docs/source/*.md)。本抽出は tar をディスクへ
+            # 展開せず ``tar.extractfile`` でメモリに読むだけで、リンクは archive 内でしか解決されず
+            # ホスト FS を辿れない(traversal/leak は起き得ない)。ゆえにディレクトリや非対象と
+            # 同じく skip するのが安全かつ正しい(archive 全体を拒否すると実 repo が解析不能になる)。
             if member.issym() or member.islnk():
-                raise ArchiveError("unsafe_link", raw_name)
+                continue
+            # device/fifo など通常ファイル以外の危険メンバ型は即拒否(zip-bomb/奇形対策)。
             if member.ischr() or member.isblk() or member.isfifo() or member.isdev():
                 raise ArchiveError("unsafe_device", raw_name)
             if _is_unsafe_path(raw_name):

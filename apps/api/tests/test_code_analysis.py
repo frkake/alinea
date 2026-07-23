@@ -290,6 +290,41 @@ async def test_estimate_truncated_tree_rejected(
 
 
 @pytest.mark.asyncio
+async def test_estimate_repo_too_large_rejected(
+    db_session: AsyncSession, redis_client: Any, factories: Any
+) -> None:
+    # 対象コードが 10 MiB / 2,000 files を超える repo は見積り段階で 422 で弾く
+    # (確定・課金後に worker extract が target_code_too_large で落ちるのを防ぐ)。
+    user = await factories.make_user(db_session)
+    paper = await factories.make_paper(db_session, owner=user, visibility="private")
+    await factories.make_revision(db_session, paper=paper)
+    item = await factories.make_library_item(db_session, user=user, paper=paper)
+    gh = await factories.make_resource_link(
+        db_session, library_item=item, kind="github", status="active"
+    )
+    uid = str(user.id)
+    await db_session.commit()
+
+    app, _state = _build_app(GitHubError("repo_too_large"))
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://testserver",
+        headers={"Origin": "http://localhost:3000"}, trust_env=False,
+    ) as ac:
+        token = await create_session(redis_client, uid)
+        ac.cookies.set("yk_session", token)
+        try:
+            resp = await ac.post(
+                f"/api/library-items/{item.id}/code-analysis/estimate",
+                json={"resource_id": str(gh.id)},
+            )
+            assert resp.status_code == 422
+        finally:
+            await db_session.rollback()
+            await purge_user(db_session, uid)
+
+
+@pytest.mark.asyncio
 async def test_estimate_private_repo_404(
     db_session: AsyncSession, redis_client: Any, factories: Any
 ) -> None:

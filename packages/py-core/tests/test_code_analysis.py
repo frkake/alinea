@@ -19,6 +19,7 @@ import io
 import tarfile
 from decimal import Decimal
 
+import httpx
 import pytest
 from alinea_core.code_analysis import (
     AnalysisClaim,
@@ -32,7 +33,9 @@ from alinea_core.code_analysis import (
     tree_sitter_available,
     verify_correspondences,
 )
+from alinea_core.code_analysis.archive import MAX_TARGET_CODE_BYTES
 from alinea_core.code_analysis.chunks import MAX_CHUNK_LINES, chunk_repository
+from alinea_core.code_analysis.github import GitHubError, resolve_repo_metadata
 
 _PREFIX = "repo-abc123"  # GitHub archive の {repo}-{sha}/ トップディレクトリ
 
@@ -87,18 +90,27 @@ def test_extract_rejects_path_traversal_and_absolute(bad: str) -> None:
     assert exc.value.code in {"path_traversal", "unsafe_member"}
 
 
-def test_extract_rejects_symlink() -> None:
-    tar = _tar([(f"{_PREFIX}/ok.py", b"x=1\n")], links=[(f"{_PREFIX}/evil.py", "/etc/passwd", "sym")])
-    with pytest.raises(ArchiveError) as exc:
-        extract_repository(tar, commit_sha="abc123")
-    assert exc.value.code == "unsafe_link"
+def test_extract_skips_symlink_but_keeps_real_files() -> None:
+    # symlink は archive 全体を拒否せず静かに除外する(実在リポジトリは docs 等で symlink を含む)。
+    # リンク先の内容が展開されない(FS を辿らない)ことも確認する。
+    tar = _tar(
+        [(f"{_PREFIX}/ok.py", b"x=1\n")],
+        links=[(f"{_PREFIX}/evil.py", "/etc/passwd", "sym")],
+    )
+    repo = extract_repository(tar, commit_sha="abc123")
+    assert "ok.py" in repo.files
+    # symlink は .py でも target code として抽出されない(リンク自体を skip している)。
+    assert "evil.py" not in repo.files
 
 
-def test_extract_rejects_hardlink() -> None:
-    tar = _tar([(f"{_PREFIX}/ok.py", b"x=1\n")], links=[(f"{_PREFIX}/hl.py", f"{_PREFIX}/ok.py", "lnk")])
-    with pytest.raises(ArchiveError) as exc:
-        extract_repository(tar, commit_sha="abc123")
-    assert exc.value.code == "unsafe_link"
+def test_extract_skips_hardlink_but_keeps_real_files() -> None:
+    tar = _tar(
+        [(f"{_PREFIX}/ok.py", b"x=1\n")],
+        links=[(f"{_PREFIX}/hl.py", f"{_PREFIX}/ok.py", "lnk")],
+    )
+    repo = extract_repository(tar, commit_sha="abc123")
+    assert "ok.py" in repo.files
+    assert "hl.py" not in repo.files
 
 
 def test_extract_rejects_device_file() -> None:
@@ -172,10 +184,63 @@ def test_secret_files_excluded(path: str) -> None:
         "dist/out.js",
         "package-lock.json",
         "image.png",
+        # デモ/使用例ツリーは対象外(論文実装ではない。LoRA は examples/ に依存を vendor する)。
+        "examples/NLU/src/transformers/trainer.py",
+        "examples/train.py",
+        "example/demo.py",
     ],
 )
 def test_generated_binary_vendor_excluded(path: str) -> None:
     assert not is_target_code_file(path)
+
+
+def test_repo_root_implementation_is_target_even_with_examples_present() -> None:
+    # examples/ は除外するが、repo 直下の実装(loralib 等)は対象に残る。
+    assert is_target_code_file("loralib/layers.py")
+    assert is_target_code_file("loralib/utils.py")
+    assert not is_target_code_file("examples/NLU/src/transformers/utils.py")
+
+
+# --------------------------------------------------------------------------- #
+# 見積り段階の上限強制(estimate と extract で上限がずれないこと)
+# --------------------------------------------------------------------------- #
+def _gh_transport(tree_entries: list[dict[str, object]]) -> httpx.MockTransport:
+    """repos / branches / git-trees の 3 応答を返す MockTransport を組む。"""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/branches/main"):
+            return httpx.Response(200, json={"commit": {"sha": "deadbeef"}})
+        if "/git/trees/" in path:
+            return httpx.Response(200, json={"truncated": False, "tree": tree_entries})
+        # /repos/{owner}/{repo}
+        return httpx.Response(200, json={"default_branch": "main"})
+
+    return httpx.MockTransport(respond)
+
+
+@pytest.mark.asyncio
+async def test_resolve_repo_metadata_rejects_target_code_over_limit() -> None:
+    # 対象コード総量が 10 MiB を超える tree は見積り段階で repo_too_large を送出する。
+    big = MAX_TARGET_CODE_BYTES + 1
+    entries = [{"type": "blob", "path": "loralib/huge.py", "size": big}]
+    async with httpx.AsyncClient(transport=_gh_transport(entries)) as client:
+        with pytest.raises(GitHubError) as exc:
+            await resolve_repo_metadata(client, "microsoft", "LoRA")
+    assert exc.value.code == "repo_too_large"
+
+
+@pytest.mark.asyncio
+async def test_resolve_repo_metadata_excludes_examples_from_total() -> None:
+    # examples/ 配下の巨大な vendored コードは対象総量に含めない(repo 直下の実装だけ数える)。
+    entries = [
+        {"type": "blob", "path": "loralib/layers.py", "size": 1000},
+        {"type": "blob", "path": "examples/NLU/src/transformers/x.py", "size": MAX_TARGET_CODE_BYTES},
+    ]
+    async with httpx.AsyncClient(transport=_gh_transport(entries)) as client:
+        meta = await resolve_repo_metadata(client, "microsoft", "LoRA")
+    assert meta.tree_files == ["loralib/layers.py"]
+    assert meta.total_code_bytes == 1000
 
 
 def test_extract_excludes_secrets_and_vendor_from_files() -> None:
