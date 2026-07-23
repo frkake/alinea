@@ -546,6 +546,96 @@ async def test_import_job_roundtrip_restores_assets(db_session: AsyncSession) ->
     assert restored == b"%PDF-1.7 fake"
 
 
+async def test_import_roundtrip_restores_in_document_figure(db_session: AsyncSession) -> None:
+    """本文内 figure の画像バイナリが、fresh-S3「別 PC」移行で new paper_id 由来キーへ復元される。
+
+    回帰対象: 本文 figure/table のキーは DB 列を持たず content JSONB の asset_key だけが参照する。
+    修正前は import の許可表(_prepare_asset_destinations)が本文キーを拾わず、content は
+    verbatim 保存されるため (1) content の asset_key が旧 paper_id を指し (2) バイナリが
+    再アップされず not_referenced になる → 移行先で図が参照切れ(404)になっていた。
+    """
+    storage = S3Storage()
+
+    src = await _seed_user_data(db_session)
+    paper_id = src["paper_id"]
+    revision_id = src["revision_id"]
+    block_id = "blk-fig-1"
+    figure_key = f"figures/{paper_id}/{revision_id}/{block_id}.png"
+    figure_bytes = b"\x89PNG\r\n\x1a\n in-document figure bytes"
+
+    # revision content に実 figure ブロックを注入(export はこの content を収集する)。
+    rev = await db_session.get(DocumentRevision, revision_id)
+    assert rev is not None
+    rev.content = {
+        "quality_level": "A",
+        "sections": [
+            {
+                "id": "s1",
+                "heading": {"number": "1", "title": "Intro"},
+                "blocks": [
+                    {
+                        "id": block_id,
+                        "type": "figure",
+                        "asset_key": figure_key,
+                        "caption": [{"t": "text", "v": "Figure 1"}],
+                    }
+                ],
+            }
+        ],
+    }
+    await db_session.commit()
+
+    # figure バイナリと source_asset バイナリを S3 に置く(export は S3 から実体を読む)。
+    await storage.put(storage.assets_bucket, figure_key, figure_bytes, content_type="image/png")
+    await storage.put(
+        storage.sources_bucket, src["asset_key"], b"%PDF-1.7 fake", content_type="application/pdf"
+    )
+
+    archive = await build_export_archive(db_session, src["user_id"], storage)
+
+    # 「別 PC / fresh S3」を模す: 元ユーザーを消し(paper も CASCADE で消える→再 import で
+    # 新 paper_id が採番される)、元キーのバイナリも S3 から削除する。
+    await _delete_source_user(db_session, src["user_id"])
+    await storage.delete_many(storage.assets_bucket, [figure_key])
+
+    target = await _make_user(db_session)
+    upload_key = f"imports/{uuid.uuid4()}.zip"
+    await storage.put(
+        storage.assets_bucket, upload_key, archive, content_type="application/zip"
+    )
+    store = JobStore(db_session)
+    job_id = await store.enqueue(
+        kind="import",
+        priority="bulk",
+        user_id=target["user_id"],
+        payload={"upload_key": upload_key},
+    )
+    job = await store.claim(job_id)
+    assert job is not None
+    await run_import_full_job({"s3": storage}, store, job)
+
+    done = await store.get(job_id)
+    assert done is not None
+    assert done.status == "succeeded", f"job failed: {done.result}"
+
+    # content の asset_key が new paper_id 由来キーへ張り替わっている。
+    new_rev = await db_session.get(DocumentRevision, revision_id)
+    assert new_rev is not None
+    new_paper_id = str(new_rev.paper_id)
+    assert new_paper_id != paper_id
+    new_key = f"figures/{new_paper_id}/{revision_id}/{block_id}.png"
+    block = new_rev.content["sections"][0]["blocks"][0]
+    assert block["asset_key"] == new_key
+
+    # fresh S3 でも new key にバイナリが復元されている(sha256 一致で往復無損失)。
+    restored = await storage.get(storage.assets_bucket, new_key)
+    assert restored == figure_bytes
+
+    # 図が not_referenced として捨てられていない。
+    failed_assets = {f.get("asset") for f in done.result["summary"]["failed"]}
+    assert figure_key not in failed_assets
+
+
 # ---------------------------------------------------------------------------
 # Task 7: ラウンドトリップ E2E — BYOK 除外 + 検索索引再構築
 # ---------------------------------------------------------------------------

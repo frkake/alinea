@@ -41,7 +41,7 @@ import zipfile
 from collections import defaultdict
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from alinea_core.db.base import Base
 from alinea_core.db.models import (
@@ -78,7 +78,7 @@ from alinea_core.db.models import (
     VocabCandidate,
     VocabEntry,
 )
-from alinea_core.document.blocks import DocumentContent
+from alinea_core.document.blocks import DocumentContent, flatten_serialized_blocks
 from alinea_core.jobs.store import JobStore
 from alinea_core.search.rebuild import rebuild_block_search_index
 from alinea_core.storage.s3 import S3Storage
@@ -236,6 +236,11 @@ class _Importer:
         self.publication_seen: set[str] = set()
         # 索引再構築対象: (new_revision_id, content_dict)
         self._pending_index: list[tuple[str, dict[str, Any]]] = []
+        # 本文内 figure/table の in-document asset を移行先 paper_id 由来のキーへ張り替えた
+        # old_key -> (logical_bucket, new_key)。run_import_full_job のアセット復元で使う。
+        # 本文アセットは DB 列を持たず content JSONB の asset_key だけが参照なので、
+        # ここで new paper_id へ再キーしないと fresh-S3 移行で図が参照切れになる。
+        self.asset_destinations: dict[str, tuple[str, str]] = {}
 
     # -- 低レベルヘルパ ------------------------------------------------------
     async def _insert(self, table: str, obj: Base, ref: str | None) -> bool:
@@ -249,6 +254,47 @@ class _Importer:
             return False
         self.created[table] += 1
         return True
+
+    def _rekey_in_document_asset(self, old_key: str, old_paper_id: str, new_paper_id: str) -> str:
+        """本文アセットキーの paper_id セグメントだけを移行先の new_paper_id へ張り替える。
+
+        本文 figure/table のキーは ``figures/{paper_id}/{revision_id}/{block_id}.{ext}``
+        (:func:`StorageKeys.figure`)。document_revision は UUID-PK 子として元 id を保持する
+        ため revision_id/block_id は不変で、変わるのは paper_id だけ。攻撃者が持ち込んだ
+        任意文字列ではなくサーバ採番の new_paper_id からキーを組むため、他人の名前空間を
+        指す上書きはできない(``imports/restored/…`` 再キーと同じ安全性)。張り替えできない
+        形なら old_key をそのまま返す(呼び出し側で登録しない)。
+        """
+        parts = old_key.split("/")
+        if len(parts) >= 2 and parts[0] in {"figures", "thumbnails"} and parts[1] == old_paper_id:
+            parts[1] = new_paper_id
+            return "/".join(parts)
+        return old_key
+
+    def _register_document_assets(
+        self, content: dict[str, Any], old_paper_id: str, new_paper_id: str
+    ) -> None:
+        """新規 paper の content 内 figure/table アセットを new paper_id 由来キーへ張り替える。
+
+        content(JSONB)は破壊的に書き換える(呼び出し側は挿入前の dict を渡す)。同時に
+        ``self.asset_destinations`` に old_key -> ("assets", new_key) を登録し、
+        run_import_full_job のアセット復元ループが manifest のバイナリを new_key へ再アップ
+        できるようにする。移行先で ``/api/assets`` は new_paper_id 先頭のキーから paper を
+        引くため、これで参照切れなく配信できる。
+        """
+        if old_paper_id == new_paper_id:
+            return
+        for block in flatten_serialized_blocks(content):
+            for field in ("asset_key", "thumbnail_key"):
+                old_key = block.get(field)
+                if not isinstance(old_key, str) or not old_key:
+                    continue
+                new_key = self._rekey_in_document_asset(old_key, old_paper_id, new_paper_id)
+                if new_key == old_key:
+                    continue
+                # block は flatten_serialized_blocks 経由の live 参照(Mapping だが実体は dict)。
+                cast(dict[str, Any], block)[field] = new_key
+                self.asset_destinations[old_key] = ("assets", new_key)
 
     # -- 各テーブル ----------------------------------------------------------
     async def restore_papers(
@@ -412,12 +458,19 @@ class _Importer:
             if await self.session.get(DocumentRevision, old_id) is not None:
                 self.skipped["document_revisions"] += 1
                 continue
-            paper_id = self.paper_map.get(str(r["paper_id"]))
+            old_paper_id = str(r["paper_id"])
+            paper_id = self.paper_map.get(old_paper_id)
             if paper_id is None:
                 self.failed.append(
                     {"table": "document_revisions", "id": old_id, "error": "unmapped paper_id"}
                 )
                 continue
+            # 新規作成 paper のときだけ、本文内 figure/table アセットのキーを new paper_id へ
+            # 張り替える(content を破壊的に書き換え、復元先を asset_destinations に登録)。
+            # 既存共有 paper を再利用したときは書き換えない(既存データ不変・他人の名前空間を
+            # 触らない)。content は verbatim 保存のため、ここで直さないと図が参照切れになる。
+            if paper_id in self.created_paper_ids and isinstance(r.get("content"), dict):
+                self._register_document_assets(r["content"], old_paper_id, paper_id)
             ok = await self._insert(
                 "document_revisions",
                 DocumentRevision(
@@ -1408,6 +1461,9 @@ async def import_data_json(
         "skipped": imp.skipped,
         "failed": imp.failed,
         "indexed_revision_ids": [rev_id for rev_id, _content in imp._pending_index],
+        # 本文内 figure/table を new paper_id 由来キーへ再アップするための old->(_bucket, new) 表。
+        # run_import_full_job のアセット復元ループが manifest 由来キーと突き合わせて使う。
+        "in_document_asset_destinations": imp.asset_destinations,
     }
 
 
@@ -1465,6 +1521,12 @@ async def run_import_full_job(ctx: dict[str, Any], store: JobStore, job: Any) ->
                 raise ValueError("invalid_data")
             asset_destinations = _prepare_asset_destinations(data, str(job.user_id))
             summary = await import_data_json(session, str(job.user_id), data)
+            # 本文内 figure/table のキーは DB 列を持たず content JSONB だけが参照するため、
+            # _prepare_asset_destinations では拾えない。import_data_json が new paper_id 由来へ
+            # 張り替えた old->(_bucket, new) 表を許可表へ合流する(既存エントリは上書きしない)。
+            in_document = summary.pop("in_document_asset_destinations", None) or {}
+            for old_key, dest in in_document.items():
+                asset_destinations.setdefault(old_key, tuple(dest))
 
             # 3. アセット復元(sha256 照合。未一致は skip してサマリへ記録)
             for a in manifest_assets:
