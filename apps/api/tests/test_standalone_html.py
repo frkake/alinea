@@ -18,10 +18,10 @@ from typing import Any, cast
 
 from alinea_api.schemas.latex_display import clean_latex_display_text
 from alinea_api.schemas.standalone_html import (
+    _KATEX_DIR,
     ArticleBlockView,
     StandaloneMeta,
     TranslationView,
-    _KATEX_DIR,
     build_katex_runtime,
     escape_html,
     render_article_html,

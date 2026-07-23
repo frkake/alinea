@@ -58,8 +58,8 @@ def _fixture_content() -> DocumentContent:
 def _revision(content: DocumentContent) -> RevisionLike:
     # Lightweight stand-in for DocumentRevision (build_source_packet only reads
     # ``id`` and ``content``); avoids a DB round-trip for the pure packet tests.
-    from typing import cast
     from types import SimpleNamespace
+    from typing import cast
 
     return cast(RevisionLike, SimpleNamespace(id=_uid(), content=content.model_dump()))
 

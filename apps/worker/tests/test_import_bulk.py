@@ -832,12 +832,11 @@ async def test_import_preserves_existing_notes_and_resources(db_session: AsyncSe
     assert summary1["failed"] == [], summary1["failed"]
 
     # 取り込み後の Note を取得して body_md を変更しておく(target が後で編集した想定)
-    from alinea_core.db.models import Note, ResourceLink
+    from alinea_core.db.models import Note
 
     notes = (await db_session.execute(select(Note))).scalars().all()
     assert notes, "notes should have been imported"
     note = notes[0]
-    original_note_id = note.id
     note.body_md = "target value"
     await db_session.commit()
 

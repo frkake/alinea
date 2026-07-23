@@ -29,7 +29,9 @@ _KATEX_DIR = pathlib.Path(__file__).parent.parent / "static" / "katex"
 # Regex to match font-face src url() references for .woff2 (to inline as data URI)
 _FONT_WOFF2_RE = re.compile(r"url\((?:\.\/)?fonts/(KaTeX_[^)]+\.woff2)\)")
 # Regex to strip non-woff2 font urls (woff, ttf) — modern browsers support woff2
-_FONT_OTHER_RE = re.compile(r",\s*url\((?:\.\/)?fonts/KaTeX_[^)]+\.(?:woff|ttf)\)\s*format\([^)]*\)")
+_FONT_OTHER_RE = re.compile(
+    r",\s*url\((?:\.\/)?fonts/KaTeX_[^)]+\.(?:woff|ttf)\)\s*format\([^)]*\)"
+)
 
 Mode = Literal["source", "translation", "bilingual"]
 

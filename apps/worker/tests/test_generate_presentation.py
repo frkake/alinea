@@ -448,9 +448,9 @@ def test_valid_plan_has_no_errors() -> None:
 #     table id. The model cites a table as evidence for a numeric claim, putting
 #     its id in evidence_anchors; a figure id is a valid packet id, not a
 #     nonexistent one, so it must not be rejected as "nonexistent".
-#  B) 3 "根拠なし" numbers — 88.55% / 1,000 / 4× ARE in the paper but were hidden
+#  B) 3 "根拠なし" numbers — 88.55% / 1,000 / 4× ARE in the paper but were hidden  # noqa: RUF003 - intentional × glyph
 #     by raw-LaTeX formatting in the grounding text (88.55\%, 1\,000, 4x). The
-#     numeric grounding must normalise LaTeX escapes + the × glyph so real
+#     numeric grounding must normalise LaTeX escapes + the × glyph so real  # noqa: RUF003 - intentional × glyph
 #     numbers match while hallucinated ones still fail.
 # Both made a full deck impossible to ground -> repair -> planning failure ->
 # infinite arq retry, even though the model's output was correct.
@@ -502,7 +502,7 @@ def test_validate_grounds_number_written_with_latex_escapes() -> None:
 
 
 def test_validate_grounds_times_glyph_number() -> None:
-    # "4×" is grounded when the paper writes "4x" (glyph-normalised match).
+    # "4×" is grounded when the paper writes "4x" (glyph-normalised match).  # noqa: RUF003 - intentional × glyph
     rev = _uid()
     packet = SourcePacket(
         revision_id=rev,
@@ -513,7 +513,7 @@ def test_validate_grounds_times_glyph_number() -> None:
         figures=[],
     )
     plan = SlidePlanDocument.model_validate(_valid_plan(packet.revision_id, 12))
-    plan.slides[3].claims = ["推論が 4× 速い。"]
+    plan.slides[3].claims = ["推論が 4× 速い。"]  # noqa: RUF001 - intentional multiplication-sign glyph
     errors = validate_slide_plan(plan, packet, preset="research_talk")
     assert not any("根拠なし" in e for e in errors)
 

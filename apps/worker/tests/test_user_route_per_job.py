@@ -14,18 +14,15 @@ import uuid
 from typing import Any
 
 import pytest
-import pytest_asyncio
 from alinea_core.db.models import (
     Article,
-    ArticleBlock,
     DocumentRevision,
-    ExplainerFigure,
-    Job,
     LibraryItem,
     OverviewFigure,
     Paper,
+    TranslationSet,
+    TranslationUnit,
     User,
-    VocabCandidate,
     VocabEntry,
 )
 from alinea_core.document.blocks import Block, DocumentContent, Section, SectionHeading
@@ -34,7 +31,7 @@ from alinea_core.jobs.store import JobStore
 from alinea_llm.protocols import LLMProvider
 from alinea_llm.router import LLMRouter
 from alinea_llm.structured import attach_parsed
-from alinea_llm.testing.fake_provider import FakeLLMProvider, FakeImageProvider
+from alinea_llm.testing.fake_provider import FakeLLMProvider
 from alinea_llm.types import LLMRequest, LLMResponse, StreamEvent
 from alinea_worker.user_router import TaskAwareLLMRouter
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,7 +55,7 @@ class FakeUserRouterFactory:
 
     async def for_job_tasks(
         self, *, user_id: str, tasks: tuple[str, ...]
-    ) -> "TaskAwareLLMRouter":
+    ) -> TaskAwareLLMRouter:
         self.task_set_calls.append((user_id, tuple(tasks)))
         # 各 task を同じ固定 router に束ねた task-aware ルータを返す(complete(task,...) は委譲)。
         return TaskAwareLLMRouter({t: self._router for t in tasks})
@@ -198,8 +195,6 @@ class _ArticleProvider:
 # --------------------------------------------------------------------------- #
 # task=translation: translate.py (glossary_change reason)
 # --------------------------------------------------------------------------- #
-
-from alinea_core.db.models import TranslationSet, TranslationUnit
 
 
 async def _seed_translation(db: AsyncSession) -> dict[str, Any]:
@@ -342,11 +337,10 @@ async def test_user_route_fetched_via_for_job_once_per_job(
     task_name: str,
 ) -> None:
     """各ハンドラが user_router_factory.for_job(user_id, task) を 1 回呼ぶことを検査する。"""
-    from alinea_llm.router import ImageRouter
 
     if handler_name == "article_generate":
         from alinea_worker.tasks.generate_article import run_article_job
-        from test_generate_article import ArticleScriptProvider, _article_payload
+        from test_generate_article import ArticleScriptProvider
 
         seed = await _seed_user_paper_item_revision(db_session)
         provider: LLMProvider = ArticleScriptProvider()

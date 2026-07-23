@@ -267,7 +267,7 @@ def flatten_svg_for_ppt(data: bytes) -> bytes:
     """
 
     try:
-        root = ET.fromstring(data)
+        root = ET.fromstring(data)  # noqa: S314 - input contractually pre-sanitized by sanitize_svg_document
     except ET.ParseError:
         # A well-formed sanitized document is the contract; if parsing fails we
         # cannot safely rewrite, so hand the bytes back untouched and let the

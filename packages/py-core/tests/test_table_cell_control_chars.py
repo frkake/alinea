@@ -23,7 +23,7 @@ from alinea_core.translation.table_cells import (
 
 def test_table_inline_projection_strips_control_chars() -> None:
     # 実測の失敗入力形状: セル訳文に改行が混ざる。
-    inlines = [{"t": "text", "v": "228 プロンプト:\n質問はありますか？"}]
+    inlines = [{"t": "text", "v": "228 プロンプト:\n質問はありますか？"}]  # noqa: RUF001 - intentional fullwidth question mark
     out = _table_inline_projection(inlines)
     assert "\n" not in out
     assert not _has_control(out)

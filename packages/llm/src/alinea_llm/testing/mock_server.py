@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import gzip
 import json
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -143,10 +144,8 @@ def _openai_chat_sse(model: str, text: str, resp: LLMResponse) -> StreamingRespo
 
 # --- OpenAI Responses API ------------------------------------------------------
 
-import re as _re
-
 # block_id パターン(plans/03 §12 の命名規則)。
-_BLOCK_ID_RE = _re.compile(r"\b(blk-[A-Za-z0-9-]+)\b")
+_BLOCK_ID_RE = re.compile(r"\b(blk-[A-Za-z0-9-]+)\b")
 
 
 def _extract_first_block_id(text: str) -> str | None:

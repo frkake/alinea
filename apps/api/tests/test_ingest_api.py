@@ -40,7 +40,6 @@ from alinea_api.services.session_service import create_session
 from alinea_api.services.user_service import upsert_user_by_email
 from alinea_api.settings import get_api_settings
 from alinea_core.arxiv.fetch import FetchError
-from alinea_core.licenses import LicenseId
 from alinea_core.arxiv.ids import ArxivId
 from alinea_core.arxiv.metadata import ArxivMeta
 from alinea_core.db.models import (
@@ -56,6 +55,7 @@ from alinea_core.db.models import (
     TranslationSet,
     User,
 )
+from alinea_core.licenses import LicenseId
 from httpx import AsyncClient
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 
-
 # ============================================================================
 # TeX シンボル置換 (replaceLatexSymbols)
 # ============================================================================
@@ -17,7 +16,7 @@ import re
 def _replace_latex_symbols(value: str) -> str:
     value = re.sub(r"\\pm\b", "±", value)
     value = re.sub(r"\\mp\b", "∓", value)
-    value = re.sub(r"\\times\b", "×", value)
+    value = re.sub(r"\\times\b", "×", value)  # noqa: RUF001 - intentional multiplication-sign output
     value = re.sub(r"\\cdot\b", "·", value)
     value = re.sub(r"\\leq?\b", "≤", value)
     value = re.sub(r"\\geq?\b", "≥", value)
@@ -29,14 +28,14 @@ def _replace_latex_symbols(value: str) -> str:
     value = re.sub(r"\\downarrow\b", "↓", value)
     value = re.sub(r"\\rightarrow\b|\\to\b", "→", value)
     value = re.sub(r"\\leftarrow\b", "←", value)
-    value = re.sub(r"\\alpha\b", "α", value)
+    value = re.sub(r"\\alpha\b", "α", value)  # noqa: RUF001 - intentional Greek-alpha output
     value = re.sub(r"\\beta\b", "β", value)
-    value = re.sub(r"\\gamma\b", "γ", value)
+    value = re.sub(r"\\gamma\b", "γ", value)  # noqa: RUF001 - intentional Greek-gamma output
     value = re.sub(r"\\delta\b", "δ", value)
     value = re.sub(r"\\lambda\b", "λ", value)
     value = re.sub(r"\\mu\b", "μ", value)
     value = re.sub(r"\\pi\b", "π", value)
-    value = re.sub(r"\\sigma\b", "σ", value)
+    value = re.sub(r"\\sigma\b", "σ", value)  # noqa: RUF001 - intentional Greek-sigma output
     value = re.sub(r"\\theta\b", "θ", value)
     value = re.sub(r"\\dots\b|\\ldots\b", "…", value)
     return value

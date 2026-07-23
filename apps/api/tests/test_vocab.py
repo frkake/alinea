@@ -648,7 +648,7 @@ def test_render_anki_tsv_always_3_columns_per_row() -> None:
         _entry("<bar>", "<b>bold</b>"),     # HTML 特殊文字
     ]
     tsv = _render_anki_tsv(entries)
-    data_lines = [l for l in tsv.splitlines() if not l.startswith("#")]
+    data_lines = [line for line in tsv.splitlines() if not line.startswith("#")]
     assert all(len(line.split("\t")) == 3 for line in data_lines), (
         "全データ行が 3 列でなければならない"
     )
