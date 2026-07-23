@@ -67,7 +67,9 @@ _CONTENT: dict[str, Any] = {
 
 
 def _candidates_response(items: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"candidates": items}
+    # 実 OpenAI strict structured outputs は required の全キー(reason 含む)を必ず出力する。
+    # fixture でも reason を必須にして本番挙動に一致させる(欠けると _JSON_SCHEMA 検証で弾かれる)。
+    return {"candidates": [{"reason": "", **item} for item in items]}
 
 
 async def _make_item(db: AsyncSession) -> tuple[User, LibraryItem, DocumentRevision]:

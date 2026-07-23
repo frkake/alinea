@@ -88,3 +88,21 @@ def test_json_schema_shape_matches_spec() -> None:
     assert OVERVIEW_FIGURE_DSL_JSON_SCHEMA["properties"]["cards"]["minItems"] == 3
     assert OVERVIEW_FIGURE_DSL_JSON_SCHEMA["properties"]["cards"]["maxItems"] == 3
     assert OVERVIEW_FIGURE_DSL_JSON_SCHEMA["properties"]["evidence"]["maxItems"] == 4
+
+
+def test_json_schema_is_openai_strict_compliant() -> None:
+    """OpenAI strict structured outputs: 各 object の properties 全キーが required に入り、
+    additionalProperties=False であること(欠けると実 OpenAI が 400 invalid_json_schema)。"""
+
+    def _assert_all_required(node: object) -> None:
+        if isinstance(node, dict):
+            if node.get("type") == "object" and "properties" in node:
+                assert node.get("additionalProperties") is False
+                assert set(node["properties"]) == set(node.get("required", []))
+            for value in node.values():
+                _assert_all_required(value)
+        elif isinstance(node, list):
+            for value in node:
+                _assert_all_required(value)
+
+    _assert_all_required(OVERVIEW_FIGURE_DSL_JSON_SCHEMA)

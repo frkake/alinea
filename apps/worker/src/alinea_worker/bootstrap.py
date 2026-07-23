@@ -39,9 +39,16 @@ from alinea_core.llm import LLMRuntimeConfig
 from alinea_core.parsing.pdf_parser import PdfOcrReadiness, check_pdf_ocr_readiness
 from alinea_core.settings import CoreSettings, get_settings
 from alinea_core.storage.s3 import S3Storage
+from alinea_llm.protocols import EmbeddingProvider
+from alinea_llm.providers import build_embedding_provider as build_embedding_provider_impl
 from alinea_llm.providers import build_image_provider, build_provider
+from alinea_llm.providers.openai_embeddings import DEFAULT_EMBEDDING_DIM, DEFAULT_EMBEDDING_MODEL
 from alinea_llm.router import ChainEntry, ImageRouter, LLMRouter
-from alinea_llm.testing.fake_provider import FakeImageProvider, FakeLLMProvider
+from alinea_llm.testing.fake_provider import (
+    FakeEmbeddingProvider,
+    FakeImageProvider,
+    FakeLLMProvider,
+)
 from arq.connections import ArqRedis, create_pool
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -190,6 +197,43 @@ async def build_image_router(
     if not chain:
         return None
     return ImageRouter(chain)
+
+
+# 埋め込みプロバイダ名(apps/api search_semantic.EMBEDDING_PROVIDER_NAME と一致。import せず複製)。
+# 埋め込みは llm_task_routes のルーティング対象外(API 側も provider を "openai" 固定で解決する)。
+EMBEDDING_PROVIDER_NAME = "openai"
+
+
+def build_embedding_provider(
+    *,
+    operator_keys: dict[str, str] | None = None,
+    provider_factory: Callable[[str, str], EmbeddingProvider] = build_embedding_provider_impl,
+) -> EmbeddingProvider | None:
+    """運営キーで埋め込みプロバイダを構築する(index_embeddings / code_analysis 用)。
+
+    埋め込みは翻訳/画像チェーンと違いルーティングしない(apps/api も ``EMBEDDING_PROVIDER_NAME``
+    固定)。運営キーが無ければ ``None``(呼び出し側 = handler は ``no_embedding_provider`` で
+    可視 skip する)。BYOK は worker では followup(:func:`resolve_embedding_provider`)で扱う。
+
+    これが無いと ``on_startup`` が ``ctx['embedding_provider']`` を張れず、セマンティック検索
+    (paper/block 埋め込みの生成)とコード解析の検索インデックスが常に skip され、実運用で
+    ``paper_embeddings`` / ``block_embeddings`` が永久に空のままになる(単体テストは ctx へ
+    直接 Fake を注入するため緑になり見逃されていた)。
+    """
+    keys = operator_keys if operator_keys is not None else operator_keys_from_env()
+    api_key = keys.get(EMBEDDING_PROVIDER_NAME)
+    if not api_key:
+        return None
+    return provider_factory(EMBEDDING_PROVIDER_NAME, api_key)
+
+
+def build_fake_embedding_provider() -> EmbeddingProvider:
+    """ALINEA_FAKE_LLM=1 用の決定的埋め込みプロバイダ(E2E/開発)。
+
+    次元は pgvector 列(``paper_embeddings.embedding vector(1536)``)と一致させる。既定 dim=8 の
+    ままだと upsert が次元不一致で失敗する。
+    """
+    return FakeEmbeddingProvider(dim=DEFAULT_EMBEDDING_DIM)
 
 
 async def build_router(
@@ -360,10 +404,12 @@ async def on_startup(ctx: dict[str, Any]) -> None:
     if fake_llm:
         router: Any | None = build_fake_router()
         image_router: ImageRouter | None = build_fake_image_router()
+        embedding_provider: EmbeddingProvider | None = build_fake_embedding_provider()
     else:
         async with maker() as session:
             router = await build_task_router(session)
             image_router = await build_image_router(session)
+        embedding_provider = build_embedding_provider()
     try:
         pdf_ocr_readiness = check_pdf_ocr_readiness()
     except Exception:
@@ -378,6 +424,13 @@ async def on_startup(ctx: dict[str, Any]) -> None:
         maker, redis_client, settings, fake_llm=fake_llm
     )
     ctx["image_router"] = image_router
+    # 埋め込みプロバイダ(index_embeddings / code_analysis のセマンティック検索・検索インデックス)。
+    # 運営キー未設定なら None → handler は no_embedding_provider で可視 skip する(P3)。
+    # 埋め込みモデル/次元は既定(text-embedding-3-small / 1536)を ctx に載せ、handler が
+    # DEFAULT にフォールバックできるようにしておく(pgvector 列 dim と一致)。
+    ctx["embedding_provider"] = embedding_provider
+    ctx["embedding_model"] = DEFAULT_EMBEDDING_MODEL
+    ctx["embedding_dim"] = DEFAULT_EMBEDDING_DIM
     ctx["redis"] = redis_client
     ctx["arq_pool"] = arq_pool
     ctx["s3"] = S3Storage(settings)
@@ -389,6 +442,8 @@ async def on_startup(ctx: dict[str, Any]) -> None:
         "worker_startup",
         router_configured=router is not None,
         router_tasks=getattr(router, "tasks", (DEFAULT_ROUTER_TASK,)) if router is not None else (),
+        image_router_configured=image_router is not None,
+        embedding_configured=embedding_provider is not None,
         fake_llm=fake_llm,
         operator_providers=sorted(operator_keys_from_env()),
         pdf_ocr=pdf_ocr_readiness.as_dict(),
@@ -429,8 +484,11 @@ async def on_shutdown(ctx: dict[str, Any]) -> None:
 
 __all__ = [
     "DEFAULT_ROUTER_TASK",
+    "EMBEDDING_PROVIDER_NAME",
     "Publish",
     "TaskAwareLLMRouter",
+    "build_embedding_provider",
+    "build_fake_embedding_provider",
     "build_fake_router",
     "build_router",
     "build_task_router",

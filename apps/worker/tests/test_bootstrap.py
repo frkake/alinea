@@ -25,9 +25,11 @@ from alinea_core.llm import LLMRuntimeConfig
 from alinea_core.parsing.pdf_parser import PdfOcrReadiness
 from alinea_llm.router import LLMRouter
 from alinea_llm.testing.fake_provider import FakeLLMProvider
+from alinea_llm.testing.fake_provider import FakeEmbeddingProvider
 from alinea_worker import bootstrap as worker_bootstrap
 from alinea_worker.bootstrap import (
     TaskAwareLLMRouter,
+    build_embedding_provider,
     build_fake_router,
     build_router,
     build_task_router,
@@ -169,6 +171,32 @@ async def test_build_task_router_uses_task_specific_chains(
 def test_build_fake_router_is_usable() -> None:
     router = build_fake_router()
     assert isinstance(router, LLMRouter)
+
+
+# =========================================================================== #
+# build_embedding_provider — index_embeddings / code_analysis のセマンティック検索
+# =========================================================================== #
+
+
+def test_build_embedding_provider_returns_none_without_openai_key() -> None:
+    # 運営 openai キーが無ければ None(handler は no_embedding_provider で可視 skip)。
+    assert build_embedding_provider(operator_keys={}) is None
+    assert build_embedding_provider(operator_keys={"anthropic": "sk-x"}) is None
+
+
+def test_build_embedding_provider_uses_openai_operator_key() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def factory(provider: str, key: str) -> Any:
+        calls.append((provider, key))
+        return FakeEmbeddingProvider(dim=1536)
+
+    provider = build_embedding_provider(
+        operator_keys={"openai": "sk-openai"}, provider_factory=factory
+    )
+    assert provider is not None
+    # 埋め込みはルーティングせず provider を "openai" 固定で構築する(apps/api と一致)。
+    assert calls == [("openai", "sk-openai")]
 
 
 # =========================================================================== #
@@ -456,6 +484,12 @@ async def test_on_startup_configures_ctx_with_fake_llm(
         assert isinstance(ctx["router"], LLMRouter)
         # Task 13: per-user ルーターファクトリが ctx に載る(移行期間は router も残す)。
         assert isinstance(ctx["user_router_factory"], UserRouterFactory)
+        # 埋め込みプロバイダが ctx に載る(index_embeddings / code_analysis 用)。これが無いと
+        # 両ハンドラが no_embedding_provider で常に skip し、paper_embeddings /
+        # block_embeddings が実運用で永久に空になる(fake モードでも Fake が張られること)。
+        assert isinstance(ctx["embedding_provider"], FakeEmbeddingProvider)
+        assert ctx["embedding_model"]  # 既定 text-embedding-3-small
+        assert ctx["embedding_dim"] == 1536  # pgvector 列 dim と一致
         assert ctx["sessionmaker"] is not None
         assert ctx["redis"] is not None
         assert ctx["arq_pool"] is not None
