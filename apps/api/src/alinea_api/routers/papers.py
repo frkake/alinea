@@ -12,13 +12,21 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
-from alinea_core.db.models import DocumentRevision, Job, LibraryItem, Paper, SourceAsset
+from alinea_core.db.models import (
+    DocumentRevision,
+    Job,
+    LibraryItem,
+    Paper,
+    PaperExternalId,
+    SourceAsset,
+)
 from alinea_core.db.revisions import get_latest_paper_revision
 from alinea_core.ingest.joblog import project_ingest_log
 from alinea_core.ingest.reanchor import ReanchorStats, reanchor_paper
 from alinea_core.jobs.store import JobStore
+from alinea_core.parsing.source_candidates import site_source_candidates
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from alinea_core.translation import find_effective_set
 from fastapi import APIRouter, Depends, Query
@@ -82,6 +90,56 @@ async def assert_paper_access(db: DbDep, paper: Paper, user_id: str) -> None:
         raise ProblemException("not_found")
 
 
+# --- reingest 用の origin-aware payload 構築 ----------------------------------------
+
+
+async def _reingest_source_payload(db: DbDep, paper: Paper) -> dict[str, Any]:
+    """再取り込みジョブの payload から、取り込み元(origin)依存部分を復元する。
+
+    初回取り込みは元 URL/kind を知っているが、reingest はそれを保存された事実
+    (``papers.arxiv_id`` / ``paper_external_ids`` / ``source_assets``)から再構成する
+    必要がある。arXiv 前提で固定していたため、PMC/ACL 等の site 論文や PDF アップロード
+    論文の再取り込みが worker で ``not a recognizable arxiv id`` になり無限リトライして
+    いた(P3: 黙って壊れない)。ここで origin ごとに worker が期待する payload 形状
+    (ingest.py の初回取り込みと同一)へ分岐する。
+
+    - arXiv (``papers.arxiv_id`` あり): ``source="arxiv"`` + ``arxiv_id``。
+    - site (``paper_external_ids`` あり): ``source="site"`` + ``site``/``external_id``/
+      ``landing_url``。PMC 等 JATS 候補を持つサイトは ``source_format="jats"`` を付す
+      (worker の is_jats 経路が S3 の先行保存 JATS を品質 A で構造化する)。
+    - PDF アップロード(上記いずれも無く原本 PDF 資産だけがある): ``source="pdf_upload"``。
+    """
+
+    if paper.arxiv_id:
+        return {"source": "arxiv", "arxiv_id": paper.arxiv_id, "url": None}
+
+    external = (
+        (
+            await db.execute(
+                select(PaperExternalId).where(PaperExternalId.paper_id == str(paper.id))
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if external is not None:
+        payload: dict[str, Any] = {
+            "source": "site",
+            "site": external.site,
+            "external_id": external.external_id,
+            "landing_url": external.canonical_url or None,
+        }
+        # JATS 品質 A 経路を持つサイト(PMC)は worker の is_jats 経路を起動する
+        # (初回取り込みで S3 へ先行保存済みの jats.xml をそのまま再構造化する)。
+        if "jats" in site_source_candidates(external.site):
+            payload["source_format"] = "jats"
+        return payload
+
+    # arxiv_id も外部識別子も無い → PDF アップロード由来。worker は先行保存の原本 PDF
+    # だけを読む(source_candidates.py の pdf_upload 経路)。
+    return {"source": "pdf_upload"}
+
+
 # --- POST /api/papers/{paper_id}/reingest ------------------------------------------
 
 
@@ -115,17 +173,16 @@ async def reingest(
     )
     library_item_id = str(item.id) if item is not None else None
 
+    payload: dict[str, Any] = {
+        "mode": "reingest",
+        "library_item_id": library_item_id,
+        **await _reingest_source_payload(db, paper),
+    }
     store = JobStore(db)
     try:
         job_id = await store.enqueue(
             kind="ingest",
-            payload={
-                "mode": "reingest",
-                "source": "arxiv",
-                "arxiv_id": paper.arxiv_id,
-                "url": None,
-                "library_item_id": library_item_id,
-            },
+            payload=payload,
             priority="bulk",
             user_id=str(user.id),
             paper_id=paper_id,
@@ -182,18 +239,17 @@ async def _enqueue_figure_expansion(
 
     if await _active_ingest_job(db, str(paper.id)) is not None:
         raise ProblemException("conflict", detail="同一 Paper の取り込みが実行中です")
+    payload: dict[str, Any] = {
+        "mode": "reingest",
+        "library_item_id": library_item_id,
+        "figure_limit": figure_limit,
+        **await _reingest_source_payload(db, paper),
+    }
     store = JobStore(db)
     try:
         job_id = await store.enqueue(
             kind="ingest",
-            payload={
-                "mode": "reingest",
-                "source": "arxiv",
-                "arxiv_id": paper.arxiv_id,
-                "url": None,
-                "library_item_id": library_item_id,
-                "figure_limit": figure_limit,
-            },
+            payload=payload,
             priority="bulk",
             user_id=user_id,
             paper_id=str(paper.id),

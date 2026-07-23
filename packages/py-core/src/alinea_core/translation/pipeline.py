@@ -1071,6 +1071,48 @@ def _build_unit(
     )
 
 
+def _sanitize_table_cell_text(value: str) -> str:
+    """Table cells/captions are single-line display atoms: collapse whitespace
+    controls (``\\t\\n\\r``) to a space and drop any other C0/C1 control char so the
+    strict typed-table contract (:func:`TableTranslationContent._validate_cells`)
+    never has to fail closed on otherwise well-formed translated prose.
+
+    保存側の ``_has_control`` は ``\\n`` 等の空白制御も Cc として拒否するため、モデルが
+    セル内に改行/タブを混ぜると翻訳ジョブが 4 回リトライして terminal 失敗し、取り込み
+    全体が止まる(実測: 2307.09288 の表セル)。単一行の表示原子であるセルでは改行/タブは
+    ほぼ確実に不要な整形なので、空白へ正規化して翻訳結果を保つ(値の破棄より情報保存)。
+    NUL/ESC 等の危険制御は従来通り除去される(セキュリティ意図は維持)。"""
+    cleaned = "".join(
+        " " if ch in "\t\n\r" else ch
+        for ch in value
+        if ch in "\t\n\r" or unicodedata.category(ch) != "Cc"
+    )
+    return " ".join(cleaned.split())
+
+
+def _sanitize_caption_inlines(inlines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sanitize control chars out of caption inline string fields (v/ref/kind/href)
+    and their emphasis children, mirroring :func:`_validate_inline`'s inspected keys.
+
+    セル本文と同じく、モデル由来のキャプション文字列に混ざった改行/タブが
+    ``TableTranslationContent`` 構築時に ``_validate_caption`` で terminal 失敗を招くのを防ぐ。"""
+    result: list[dict[str, Any]] = []
+    for inline in inlines:
+        if not isinstance(inline, dict):
+            result.append(inline)
+            continue
+        node = dict(inline)
+        for key in ("v", "ref", "kind", "href"):
+            value = node.get(key)
+            if isinstance(value, str):
+                node[key] = _sanitize_table_cell_text(value)
+        children = node.get("children")
+        if isinstance(children, list):
+            node["children"] = _sanitize_caption_inlines(children)
+        result.append(node)
+    return result
+
+
 def _table_inline_projection(inlines: list[dict[str, Any]]) -> str:
     """Project verified cell inlines without losing protected display atoms."""
 
@@ -1103,7 +1145,7 @@ def _table_inline_projection(inlines: list[dict[str, Any]]) -> str:
             reference = str(inline.get("ref") or "")
             if reference:
                 parts.append(f"[{reference}]")
-    return "".join(parts).strip()
+    return _sanitize_table_cell_text("".join(parts))
 
 
 def _table_fallback_from_units(
@@ -1162,7 +1204,8 @@ def _aggregate_table_unit(
     if caption_unit is not None:
         if not isinstance(caption_unit.content_ja, list):
             return _table_fallback_from_units(item, target_units)
-        caption = caption_unit.content_ja
+        # モデル由来キャプションは制御文字を含み得るので構築前にサニタイズする(セルと同方針)。
+        caption = _sanitize_caption_inlines(caption_unit.content_ja)
 
     cells: list[list[str | None]] | None = None
     if item.table_cells_requested and item.table_grid.supported:

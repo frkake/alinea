@@ -1339,6 +1339,117 @@ async def test_reingest_missing_paper_404(
     assert r.status_code == 404
 
 
+async def test_reingest_pmc_site_paper_builds_jats_payload(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+) -> None:
+    """PMC(site/JATS)論文の再取り込みは arXiv 前提でなく site+jats payload を作る。
+
+    回帰: reingest エンドポイントが ``source="arxiv"`` + 空 ``arxiv_id`` を固定送出して
+    いたため、worker が ``not a recognizable arxiv id`` で無限リトライし PMC 等の
+    非 arXiv 論文が再取り込みできなかった(P3: 黙って壊れない)。
+    """
+
+    user = await _login(client, db_session, redis_client, unique_email)
+    # arxiv_id を持たない PMC 由来の site 論文(初回取り込みが作る形)。
+    paper = Paper(arxiv_id=None, title="Transformers in Healthcare", visibility="public")
+    db_session.add(paper)
+    await db_session.flush()
+    created_papers.append(paper.id)
+    db_session.add(
+        PaperExternalId(
+            paper_id=paper.id,
+            site="pmc",
+            external_id="PMC11638972",
+            canonical_url="https://pmc.ncbi.nlm.nih.gov/articles/PMC11638972/",
+        )
+    )
+    db_session.add(LibraryItem(user_id=user.id, paper_id=paper.id, status="reading"))
+    await db_session.commit()
+
+    r = await client.post(f"/api/papers/{paper.id}/reingest")
+    assert r.status_code == 202
+    job = await db_session.get(Job, r.json()["job_id"])
+    assert job is not None
+    payload = job.payload
+    assert payload["mode"] == "reingest"
+    assert payload["source"] == "site"
+    assert payload["site"] == "pmc"
+    assert payload["external_id"] == "PMC11638972"
+    assert payload["landing_url"] == "https://pmc.ncbi.nlm.nih.gov/articles/PMC11638972/"
+    # PMC は JATS 品質 A 経路 → worker の is_jats を起動する source_format を付す。
+    assert payload["source_format"] == "jats"
+    # arXiv 経路のキーは付けない(worker が arxiv_id 正規化を試みないように)。
+    assert "arxiv_id" not in payload
+
+
+async def test_reingest_acl_site_paper_builds_pdf_payload(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+) -> None:
+    """PDF のみのサイト(ACL 等)の再取り込みは site payload で source_format を付けない。"""
+
+    user = await _login(client, db_session, redis_client, unique_email)
+    paper = Paper(arxiv_id=None, title="BERT", visibility="public")
+    db_session.add(paper)
+    await db_session.flush()
+    created_papers.append(paper.id)
+    db_session.add(
+        PaperExternalId(
+            paper_id=paper.id,
+            site="acl",
+            external_id="N19-1423",
+            canonical_url="https://aclanthology.org/N19-1423/",
+        )
+    )
+    db_session.add(LibraryItem(user_id=user.id, paper_id=paper.id, status="reading"))
+    await db_session.commit()
+
+    r = await client.post(f"/api/papers/{paper.id}/reingest")
+    assert r.status_code == 202
+    job = await db_session.get(Job, r.json()["job_id"])
+    assert job is not None
+    payload = job.payload
+    assert payload["source"] == "site"
+    assert payload["site"] == "acl"
+    assert payload["external_id"] == "N19-1423"
+    # ACL は PDF 品質 B のみ → JATS 経路を起動しない。
+    assert "source_format" not in payload
+
+
+async def test_reingest_arxiv_paper_keeps_arxiv_payload(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    redis_client: Any,
+    unique_email: str,
+    created_papers: list[str],
+) -> None:
+    """arXiv 論文の再取り込みは従来どおり source="arxiv" + arxiv_id を送る(退行防止)。"""
+
+    user = await _login(client, db_session, redis_client, unique_email)
+    aid = _rand_arxiv()
+    paper = Paper(arxiv_id=aid, title="Attention Is All You Need", visibility="public")
+    db_session.add(paper)
+    await db_session.flush()
+    created_papers.append(paper.id)
+    db_session.add(LibraryItem(user_id=user.id, paper_id=paper.id, status="reading"))
+    await db_session.commit()
+
+    r = await client.post(f"/api/papers/{paper.id}/reingest")
+    assert r.status_code == 202
+    job = await db_session.get(Job, r.json()["job_id"])
+    assert job is not None
+    assert job.payload["source"] == "arxiv"
+    assert job.payload["arxiv_id"] == aid
+    assert "site" not in job.payload
+
+
 # ---------------------------------------------------------------------------
 # POST /api/library-items/{id}/figures/{block}/materialize (deferred figures)
 # ---------------------------------------------------------------------------

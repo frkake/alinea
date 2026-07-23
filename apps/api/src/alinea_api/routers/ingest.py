@@ -18,7 +18,7 @@ import hashlib
 import json
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from urllib.parse import urlsplit
 
 import structlog
@@ -61,7 +61,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from alinea_api.deps import CurrentUserOrExt, DbDep, SettingsDep
+from alinea_api.deps import CurrentUserOrExt, DbDep, RedisDep, SettingsDep
 from alinea_api.errors import PROBLEM_CONTENT_TYPE, ProblemError, ProblemException, build_problem
 from alinea_api.schemas.ingest import (
     IngestArxivRequest,
@@ -1149,6 +1149,7 @@ async def ingest_site(
     site_gateway: SiteGatewayDep,
     storage: PdfStorageDep,
     settings: SettingsDep,
+    redis: RedisDep,
     body: SiteIngestRequest,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> SiteIngestResponse | JSONResponse:
@@ -1189,9 +1190,13 @@ async def ingest_site(
 
     landing_url = adapter.landing_url(ref)
 
+    # JATS 品質 A 経路を持つサイト(PMC)は NCBI E-utilities から JATS XML を取得し S3 に
+    # 先行保存する。worker は source_format="jats" のとき原本 PDF を一切触らず JATS から
+    # 品質 A で構造化する(pipeline.py is_jats 経路)。PDF のみのサイト(ACL 等)は従来通り。
+    use_jats = "jats" in site_source_candidates(adapter.site)
+
     # 本文取得経路が無いサイト(PubMed 単体: JATS 本文なし・PDF 直リンクなし)は、常に失敗する
     # provider_error(502=リトライ示唆)ではなく、明確な終端シグナル(415=未対応)を返す。
-    # JATS/NCBI エンドツーエンド経路が API に配線されるまでの暫定ゲート(silent always-500 回避)。
     if _site_body_unavailable(adapter, ref):
         raise ProblemException(
             "unsupported_media_type",
@@ -1206,18 +1211,36 @@ async def ingest_site(
         if existing_item is not None:
             return await _duplicate_response(db, existing_item, instance="/api/ingest/site")
 
-    # landing メタと本文 PDF を SSRF 対策付きで取得する。
+    # 本文取得(JATS 優先。JATS 経路は原本 PDF を取らない)。SSRF/上限対策付き。
+    pdf_bytes: bytes | None = None
+    jats_bytes: bytes | None = None
     try:
         meta = await site_gateway.fetch_metadata(adapter, ref)
-        pdf_bytes = await site_gateway.fetch_pdf(adapter, ref, meta, settings)
+        if use_jats:
+            from alinea_core.adapters.pubmed import NcbiClient, NcbiConfig
+            from alinea_core.arxiv.fetch import RedisLike
+
+            # redis.Redis は RedisLike と構造的に厳密一致しないため cast する(cron.py と同方針)。
+            ncbi = NcbiClient(
+                config=NcbiConfig.from_settings(settings),
+                redis=cast(RedisLike, redis),
+            )
+            jats_bytes = await ncbi.fetch_pmc_jats(ref.external_id)
+        else:
+            pdf_bytes = await site_gateway.fetch_pdf(adapter, ref, meta, settings)
     except SiteFetchError as exc:
         raise ProblemException(
             "provider_error", detail=f"サイトからの取得に失敗しました({exc.kind})"
         ) from exc
-    if not pdf_bytes.startswith(_PDF_MAGIC):
-        raise ProblemException("provider_error", detail="取得した本文が PDF ではありません")
 
-    sha256 = hashlib.sha256(pdf_bytes).hexdigest()
+    if use_jats:
+        assert jats_bytes is not None
+        sha256 = hashlib.sha256(jats_bytes).hexdigest()
+    else:
+        assert pdf_bytes is not None
+        if not pdf_bytes.startswith(_PDF_MAGIC):
+            raise ProblemException("provider_error", detail="取得した本文が PDF ではありません")
+        sha256 = hashlib.sha256(pdf_bytes).hexdigest()
 
     # 冪等化: DOI → (site, external_id) → PDF SHA-256 の順に既存 Paper を探す。
     # 再利用は「public か自分の所有」に限る(他人の private には寄せない。§7.1)。
@@ -1252,27 +1275,40 @@ async def ingest_site(
         await db.commit()
         return await _duplicate_response(db, existing_item, instance="/api/ingest/site")
 
-    # 原本 PDF の保存は「新規作成した Paper」に対してのみ行う。再利用した(public または自分の)
-    # Paper は最初の取り込みで既に原本 PDF・リビジョンを持つため、上書き保存しない
-    # (他ユーザーの共有 Paper の原本 PDF を untrusted なサイト取得で破壊しない)。
+    # 本文の保存は「新規作成した Paper」に対してのみ行う。再利用した(public または自分の)
+    # Paper は最初の取り込みで既に本文・リビジョンを持つため、上書き保存しない
+    # (他ユーザーの共有 Paper の本文を untrusted なサイト取得で破壊しない)。
     if created_new:
-        storage_key = StorageKeys.original_pdf(paper_id, "v1")
-        await storage.put(
-            storage.sources_bucket, storage_key, pdf_bytes, content_type="application/pdf"
-        )
-        db.add(
-            SourceAsset(
-                paper_id=paper_id,
-                kind="pdf",
-                source_url=landing_url,
-                source_version="v1",
-                storage_key=storage_key,
-                content_type="application/pdf",
-                byte_size=len(pdf_bytes),
-                sha256=sha256,
+        if use_jats:
+            # JATS XML を S3(sources/<paper>/v1/jats.xml)へ先行保存する。worker の is_jats
+            # 経路がこの規約キーを直接読み品質 A リビジョンを生成する(SourceAsset 行や PDF
+            # プレースホルダは worker 契約上不要 — ck_source_assets_kind に 'jats' も無い)。
+            assert jats_bytes is not None
+            await storage.put(
+                storage.sources_bucket,
+                StorageKeys.jats_xml(paper_id, "v1"),
+                jats_bytes,
+                content_type="application/xml",
             )
-        )
-        await _ensure_pdf_placeholder_revision(db, paper, "v1")
+        else:
+            assert pdf_bytes is not None
+            storage_key = StorageKeys.original_pdf(paper_id, "v1")
+            await storage.put(
+                storage.sources_bucket, storage_key, pdf_bytes, content_type="application/pdf"
+            )
+            db.add(
+                SourceAsset(
+                    paper_id=paper_id,
+                    kind="pdf",
+                    source_url=landing_url,
+                    source_version="v1",
+                    storage_key=storage_key,
+                    content_type="application/pdf",
+                    byte_size=len(pdf_bytes),
+                    sha256=sha256,
+                )
+            )
+            await _ensure_pdf_placeholder_revision(db, paper, "v1")
 
     item = LibraryItem(
         user_id=user_id,
@@ -1297,17 +1333,22 @@ async def ingest_site(
 
     await db.commit()
 
+    ingest_payload: dict[str, Any] = {
+        "mode": "initial",
+        "source": "site",
+        "site": adapter.site,
+        "external_id": ref.external_id,
+        "landing_url": landing_url,
+        "library_item_id": library_item_id,
+    }
+    if use_jats:
+        # worker の is_jats 経路を起動する(先行保存した jats.xml を品質 A で構造化)。
+        ingest_payload["source_format"] = "jats"
+
     store = JobStore(db)
     job_id = await store.enqueue(
         kind="ingest",
-        payload={
-            "mode": "initial",
-            "source": "site",
-            "site": adapter.site,
-            "external_id": ref.external_id,
-            "landing_url": landing_url,
-            "library_item_id": library_item_id,
-        },
+        payload=ingest_payload,
         idempotency_key=stored_idempotency_key,
         priority="bulk",
         user_id=user_id,

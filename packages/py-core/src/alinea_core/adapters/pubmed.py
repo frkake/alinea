@@ -143,7 +143,10 @@ class PmcAdapter:
         return SiteRef(site=_PMC_SITE, external_id=pmcid)
 
     def landing_url(self, ref: SiteRef) -> str:
-        return f"https://www.ncbi.nlm.nih.gov/pmc/articles/{ref.external_id}/"
+        # 正規ホストは pmc.ncbi.nlm.nih.gov。旧 www.ncbi.nlm.nih.gov/pmc/ は 301 で
+        # ここへ転送されるが、リダイレクト先ホストが allow-list 外になり fetch が
+        # source_not_found で落ちるため、最初から正規ホストを返す。
+        return f"https://pmc.ncbi.nlm.nih.gov/articles/{ref.external_id}/"
 
     def pdf_url(self, ref: SiteRef) -> str | None:
         # PMC の本文 PDF 直リンクは記事ごとに異なり landing HTML からしか判らないため、

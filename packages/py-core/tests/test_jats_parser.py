@@ -152,8 +152,22 @@ _XXE_EXTERNAL_ENTITY = b"""<?xml version="1.0"?>
 <article><body><sec><title>t</title><p>&xxe;</p></sec></body></article>
 """
 
-_DOCTYPE_ONLY = b"""<?xml version="1.0"?>
+# 外部 DTD 参照のみ(内部サブセット無し)の DOCTYPE。PMC の efetch JATS が常にこの形:
+#   <!DOCTYPE pmc-articleset PUBLIC "..." "https://dtd.nlm.nih.gov/.../*.dtd">
+# 外部 DTD は XML_PARAM_ENTITY_PARSING_NEVER により決して取得されず、ENTITY も宣言でき
+# ないため安全に許可する(取得を試みるとネットワークで固まるが、本テストが即返るのは
+# 取得していない証左)。
+_DOCTYPE_EXTERNAL_ONLY = b"""<?xml version="1.0"?>
 <!DOCTYPE article SYSTEM "http://evil.example/jats.dtd">
+<article><body><sec><title>t</title><p>hello</p></sec></body></article>
+"""
+
+# 内部サブセット([...])を持つ DOCTYPE は ENTITY 宣言の温床。外部実体も billion-laughs も
+# ここに宣言されるため、内部サブセット付き DOCTYPE は一律拒否する。
+_DOCTYPE_INTERNAL_SUBSET = b"""<?xml version="1.0"?>
+<!DOCTYPE article [
+  <!ELEMENT article ANY>
+]>
 <article><body><sec><title>t</title><p>hello</p></sec></body></article>
 """
 
@@ -172,9 +186,16 @@ def test_parse_jats_rejects_external_entity() -> None:
     assert exc.value.kind == "parse_error"
 
 
-def test_parse_jats_rejects_doctype() -> None:
+def test_parse_jats_accepts_external_only_doctype() -> None:
+    # 外部 DTD 参照のみの DOCTYPE(PMC efetch の実形式)は安全に受理される。
+    result = parse_jats(_DOCTYPE_EXTERNAL_ONLY)
+    assert result.body_available is True
+    assert result.document.sections
+
+
+def test_parse_jats_rejects_internal_subset_doctype() -> None:
     with pytest.raises(JatsParseError):
-        parse_jats(_DOCTYPE_ONLY)
+        parse_jats(_DOCTYPE_INTERNAL_SUBSET)
 
 
 def test_parse_jats_rejects_entity_bomb() -> None:
@@ -210,3 +231,108 @@ def test_parse_jats_no_body_is_abstract_only() -> None:
     assert result.meta.abstract.startswith("Only an abstract")
     # 本文が無いので構造化ブロックは空(abstract は Paper 側メタとして保存される)。
     assert result.document.blocks == []
+
+
+# --------------------------------------------------------------------------- #
+# efetch(db=pmc)の実形式: <pmc-articleset> ラッパ・<floats-group> 図・pmcid ID 種別
+# --------------------------------------------------------------------------- #
+
+# 実際の NCBI efetch は <article> を <pmc-articleset> で包み、図を <body> ではなく
+# 末尾の <floats-group> に集約し、PMCID を pub-id-type="pmcid"(値は "PMC…")で持つ。
+_EFETCH_ARTICLESET = b"""<?xml version="1.0"?>
+<!DOCTYPE pmc-articleset PUBLIC "-//NLM//DTD ARTICLE SET 2.0//EN" \
+"https://dtd.nlm.nih.gov/ncbi/pmc/articleset/nlm-articleset-2.0.dtd">
+<pmc-articleset><article>
+  <front><article-meta>
+    <article-id pub-id-type="pmcid">PMC11638972</article-id>
+    <article-id pub-id-type="pmid">38878555</article-id>
+    <article-id pub-id-type="doi">10.1016/j.artmed.2024.102900</article-id>
+    <title-group><article-title>Wrapped In An Articleset</article-title></title-group>
+  </article-meta></front>
+  <body>
+    <sec><title>Intro</title>
+      <p>See <xref ref-type="fig" rid="F1">Fig. 1</xref>.</p>
+    </sec>
+  </body>
+  <floats-group>
+    <fig id="F1"><label>Fig. 1.</label>
+      <caption><p>A flow diagram.</p></caption>
+      <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="nihms-f0001.jpg"/>
+    </fig>
+    <fig id="F2"><label>Fig. 2.</label>
+      <caption><p>A second figure.</p></caption>
+      <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="nihms-f0002.jpg"/>
+    </fig>
+  </floats-group>
+</article></pmc-articleset>
+"""
+
+
+def test_parse_jats_unwraps_pmc_articleset() -> None:
+    result = parse_jats(_EFETCH_ARTICLESET)
+    assert result.body_available is True
+    assert result.meta.title == "Wrapped In An Articleset"
+
+
+def test_parse_jats_reads_pmcid_id_type() -> None:
+    # efetch は pub-id-type="pmcid"(値は "PMC…")。旧経路の "pmc" とも両立する。
+    meta = parse_jats(_EFETCH_ARTICLESET).meta
+    assert meta.pmcid == "PMC11638972"
+    assert meta.pmid == "38878555"
+    assert meta.doi == "10.1016/j.artmed.2024.102900"
+
+
+def test_parse_jats_extracts_floats_group_figures() -> None:
+    # <floats-group> の図は本文走査では拾えないため、別途収容して図 0 枚を防ぐ。
+    result = parse_jats(_EFETCH_ARTICLESET)
+    figures = [b for _sec, b in result.document.iter_blocks() if b.type == "figure"]
+    assert len(figures) == 2
+    hrefs = {ref.get("href", "") for ref in result.deferred_figures}
+    assert hrefs == {"nihms-f0001.jpg", "nihms-f0002.jpg"}
+
+
+# --------------------------------------------------------------------------- #
+# ネストした <sec> の section id 一意性(pipeline の重複 id 検証を通す)
+# --------------------------------------------------------------------------- #
+
+# 実測(PMC11638972)で、ネストした ``<sec>`` の連番を親ごとに 0 から振っていたため
+# ``sec-s0`` が最上位イントロ節と最初の節の最初の子節で衝突し、structuring 段の
+# ``_validate_unique_document_ids`` が "duplicate section id: sec-s0" で fail-closed に
+# なり品質 A 取り込みが terminal 失敗していた。階層パス id で一意化する。
+_NESTED_SECS = b"""<?xml version="1.0"?>
+<article><body>
+  <sec><title>First</title>
+    <p>Parent one.</p>
+    <sec><title>First-A</title><p>child a</p></sec>
+    <sec><title>First-B</title><p>child b</p></sec>
+  </sec>
+  <sec><title>Second</title>
+    <p>Parent two.</p>
+    <sec><title>Second-A</title><p>child a2</p>
+      <sec><title>Second-A-1</title><p>grandchild</p></sec>
+    </sec>
+  </sec>
+</body></article>
+"""
+
+
+def test_parse_jats_nested_section_ids_are_unique() -> None:
+    from alinea_core.translation.pipeline import _validate_unique_document_ids
+
+    result = parse_jats(_NESTED_SECS)
+    content = result.document.to_document_content()
+
+    ids: list[str] = []
+
+    def _walk(sec: object) -> None:
+        ids.append(sec.id)  # type: ignore[attr-defined]
+        for child in sec.sections:  # type: ignore[attr-defined]
+            _walk(child)
+
+    for sec in content.sections:
+        _walk(sec)
+
+    # 親ごとに 0 から振ると sec-s0 が衝突する。階層 id なら全て一意。
+    assert len(ids) == len(set(ids)), f"duplicate section ids: {ids}"
+    # pipeline のリビジョン全体一意性検証を通る(structuring 段が落ちない)。
+    _validate_unique_document_ids(content)

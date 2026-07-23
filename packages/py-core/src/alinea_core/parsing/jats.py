@@ -104,8 +104,19 @@ def _safe_parse(data: bytes | str) -> _Node:
     # namespace_separator を渡すと属性名も {uri}local へ展開される。
     parser = expat.ParserCreate(namespace_separator="}")
 
-    def _reject_doctype(*_args: Any, **_kwargs: Any) -> None:
-        raise JatsParseError("parse_error", "DOCTYPE declarations are not allowed in JATS input")
+    def _guard_doctype(
+        _name: str, _system_id: Any, _public_id: Any, has_internal_subset: int
+    ) -> None:
+        # PMC の efetch JATS は常に外部 DTD 参照のみの DOCTYPE(内部サブセット無し)を持つ:
+        #   <!DOCTYPE pmc-articleset PUBLIC "..." "https://dtd.nlm.nih.gov/.../*.dtd">
+        # 内部サブセット([...])が無い DOCTYPE は ENTITY 宣言を持ち得ないため billion-laughs
+        # は原理的に不可能で、外部 DTD は XML_PARAM_ENTITY_PARSING_NEVER により決して取得
+        # されない。よって外部参照のみの DOCTYPE は安全に許可する。内部サブセットを持つ
+        # DOCTYPE(カスタム ENTITY 宣言の温床)だけは従来通り fail-closed で拒否する。
+        if has_internal_subset:
+            raise JatsParseError(
+                "parse_error", "DOCTYPE with an internal subset is not allowed in JATS input"
+            )
 
     def _reject_entity(*_args: Any, **_kwargs: Any) -> None:
         raise JatsParseError("parse_error", "entity declarations are not allowed in JATS input")
@@ -113,7 +124,7 @@ def _safe_parse(data: bytes | str) -> _Node:
     def _reject_external(*_args: Any, **_kwargs: Any) -> bool:
         raise JatsParseError("parse_error", "external entity references are not allowed")
 
-    parser.StartDoctypeDeclHandler = _reject_doctype
+    parser.StartDoctypeDeclHandler = _guard_doctype
     parser.EntityDeclHandler = _reject_entity
     parser.UnparsedEntityDeclHandler = _reject_entity
     parser.ExternalEntityRefHandler = _reject_external
@@ -236,7 +247,8 @@ def _extract_meta(article: _Node) -> JatsMeta:
             value = _clean(_all_text(aid))
             if kind == "pmid":
                 pmid = value
-            elif kind == "pmc":
+            elif kind in ("pmc", "pmcid"):
+                # PMC OA 直配布は "pmc"、efetch(db=pmc)は "pmcid"(値は "PMC…")を使う。
                 pmcid = normalize_pmcid(value)
             elif kind == "doi":
                 doi = value
@@ -584,22 +596,31 @@ class _BodyBuilder:
         return Block(id="", type="list", ordered=ordered, items=items)
 
     # -- セクション --------------------------------------------------------
-    def _section(self, node: _Node, order: int) -> Section:
+    def _section(self, node: _Node, path: str) -> Section:
+        """1 つの ``<sec>`` を Section へ。``path`` は階層パス(例: "s0", "s0-1")。
+
+        section id はリビジョン全体で一意でなければならない(pipeline の
+        ``_validate_unique_document_ids`` が重複を fail-closed で弾く)。ネストした
+        ``<sec>`` の連番を親ごとに 0 から振ると ``sec-s0`` 等が衝突するため、
+        html_parser と同じく親のパスを引き継いだ階層 id を採る。
+        """
         title_node = _find(node, "title")
         title = _clean(_all_text(title_node)) if title_node is not None else ""
-        sec = Section(id=f"sec-s{order}", heading=SectionHeading(title=title))
+        sec = Section(id=f"sec-{path}", heading=SectionHeading(title=title))
         sub_order = 0
         for child in node.children:
             if child.tag == "title":
                 continue
             if child.tag == "sec":
-                sec.sections.append(self._section(child, sub_order))
+                sec.sections.append(self._section(child, f"{path}-{sub_order}"))
                 sub_order += 1
             else:
                 sec.blocks.extend(self._blocks_from(child))
         return sec
 
-    def build(self, body: _Node, back: _Node | None) -> list[Section]:
+    def build(
+        self, body: _Node, back: _Node | None, floats: list[_Node] | None = None
+    ) -> list[Section]:
         sections: list[Section] = []
         pending: list[Block] = []
         order = 0
@@ -611,7 +632,7 @@ class _BodyBuilder:
                     sections.append(intro)
                     order += 1
                     pending = []
-                sections.append(self._section(child, order))
+                sections.append(self._section(child, f"s{order}"))
                 order += 1
             else:
                 pending.extend(self._blocks_from(child))
@@ -620,6 +641,21 @@ class _BodyBuilder:
             intro.blocks.extend(pending)
             sections.append(intro)
             order += 1
+
+        # <floats-group>: PMC は本文と別に figure/table を末尾へ集約することがある
+        # (body 内は xref 参照のみ)。本文走査では拾えないため図表ブロックを別セクションへ
+        # 収容する(拾わないと品質 A なのに図 0 枚になる)。
+        for group in floats or []:
+            float_blocks: list[Block] = []
+            for child in group.children:
+                float_blocks.extend(self._blocks_from(child))
+            if float_blocks:
+                floats_sec = Section(
+                    id=f"sec-s{order}", heading=SectionHeading(title="Figures and Tables")
+                )
+                floats_sec.blocks.extend(float_blocks)
+                sections.append(floats_sec)
+                order += 1
 
         # back/ref-list を参考文献セクションへ。
         if back is not None:
@@ -666,14 +702,24 @@ def parse_jats(data: bytes | str) -> JatsParseResult:
     JATS 本文が無い)なら ``body_available=False`` の空 document + abstract メタを返す。
     """
 
-    article = _safe_parse(data)
-    if article.tag != "article":
-        # PMC OA は必ず <article> ルート。それ以外は非対応 XML。
-        raise JatsParseError("parse_error", f"unexpected JATS root element: {article.tag!r}")
+    root = _safe_parse(data)
+    # PMC の efetch は <article> を <pmc-articleset> でラップして返す(通常 1 件)。
+    # PMC OA の直接 JATS は <article> ルート。両形式を受理し、article 要素へ降りる。
+    article: _Node | None
+    if root.tag == "article":
+        article = root
+    elif root.tag == "pmc-articleset":
+        article = _find(root, "article")
+    else:
+        raise JatsParseError("parse_error", f"unexpected JATS root element: {root.tag!r}")
+    if article is None:
+        raise JatsParseError("parse_error", "pmc-articleset contains no <article> element")
 
     meta = _extract_meta(article)
     body = _find(article, "body")
     back = _find(article, "back")
+    # <floats-group> は article 直下(body/back の兄弟)に置かれることがある。
+    floats = _findall(article, "floats-group")
 
     builder = _BodyBuilder()
     if body is None:
@@ -685,7 +731,7 @@ def parse_jats(data: bytes | str) -> JatsParseResult:
             body_available=False,
         )
 
-    sections = builder.build(body, back)
+    sections = builder.build(body, back, floats)
     assign_block_ids(sections)
     document = JatsDocument(sections=sections, warnings=builder.warnings)
     return JatsParseResult(
