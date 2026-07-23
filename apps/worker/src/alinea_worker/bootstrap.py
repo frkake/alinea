@@ -295,7 +295,7 @@ async def build_task_router(
 
 def build_user_router_factory(
     maker: async_sessionmaker[AsyncSession],
-    redis_client: redis.Redis,
+    redis_client: redis.Redis | None,
     settings: CoreSettings,
     *,
     fake_llm: bool = False,
@@ -494,6 +494,7 @@ __all__ = [
     "build_task_router",
     "build_user_router_factory",
     "channel_key",
+    "get_settings",
     "make_publish",
     "on_shutdown",
     "on_startup",

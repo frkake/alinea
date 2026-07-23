@@ -571,7 +571,10 @@ def test_pubmed_pmc_url_builders() -> None:
     pm_ref = SiteRef(site="pubmed", external_id="31000000")
     pmc_ref = SiteRef(site="pmc", external_id="PMC6543210")
     assert pubmed.landing_url(pm_ref) == "https://pubmed.ncbi.nlm.nih.gov/31000000/"
-    assert pmc.landing_url(pmc_ref) == "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6543210/"
+    # 正規ホストは pmc.ncbi.nlm.nih.gov(旧 www.ncbi.nlm.nih.gov/pmc/ は 301 でここへ転送
+    # されるが、リダイレクト先が fetch allow-list 外になるため源泉側で正規ホストを返す。
+    # d5a1e04 で landing_url を修正した際に本テストが未追随だった)。
+    assert pmc.landing_url(pmc_ref) == "https://pmc.ncbi.nlm.nih.gov/articles/PMC6543210/"
     # PubMed は本文 PDF 直リンクを持たない(NCBI client 経由でしか本文へ到達しない)。
     assert pubmed.pdf_url(pm_ref) is None
 

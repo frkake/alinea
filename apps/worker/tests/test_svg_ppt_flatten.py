@@ -24,6 +24,17 @@ def _find_all(root: ET.Element, local: str) -> list[ET.Element]:
     return [e for e in root.iter() if str(e.tag).rsplit("}", 1)[-1] == local]
 
 
+def _opacity(el: ET.Element) -> float:
+    """Return the element's ``opacity`` as a float, asserting it is present.
+
+    ``Element.get`` is typed ``str | None``; the tests below require the folded
+    opacity to exist, so assert-then-cast keeps both mypy and the intent honest.
+    """
+    value = el.get("opacity")
+    assert value is not None, "expected opacity attribute to be present"
+    return float(value)
+
+
 def _forbidden_present(text: str) -> list[str]:
     """Mirror the checker's three hard-error style constructs."""
     import re
@@ -52,7 +63,7 @@ def test_style_block_and_class_are_inlined() -> None:
         '<text class="title" x="78" y="138">タイトル</text>'
         '<text class="sub" x="80" y="226">サブ</text>'
         "</svg>"
-    ).encode("utf-8")
+    ).encode()
 
     out = flatten_svg_for_ppt(svg)
     text = out.decode("utf-8")
@@ -82,7 +93,7 @@ def test_inline_style_attribute_overrides_class_and_beats_presentation_attr() ->
         # element: presentation attr fill=#222 < class fill=#111 < style fill=#333
         '<text class="c" fill="#222222" style="fill:#333333">x</text>'
         "</svg>"
-    ).encode("utf-8")
+    ).encode()
 
     root = _parse(flatten_svg_for_ppt(svg))
     text = _find_all(root, "text")[0]
@@ -101,7 +112,7 @@ def test_multiple_classes_on_one_element_merge_in_stylesheet_order() -> None:
         "</style>"
         '<text class="base hi">y</text>'
         "</svg>"
-    ).encode("utf-8")
+    ).encode()
 
     root = _parse(flatten_svg_for_ppt(svg))
     text = _find_all(root, "text")[0]
@@ -120,7 +131,7 @@ def test_group_opacity_is_folded_onto_children() -> None:
         '<rect x="0" y="0" width="4" height="4" fill="#fff" opacity="0.5"/>'
         "</g>"
         "</svg>"
-    ).encode("utf-8")
+    ).encode()
 
     out = flatten_svg_for_ppt(svg)
     assert _forbidden_present(out.decode("utf-8")) == []
@@ -133,7 +144,7 @@ def test_group_opacity_is_folded_onto_children() -> None:
     rect = _find_all(root, "rect")[0]
     assert path.get("opacity") == "0.18"
     # child with its own opacity multiplies: 0.18 * 0.5 = 0.09
-    assert abs(float(rect.get("opacity")) - 0.09) < 1e-6
+    assert abs(_opacity(rect) - 0.09) < 1e-6
 
 
 def test_nested_group_opacity_is_pushed_all_the_way_down() -> None:
@@ -145,7 +156,7 @@ def test_nested_group_opacity_is_pushed_all_the_way_down() -> None:
         "</g>"
         "</g>"
         "</svg>"
-    ).encode("utf-8")
+    ).encode()
 
     out = flatten_svg_for_ppt(svg)
     assert _forbidden_present(out.decode("utf-8")) == []
@@ -154,7 +165,7 @@ def test_nested_group_opacity_is_pushed_all_the_way_down() -> None:
         assert "opacity" not in g.attrib
     rect = _find_all(root, "rect")[0]
     # 0.5 * 0.4 = 0.20
-    assert abs(float(rect.get("opacity")) - 0.20) < 1e-6
+    assert abs(_opacity(rect) - 0.20) < 1e-6
 
 
 # --- preservation ------------------------------------------------------------ #
@@ -170,7 +181,7 @@ def test_gradient_stop_style_is_preserved() -> None:
         "</linearGradient></defs>"
         '<rect x="0" y="0" width="10" height="10" fill="url(#bg)"/>'
         "</svg>"
-    ).encode("utf-8")
+    ).encode()
 
     root = _parse(flatten_svg_for_ppt(svg))
     stops = _find_all(root, "stop")
@@ -184,7 +195,7 @@ def test_clean_svg_is_returned_unchanged() -> None:
         '<text x="5" y="5" fill="#ffffff" font-size="24" '
         "font-family=\"'Noto Sans JP',Arial\">z</text>"
         "</svg>"
-    ).encode("utf-8")
+    ).encode()
 
     out = flatten_svg_for_ppt(svg)
     assert _forbidden_present(out.decode("utf-8")) == []
@@ -198,7 +209,7 @@ def test_gt_style_attribute_is_not_the_forbidden_style_element() -> None:
         f'<svg xmlns="{_SVG_NS}" width="1280" height="720" viewBox="0 0 1280 720">'
         '<rect style="fill:#abcdef" x="0" y="0" width="4" height="4"/>'
         "</svg>"
-    ).encode("utf-8")
+    ).encode()
     root = _parse(flatten_svg_for_ppt(svg))
     rect = _find_all(root, "rect")[0]
     assert rect.get("fill") == "#abcdef"

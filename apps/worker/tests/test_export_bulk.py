@@ -376,7 +376,11 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
     )
 
     # PaperExternalId(サイト取り込み由来の名寄せ識別子。完全バックアップに含める)。
-    external_id = f"2023.acl-long.{uuid.uuid4().int % 1000}"
+    # ``uq_paper_external_ids_site_external (site, external_id)`` はグローバル制約。以前は
+    # ``% 1000`` で 1000 通りしか無く、_seed_user_data を呼ぶ複数テストが同一の分離 DB
+    # (Task 32・TRUNCATE しない)へ commit するうちに誕生日のパラドックスで衝突していた。
+    # 他フィクスチャ同様、完全な uuid エントロピーで一意にする。
+    external_id = f"2023.acl-long.{uuid.uuid4().hex}"
     db.add(
         PaperExternalId(
             id=str(uuid.uuid4()),
@@ -445,7 +449,6 @@ async def _seed_user_data(db: AsyncSession) -> dict[str, str]:
         "user_id": str(user.id),
         "paper_id": str(paper.id),
         "library_item_id": str(item.id),
-        "paper_id": str(paper.id),
         "presentation_artifact_id": presentation_artifact_id,
         "presentation_job_id": presentation_job_id,
         "presentation_pptx_key": presentation_pptx_key,
@@ -774,9 +777,9 @@ async def test_export_document_asset_keys_collected(db_session: AsyncSession) ->
                       content_type="image/webp")
 
     # DocumentRevision の content に figure block を追加する
-    from alinea_core.db.models import DocumentRevision as DR
+    from alinea_core.db.models import DocumentRevision
     from sqlalchemy import select
-    revs = (await db_session.execute(select(DR))).scalars().all()
+    revs = (await db_session.execute(select(DocumentRevision))).scalars().all()
     for rev in revs:
         rev.content = {
             "quality_level": "A",

@@ -11,7 +11,6 @@ arXiv は worker conftest の ASGI スタブ(``worker_ctx``)を再利用する(L
 
 from __future__ import annotations
 
-import os
 import random
 import time
 import uuid
@@ -21,19 +20,18 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from alinea_core.db.models import DocumentRevision, LibraryItem, Notification, Paper, User
+from alinea_core.testing import testdb
 from alinea_worker.cron import _candidate_papers, check_quality_promotions
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql+asyncpg://alinea:alinea@localhost:5432/alinea",
-)
-
 
 @pytest_asyncio.fixture
 async def maker() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    engine = create_async_engine(DATABASE_URL, poolclass=None)
+    # Task 32 の分離テスト DB をフィクスチャ呼び出し時に解決する(import 時の定数焼き込みは
+    # ``db_session`` と DB が食い違い、seed した行が cron から見えなくなる。
+    # test_cron_deadline_reminders.py の同名 fixture 参照)。
+    engine = create_async_engine(testdb.database_url(), poolclass=None)
     yield async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     await engine.dispose()
 

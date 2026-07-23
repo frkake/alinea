@@ -23,9 +23,9 @@ import redis.asyncio as redis
 from alinea_core.db.models import LibraryItem, Paper, User
 from alinea_core.llm import LLMRuntimeConfig
 from alinea_core.parsing.pdf_parser import PdfOcrReadiness
+from alinea_core.testing import testdb
 from alinea_llm.router import LLMRouter
-from alinea_llm.testing.fake_provider import FakeLLMProvider
-from alinea_llm.testing.fake_provider import FakeEmbeddingProvider
+from alinea_llm.testing.fake_provider import FakeEmbeddingProvider, FakeLLMProvider
 from alinea_worker import bootstrap as worker_bootstrap
 from alinea_worker.bootstrap import (
     TaskAwareLLMRouter,
@@ -45,16 +45,14 @@ from cryptography.fernet import Fernet
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql+asyncpg://alinea:alinea@localhost:5432/alinea",
-)
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 
 @pytest_asyncio.fixture
 async def maker() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    engine = create_async_engine(DATABASE_URL, poolclass=None)
+    # Task 32 の分離テスト DB をフィクスチャ呼び出し時に解決する(import 時の env 焼き込みは
+    # ``db_session`` と DB が食い違う。test_cron_deadline_reminders.py の同名 fixture 参照)。
+    engine = create_async_engine(testdb.database_url(), poolclass=None)
     yield async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     await engine.dispose()
 
