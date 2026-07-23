@@ -70,6 +70,13 @@ _DEFAULT_STRUCTURED: dict[str, dict[str, Any]] = {
             },
         ],
         "connectors": [{"from": 0, "to": 1}, {"from": 1, "to": 2}],
+        # 決定(live-acceptance): schema 側(alinea_figures.dsl)がコミット 3c90c95 で
+        # ``evidence`` を required 化(OpenAI strict structured outputs 準拠)した際、この共有
+        # fixture が追随せず ALINEA_FAKE_LLM=1 経路で attach_parsed が schema_validation で
+        # 必ず落ち、概要図ジョブが partial_failure で握り潰されて記事に「✦ 全体概要図」が
+        # 出なくなっていた(E2E PW-13 失敗の根本原因)。実データ由来のブロックID未解決でも
+        # _evidence_anchor_dicts が黙って skip するため任意のパターン一致IDで安全。
+        "evidence": ["blk-p1", "blk-p2"],
     },
     # alinea_worker.tasks.generate_vocab_ai の実スキーマ名・9 フィールドと一致させる
     # (plans/07 §7.2)。旧名 vocab_entry_v1 は実装のどこからも参照されない死んだキーだった。

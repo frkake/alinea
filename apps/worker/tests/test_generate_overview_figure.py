@@ -299,7 +299,9 @@ async def test_py_fig_03_initial_v1_then_rewrite_bumps_version(db_session: Async
     )
     rewrite_job = await store.claim(rewrite_job_id)
     assert rewrite_job is not None
-    await run_overview_figure_job({"user_router_factory": _factory(rewrite_provider)}, store, rewrite_job)
+    await run_overview_figure_job(
+        {"user_router_factory": _factory(rewrite_provider)}, store, rewrite_job
+    )
 
     refreshed_v1 = await db_session.get(OverviewFigure, v1.id)
     assert refreshed_v1 is not None
@@ -387,7 +389,13 @@ async def test_py_fig_04_raster_mode_on_generates_image_via_image_router(
     ctx = {"image_router": image_router}
 
     row = await create_overview_figure_v1(
-        ctx, db_session, router=router, article=seed["article"], sources=sources, user=seed["user"], job=job
+        ctx,
+        db_session,
+        router=router,
+        article=seed["article"],
+        sources=sources,
+        user=seed["user"],
+        job=job,
     )
     await db_session.commit()
     assert row.render_mode == "raster"
@@ -417,3 +425,36 @@ async def test_numeric_mismatch_retries_then_raises(db_session: AsyncSession) ->
             job=job,
         )
     assert provider.calls == 3  # 初回 + 再試行 2 回
+
+
+# --------------------------------------------------------------------------- #
+# 回帰(live-acceptance): 共有 FakeLLM fixture が概要図 DSL の実スキーマに追随していること。
+#
+# コミット 3c90c95 が ``OVERVIEW_FIGURE_DSL_JSON_SCHEMA`` の required に ``evidence`` を追加した
+# のに ``fake_provider._DEFAULT_STRUCTURED["overview_figure_dsl_v1"]`` を更新しなかったため、
+# ALINEA_FAKE_LLM=1 経路(E2E・開発)で ``attach_parsed`` が schema_validation で必ず落ち、
+# 概要図ジョブが partial_failure に握り潰されて記事に「✦ 全体概要図」が描画されなくなっていた。
+# 本テストは E2E スタックと同一の経路(実 FakeLLMProvider.generate_structured と実 schema spec)
+# で fixture を検証し、fixture ドリフトを二度と通さないための門番。
+# --------------------------------------------------------------------------- #
+async def test_shared_fake_fixture_satisfies_real_overview_dsl_schema() -> None:
+    from alinea_llm.testing.fake_provider import _DEFAULT_STRUCTURED, FakeLLMProvider
+    from alinea_llm.types import ContentPart, Message
+    from alinea_worker.tasks.generate_overview_figure import OVERVIEW_FIGURE_DSL_SCHEMA_SPEC
+
+    # fixture は schema の全 required キーを含む(欠けると E2E で握り潰される)。
+    fixture = _DEFAULT_STRUCTURED[OVERVIEW_FIGURE_DSL_SCHEMA_SPEC.name]
+    assert set(OVERVIEW_FIGURE_DSL_SCHEMA_SPEC.json_schema["required"]).issubset(fixture)
+
+    # E2E と同一経路: 実 FakeLLMProvider が実 schema spec で attach_parsed を通す
+    # (fixture が schema 不整合なら ProviderError(SCHEMA_VALIDATION) を送出する)。
+    provider = FakeLLMProvider()
+    resp = await provider.generate_structured(
+        LLMRequest(
+            model="claude-opus-4-8",
+            messages=[Message(role="user", parts=[ContentPart(type="text", text="x")])],
+            json_schema=OVERVIEW_FIGURE_DSL_SCHEMA_SPEC,
+        )
+    )
+    assert resp.parsed is not None
+    assert "evidence" in resp.parsed
