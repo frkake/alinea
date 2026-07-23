@@ -1,12 +1,47 @@
 /**
- * リソースタブ(5a)の型(plans/03 §12.1 の完全形をそのまま使用)。
+ * リソースタブ(5a)の型。
  *
- * `@alinea/api-client` は本エンドポイント群を未生成のため(main.py 未登録。deviations 参照)、
- * ここでローカル定義する。生成後はこのファイルを `@alinea/api-client` の re-export に差し替える。
+ * `@alinea/api-client` の生成型を re-export し、UI 固有の補助型だけをここで定義する。
+ * 生成型は OpenAPI "nullable optional" フィールドを `?: T | null` (= `T | null | undefined`) で
+ * 生成するが、呼び出し元は `T | null` を期待するため、ラッパー型で `undefined` を除去する。
  */
 
-export type ResKind = "github" | "youtube" | "slides" | "article";
+export type {
+  ResourceSuggestion,
+} from "@alinea/api-client";
 
+import type {
+  ResourceLink as _ResourceLink,
+  ResourceListResponse as _ResourceListResponse,
+} from "@alinea/api-client";
+
+/**
+ * ResourceLink: `@alinea/api-client` の生成型から nullable optional フィールドを
+ * `T | null` へ正規化し、meta を Record<string, unknown> に固定する。
+ */
+export type ResourceLink = Omit<_ResourceLink, "thumbnail_url" | "note" | "meta"> & {
+  thumbnail_url: string | null;
+  note: string | null;
+  meta: Record<string, unknown>;
+};
+
+/**
+ * ResourceListResponse: items を正規化済み ResourceLink の配列に固定。
+ * suggestions(複数)が正典。suggestion(単数)は互換期間中のみ先頭候補。
+ */
+export type ResourceListResponse = Omit<
+  _ResourceListResponse,
+  "items" | "suggestion" | "suggestions"
+> & {
+  items: ResourceLink[];
+  suggestion: import("@alinea/api-client").ResourceSuggestion | null;
+  suggestions: import("@alinea/api-client").ResourceSuggestion[];
+};
+
+/** リソース種別(生成型 ResourceLink.kind の union を名付けたエイリアス)。 */
+export type ResKind = "github" | "youtube" | "slides" | "article" | "huggingface" | "project";
+
+/** kind 別 meta 形(format.ts のキャスト用。生成型は meta?: Record<string, unknown>)。 */
 export interface ResourceGithubMeta {
   language: string | null;
   stars: number | null;
@@ -26,34 +61,25 @@ export interface ResourceArticleMeta {
   reading_minutes: number | null;
 }
 
+/** Hugging Face カード meta(Paper/Model/Dataset/Space)。 */
+export interface ResourceHuggingFaceMeta {
+  repo_type: "paper" | "model" | "dataset" | "space";
+  repo_id: string | null;
+  downloads: number | null;
+  likes: number | null;
+  pipeline_tag: string | null;
+}
+
+/** 公式プロジェクトページ meta。 */
+export interface ResourceProjectMeta {
+  official_candidate?: boolean;
+}
+
 export type ResourceMeta =
   | ResourceGithubMeta
   | ResourceYoutubeMeta
   | ResourceSlidesMeta
   | ResourceArticleMeta
+  | ResourceHuggingFaceMeta
+  | ResourceProjectMeta
   | Record<string, never>;
-
-export interface ResourceLink {
-  id: string;
-  kind: ResKind;
-  url: string;
-  official: boolean;
-  title: string;
-  source_label: string;
-  thumbnail_url: string | null;
-  meta: ResourceMeta;
-  meta_fetched: boolean;
-  note: string | null;
-  created_at: string;
-}
-
-export interface ResourceSuggestion {
-  url: string;
-  detected_from: "arxiv_page";
-}
-
-export interface ResourceListResponse {
-  items: ResourceLink[];
-  suggestion: ResourceSuggestion | null;
-  count: number;
-}

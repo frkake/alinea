@@ -36,6 +36,9 @@ ignore = ["S101"]
 "**/tests/**" = ["S", "E501"]
 # Alembic マイグレーションは verbatim SQL(plans/02 §4)を持つため行長チェック対象外
 "**/alembic/versions/**" = ["E501"]
+# 意図的な数式グリフ ``×`` を docstring 内で使う(noqa をコメントとして置けない位置)。
+"apps/worker/src/alinea_worker/presentation/runner.py" = ["RUF002"]
+"packages/llm/src/alinea_llm/testing/mock_server.py" = ["RUF002"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
@@ -48,7 +51,7 @@ exclude = ["alembic/versions/"]
 
 # 型スタブを提供しないサードパーティ(aioboto3/botocore 等)は import 追跡を無視する
 [[tool.mypy.overrides]]
-module = ["aioboto3.*", "botocore.*", "selectolax.*", "xxhash.*", "fitz.*", "pdfplumber.*"]
+module = ["aioboto3.*", "botocore.*", "selectolax.*", "xxhash.*", "fitz.*", "pdfplumber.*", "asyncpg.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

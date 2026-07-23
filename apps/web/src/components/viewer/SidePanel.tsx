@@ -8,6 +8,7 @@ import { useViewerStore } from "@/stores/viewer-store";
 import { AnnotationListPanel } from "@/components/viewer/AnnotationListPanel";
 import { NotesPanel } from "@/components/viewer/NotesPanel";
 import { ResourcesPanel } from "@/components/viewer/ResourcesPanel";
+import { VocabCandidatesPanel } from "@/components/viewer/VocabCandidatesPanel";
 
 /** M0 のサイドパネルは チャット / 図表 / 情報 の 3 タブのみ(plans/13 §1.5・未実装 UI は非表示)。 */
 const M0_TABS: readonly SidePanelTabId[] = ["chat", "figures", "info"];
@@ -27,12 +28,24 @@ const M2_TABS: readonly SidePanelTabId[] = [
   "info",
 ];
 
+/** M3 で 単語候補 タブを追加(Task-8)。 */
+const M3_TABS: readonly SidePanelTabId[] = [
+  "chat",
+  "notes",
+  "annotations",
+  "figures",
+  "resources",
+  "vocab-candidates",
+  "info",
+];
+
 const TAB_LABELS: Record<SidePanelTabId, string> = {
   chat: "チャット",
   notes: "メモ",
   annotations: "注釈",
   figures: "図表",
   resources: "リソース",
+  "vocab-candidates": "単語候補",
   info: "情報",
 };
 
@@ -69,7 +82,7 @@ function writePanelWidth(width: number): void {
 }
 
 export interface SidePanelProps {
-  milestone?: "M0" | "M1" | "M2";
+  milestone?: "M0" | "M1" | "M2" | "M3";
   /** 件数バッジ(注釈・リソースのみ。M0 タブには出さない)。 */
   counts?: Partial<Record<SidePanelTabId, number>>;
   /**
@@ -84,7 +97,7 @@ export interface SidePanelProps {
  * サイドパネル枠(viewer-shell §6)。排他タブ・幅・開閉を所有。
  * タブ本体(ChatTab/FiguresTab/InfoTab)は各画面ファイル担当のため、
  * 未供給時はプレースホルダを描画する(M0 シェルの責務は枠まで)。
- * notes/annotations/resources タブは本レーン所有の自己完結コンポーネント(props なし)を直接マウントする。
+ * notes/annotations/resources/vocab-candidates タブは本レーン所有の自己完結コンポーネント(props なし)を直接マウントする。
  */
 export function SidePanel({ milestone = "M0", counts = {}, renderTab }: SidePanelProps) {
   const panelOpen = useViewerStore((s) => s.panelOpen);
@@ -153,7 +166,14 @@ export function SidePanel({ milestone = "M0", counts = {}, renderTab }: SidePane
     [finishResize, width],
   );
 
-  const tabs = milestone === "M2" ? M2_TABS : milestone === "M1" ? M1_TABS : M0_TABS;
+  const tabs =
+    milestone === "M3"
+      ? M3_TABS
+      : milestone === "M2"
+        ? M2_TABS
+        : milestone === "M1"
+          ? M1_TABS
+          : M0_TABS;
   const active = tabs.includes(storeTab) ? storeTab : "chat";
 
   if (!panelOpen) {
@@ -270,6 +290,8 @@ export function SidePanel({ milestone = "M0", counts = {}, renderTab }: SidePane
           <NotesPanel />
         ) : active === "resources" ? (
           <ResourcesPanel />
+        ) : active === "vocab-candidates" ? (
+          <VocabCandidatesPanel />
         ) : renderTab ? (
           renderTab(active)
         ) : (
@@ -387,6 +409,7 @@ function TabPlaceholder({ tab }: { tab: SidePanelTabId }) {
     notes: { title: "メモ", description: "" },
     annotations: { title: "注釈", description: "" },
     resources: { title: "リソース", description: "" },
+    "vocab-candidates": { title: "単語候補", description: "" },
   };
   const c = copy[tab];
   return (

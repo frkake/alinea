@@ -6,12 +6,19 @@ URL 検出・citation_* メタ抽出・SiteMeta 写像・registry 解決を fixt
 
 from __future__ import annotations
 
+import json as _json
 from pathlib import Path
 
+import httpx
+import pytest
 from alinea_core.adapters import (
     AclAnthologyAdapter,
+    SiteFetchError,
     SiteRef,
+    adapter_allowed_hosts,
     extract_citation_meta,
+    fetch_html,
+    fetch_pdf,
     normalize_scholar_author,
     resolve_adapter,
 )
@@ -149,3 +156,783 @@ def test_resolve_adapter_none() -> None:
     assert resolve_adapter("https://arxiv.org/abs/2209.03003") is None
     assert resolve_adapter("https://example.com/paper") is None
     assert resolve_adapter("") is None
+
+
+# --------------------------------------------------------------------------- #
+# 境界付き HTTP クライアント + SSRF 対策(adapters/fetch.py)
+# --------------------------------------------------------------------------- #
+
+_ACL_HOSTS = frozenset({"aclanthology.org"})
+_MINIMAL_PDF = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+
+
+def test_adapter_allowed_hosts_from_declared_urls() -> None:
+    adapter = AclAnthologyAdapter()
+    ref = SiteRef(site="acl_anthology", external_id="2023.acl-long.42")
+    assert adapter_allowed_hosts(adapter, ref) == frozenset({"aclanthology.org"})
+
+
+async def test_fetch_html_returns_landing_on_allowed_host() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html><body>ok</body></html>",
+                              headers={"content-type": "text/html"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        html = await fetch_html(
+            "https://aclanthology.org/2023.acl-long.42/",
+            allowed_hosts=_ACL_HOSTS,
+            client=client,
+        )
+    finally:
+        await client.aclose()
+    assert "ok" in html
+
+
+async def test_fetch_html_rejects_host_not_in_allowlist() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - must not be called
+        raise AssertionError("request should be blocked before sending")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(SiteFetchError) as exc:
+            await fetch_html(
+                "https://evil.example/steal",
+                allowed_hosts=_ACL_HOSTS,
+                client=client,
+            )
+    finally:
+        await client.aclose()
+    assert exc.value.kind == "source_not_found"
+
+
+async def test_fetch_pdf_revalidates_host_after_redirect() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "aclanthology.org":
+            # allow-list 外ホストへ 302 リダイレクトする(SSRF 試行)。
+            return httpx.Response(302, headers={"location": "https://169.254.169.254/latest/meta"})
+        raise AssertionError("must not follow redirect to disallowed host")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(SiteFetchError) as exc:
+            await fetch_pdf(
+                "https://aclanthology.org/2023.acl-long.42.pdf",
+                allowed_hosts=_ACL_HOSTS,
+                client=client,
+            )
+    finally:
+        await client.aclose()
+    assert exc.value.kind == "source_not_found"
+
+
+async def test_fetch_pdf_follows_redirect_within_allowlist() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(".pdf") and "final" not in request.url.path:
+            return httpx.Response(
+                302, headers={"location": "https://aclanthology.org/final.pdf"}
+            )
+        return httpx.Response(
+            200, content=_MINIMAL_PDF, headers={"content-type": "application/pdf"}
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        data = await fetch_pdf(
+            "https://aclanthology.org/2023.acl-long.42.pdf",
+            allowed_hosts=_ACL_HOSTS,
+            client=client,
+        )
+    finally:
+        await client.aclose()
+    assert data.startswith(b"%PDF-")
+
+
+async def test_fetch_pdf_rejects_non_pdf_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>not a pdf</html>",
+                              headers={"content-type": "text/html"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(SiteFetchError) as exc:
+            await fetch_pdf(
+                "https://aclanthology.org/2023.acl-long.42.pdf",
+                allowed_hosts=_ACL_HOSTS,
+                client=client,
+            )
+    finally:
+        await client.aclose()
+    assert exc.value.kind == "source_not_found"
+
+
+# --------------------------------------------------------------------------- #
+# OpenReview アダプタ
+# --------------------------------------------------------------------------- #
+
+_OR_FIXTURE = Path(__file__).parent / "fixtures" / "openreview_note.json"
+_OR_HOSTS = frozenset({"openreview.net"})
+
+_VALID_OR = [
+    # forum URL → 同一 SiteRef
+    ("https://openreview.net/forum?id=abc123XYZ", "abc123XYZ"),
+    ("http://openreview.net/forum?id=abc123XYZ", "abc123XYZ"),
+    # pdf URL → 同一 SiteRef
+    ("https://openreview.net/pdf?id=abc123XYZ", "abc123XYZ"),
+    # 特殊文字を含む ID (URL エンコード済み)
+    ("https://openreview.net/forum?id=Abc_1-2%2F3", "Abc_1-2/3"),
+]
+
+_INVALID_OR = [
+    "https://openreview.net/",                          # ルートだけ
+    "https://openreview.net/group?id=ICLR.cc/2024",    # group URL
+    "https://openreview.net/revisions?id=abc",          # revisions URL
+    "https://aclanthology.org/2023.acl-long.123/",
+    "https://arxiv.org/abs/2209.03003",
+    "",
+    "not a url",
+]
+
+
+# --------------------------------------------------------------------------- #
+# PubMed / PMC アダプタ(Task 17)
+# --------------------------------------------------------------------------- #
+
+from alinea_core.adapters import (  # noqa: E402
+    PmcAdapter,
+    PubMedAdapter,
+)
+
+_VALID_PUBMED = [
+    ("https://pubmed.ncbi.nlm.nih.gov/31000000/", "31000000"),
+    ("https://pubmed.ncbi.nlm.nih.gov/31000000", "31000000"),
+    ("http://www.ncbi.nlm.nih.gov/pubmed/31000000", "31000000"),
+    ("pubmed.ncbi.nlm.nih.gov/31000000/", "31000000"),
+]
+
+_INVALID_PUBMED = [
+    "https://pubmed.ncbi.nlm.nih.gov/",
+    "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6543210/",
+    "https://arxiv.org/abs/2209.03003",
+    "",
+    "not a url",
+]
+
+
+def test_openreview_match_valid() -> None:
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    for url, external_id in _VALID_OR:
+        ref = adapter.match(url)
+        assert ref is not None, f"should match: {url}"
+        assert ref.site == "openreview"
+        assert ref.external_id == external_id, f"id mismatch for {url}"
+
+
+def test_openreview_match_invalid() -> None:
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    for url in _INVALID_OR:
+        assert adapter.match(url) is None, f"should not match: {url}"
+
+
+def test_openreview_forum_and_pdf_url_normalize_to_same_ref() -> None:
+    """forum?id=X と /pdf?id=X は同一 SiteRef になる。"""
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    forum_ref = adapter.match("https://openreview.net/forum?id=abc123XYZ")
+    pdf_ref = adapter.match("https://openreview.net/pdf?id=abc123XYZ")
+    assert forum_ref is not None
+    assert pdf_ref is not None
+    assert forum_ref == pdf_ref
+
+
+def test_openreview_url_builders() -> None:
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    assert adapter.pdf_url(ref) == "https://openreview.net/pdf?id=abc123XYZ"
+    assert adapter.landing_url(ref) == "https://openreview.net/forum?id=abc123XYZ"
+
+
+def test_openreview_adapter_allowed_hosts() -> None:
+    """アダプタ宣言ホストは openreview.net のみ(SSRF allow-list)。"""
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    hosts = adapter_allowed_hosts(adapter, ref)
+    assert hosts == frozenset({"openreview.net"})
+
+
+def test_openreview_parse_note_from_fixture() -> None:
+    """API2 note JSON → SiteMeta 写像を検証する。"""
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    payload = _json.loads(_OR_FIXTURE.read_text())
+    note = payload["notes"][0]
+    meta = adapter.parse_note(note, ref)
+
+    assert meta.site == "openreview"
+    assert meta.external_id == "abc123XYZ"
+    assert meta.title == "Attention Is All You Need (Mock)"
+    assert meta.authors == [{"name": "Alice Author"}, {"name": "Bob Builder"}]
+    assert meta.abstract.startswith("We introduce a new mock architecture")
+    assert meta.venue == "ICLR 2024"
+    # pdate 1704153600000 ms → 2024-01-02
+    assert meta.published_on == "2024-01-02"
+    assert meta.pdf_url == "https://openreview.net/pdf?id=abc123XYZ"
+    assert meta.license == "cc-by-4.0"
+    assert meta.doi is None
+
+
+def test_openreview_parse_note_fallback_to_citation_meta() -> None:
+    """note が空(notes=[])の場合は citation_* メタへフォールバックする。"""
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    # note が None → citation_* 経由
+    meta = adapter.parse_metadata_from_note_and_citation(
+        note=None,
+        citation_html="<html><head>"
+        '<meta name="citation_title" content="Fallback Title">'
+        '<meta name="citation_author" content="Doe, John">'
+        '<meta name="citation_publication_date" content="2023/05">'
+        "</head></html>",
+        ref=ref,
+    )
+    assert meta.title == "Fallback Title"
+    assert meta.authors == [{"name": "John Doe"}]
+    assert meta.published_on == "2023-05-01"
+    assert meta.pdf_url == "https://openreview.net/pdf?id=abc123XYZ"
+
+
+def test_openreview_resolve_adapter() -> None:
+    """registry 経由で OpenReview URL が解決される。"""
+    resolved = resolve_adapter("https://openreview.net/forum?id=abc123XYZ")
+    assert resolved is not None
+    adapter, ref = resolved
+    assert adapter.site == "openreview"
+    assert ref.external_id == "abc123XYZ"
+
+
+def test_openreview_resolve_adapter_pdf_url() -> None:
+    """PDF URL も registry で解決される。"""
+    resolved = resolve_adapter("https://openreview.net/pdf?id=abc123XYZ")
+    assert resolved is not None
+    adapter, ref = resolved
+    assert adapter.site == "openreview"
+    assert ref.external_id == "abc123XYZ"
+
+
+def test_openreview_citation_fallback_ignores_html_pdf_url() -> None:
+    """citation_html に citation_pdf_url があっても adapter URL を使う(SSRF 対策)。"""
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    citation_html = (
+        "<html><head>"
+        '<meta name="citation_title" content="Attack Paper">'
+        '<meta name="citation_author" content="Hacker, Evil">'
+        # 悪意のある citation_pdf_url (SSRF 試行)。
+        '<meta name="citation_pdf_url" content="https://169.254.169.254/latest/meta-data/">'
+        "</head></html>"
+    )
+    meta = adapter.parse_metadata_from_note_and_citation(
+        note=None, citation_html=citation_html, ref=ref
+    )
+    # HTML 由来の悪性 URL ではなくアダプタ宣言 URL が使われていること。
+    assert meta.pdf_url == "https://openreview.net/pdf?id=abc123XYZ"
+
+
+async def test_fetch_note_returns_note_on_success() -> None:
+    """fetch_note は API2 notes[0] を返す(MockTransport)。"""
+    from alinea_core.adapters.fetch import fetch_note
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    note_payload = _json.loads(_OR_FIXTURE.read_text())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "api2/notes" in request.url.path
+        return httpx.Response(
+            200,
+            json=note_payload,
+            headers={"content-type": "application/json"},
+        )
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        note = await fetch_note(adapter, ref, client=client)
+    finally:
+        await client.aclose()
+
+    assert note is not None
+    assert note["id"] == "abc123XYZ"
+    content = note["content"]
+    assert isinstance(content, dict)
+    assert content["title"]["value"] == "Attention Is All You Need (Mock)"
+
+
+async def test_fetch_note_returns_none_on_403() -> None:
+    """403 は note 不在として None を返す(in-tab PDF fallback シグナル)。"""
+    from alinea_core.adapters.fetch import fetch_note
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, text="Forbidden")
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        note = await fetch_note(adapter, ref, client=client)
+    finally:
+        await client.aclose()
+    assert note is None
+
+
+async def test_fetch_note_returns_none_on_empty_notes() -> None:
+    """notes=[] は note 不在として None を返す。"""
+    from alinea_core.adapters.fetch import fetch_note
+    from alinea_core.adapters.openreview import OpenReviewAdapter
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"notes": [], "count": 0})
+
+    adapter = OpenReviewAdapter()
+    ref = SiteRef(site="openreview", external_id="abc123XYZ")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        note = await fetch_note(adapter, ref, client=client)
+    finally:
+        await client.aclose()
+    assert note is None
+
+
+_VALID_PMC = [
+    ("https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6543210/", "PMC6543210"),
+    ("https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6543210", "PMC6543210"),
+    ("https://pmc.ncbi.nlm.nih.gov/articles/PMC6543210/", "PMC6543210"),
+    ("ncbi.nlm.nih.gov/pmc/articles/PMC6543210/", "PMC6543210"),
+]
+
+_INVALID_PMC = [
+    "https://pubmed.ncbi.nlm.nih.gov/31000000/",
+    "https://www.ncbi.nlm.nih.gov/pmc/",
+    "https://arxiv.org/abs/2209.03003",
+    "",
+]
+
+
+def test_pubmed_match_valid() -> None:
+    adapter = PubMedAdapter()
+    for url, external_id in _VALID_PUBMED:
+        ref = adapter.match(url)
+        assert ref is not None, url
+        assert ref.site == "pubmed"
+        assert ref.external_id == external_id, url
+
+
+def test_pubmed_match_invalid() -> None:
+    adapter = PubMedAdapter()
+    for url in _INVALID_PUBMED:
+        assert adapter.match(url) is None, url
+
+
+def test_pmc_match_valid() -> None:
+    adapter = PmcAdapter()
+    for url, external_id in _VALID_PMC:
+        ref = adapter.match(url)
+        assert ref is not None, url
+        assert ref.site == "pmc", url
+        # PMCID は大文字 PMC + 数字へ正規化する。
+        assert ref.external_id == external_id, url
+
+
+def test_pmc_match_invalid() -> None:
+    adapter = PmcAdapter()
+    for url in _INVALID_PMC:
+        assert adapter.match(url) is None, url
+
+
+def test_pubmed_pmc_url_builders() -> None:
+    pubmed = PubMedAdapter()
+    pmc = PmcAdapter()
+    pm_ref = SiteRef(site="pubmed", external_id="31000000")
+    pmc_ref = SiteRef(site="pmc", external_id="PMC6543210")
+    assert pubmed.landing_url(pm_ref) == "https://pubmed.ncbi.nlm.nih.gov/31000000/"
+    # 正規ホストは pmc.ncbi.nlm.nih.gov(旧 www.ncbi.nlm.nih.gov/pmc/ は 301 でここへ転送
+    # されるが、リダイレクト先が fetch allow-list 外になるため源泉側で正規ホストを返す。
+    # d5a1e04 で landing_url を修正した際に本テストが未追随だった)。
+    assert pmc.landing_url(pmc_ref) == "https://pmc.ncbi.nlm.nih.gov/articles/PMC6543210/"
+    # PubMed は本文 PDF 直リンクを持たない(NCBI client 経由でしか本文へ到達しない)。
+    assert pubmed.pdf_url(pm_ref) is None
+
+
+def test_resolve_adapter_pubmed_and_pmc() -> None:
+    resolved_pm = resolve_adapter("https://pubmed.ncbi.nlm.nih.gov/31000000/")
+    assert resolved_pm is not None
+    assert resolved_pm[0].site == "pubmed"
+    assert resolved_pm[1].external_id == "31000000"
+
+    resolved_pmc = resolve_adapter("https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6543210/")
+    assert resolved_pmc is not None
+    assert resolved_pmc[0].site == "pmc"
+    assert resolved_pmc[1].external_id == "PMC6543210"
+
+
+# --------------------------------------------------------------------------- #
+# NCBI E-utilities / PMC OA クライアント + Redis throttle(Task 17)
+# --------------------------------------------------------------------------- #
+
+from alinea_core.adapters.pubmed import (  # noqa: E402
+    NcbiClient,
+    NcbiConfig,
+    ncbi_throttle,
+    ncbi_throttle_interval_ms,
+)
+
+
+class _FakeRedis:
+    """in-memory の最小 Redis(SET NX PX スピン用)。TTL は無視する。"""
+
+    def __init__(self) -> None:
+        self._store: dict[str, bytes] = {}
+        self.set_calls = 0
+
+    async def get(self, name: str) -> bytes | None:
+        return self._store.get(name)
+
+    async def set(
+        self,
+        name: str,
+        value: bytes,
+        *,
+        ex: int | None = None,
+        px: int | None = None,
+        nx: bool = False,
+    ) -> bool | None:
+        self.set_calls += 1
+        if nx and name in self._store:
+            return None
+        self._store[name] = value
+        return True
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_ncbi_throttle_interval_depends_on_api_key() -> None:
+    # API キーなし = 3 req/s(>= 333ms 間隔)、あり = 10 req/s(>= 100ms 間隔)。
+    assert ncbi_throttle_interval_ms(api_key=None) >= 333
+    assert ncbi_throttle_interval_ms(api_key="secret") >= 100
+    assert ncbi_throttle_interval_ms(api_key="secret") < ncbi_throttle_interval_ms(api_key=None)
+
+
+async def test_ncbi_throttle_spins_until_slot_free() -> None:
+    redis = _FakeRedis()
+    # 最初の取得は成功、2 回目は占有中(nx 失敗)→ 解放後に取得できる。
+    await ncbi_throttle(redis, interval_ms=100, sleep_ms=1)
+    assert redis.set_calls == 1
+
+
+async def test_ncbi_client_fetches_pmc_jats_from_configured_base() -> None:
+    jats = (_FIXTURE.parent / "pmc_article.xml").read_bytes()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # PMC OA XML は設定可能な base URL 配下のみ叩く(実 NCBI へは行かない)。
+        assert request.url.host == "eutils.test"
+        if "efetch" in request.url.path:
+            return httpx.Response(200, content=jats,
+                                  headers={"content-type": "application/xml"})
+        raise AssertionError(f"unexpected NCBI path: {request.url.path}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://eutils.test")
+    config = NcbiConfig(eutils_base_url="http://eutils.test", api_key=None)
+    ncbi = NcbiClient(config=config, client=client, redis=_FakeRedis())
+    try:
+        xml = await ncbi.fetch_pmc_jats("PMC6543210")
+    finally:
+        await client.aclose()
+    assert b"A Deterministic Method for Parsing JATS" in xml
+
+
+async def test_ncbi_client_maps_pmid_to_pmcid() -> None:
+    idconv = b"""<?xml version="1.0"?>
+    <pmcids status="ok">
+      <record requested-id="31000000" pmcid="PMC6543210" pmid="31000000"/>
+    </pmcids>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "idconv.test"
+        return httpx.Response(200, content=idconv, headers={"content-type": "application/xml"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://idconv.test")
+    config = NcbiConfig(idconv_base_url="http://idconv.test", api_key=None)
+    ncbi = NcbiClient(config=config, client=client, redis=_FakeRedis())
+    try:
+        pmcid = await ncbi.pmid_to_pmcid("31000000")
+    finally:
+        await client.aclose()
+    assert pmcid == "PMC6543210"
+
+
+# --------------------------------------------------------------------------- #
+# Hugging Face アダプタ(Task 18)
+# --------------------------------------------------------------------------- #
+
+_HF_FIXTURE = Path(__file__).parent / "fixtures" / "huggingface_paper.json"
+
+_VALID_HF = [
+    ("https://huggingface.co/papers/2307.09288", "paper", "2307.09288"),
+    ("http://huggingface.co/papers/2307.09288", "paper", "2307.09288"),
+    ("https://hf.co/papers/2307.09288", "paper", "2307.09288"),
+    ("huggingface.co/papers/2307.09288", "paper", "2307.09288"),
+    ("https://huggingface.co/meta-llama/Llama-2-7b", "model", "meta-llama/Llama-2-7b"),
+    ("https://huggingface.co/datasets/squad", "dataset", "squad"),
+    ("https://huggingface.co/datasets/org/instruct", "dataset", "org/instruct"),
+    ("https://huggingface.co/spaces/huggingface/llama2-demo", "space", "huggingface/llama2-demo"),
+]
+
+_INVALID_HF = [
+    # org / user page (no repo id after org)
+    "https://huggingface.co/meta-llama",
+    # collections / settings / resolve は取り込み入口にしない
+    "https://huggingface.co/collections/meta-llama/llama-2",
+    "https://huggingface.co/settings/tokens",
+    "https://huggingface.co/meta-llama/Llama-2-7b/resolve/main/config.json",
+    # 他ホスト
+    "https://arxiv.org/abs/2307.09288",
+    "https://aclanthology.org/2023.acl-long.123/",
+    "https://nothuggingface.co/papers/2307.09288",
+    "",
+    "not a url",
+]
+
+
+def test_huggingface_match_valid() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceAdapter, parse_huggingface_url
+
+    adapter = HuggingFaceAdapter()
+    for url, kind, external_id in _VALID_HF:
+        ref = adapter.match(url)
+        assert ref is not None, url
+        assert ref.site == "huggingface"
+        assert ref.external_id == external_id, url
+        parsed = parse_huggingface_url(url)
+        assert parsed is not None, url
+        assert parsed.kind == kind, url
+        assert parsed.external_id == external_id, url
+
+
+def test_huggingface_match_invalid() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceAdapter, parse_huggingface_url
+
+    adapter = HuggingFaceAdapter()
+    for url in _INVALID_HF:
+        assert adapter.match(url) is None, url
+        assert parse_huggingface_url(url) is None, url
+
+
+def test_parse_huggingface_url_paper_ref() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceRef, parse_huggingface_url
+
+    assert parse_huggingface_url("https://huggingface.co/papers/2307.09288") == HuggingFaceRef(
+        kind="paper", external_id="2307.09288"
+    )
+
+
+def test_huggingface_allowed_hosts() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceAdapter
+
+    adapter = HuggingFaceAdapter()
+    ref = SiteRef(site="huggingface", external_id="2307.09288")
+    hosts = adapter_allowed_hosts(adapter, ref)
+    assert hosts == frozenset({"huggingface.co"})
+
+
+def test_discover_paper_resources_order_limit_and_relations() -> None:
+    from alinea_core.adapters.huggingface import discover_paper_resources
+
+    payload = _json.loads(_HF_FIXTURE.read_text())
+    resources = discover_paper_resources(payload, arxiv_id="2307.09288")
+
+    # 全種最大(1+1+1+5+3+3=14)は 13 件のグローバル上限で切り詰められる(≤13)。
+    assert len(resources) <= 13
+    assert len(resources) == 13
+
+    relations = [r.relation for r in resources]
+    # 生成順: paper -> github -> project -> model(5) -> dataset(3) -> space(上限で末尾 1 件が落ちる)。
+    assert relations[0] == "paper"
+    assert relations[1] == "github"
+    assert relations[2] == "project"
+    assert relations[3:8] == ["model"] * 5
+    assert relations[8:11] == ["dataset"] * 3
+    assert relations[11:13] == ["space"] * 2
+
+    assert {r.relation for r in resources} >= {"github", "project", "model", "dataset", "space"}
+
+
+def test_discover_paper_resources_kinds_and_official_candidates() -> None:
+    from alinea_core.adapters.huggingface import discover_paper_resources
+
+    payload = _json.loads(_HF_FIXTURE.read_text())
+    resources = discover_paper_resources(payload, arxiv_id="2307.09288")
+    by_relation = {r.relation: r for r in resources}
+
+    # Paper Page / Model / Dataset / Space は kind="huggingface"。
+    assert by_relation["paper"].kind == "huggingface"
+    assert by_relation["model"].kind == "huggingface"
+    assert by_relation["dataset"].kind == "huggingface"
+    assert by_relation["space"].kind == "huggingface"
+    # githubRepo は github、projectPage は project。
+    assert by_relation["github"].kind == "github"
+    assert by_relation["project"].kind == "project"
+
+    # official candidate は paper-level の githubRepo / projectPage のみ。
+    official = {r.relation for r in resources if r.official_candidate}
+    assert official == {"github", "project"}
+    # linked artifacts は official candidate ではない。
+    assert by_relation["model"].official_candidate is False
+    assert by_relation["paper"].official_candidate is False
+
+
+def test_discover_paper_resources_models_sorted_by_downloads_desc() -> None:
+    from alinea_core.adapters.huggingface import discover_paper_resources
+
+    payload = _json.loads(_HF_FIXTURE.read_text())
+    resources = discover_paper_resources(payload, arxiv_id="2307.09288")
+    model_urls = [r.url for r in resources if r.relation == "model"]
+    # downloads 降順の上位 5 件(700000, 500000, 400000, 300000, 100000)。
+    assert "meta-llama/Llama-2-7b" in model_urls[0]
+    assert "meta-llama/Llama-2-70b" in model_urls[1]
+    assert all("some/extra-model" not in u for u in model_urls)  # 6件目は上限で落ちる
+
+
+def test_discover_paper_resources_dedupes_by_normalized_url() -> None:
+    from alinea_core.adapters.huggingface import discover_paper_resources
+
+    payload: dict[str, object] = {
+        "id": "1234.5678",
+        "githubRepo": "https://github.com/acme/repo",
+        # projectPage が githubRepo と同一(正規化後) → 重複排除で 1 件に畳む。
+        "projectPage": "https://github.com/acme/repo/",
+        "linkedModels": [],
+        "linkedDatasets": [],
+        "linkedSpaces": [],
+    }
+    resources = discover_paper_resources(payload, arxiv_id="1234.5678")
+    urls = [r.url for r in resources]
+    # 正規化後 URL がユニーク。
+    from alinea_core.adapters.huggingface import normalize_candidate_url
+
+    normalized = [normalize_candidate_url(u) for u in urls]
+    assert len(normalized) == len(set(normalized))
+
+
+def test_huggingface_resolve_adapter() -> None:
+    resolved = resolve_adapter("https://huggingface.co/papers/2307.09288")
+    assert resolved is not None
+    adapter, ref = resolved
+    assert adapter.site == "huggingface"
+    assert ref.external_id == "2307.09288"
+
+
+def test_arxiv_id_from_tags_unique() -> None:
+    from alinea_core.adapters.huggingface import arxiv_id_from_tags
+
+    assert arxiv_id_from_tags(["arxiv:2307.09288", "license:mit"]) == "2307.09288"
+    # 0 件 → None(選択不能)。
+    assert arxiv_id_from_tags(["license:mit"]) is None
+    # 複数件 → None(一意に決まらない)。
+    assert arxiv_id_from_tags(["arxiv:2307.09288", "arxiv:2101.00001"]) is None
+    # 重複した同一 ID は一意扱い。
+    assert arxiv_id_from_tags(["arxiv:2307.09288", "arxiv:2307.09288"]) == "2307.09288"
+
+
+async def test_hf_client_fetch_paper_from_configured_base() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceClient, HuggingFaceConfig
+
+    payload = _json.loads(_HF_FIXTURE.read_text())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "hf.test"
+        assert "/api/papers/2307.09288" in request.url.path
+        return httpx.Response(200, json=payload, headers={"content-type": "application/json"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://hf.test")
+    config = HuggingFaceConfig(base_url="http://hf.test")
+    hf = HuggingFaceClient(config=config, client=client)
+    try:
+        data = await hf.fetch_paper("2307.09288")
+    finally:
+        await client.aclose()
+    assert data["id"] == "2307.09288"
+    github_repo = data["githubRepo"]
+    assert isinstance(github_repo, str)
+    assert github_repo.startswith("https://github.com/")
+
+
+async def test_hf_client_fetch_repo_tags_for_model() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceClient, HuggingFaceConfig
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "hf.test"
+        assert "/api/models/meta-llama/Llama-2-7b" in request.url.path
+        return httpx.Response(
+            200,
+            json={"id": "meta-llama/Llama-2-7b", "tags": ["arxiv:2307.09288", "license:llama2"]},
+            headers={"content-type": "application/json"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://hf.test")
+    config = HuggingFaceConfig(base_url="http://hf.test")
+    hf = HuggingFaceClient(config=config, client=client)
+    try:
+        tags = await hf.fetch_repo_tags("model", "meta-llama/Llama-2-7b")
+    finally:
+        await client.aclose()
+    assert "arxiv:2307.09288" in tags
+
+
+async def test_hf_client_maps_404_to_source_not_found() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceClient, HuggingFaceConfig
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="not found")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://hf.test")
+    hf = HuggingFaceClient(config=HuggingFaceConfig(base_url="http://hf.test"), client=client)
+    try:
+        with pytest.raises(SiteFetchError) as exc:
+            await hf.fetch_paper("2307.09288")
+    finally:
+        await client.aclose()
+    assert exc.value.kind == "source_not_found"
+
+
+async def test_hf_client_maps_429_to_rate_limited() -> None:
+    from alinea_core.adapters.huggingface import HuggingFaceClient, HuggingFaceConfig
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="slow down")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://hf.test")
+    hf = HuggingFaceClient(config=HuggingFaceConfig(base_url="http://hf.test"), client=client)
+    try:
+        with pytest.raises(SiteFetchError) as exc:
+            await hf.fetch_paper("2307.09288")
+    finally:
+        await client.aclose()
+    assert exc.value.kind == "rate_limited"
+

@@ -21,6 +21,7 @@ import {
   apiMe,
   apiPatchStatus,
   apiSaveArxiv,
+  apiSaveSite,
   apiSendPdf,
   siteUrl,
   type DuplicateExisting,
@@ -211,63 +212,6 @@ export function App() {
     window.close();
   }, []);
 
-  const handleSave = useCallback(
-    async (payload: SavePayload) => {
-      if (!tabInfo) return;
-      setSaving(true);
-      setSaveError(null);
-      const idempotencyKey = crypto.randomUUID();
-      const body = {
-        url: tabInfo.url,
-        status: payload.status,
-        tags: payload.tags,
-        quick_note: payload.quickNote || null,
-        collection_id: payload.collectionId,
-      };
-      const outcome = await apiSaveArxiv(body, idempotencyKey);
-      setSaving(false);
-      switch (outcome.kind) {
-        case "accepted":
-          await addActiveJob(outcome.data.job_id);
-          setSavedView({
-            jobId: outcome.data.job_id,
-            libraryItemId: outcome.data.library_item_id,
-            title: check?.bib?.title ?? tabInfo.title,
-          });
-          break;
-        case "duplicate":
-          // 重複 → check を取り直して状態3(既にライブラリ)を表示(3a §2.4)。
-          setSavedView(null);
-          setReloadKey((k) => k + 1);
-          break;
-        case "retryable":
-          if (outcome.status === 0) {
-            // ネットワーク断のみキュー対象(plans/10 §7.1 決定。5xx/429 はキューに入れない)。
-            const record: FailedSaveRecord = {
-              id: idempotencyKey,
-              kind: "arxiv",
-              request: body,
-              title: check?.bib?.title ?? tabInfo.title,
-              failedAt: Date.now(),
-              lastError: NETWORK_ERROR,
-            };
-            const { evicted } = await enqueueFailedSave(record);
-            await refreshQueue();
-            if (evicted) notifyEviction(evicted.title);
-            setSaveError("送信できませんでした。あとで再試行できます(失敗キューに保存しました)。");
-          } else {
-            setSaveError(
-              outcome.message || "送信に失敗しました。しばらくしてからもう一度お試しください。",
-            );
-          }
-          break;
-        default:
-          setSaveError(outcome.message);
-      }
-    },
-    [tabInfo, check, refreshQueue, notifyEviction],
-  );
-
   // 取り込みキャンセル(docs/08 §2.2)。ライブラリ項目ごと削除して保存前フォームへ戻す。
   const handleCancelIngest = useCallback(async () => {
     if (!savedView) return;
@@ -355,6 +299,93 @@ export function App() {
         break;
     }
   }, [tabInfo, pdfTitleGuess, refreshQueue, notifyEviction]);
+
+  const handleSave = useCallback(
+    async (payload: SavePayload) => {
+      if (!tabInfo) return;
+      setSaving(true);
+      setSaveError(null);
+      const idempotencyKey = crypto.randomUUID();
+      const body = {
+        url: tabInfo.url,
+        status: payload.status,
+        tags: payload.tags,
+        quick_note: payload.quickNote || null,
+        collection_id: payload.collectionId,
+      };
+      // ACL Anthology 等の対応サイトは arXiv ではなく site エンドポイントを選ぶ。
+      // site 取り込みが恒久失敗(非対応 URL 等)以外で失敗したら、既存のタブ内 PDF 送信へ誘導する。
+      if (check?.kind === "site") {
+        const siteOutcome = await apiSaveSite(body, idempotencyKey);
+        if (siteOutcome.kind === "accepted") {
+          setSaving(false);
+          await addActiveJob(siteOutcome.data.job_id);
+          setSavedView({
+            jobId: siteOutcome.data.job_id,
+            libraryItemId: siteOutcome.data.library_item_id,
+            title: check?.bib?.title ?? tabInfo.title,
+          });
+          return;
+        }
+        if (siteOutcome.kind === "duplicate") {
+          setSaving(false);
+          setSavedView(null);
+          setReloadKey((k) => k + 1);
+          return;
+        }
+        // retryable(サイト取得失敗含む): タブ内 PDF 送信へフォールバック。
+        if (siteOutcome.kind === "retryable") {
+          await handleSendPdf();
+          setSaving(false);
+          return;
+        }
+        setSaving(false);
+        setSaveError(siteOutcome.message);
+        return;
+      }
+      const outcome = await apiSaveArxiv(body, idempotencyKey);
+      setSaving(false);
+      switch (outcome.kind) {
+        case "accepted":
+          await addActiveJob(outcome.data.job_id);
+          setSavedView({
+            jobId: outcome.data.job_id,
+            libraryItemId: outcome.data.library_item_id,
+            title: check?.bib?.title ?? tabInfo.title,
+          });
+          break;
+        case "duplicate":
+          // 重複 → check を取り直して状態3(既にライブラリ)を表示(3a §2.4)。
+          setSavedView(null);
+          setReloadKey((k) => k + 1);
+          break;
+        case "retryable":
+          if (outcome.status === 0) {
+            // ネットワーク断のみキュー対象(plans/10 §7.1 決定。5xx/429 はキューに入れない)。
+            const record: FailedSaveRecord = {
+              id: idempotencyKey,
+              kind: "arxiv",
+              request: body,
+              title: check?.bib?.title ?? tabInfo.title,
+              failedAt: Date.now(),
+              lastError: NETWORK_ERROR,
+            };
+            const { evicted } = await enqueueFailedSave(record);
+            await refreshQueue();
+            if (evicted) notifyEviction(evicted.title);
+            setSaveError("送信できませんでした。あとで再試行できます(失敗キューに保存しました)。");
+          } else {
+            setSaveError(
+              outcome.message || "送信に失敗しました。しばらくしてからもう一度お試しください。",
+            );
+          }
+          break;
+        default:
+          setSaveError(outcome.message);
+      }
+    },
+    [tabInfo, check, refreshQueue, notifyEviction, handleSendPdf],
+  );
 
   const handleRetryQueueEntry = useCallback(
     async (id: string, kind: "arxiv" | "pdf") => {
@@ -534,7 +565,10 @@ export function App() {
     case "saveform":
       return frame(
         "Alineaに保存",
-        { kind: "detect", label: "arXiv 論文を検出" },
+        {
+          kind: "detect",
+          label: check?.kind === "site" ? "対応サイトの論文を検出" : "arXiv 論文を検出",
+        },
         <SaveForm
           preview={{
             title: check?.bib?.title ?? tabInfo?.title ?? "",

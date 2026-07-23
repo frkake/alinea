@@ -7,7 +7,13 @@ services:
     # 決定: debian 版を使う。理由: alpine 版は英語ステミング用の token_filters/stem.so を同梱せず
     # PGroonga 索引(plans/11 §2.2 の英語面 TokenFilterStem)が作れない(実測)。debian 版は
     # stem.so + tokenizers/mecab.so を同梱し plans/11 §2.3-2.4 の前提を満たす。
-    image: groonga/pgroonga:4.0.1-debian-16
+    # S12: PGroonga(全文検索)に加え pgvector(vector 拡張)を積んだ自前イメージを build する。
+    # groonga/pgroonga:4.0.1-debian-16 を base に postgresql-16-pgvector を足す
+    # (docker/db/Dockerfile。両拡張を同時に持つ既製イメージは無い)。
+    build:
+      context: .
+      dockerfile: docker/db/Dockerfile
+    image: alinea-db:pgroonga-pgvector-16
     container_name: alinea-db
     ports:
       - "5432:5432"

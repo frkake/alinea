@@ -336,6 +336,20 @@ def _router(provider: ArticleScriptProvider) -> LLMRouter:
     return LLMRouter([("fake", "claude-opus-4-8", provider)])
 
 
+class _FakeFactory:
+    """テスト用 UserRouterFactory: 全タスク共通で固定 router を返す。"""
+
+    def __init__(self, router: LLMRouter) -> None:
+        self._router = router
+
+    async def for_job(self, *, user_id: str, task: str) -> LLMRouter:
+        return self._router
+
+
+def _factory(provider: ArticleScriptProvider) -> _FakeFactory:
+    return _FakeFactory(_router(provider))
+
+
 async def _enqueue_generate(
     db: AsyncSession, *, ctx_data: dict[str, Any], preset: str = "beginner"
 ) -> str:
@@ -379,7 +393,7 @@ async def test_generate_creates_article_with_attribution_last(db_session: AsyncS
     job = await store.claim(job_id)
     assert job is not None
 
-    await run_article_job({"router": _router(provider)}, store, job)
+    await run_article_job({"user_router_factory": _factory(provider)}, store, job)
 
     job = await store.get(job_id)
     assert job is not None
@@ -431,7 +445,7 @@ async def test_generate_persists_llm_output_containing_nul_safely(
     job = await store.claim(job_id)
     assert job is not None
 
-    await run_article_job({"router": _router(provider)}, store, job)
+    await run_article_job({"user_router_factory": _factory(provider)}, store, job)
 
     job = await store.get(job_id)
     assert job is not None and job.status == "succeeded", job.error if job else None
@@ -482,7 +496,7 @@ async def test_generate_rejects_foreign_latest_revision_before_llm(
     assert job is not None
 
     with pytest.raises(LookupError, match="revision not found"):
-        await run_article_job({"router": _router(provider)}, store, job)
+        await run_article_job({"user_router_factory": _factory(provider)}, store, job)
 
     assert provider.calls == 0
 
@@ -496,7 +510,7 @@ async def test_generate_respects_implementer_include_math_default(
     store = JobStore(db_session)
     job = await store.claim(job_id)
     assert job is not None
-    await run_article_job({"router": _router(provider)}, store, job)
+    await run_article_job({"user_router_factory": _factory(provider)}, store, job)
 
     job = await store.get(job_id)
     assert job is not None and job.status == "succeeded"
@@ -519,7 +533,7 @@ async def test_generate_uses_preset_specific_outline_for_all_four_presets(
     store = JobStore(db_session)
     job = await store.claim(job_id)
     assert job is not None
-    await run_article_job({"router": _router(provider)}, store, job)
+    await run_article_job({"user_router_factory": _factory(provider)}, store, job)
 
     job = await store.get(job_id)
     assert job is not None and job.status == "succeeded", job.error if job else None
@@ -540,7 +554,7 @@ async def test_generate_conflict_free_regenerate_bumps_version_and_history(
     store = JobStore(db_session)
     job = await store.claim(job_id)
     assert job is not None
-    await run_article_job({"router": _router(provider)}, store, job)
+    await run_article_job({"user_router_factory": _factory(provider)}, store, job)
     job = await store.get(job_id)
     assert job is not None
     article_id = job.result["article_id"]
@@ -556,7 +570,7 @@ async def test_generate_conflict_free_regenerate_bumps_version_and_history(
     )
     regen_job = await store.claim(regen_job_id)
     assert regen_job is not None
-    await run_article_job({"router": _router(provider)}, store, regen_job)
+    await run_article_job({"user_router_factory": _factory(provider)}, store, regen_job)
     article = await db_session.get(Article, article_id)
     assert article is not None
     assert article.version == 2
@@ -577,7 +591,7 @@ async def test_generate_conflict_free_regenerate_bumps_version_and_history(
     )
     regen_job2 = await store.claim(regen_job_id2)
     assert regen_job2 is not None
-    await run_article_job({"router": _router(provider)}, store, regen_job2)
+    await run_article_job({"user_router_factory": _factory(provider)}, store, regen_job2)
     await db_session.refresh(article)
     assert article.version == 3
     assert article.instructions_history == ["もっと簡単に書き直してください"]
@@ -593,7 +607,7 @@ async def test_block_rewrite_updates_only_target_block(db_session: AsyncSession)
     store = JobStore(db_session)
     job = await store.claim(job_id)
     assert job is not None
-    await run_article_job({"router": _router(provider)}, store, job)
+    await run_article_job({"user_router_factory": _factory(provider)}, store, job)
     job = await store.get(job_id)
     assert job is not None
     article_id = job.result["article_id"]
@@ -615,7 +629,7 @@ async def test_block_rewrite_updates_only_target_block(db_session: AsyncSession)
     )
     rewrite_job = await store.claim(rewrite_job_id)
     assert rewrite_job is not None
-    await run_article_job({"router": _router(rewrite_provider)}, store, rewrite_job)
+    await run_article_job({"user_router_factory": _factory(rewrite_provider)}, store, rewrite_job)
 
     rewrite_job = await store.get(rewrite_job_id)
     assert rewrite_job is not None
@@ -666,7 +680,7 @@ async def test_discussion_item_from_question_annotation_gets_user_highlight_orig
     store = JobStore(db_session)
     job = await store.claim(job_id)
     assert job is not None
-    await run_article_job({"router": _router(provider)}, store, job)
+    await run_article_job({"user_router_factory": _factory(provider)}, store, job)
 
     job = await store.get(job_id)
     assert job is not None and job.status == "succeeded", job.error if job else None
@@ -698,7 +712,7 @@ async def test_block_rewrite_of_attribution_is_rejected(db_session: AsyncSession
     store = JobStore(db_session)
     job = await store.claim(job_id)
     assert job is not None
-    await run_article_job({"router": _router(provider)}, store, job)
+    await run_article_job({"user_router_factory": _factory(provider)}, store, job)
     job = await store.get(job_id)
     assert job is not None
     article_id = job.result["article_id"]
@@ -717,7 +731,7 @@ async def test_block_rewrite_of_attribution_is_rejected(db_session: AsyncSession
     rewrite_job = await store.claim(rewrite_job_id)
     assert rewrite_job is not None
     try:
-        await run_article_job({"router": _router(provider)}, store, rewrite_job)
+        await run_article_job({"user_router_factory": _factory(provider)}, store, rewrite_job)
         raised = False
     except PermissionError:
         raised = True
@@ -747,7 +761,7 @@ async def test_generate_auto_creates_overview_and_explainer_figures(
 
     image_provider = FakeImageProvider(name="google")
     ctx = {
-        "router": _router(provider),
+        "user_router_factory": _factory(provider),
         "image_router": ImageRouter([("google", "gemini-3.1-flash-image", image_provider)]),
     }
     await run_article_job(ctx, store, job)
@@ -799,7 +813,7 @@ async def test_generate_without_image_router_skips_explainer_but_succeeds(
 
     # image_router を注入しない: 記事生成自体は成功し、概要図は生成される(explainer のみ
     # スキップされ部分失敗としてログに残る — P3。docs/07 §1.4)。
-    await run_article_job({"router": _router(provider)}, store, job)
+    await run_article_job({"user_router_factory": _factory(provider)}, store, job)
 
     job = await store.get(job_id)
     assert job is not None and job.status == "succeeded", job.error if job else None
@@ -849,7 +863,7 @@ async def test_regenerate_reuses_unchanged_explainer_and_bumps_changed_slot(
     assert job is not None
     image_provider = FakeImageProvider(name="google")
     image_router = ImageRouter([("google", "gemini-3.1-flash-image", image_provider)])
-    ctx = {"router": _router(provider), "image_router": image_router}
+    ctx = {"user_router_factory": _factory(provider), "image_router": image_router}
     await run_article_job(ctx, store, job)
     job = await store.get(job_id)
     assert job is not None
@@ -904,7 +918,7 @@ async def test_regenerate_reuses_unchanged_explainer_and_bumps_changed_slot(
     provider2 = ArticleScriptProvider(
         article_payload=_article_payload_with_explainer(image_brief_en="a totally new concept")
     )
-    ctx2 = {"router": _router(provider2), "image_router": image_router}
+    ctx2 = {"user_router_factory": _factory(provider2), "image_router": image_router}
     regen_job_id2 = await store.enqueue(
         kind="article",
         priority="interactive",

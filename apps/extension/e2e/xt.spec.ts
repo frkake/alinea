@@ -25,6 +25,13 @@ declare const chrome: {
     getBadgeText(details: Record<string, never>): Promise<string>;
     getBadgeBackgroundColor(details: Record<string, never>): Promise<number[]>;
   };
+  permissions: { request(p: { origins: string[] }): Promise<boolean> };
+  scripting: {
+    registerContentScripts(
+      s: Array<{ id: string; matches: string[]; js: string[]; runAt?: string }>,
+    ): Promise<void>;
+    unregisterContentScripts(f?: { ids: string[] }): Promise<void>;
+  };
 };
 
 const SEED_ARXIV = "https://arxiv.org/abs/2209.03003"; // シード済み(状態3 用)
@@ -57,6 +64,45 @@ test.describe.serial("拡張 E2E", () => {
     await page.goto(popupUrl(extensionId, url));
     await expect(page.getByText(`Mock Paper for ${id}`)).toBeVisible();
     await expect(page.getByText("品質レベル A 見込み")).toBeVisible();
+    await page.close();
+  });
+
+  // XT-SITE: ACL Anthology 等の対応サイト URL は保存前フォーム(site 検出バッジ)を出す。
+  // 既定 skip: サーバの ingest_check がサイト landing を取得する必要があり、ローカル E2E では
+  // 外部ネットワークに接続しないため(Task 15 の hard constraint)。バックエンドに ACL フィクスチャ
+  // を配線した環境でのみ有効化する。
+  test.skip("XT-SITE 対応サイト URL は保存前フォームを出す", async ({ extContext, extensionId }) => {
+    await ensureLoggedIn(extContext);
+    const page = await extContext.newPage();
+    await page.goto(popupUrl(extensionId, "https://aclanthology.org/2023.acl-long.42/"));
+    await expect(page.getByText("対応サイトの論文を検出")).toBeVisible();
+    await page.close();
+  });
+
+  // XT-HF: Hugging Face URL は arXiv ID を解決して既存 arXiv 経路の保存前フォームを出す(Task 18)。
+  // 既定 skip: ingest_check がサーバ側で HF Hub API を叩く必要があり、ローカル E2E では外部
+  // ネットワークに接続しないため(Task 15/18 の hard constraint)。HF Hub API モックを配線した
+  // 環境でのみ有効化する。arXiv タグの無い Model/Dataset/Space は「関連論文が見つかりません」。
+  test.skip("XT-HF Hugging Face URL は関連論文を解決して保存前フォームを出す", async ({
+    extContext,
+    extensionId,
+  }) => {
+    await ensureLoggedIn(extContext);
+    const page = await extContext.newPage();
+    await page.goto(popupUrl(extensionId, "https://huggingface.co/papers/2307.09288"));
+    // Paper URL は arXiv ID(2307.09288)に解決され、arXiv 書誌プレビューが出る。
+    await expect(page.getByText("品質レベル A 見込み")).toBeVisible();
+    await page.close();
+  });
+
+  test.skip("XT-HF arXiv タグが無い Model は関連論文が見つからない旨を表示する", async ({
+    extContext,
+    extensionId,
+  }) => {
+    await ensureLoggedIn(extContext);
+    const page = await extContext.newPage();
+    await page.goto(popupUrl(extensionId, "https://huggingface.co/some/model-without-arxiv-tag"));
+    await expect(page.getByText("関連論文が見つかりません")).toBeVisible();
     await page.close();
   });
 
@@ -236,10 +282,66 @@ test.describe.serial("拡張 E2E", () => {
     await settingsPage.close();
   });
 
+  // XT-08(設定オン): arXiv abs のみ注入・非 arXiv 非注入。ピル注入の登録経路(SW の
+  // scripting.registerContentScripts)を直接叩いて検証する。popup の「設定オン」トグルが
+  // 呼ぶ browser.permissions.request(optional host)は実ユーザージェスチャーを要し
+  // Playwright では付与できない(XT-08 の docstring 参照)。そのため本テストは
+  // release-env(host 権限を事前付与できる環境)専用として test.fixme で登録し、
+  // 実操作+assertion を完成形で残す(権限付与手段が整えば .fixme を外すだけで通る)。
   test.fixme(
-    "XT-08 設定オンで arXiv abs のみ注入・保存後「✓保存済み」・非arXivページに非注入" +
-      "(chrome.permissions.request の実ユーザージェスチャー要求により Playwright 自動化不可。followups 参照)",
-    async () => {},
+    "XT-08 設定オンで arXiv abs のみ注入・保存後「保存済み」・非arXivページに非注入",
+    async ({ extContext, extensionId }) => {
+      await ensureLoggedIn(extContext);
+
+      // SW で optional host を付与し、abs 限定 matches で content script を登録する
+      // (popup の setPillEnabled と同じ登録。permissions.request のみジェスチャー依存)。
+      let [sw] = extContext.serviceWorkers();
+      if (!sw) sw = await extContext.waitForEvent("serviceworker");
+      await sw.evaluate(async () => {
+        await chrome.permissions.request({ origins: ["https://arxiv.org/*"] });
+        await chrome.scripting.registerContentScripts([
+          {
+            id: "arxiv-pill",
+            matches: ["https://arxiv.org/abs/*"],
+            js: ["content-scripts/arxiv-pill.js"],
+            runAt: "document_idle",
+          },
+        ]);
+        await chrome.storage.local.set({ "settings:arxivPillEnabled": true });
+      });
+
+      // arXiv abs ページ(ローカル fixture を配信)にピルが注入される。
+      const absHtml = readFileSync(join(__dirname, "fixtures", "arxiv-abs-2209.03003.html"), "utf-8");
+      await extContext.route("https://arxiv.org/abs/2209.03003", async (route) => {
+        await route.fulfill({ status: 200, contentType: "text/html", body: absHtml });
+      });
+      const abs = await extContext.newPage();
+      await abs.goto("https://arxiv.org/abs/2209.03003");
+      const pill = abs.locator(".alinea-pill");
+      await expect(pill).toBeVisible();
+      await expect(pill.locator(".alinea-pill-label")).toHaveText("保存");
+
+      // クリック保存 → 「保存済み」へ遷移する。
+      await pill.click();
+      await expect(pill.locator(".alinea-pill-label")).toHaveText("保存済み");
+      await abs.close();
+
+      // 非 arXiv ページには注入されない(matches が abs 限定)。
+      const other = await extContext.newPage();
+      await other.route("https://example.org/paper", async (route) => {
+        await route.fulfill({ status: 200, contentType: "text/html", body: "<h1 class='title'>x</h1>" });
+      });
+      await other.goto("https://example.org/paper");
+      await other.waitForTimeout(500);
+      expect(await other.locator(".alinea-pill").count()).toBe(0);
+      await other.close();
+
+      // 後始末。
+      await sw.evaluate(async () => {
+        await chrome.scripting.unregisterContentScripts({ ids: ["arxiv-pill"] });
+        await chrome.storage.local.set({ "settings:arxivPillEnabled": false });
+      });
+    },
   );
 
   test("XT-10 送信キュー永続: API停止中の保存が失敗キューに残り、コンテキスト再起動後も残り、復旧後に再試行で送信される", async () => {

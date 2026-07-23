@@ -29,7 +29,8 @@ test.describe("PW-13 記事モード", () => {
 
     // 2) 未生成 CTA: プリセット選択→生成。
     await expect(page.getByText("この論文の記事はまだありません")).toBeVisible();
-    await page.getByRole("radio", { name: "初学者向け", exact: true }).click();
+    // 読者タイプは role=tab(tablist「読者タイプ別の記事」)。未生成時は名前に " ＋" が付く。
+    await page.getByRole("tab", { name: "初学者向け ＋", exact: true }).click();
     await page.getByRole("button", { name: "✦ 記事を生成" }).click();
     await expect(page.getByText(/✦ 記事を生成しています/)).toBeVisible();
 
@@ -96,8 +97,10 @@ test.describe("PW-13 記事モード", () => {
     await attribution.hover();
     await expect(page.getByRole("toolbar", { name: "ブロック操作" })).toHaveCount(0);
 
-    // 9) 否定検査(A17): 公開・限定公開・コメント UI が存在しない。
-    await expect(page.getByRole("button", { name: /^(公開|限定公開)$/ })).toHaveCount(0);
+    // 9) 否定検査(A17 改訂): 記事本文内にはコメント UI が無く、公開モーダルは閉じている。
+    //    ※ 記事の「公開」ボタン自体は Task 26 で実装済み(pw-article-publication.spec.ts が担保)
+    //      のため、ボタン非存在の旧検査は撤回する。ここでは公開「モーダル/コメント」が
+    //      閲覧状態で開いていないことのみを確認する。
     await expect(page.getByRole("button", { name: /コメントを(投稿|追加)/ })).toHaveCount(0);
     await expect(page.getByText(/この記事を公開/)).toHaveCount(0);
     await expect(page.getByText(/限定公開/)).toHaveCount(0);

@@ -5,18 +5,15 @@ import { resolveRfItemId } from "../fixtures/api";
 import { dragSelect, openViewer } from "../fixtures/viewer";
 
 /**
- * PW-08(plans/12 §4.3・M0 スコープ+M1-24 追補): チャット。
+ * PW-08(plans/12 §4.3・M0 スコープ+M1-24 追補+Task 7): チャット。
  * 本 spec は M0 で確実に配線された経路(本文選択 → 選択メニュー「✦ AIに質問」→ チャットタブ)に
  * 加え、M1-24 で「↑ メモに保存」経路の fixme を解除する: §14 シード(chat.json)には既に
  * 根拠アンカー付きの assistant 回答が投入済みのため、これを使って 根拠チップ→本文ジャンプ→
  * 双方向ハイライト→メモに保存 を実 API 往復で検証できる(ライブ SSE 生成は不要)。
  *
- * fixme(理由を明記):
- * - 新規質問への SSE 回答での根拠チップ生成: モック LLM サーバ(§8.4)がプロンプト中の実在
- *   block_id を引用する `[[evidence:blk-XXX]]` を返す必要があるが現状はエコー応答で根拠を
- *   出さない。加えてチャット既定モデルの anthropic/openai ストリーミングアダプタが同梱 SDK と
- *   非互換(`output_config` / Responses API)。これらは packages/llm(別レーン)の課題。
- *   UI 単体は VT-VIEW-09/10(EvidenceChip/ChatMarkdown)が担保。followups 参照。
+ * Task 7 で根拠チップ生成テストの fixme を解除: モック LLM サーバが output_config を受け付け
+ * Responses API ストリーミングをサポートするようになった(packages/llm mock_server.py)。
+ * E2E 実行は Task 32 の consolidated gate に委譲(worktree 環境では全スタック起動が不要)。
  */
 test.describe("PW-08 チャット(選択→AIに質問→チャットタブ)", () => {
   test("本文選択→「✦ AIに質問」でチャットタブが開き、入力欄と免責文が出る", async ({ page }) => {
@@ -48,9 +45,34 @@ test.describe("PW-08 チャット(選択→AIに質問→チャットタブ)", (
     await expect(page.getByText(CHAT_DISCLAIMER_SNIPPET)).toBeVisible();
   });
 
-  test.fixme(
-    "新規質問への SSE 回答での根拠チップ生成(モック LLM 根拠出力/アダプタ互換が前提)",
-    async () => {},
+  test(
+    "新規質問への SSE 回答での根拠チップ生成(モック LLM が Responses API ストリーミング + output_config に対応)",
+    async ({ page }) => {
+      // Task 7: mock_server.py が output_config + Responses API streaming に対応したため
+      // 新規質問を送って根拠チップが出ることを検証できる。
+      // E2E 実行: Task 32 の consolidated gate に委譲(本ファイルの変更は完了)。
+      const itemId = await resolveRfItemId(page);
+      await openViewer(page, itemId, "translation");
+
+      const chatTab = page.getByRole("tab", { name: "チャット" });
+      await expect(chatTab).toHaveAttribute("aria-selected", "true");
+
+      // チャット入力欄に質問を入力して送信する。
+      const input = page.getByRole("textbox", { name: "この論文について質問" });
+      await expect(input).toBeVisible();
+      await input.fill("整流フローの学習目的を式で説明して。");
+      await input.press("Enter");
+
+      // アシスタント回答が来て根拠チップが表示されるまで待つ。
+      // モック LLM は instructions に含まれる block_id を [[evidence:...]] で返すため、
+      // stream_pipeline が evidence チップへ変換する。
+      const assistantMsg = page.locator("[data-message-id]").filter({ hasText: "アシスタント" }).last();
+      await expect(assistantMsg).toBeVisible({ timeout: 15_000 });
+
+      // 根拠チップが少なくとも 1 件出現している。
+      const evidenceChip = assistantMsg.locator("[data-evidence-ref]").first();
+      await expect(evidenceChip).toBeVisible({ timeout: 15_000 });
+    },
   );
 
   test("既存回答: 根拠チップ→本文ジャンプ→双方向ハイライト→メモに保存", async ({ page }) => {
@@ -63,10 +85,13 @@ test.describe("PW-08 チャット(選択→AIに質問→チャットタブ)", (
     const chatTab = page.getByRole("tab", { name: "チャット" });
     await expect(chatTab).toHaveAttribute("aria-selected", "true");
 
+    // シード(chat.json)の 2 番目の assistant 回答に固有の本文で絞る。
+    // 「整流フローの学習目的」は PW-08 の新規質問(line 48)の echo とも一致してしまい、
+    // その質問が成功して回答が残ると strict-mode 違反になるため、固有句を使う。
     const assistantMsg = page
       .locator("[data-message-id]")
       .filter({ hasText: "アシスタント" })
-      .filter({ hasText: "整流フローの学習目的" });
+      .filter({ hasText: "最小二乗回帰に帰着します" });
     await expect(assistantMsg).toBeVisible();
 
     // 根拠チップ(display は block_search_index から決定的に導出。式(2) = blk-2-1-eq2-2dfc)。

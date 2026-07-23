@@ -100,6 +100,11 @@ async def test_get_returns_full_defaults(auth: AsyncClient) -> None:
         "model": "deepseek-v4-flash",
     }
     assert s["llm_routing"]["figure_image"]["provider"] == "google"
+    # presentation ルート(Task 28)。構造化出力対応の既定モデル。
+    assert s["llm_routing"]["presentation"] == {
+        "provider": "openai",
+        "model": "gpt-5.5",
+    }
     assert isinstance(s["available_models"], dict)
 
 
@@ -198,6 +203,19 @@ async def test_patch_llm_routing_task_name_mapping(
         await _override_model(db_session, seeded_user_id, "overview_figure_dsl")
         == "gemini-3.5-flash"
     )
+
+
+async def test_patch_llm_routing_presentation_bridges_to_overrides(
+    auth: AsyncClient, db_session: AsyncSession, seeded_user_id: str
+) -> None:
+    # presentation のモデル変更 → overrides の task 'presentation' に入る(Task 28)。
+    r = await auth.patch(
+        "/api/settings",
+        json={"llm_routing": {"presentation": {"provider": "anthropic", "model": "claude-opus-4-8"}}},
+    )
+    assert r.status_code == 200
+    assert r.json()["llm_routing"]["presentation"]["model"] == "claude-opus-4-8"
+    assert await _override_model(db_session, seeded_user_id, "presentation") == "claude-opus-4-8"
 
 
 async def test_patch_llm_routing_model_only_still_upserts(

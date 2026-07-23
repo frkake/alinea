@@ -1,35 +1,26 @@
 """ユーザー文脈での LLM ルータ構築とクォータ判定(plans/04 §9・§11・§15、plans/07 §9)。
 
-- ``build_router_for_user``: タスクの解決済みチェーンを、BYOK 優先・運営キーフォールバック・
-  未設定プロバイダ除外で ``LLMRouter`` に組み立てる(計測は ``DbMeterHook``)。
+- ``build_router_for_user``: 共有層 :func:`alinea_core.llm.build_user_router` に委譲する薄い
+  ラッパ(API 呼び出し規約 ``(session, user_id, task, ...)`` を保つ)。ルート解決・BYOK 解決・
+  計測フックの実装本体は Task 13 で ``alinea_core.llm.runtime`` へ移設済み。
 - ``check_quota``: 月次クォータ(``quota_limits`` と ``usage_records``、JST 暦月・operator 行のみ)
   を事前判定し、超過なら 429 ``quota_exceeded``(Problem Details)を送出。BYOK 設定済み
-  プロバイダはスキップ(plans/07 §9.2)。
+  プロバイダはスキップ(plans/07 §9.2)。クォータ判定は API 固有(429 送出)なのでここに残す。
 """
 
 from __future__ import annotations
 
-import functools
-from collections.abc import Callable
-from pathlib import Path
-
-import alinea_llm
 import redis.asyncio as redis
-from alinea_llm.protocols import LLMProvider
-from alinea_llm.providers import build_provider
+from alinea_core.llm import ProviderFactory, build_user_router
 from alinea_llm.registry import ModelRegistry
 from alinea_llm.router import LLMRouter
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from alinea_api.errors import ProblemException
-from alinea_api.llm.key_store import DbKeyStore
-from alinea_api.llm.meter import DbMeterHook
+from alinea_api.llm.key_store import DbKeyStore, config_from_settings
 from alinea_api.llm.route_store import DbRouteStore
 from alinea_api.settings import ApiSettings, get_api_settings
-
-# provider 名 + api_key → LLMProvider(既定は実アダプタ。テストは Fake を注入する)。
-ProviderFactory = Callable[[str, str], LLMProvider]
 
 # JST(Asia/Tokyo)暦月の開始インスタント(plans/07 §9.2)。
 _JST_MONTH_START = (
@@ -71,16 +62,6 @@ _QUOTA_DETAIL = (
 )
 
 
-@functools.lru_cache(maxsize=1)
-def _default_registry() -> ModelRegistry | None:
-    """価格計算用の ModelRegistry(packages/llm/models.yaml シード)。失敗時は None。"""
-    path = Path(alinea_llm.__file__).resolve().parents[2] / "models.yaml"
-    try:
-        return ModelRegistry.from_yaml(path)
-    except (OSError, ValueError):
-        return None
-
-
 def _route_store(
     session: AsyncSession, cache: redis.Redis | None, settings: ApiSettings
 ) -> DbRouteStore:
@@ -101,29 +82,21 @@ async def build_router_for_user(
 ) -> LLMRouter:
     """タスクのモデルチェーンを解決し、キー解決済みの ``LLMRouter`` を返す(§9.2・§11.1)。
 
+    実装は共有層 :func:`alinea_core.llm.build_user_router` に委譲する(API と worker で共用)。
     チェーンは operator と BYOK が使えるプロバイダのモデルに絞り、各モデルのキーは BYOK 優先・
-    運営キーフォールバックで解決する。どちらも無いプロバイダのモデルは除外される。
+    運営キーフォールバックで解決する。計測フック(``DbMeterHook``)を付ける。
     """
     settings = settings or get_api_settings()
-    key_store = key_store or DbKeyStore(session, settings)
-    route_store = route_store or _route_store(session, cache, settings)
-    factory: ProviderFactory = provider_factory or build_provider
-
-    byok_providers = await key_store.active_providers(user_id)
-    available = set(settings.operator_api_keys) | byok_providers
-    entries = await route_store.resolve_chain(task, user_id, available_providers=available)
-
-    chain: list[tuple[str, str, LLMProvider | None]] = []
-    for model_id, provider in entries:
-        resolved = await key_store.resolve_or_none(user_id, provider)
-        instance = factory(provider, resolved.api_key) if resolved is not None else None
-        chain.append((provider, model_id, instance))
-
-    meter = DbMeterHook(session, byok_providers=byok_providers)
-    return LLMRouter(
-        chain,
-        registry=registry if registry is not None else _default_registry(),
-        meter=meter,
+    return await build_user_router(
+        session=session,
+        cache=cache,
+        config=config_from_settings(settings),
+        user_id=user_id,
+        task=task,
+        provider_factory=provider_factory,
+        registry=registry,
+        key_store=key_store,
+        route_store=route_store,
     )
 
 

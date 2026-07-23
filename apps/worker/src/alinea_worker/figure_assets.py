@@ -1085,8 +1085,28 @@ def _parse_limited_svg(text: str) -> ET.Element[str]:
     return root
 
 
-def _validate_svg_document(data: bytes) -> bytes:
-    """Return a passive, canonical SVG containing only rendering semantics."""
+def sanitize_svg_document(data: bytes) -> bytes:
+    """Return a passive, canonical SVG containing only rendering semantics.
+
+    This is the public entry point for SVG safety. It rejects (or strips) every
+    construct that could carry active or external behaviour before the bytes are
+    handed to any downstream renderer or the pinned ppt-master quality checker:
+
+    - ``<script>`` / animation / ``<foreignObject>`` / other active elements,
+    - ``on*`` event handlers and other active attributes,
+    - external URLs in ``href``/``src``/CSS ``url()`` (only internal ``#frag``),
+    - ``<!DOCTYPE`` / ``<!ENTITY`` declarations and XML processing instructions,
+    - unsafe or non-finite geometry/CSS, foreign-namespace nodes, and
+    - byte / element / depth / text limits that bound XML expansion.
+
+    Author-controlled figure *paths* (LaTeX ``\\includegraphics`` etc.) are
+    normalized separately by :func:`normalize_requested_asset`; this function
+    guarantees the *document* itself only references internal fragments, never a
+    filesystem or network location. The returned bytes are a re-serialized,
+    canonical SVG.
+
+    Raises :class:`FigureAssetError` on any rejected construct.
+    """
 
     text = _decode_and_precheck_svg(data)
     root = _parse_limited_svg(text)
@@ -1158,8 +1178,13 @@ def _validate_svg_document(data: bytes) -> bytes:
     return cast(bytes, ET.tostring(root, encoding="utf-8", short_empty_elements=True))
 
 
+# Backwards-compatible internal alias. Existing callers/tests reference the
+# private name; the public API is :func:`sanitize_svg_document`.
+_validate_svg_document = sanitize_svg_document
+
+
 def _render_svg(data: bytes) -> FigureAssetPayload:
-    sanitized = _validate_svg_document(data)
+    sanitized = sanitize_svg_document(data)
     try:
         return _render_document(sanitized, "svg")
     except FigureAssetError as exc:
@@ -1912,4 +1937,5 @@ __all__ = [
     "isolated_thumbnail_payload",
     "normalize_requested_asset",
     "resolve_latex_source",
+    "sanitize_svg_document",
 ]

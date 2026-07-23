@@ -16,7 +16,7 @@ import json
 import re
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 import alinea_core.translation as translation_core
 import pytest
@@ -1077,12 +1077,14 @@ def test_translation_plan_enforces_combined_block_limit_and_primary_auxiliary_di
     )
 
     with pytest.raises(ValidationError):
+        aux_ids = cast(list[str], base["auxiliary_block_ids"])
         translation_core.TranslationPlan.model_validate(
-            base | {"auxiliary_block_ids": [*base["auxiliary_block_ids"], "overflow"]}
+            base | {"auxiliary_block_ids": [*aux_ids, "overflow"]}
         )
     with pytest.raises(ValidationError):
+        target_ids = cast(list[str], base["target_block_ids"])
         translation_core.TranslationPlan.model_validate(
-            base | {"auxiliary_block_ids": [base["target_block_ids"][0]]}
+            base | {"auxiliary_block_ids": [target_ids[0]]}
         )
 
 

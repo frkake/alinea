@@ -27,6 +27,7 @@ from alinea_api.services.user_service import purge_user
 from alinea_core.db.models import LibraryItem, Paper, ResourceLink
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -466,10 +467,14 @@ async def test_suggestion_derived_from_paper_official_repo_url(
     r = await client.get(f"/api/library-items/{item.id}/resources")
     assert r.status_code == 200
     body = r.json()
-    assert body["suggestion"] == {
-        "url": "https://github.com/gnobitab/RectifiedFlow",
-        "detected_from": "arxiv_page",
-    }
+    # 互換: 単数 suggestion(arXiv 動的候補は resource_id を持たない)。
+    assert body["suggestion"]["url"] == "https://github.com/gnobitab/RectifiedFlow"
+    assert body["suggestion"]["detected_from"] == "arxiv_page"
+    assert body["suggestion"]["resource_id"] is None
+    # 複数 suggestions にも同じ候補が入る。
+    assert any(
+        s["url"] == "https://github.com/gnobitab/RectifiedFlow" for s in body["suggestions"]
+    )
     assert body["count"] == 0  # 提案は件数に数えない
 
 
@@ -738,3 +743,266 @@ async def test_delete_resource_removes_it(
 
     listing = (await client.get(f"/api/library-items/{item.id}/resources")).json()
     assert listing["items"] == []
+
+
+# ===========================================================================
+# Task 18: Hugging Face 関連ソース候補(複数 suggestions・ID 指定 accept/dismiss)
+# ===========================================================================
+async def _seed_suggested_link(
+    db_session: AsyncSession,
+    item: LibraryItem,
+    *,
+    url: str,
+    kind: str,
+    relation: str,
+    official_candidate: bool,
+    title: str = "",
+    meta: dict[str, Any] | None = None,
+) -> str:
+    """resource_links に status='suggested' の候補行を直接作る(Hugging Face 由来の永続候補)。"""
+    from alinea_api.routers.resources import normalize_url
+
+    link_meta = dict(meta or {})
+    link_meta["relation"] = relation
+    link_meta["official_candidate"] = official_candidate
+    link_meta["detected_from"] = "huggingface_paper"
+    link = ResourceLink(
+        id=str(uuid.uuid4()),
+        library_item_id=str(item.id),
+        status="suggested",
+        kind=kind,
+        url=url,
+        url_normalized=normalize_url(url),
+        official=False,
+        title=title,
+        source_domain="huggingface.co",
+        meta=link_meta,
+        fetch_status="ok",
+        note_md="",
+        note_anchors=[],
+    )
+    db_session.add(link)
+    await db_session.commit()
+    return link.id
+
+
+async def test_suggestions_plural_lists_persisted_and_arxiv_candidates(
+    env: tuple[AsyncClient, LibraryItem, Paper, str], db_session: AsyncSession
+) -> None:
+    """suggestions(複数)は arXiv 動的候補 + 永続 Hugging Face 候補を返す。単数は先頭を返す。"""
+    client, item, paper, _uid = env
+    paper.official_repo_url = "https://github.com/gnobitab/RectifiedFlow"
+    await db_session.commit()
+    hf_id = await _seed_suggested_link(
+        db_session,
+        item,
+        url="https://huggingface.co/meta-llama/Llama-2-7b",
+        kind="huggingface",
+        relation="model",
+        official_candidate=False,
+        title="meta-llama/Llama-2-7b",
+        meta={"repo_type": "model", "downloads": 700000},
+    )
+
+    body = (await client.get(f"/api/library-items/{item.id}/resources")).json()
+    # 複数候補: arXiv 動的 + HF 永続。
+    urls = {s["url"] for s in body["suggestions"]}
+    assert "https://github.com/gnobitab/RectifiedFlow" in urls
+    assert "https://huggingface.co/meta-llama/Llama-2-7b" in urls
+    # HF 候補は resource_id を持つ。
+    hf_sug = next(s for s in body["suggestions"] if s["url"].endswith("Llama-2-7b"))
+    assert hf_sug["resource_id"] == hf_id
+    assert hf_sug["kind"] == "huggingface"
+    assert hf_sug["relation"] == "model"
+    assert hf_sug["official_candidate"] is False
+    # 互換: 単数 suggestion は先頭候補。
+    assert body["suggestion"] is not None
+    # 候補は件数に数えない。
+    assert body["count"] == 0
+
+
+async def test_accept_suggestion_by_id_activates_official_only_for_official_candidate(
+    env: tuple[AsyncClient, LibraryItem, Paper, str], db_session: AsyncSession
+) -> None:
+    """ID 指定 accept: suggested→active。github/project の official_candidate だけ official=true。"""
+    client, item, _paper, _uid = env
+    gh_id = await _seed_suggested_link(
+        db_session,
+        item,
+        url="https://github.com/facebookresearch/llama",
+        kind="github",
+        relation="github",
+        official_candidate=True,
+        title="facebookresearch/llama",
+    )
+    model_id = await _seed_suggested_link(
+        db_session,
+        item,
+        url="https://huggingface.co/meta-llama/Llama-2-7b",
+        kind="huggingface",
+        relation="model",
+        official_candidate=False,
+        title="meta-llama/Llama-2-7b",
+    )
+
+    # 公式候補の github → official=true。
+    r1 = await client.post(f"/api/resources/{gh_id}/accept-suggestion")
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["official"] is True
+
+    # model(official_candidate=false)→ official=false。
+    r2 = await client.post(f"/api/resources/{model_id}/accept-suggestion")
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["official"] is False
+
+    listing = (await client.get(f"/api/library-items/{item.id}/resources")).json()
+    assert listing["count"] == 2  # accept で active になり件数に入る
+    assert listing["suggestions"] == []
+
+
+async def test_dismiss_suggestion_by_id_does_not_resurrect(
+    env: tuple[AsyncClient, LibraryItem, Paper, str], db_session: AsyncSession
+) -> None:
+    """ID 指定 dismiss: suggested→dismissed。同一正規化 URL は再同期しても復活しない。"""
+    client, item, _paper, _uid = env
+    model_id = await _seed_suggested_link(
+        db_session,
+        item,
+        url="https://huggingface.co/meta-llama/Llama-2-7b",
+        kind="huggingface",
+        relation="model",
+        official_candidate=False,
+    )
+
+    r = await client.post(f"/api/resources/{model_id}/dismiss-suggestion")
+    assert r.status_code == 204
+
+    listing = (await client.get(f"/api/library-items/{item.id}/resources")).json()
+    dismissed_url = "https://huggingface.co/meta-llama/Llama-2-7b"
+    assert all(s["url"] != dismissed_url for s in listing["suggestions"])
+
+    # 再同期相当: 同一 URL の suggested を再挿入しようとしても uq 制約で復活しない。
+    row = await db_session.get(ResourceLink, model_id)
+    assert row is not None
+    assert row.status == "dismissed"
+
+
+async def test_accept_dismiss_reject_active_resource(
+    env: tuple[AsyncClient, LibraryItem, Paper, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """accept/dismiss-suggestion は suggested 行のみ対象。active な通常 Resource には 404/409。"""
+    client, item, _paper, _uid = env
+    _patch_http(monkeypatch, {})
+    created = await client.post(
+        f"/api/library-items/{item.id}/resources", json={"url": "https://example.com/a"}
+    )
+    active_id = created.json()["id"]
+    r = await client.post(f"/api/resources/{active_id}/accept-suggestion")
+    assert r.status_code in (404, 409)
+
+
+# ===========================================================================
+# Task 21: automatic モードでの code_analysis 自動起動
+# ===========================================================================
+async def test_code_analysis_enqueued_on_github_add_when_automatic(
+    db_session: AsyncSession,
+    redis_client: Any,
+    factories: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """automatic モードで active GitHub Resource を手動追加すると code_analysis ジョブが入る。"""
+    from alinea_core.db.models import Job
+
+    user = await factories.make_user(db_session)
+    user.settings = {"code_analysis": {"mode": "automatic", "monthly_budget_usd": "5.00"}}
+    paper = await factories.make_paper(db_session, owner=user, visibility="private")
+    await factories.make_revision(db_session, paper=paper)  # 本文 ready
+    item = await factories.make_library_item(db_session, user=user, paper=paper)
+    uid = str(user.id)
+    await db_session.commit()
+
+    _patch_http(
+        monkeypatch,
+        {
+            "https://api.github.com/repos/gnobitab/RectifiedFlow": _FakeResponse(
+                json_data={"language": "Python", "stargazers_count": 1, "pushed_at": None}
+            )
+        },
+    )
+    transport = ASGITransport(app=_build_app())
+    async with AsyncClient(
+        transport=transport, base_url="http://testserver",
+        headers={"Origin": "http://localhost:3000"}, trust_env=False,
+    ) as ac:
+        token = await create_session(redis_client, uid)
+        ac.cookies.set("yk_session", token)
+        try:
+            resp = await ac.post(
+                f"/api/library-items/{item.id}/resources",
+                json={"url": "https://github.com/gnobitab/RectifiedFlow"},
+            )
+            assert resp.status_code == 201, resp.text
+            jobs = (
+                await db_session.execute(
+                    select(Job).where(
+                        Job.kind == "code_analysis",
+                        Job.library_item_id == str(item.id),
+                    )
+                )
+            ).scalars().all()
+            assert len(jobs) == 1
+            assert jobs[0].payload["trigger"] == "automatic"
+        finally:
+            await db_session.rollback()
+            await purge_user(db_session, uid)
+
+
+async def test_code_analysis_not_enqueued_when_on_demand(
+    db_session: AsyncSession,
+    redis_client: Any,
+    factories: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """既定(on_demand)では GitHub Resource 追加で自動起動しない。"""
+    from alinea_core.db.models import Job
+
+    user = await factories.make_user(db_session)  # 既定 = on_demand
+    paper = await factories.make_paper(db_session, owner=user, visibility="private")
+    await factories.make_revision(db_session, paper=paper)
+    item = await factories.make_library_item(db_session, user=user, paper=paper)
+    uid = str(user.id)
+    await db_session.commit()
+
+    _patch_http(
+        monkeypatch,
+        {
+            "https://api.github.com/repos/gnobitab/RectifiedFlow": _FakeResponse(
+                json_data={"language": "Python", "stargazers_count": 1, "pushed_at": None}
+            )
+        },
+    )
+    transport = ASGITransport(app=_build_app())
+    async with AsyncClient(
+        transport=transport, base_url="http://testserver",
+        headers={"Origin": "http://localhost:3000"}, trust_env=False,
+    ) as ac:
+        token = await create_session(redis_client, uid)
+        ac.cookies.set("yk_session", token)
+        try:
+            resp = await ac.post(
+                f"/api/library-items/{item.id}/resources",
+                json={"url": "https://github.com/gnobitab/RectifiedFlow"},
+            )
+            assert resp.status_code == 201
+            jobs = (
+                await db_session.execute(
+                    select(Job).where(
+                        Job.kind == "code_analysis",
+                        Job.library_item_id == str(item.id),
+                    )
+                )
+            ).scalars().all()
+            assert jobs == []
+        finally:
+            await db_session.rollback()
+            await purge_user(db_session, uid)

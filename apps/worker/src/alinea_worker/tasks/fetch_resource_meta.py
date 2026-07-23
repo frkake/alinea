@@ -226,7 +226,9 @@ async def gather_metadata(
     fallback_title = _strip_scheme(url)
     domain_label = _domain_label(url)
     try:
-        async with httpx.AsyncClient(trust_env=False, timeout=_FETCH_TIMEOUT) as client:
+        # プロキシ設定は環境に委ねる(trust_env 既定 True)。resources.py と同理由(企業プロキシ配下で
+        # GitHub/一般 URL のメタ取得に proxy が要る)。
+        async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT) as client:
             if kind == "github" and gh is not None:
                 owner, repo = gh
                 meta = await _fetch_github_meta(client, owner, repo)

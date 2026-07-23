@@ -43,6 +43,10 @@ class StorageKeys:
         return f"sources/{paper_id}/{source_version}/arxiv.html"
 
     @staticmethod
+    def jats_xml(paper_id: str, source_version: str) -> str:
+        return f"sources/{paper_id}/{source_version}/jats.xml"
+
+    @staticmethod
     def original_pdf(paper_id: str, source_version: str) -> str:
         return f"sources/{paper_id}/{source_version}/original.pdf"
 
@@ -102,6 +106,15 @@ class StorageKeys:
     @staticmethod
     def explainer_png(explainer_figure_id: str, version: int) -> str:
         return f"renders/explainer/{explainer_figure_id}/v{version}.png"
+
+    @staticmethod
+    def presentation_pptx(library_item_id: str, job_id: str) -> str:
+        """論文→PPTX 成果物の S3 キー(assets バケット。Task 28)。
+
+        job 別に採番するため再生成しても既存 key を上書きしない(no-overwrite key)。DB が
+        コミットで新 key を指すまで旧 key(旧成功)は生き残る。
+        """
+        return f"presentations/{library_item_id}/{job_id}.pptx"
 
     @staticmethod
     def export(user_id: str, export_id: str) -> str:

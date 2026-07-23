@@ -10,13 +10,18 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
+# pgvector の SQLAlchemy 型(S12 セマンティック検索。vector(1536) 列)。実体は
+# docker/db/Dockerfile が同梱する postgresql-16-pgvector が提供する拡張。
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Computed,
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     SmallInteger,
@@ -118,6 +123,28 @@ class Paper(Base):
     latest_revision_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
     created_at: Mapped[dt.datetime] = _now()
     updated_at: Mapped[dt.datetime] = _now()
+
+
+class PaperExternalId(Base):
+    """外部サイト由来の論文識別子(S8。ACL Anthology / OpenReview / PubMed 等)。
+
+    ``(site, external_id)`` を一意にし、一論文へ複数の識別子(例: PubMed の PMID と
+    PMC の PMCID)を保存できる。取り込み時の名寄せ(冪等化)と完全バックアップの
+    復元名寄せに使う。arXiv は ``papers.arxiv_id`` が担うため、ここには入れない。
+    """
+
+    __tablename__ = "paper_external_ids"
+    id: Mapped[str] = _uuid_pk()
+    paper_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("papers.id", ondelete="CASCADE"), nullable=False
+    )
+    site: Mapped[str] = mapped_column(Text, nullable=False)
+    external_id: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_url: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    created_at: Mapped[dt.datetime] = _now()
+    __table_args__ = (
+        UniqueConstraint("site", "external_id", name="uq_paper_external_ids_site_external"),
+    )
 
 
 class SourceAsset(Base):
@@ -622,6 +649,81 @@ class ExplainerFigure(Base):
     )
 
 
+class ArticlePublication(Base):
+    """生成記事のサニタイズ済み公開スナップショット(Task 24)。
+
+    記事から漏えいのない安全な部分集合(heading/paragraph/attribution + ライセンス確認済み
+    overview/explainer 図)だけを切り出して保存し、slug で認証不要に読める。private 論文の記事
+    は公開できない。可視性は unlisted(URL 保持者のみ・robots noindex)/ public(検索索引許可)。
+    公開解除しても行は残し、slug を予約してリンク乗っ取りを防ぐ(visibility='private')。
+    """
+
+    __tablename__ = "article_publications"
+    id: Mapped[str] = _uuid_pk()
+    article_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("articles.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    slug: Mapped[str] = mapped_column(Text, nullable=False)
+    # unlisted | public | private(private = 公開解除後の slug 予約状態)。
+    visibility: Mapped[str] = mapped_column(Text, nullable=False, server_default="unlisted")
+    snapshot_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    title: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    paper_meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default="{}")
+    blocks: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, server_default="[]")
+    published_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[dt.datetime] = _now()
+    updated_at: Mapped[dt.datetime] = _now()
+    __table_args__ = (
+        UniqueConstraint("article_id", name="uq_article_publications_article"),
+        UniqueConstraint("slug", name="uq_article_publications_slug"),
+    )
+
+
+class PublicationComment(Base):
+    """公開記事へのモデレーション付きコメント(Task 25)。
+
+    公開スナップショットのブロックに対して認証ユーザーが plain text コメントを投稿する。
+    - ``status`` = visible | hidden | deleted。hidden は記事公開者(publisher)がモデレーション
+      で伏せた状態、deleted は投稿者本人による soft delete(返信があってもスレッド構造を残す)。
+    - ``parent_id`` は同じ publication の 1 階層のみ(返信への返信は API 層で拒否する)。
+    - ``block_id`` は公開スナップショットに存在するブロックだけを許可する(API 層で検証)。
+    - 本文は plain text のみ・1〜4000 文字(API 層でサニタイズ・検証)。
+    """
+
+    __tablename__ = "publication_comments"
+    id: Mapped[str] = _uuid_pk()
+    publication_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("article_publications.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    # 返信先(同一 publication の 1 階層のみ)。親削除時は返信も CASCADE で消える。
+    parent_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("publication_comments.id", ondelete="CASCADE")
+    )
+    block_id: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    # visible | hidden | deleted。
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="visible")
+    created_at: Mapped[dt.datetime] = _now()
+    updated_at: Mapped[dt.datetime] = _now()
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('visible', 'hidden', 'deleted')",
+            name="ck_publication_comments_status",
+        ),
+        Index("ix_publication_comments_publication", "publication_id", "created_at"),
+        Index("ix_publication_comments_parent", "parent_id"),
+        Index("ix_publication_comments_user", "user_id"),
+    )
+
+
 class ReadingSession(Base):
     __tablename__ = "reading_sessions"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -632,6 +734,162 @@ class ReadingSession(Base):
     ended_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     active_seconds: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     view_mode: Mapped[str] = mapped_column(Text, nullable=False, server_default="translation")
+    created_at: Mapped[dt.datetime] = _now()
+
+
+class PresentationArtifact(Base):
+    """論文→PPTX プレゼンテーション成果物のメタデータ(Task 28)。
+
+    library_item ごとに最新版のみを持つ(``library_item_id`` UNIQUE)。PPTX 本体は S3
+    (assets バケット)の job 別 key ``presentations/{library_item_id}/{job_id}.pptx`` を指す
+    (:meth:`StorageKeys.presentation_pptx`)。再生成時も既存 key を上書きせず、DB がコミットで
+    新 key を指すまで旧 key(旧成功)を保つ(no-overwrite key)。
+    """
+
+    __tablename__ = "presentation_artifacts"
+    id: Mapped[str] = _uuid_pk()
+    library_item_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("library_items.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    source_revision_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("document_revisions.id"), nullable=False
+    )
+    generation_job_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
+    preset: Mapped[str] = mapped_column(Text, nullable=False)
+    audience: Mapped[str] = mapped_column(Text, nullable=False)
+    instruction: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    model_provider: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    model_id: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    ppt_master_revision: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    pptx_storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    generated_at: Mapped[dt.datetime] = _now()
+    updated_at: Mapped[dt.datetime] = _now()
+    # library_item_id の UNIQUE は列定義(unique=True)= migration の inline UNIQUE と一致。
+
+
+class CodeAnalysisEstimate(Base):
+    """コード対応解析の実行前見積り(Task 21・設計 §10-§11)。
+
+    commit SHA・対象規模・概算 token・概算費用・失効時刻を保持する。10 分で失効し、
+    開始 API が所有者・失効・commit・設定・残予算を再検証する。派生的だが短命なので
+    完全バックアップには含めない(runs / correspondences のみ含める)。
+    """
+
+    __tablename__ = "code_analysis_estimates"
+    id: Mapped[str] = _uuid_pk()
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    library_item_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("library_items.id", ondelete="CASCADE"), nullable=False
+    )
+    resource_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("resource_links.id", ondelete="CASCADE"), nullable=False
+    )
+    revision_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("document_revisions.id", ondelete="CASCADE"), nullable=False
+    )
+    commit_sha: Mapped[str] = mapped_column(Text, nullable=False)
+    analysis_version: Mapped[str] = mapped_column(Text, nullable=False)
+    files: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    estimated_input_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    estimated_output_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    estimated_embedding_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    estimated_cost_usd: Mapped[Any] = mapped_column(
+        Numeric(12, 4), nullable=False, server_default="0"
+    )
+    model_id: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    section_ids: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, server_default="{}"
+    )
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[dt.datetime] = _now()
+
+
+class CodeAnalysisRun(Base):
+    """コード対応解析の実行単位(Task 21・設計 §11)。
+
+    一意制約 ``(user_id, revision_id, resource_id, commit_sha, analysis_version)`` で同一対象の
+    成功結果を再利用し二重課金を防ぐ。revision / commit が変わった結果は削除せず ``stale`` に
+    する(再解析は設定モードに従う)。完全バックアップへ含め、復元後も固定 commit URL を再利用。
+    """
+
+    __tablename__ = "code_analysis_runs"
+    id: Mapped[str] = _uuid_pk()
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    library_item_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("library_items.id", ondelete="CASCADE"), nullable=False
+    )
+    resource_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("resource_links.id", ondelete="CASCADE"), nullable=False
+    )
+    revision_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("document_revisions.id", ondelete="CASCADE"), nullable=False
+    )
+    commit_sha: Mapped[str] = mapped_column(Text, nullable=False)
+    analysis_version: Mapped[str] = mapped_column(Text, nullable=False)
+    # on_demand | automatic | rerun
+    trigger: Mapped[str] = mapped_column(Text, nullable=False, server_default="on_demand")
+    # queued | running | succeeded | failed | canceled | waiting_budget
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
+    stale: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    estimated_cost_usd: Mapped[Any] = mapped_column(
+        Numeric(12, 4), nullable=False, server_default="0"
+    )
+    actual_cost_usd: Mapped[Any] = mapped_column(
+        Numeric(12, 8), nullable=False, server_default="0"
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    job_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
+    created_at: Mapped[dt.datetime] = _now()
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[dt.datetime] = _now()
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "revision_id",
+            "resource_id",
+            "commit_sha",
+            "analysis_version",
+            name="uq_code_analysis_runs_target",
+        ),
+    )
+
+
+class CodeCorrespondence(Base):
+    """検証済みの一対応(Task 21・設計 §5・§11)。
+
+    サーバーが LLM 出力を実バイトと照合し、paper anchor・path・行範囲・excerpt がすべて
+    一致したものだけを保存する(未検証は保存しない)。``code_excerpt`` は 500 文字以下、
+    ソース全文は保存しない。
+    """
+
+    __tablename__ = "code_correspondences"
+    id: Mapped[str] = _uuid_pk()
+    run_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("code_analysis_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    paper_anchor: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    claim_text: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    start_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    code_excerpt: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    explanation_ja: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    confidence: Mapped[str] = mapped_column(Text, nullable=False, server_default="medium")
     created_at: Mapped[dt.datetime] = _now()
 
 
@@ -708,16 +966,56 @@ class QuotaLimit(Base):
     updated_at: Mapped[dt.datetime] = _now()
 
 
+# S12 セマンティック検索(docs/10 §5)の埋め込み格納テーブル。
+# 埋め込みは title/abstract/source_text から再生成できる派生データ。完全バックアップには
+# 含めず、model / source_hash で「どのモデルで何を埋めたか」を保持して再計算をスキップする。
+# BYOK 秘密鍵はここに一切保存しない(ベクトルとメタのみ)。DDL の正は
+# apps/api/alembic/versions/0016_semantic_embeddings.py。
+_EMBEDDING_DIM = 1536
+
+
+class PaperEmbedding(Base):
+    __tablename__ = "paper_embeddings"
+    paper_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("papers.id", ondelete="CASCADE"), primary_key=True
+    )
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(_EMBEDDING_DIM), nullable=False)
+    source_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[dt.datetime] = _now()
+
+
+class BlockEmbedding(Base):
+    __tablename__ = "block_embeddings"
+    revision_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("document_revisions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    block_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(_EMBEDDING_DIM), nullable=False)
+    source_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[dt.datetime] = _now()
+
+
 __all__ = [
     "Annotation",
     "Article",
     "ArticleBlock",
+    "ArticlePublication",
     "AuthIdentity",
     "Base",
+    "BlockEmbedding",
     "BlockSearchIndex",
     "ByokApiKey",
     "ChatMessage",
     "ChatThread",
+    "CodeAnalysisEstimate",
+    "CodeAnalysisRun",
+    "CodeCorrespondence",
     "Collection",
     "CollectionEntry",
     "CollectionShareToken",
@@ -731,6 +1029,10 @@ __all__ = [
     "Notification",
     "OverviewFigure",
     "Paper",
+    "PaperEmbedding",
+    "PaperExternalId",
+    "PresentationArtifact",
+    "PublicationComment",
     "QuotaLimit",
     "ReadingSession",
     "ResourceLink",

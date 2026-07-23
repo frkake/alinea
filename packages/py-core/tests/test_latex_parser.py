@@ -15,11 +15,12 @@ import bz2
 import gzip
 import io
 import lzma
+import re
 import tarfile
 import zlib
 from collections.abc import Iterator
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal, SupportsIndex, overload
 
 import pytest
 from alinea_core.document.blocks import DocumentContent
@@ -526,7 +527,7 @@ def test_recognized_decompressor_read_and_close_errors_are_invalid(
             _exc_type: object,
             _exc: object,
             _traceback: object,
-        ) -> bool:
+        ) -> Literal[False]:
             if failure == "close":
                 raise OSError("corrupt compressed stream while closing")
             return False
@@ -577,7 +578,7 @@ def test_decompressor_close_error_never_constructs_partial_archive(
             _exc_type: object,
             _exc: object,
             _traceback: object,
-        ) -> bool:
+        ) -> None:
             raise OSError("corrupt compressed stream while closing")
 
     monkeypatch.setattr(
@@ -741,7 +742,7 @@ def test_huge_base256_unknown_size_is_rejected_before_stream_seek(
         seek_calls.append(position)
         raise AssertionError("tar stream seek reached attacker-controlled huge offset")
 
-    monkeypatch.setattr(tarfile._Stream, "seek", forbidden_seek)
+    monkeypatch.setattr(tarfile._Stream, "seek", forbidden_seek)  # type: ignore[attr-defined]
 
     with pytest.raises(LatexParseError) as caught:
         extract_latex_archive(raw)
@@ -977,9 +978,9 @@ def test_xz_decoder_rejects_oversized_dictionary_with_explicit_memlimit(
         seen_memlimits.append(memlimit)
         return real_decompressor(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(latex_parser.lzma, "LZMADecompressor", guarded_decompressor)
+    monkeypatch.setattr(lzma, "LZMADecompressor", guarded_decompressor)
     monkeypatch.setattr(
-        latex_parser.lzma,
+        lzma,
         "LZMAFile",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unbounded LZMAFile used")),
     )
@@ -1042,9 +1043,9 @@ def test_oversized_dictionary_in_concatenated_xz_stream_is_invalid(
         assert kwargs.get("memlimit") == 128 * 1024 * 1024
         return real_decompressor(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(latex_parser.lzma, "LZMADecompressor", guarded_decompressor)
+    monkeypatch.setattr(lzma, "LZMADecompressor", guarded_decompressor)
     monkeypatch.setattr(
-        latex_parser.lzma,
+        lzma,
         "LZMAFile",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unbounded LZMAFile used")),
     )
@@ -1121,9 +1122,13 @@ def test_xz_padding_scan_does_not_loop_over_individual_bytes() -> None:
     class CountingBytes(bytes):
         item_reads = 0
 
-        def __getitem__(self, key: object) -> object:
+        @overload
+        def __getitem__(self, key: SupportsIndex) -> int: ...
+        @overload
+        def __getitem__(self, key: slice) -> bytes: ...
+        def __getitem__(self, key: SupportsIndex | slice) -> int | bytes:
             type(self).item_reads += 1
-            return super().__getitem__(key)  # type: ignore[index]
+            return super().__getitem__(key)
 
     padding = CountingBytes(b"\0" * (1024 * 1024))
 
@@ -2974,7 +2979,7 @@ def test_bibliography_resolution_receives_budget_before_replacement_concat(
         text: str,
         files: dict[str, str],
         *,
-        budget: object | None = None,
+        budget: latex_parser._LatexEvaluationBudget | None = None,
     ) -> str:
         calls.append(budget is not None)
         assert budget is not None
@@ -3016,7 +3021,7 @@ def test_large_unsupported_slices_are_reserved_before_materialization(
     original_emitted = latex_parser._LatexEvaluationBudget.reserve_emitted_text
 
     def allow_evaluated(
-        budget: object,
+        budget: latex_parser._LatexEvaluationBudget,
         text: str,
         start: int = 0,
         end: int | None = None,
@@ -3027,7 +3032,7 @@ def test_large_unsupported_slices_are_reserved_before_materialization(
         original_evaluated(budget, text, start, end)
 
     def allow_emitted(
-        budget: object,
+        budget: latex_parser._LatexEvaluationBudget,
         text: str,
         start: int = 0,
         end: int | None = None,
@@ -3110,10 +3115,14 @@ def test_unsupported_semantic_macro_dag_is_memoized(
     calls = 0
     original_matches = latex_parser._evaluated_matches
 
-    def counted_matches(*args: object, **kwargs: object) -> object:
+    def counted_matches(
+        pattern: re.Pattern[str],
+        text: str,
+        budget: latex_parser._LatexEvaluationBudget | None = None,
+    ) -> Iterator[re.Match[str]]:
         nonlocal calls
         calls += 1
-        return original_matches(*args, **kwargs)
+        return original_matches(pattern, text, budget)
 
     monkeypatch.setattr(latex_parser, "_evaluated_matches", counted_matches)
 
@@ -3236,10 +3245,13 @@ def test_unsupported_argument_layout_is_parsed_once_per_definition(
     original = latex_parser._unsupported_invocation_argument_layout
     calls = 0
 
-    def counted(*args: object, **kwargs: object) -> object:
+    def counted(
+        definition: latex_parser._UnsupportedMacroDefinition,
+        budget: latex_parser._LatexEvaluationBudget | None = None,
+    ) -> tuple[str, ...] | None:
         nonlocal calls
         calls += 1
-        return original(*args, **kwargs)
+        return original(definition, budget)
 
     monkeypatch.setattr(
         latex_parser,
@@ -3399,10 +3411,13 @@ def test_figure_environment_reserves_ir_before_collecting_all_assets(
     original = latex_parser._evaluated_includegraphics_matches
     yielded = 0
 
-    def counted(*args: object, **kwargs: object) -> object:
-        matches = original(*args, **kwargs)
+    def counted(
+        text: str,
+        budget: latex_parser._LatexEvaluationBudget | None = None,
+    ) -> Iterator[re.Match[str]]:
+        matches = original(text, budget)
 
-        def iterator() -> Iterator[object]:
+        def iterator() -> Iterator[re.Match[str]]:
             nonlocal yielded
             for match in matches:
                 yielded += 1
@@ -3437,9 +3452,9 @@ def test_environment_depth_budget_stops_boundary_stream_early(
 
     class CountingPattern:
         @staticmethod
-        def finditer(*args: object, **kwargs: object) -> Iterator[object]:
+        def finditer(string: str, pos: int = 0, endpos: int = 2147483647) -> Iterator[re.Match[str]]:
             nonlocal yielded
-            for match in original.finditer(*args, **kwargs):
+            for match in original.finditer(string, pos, endpos):
                 yielded += 1
                 yield match
 

@@ -2,7 +2,7 @@
 
 - 日付: 2026-07-16
 - 対象: `apps/api`、`apps/worker`、`apps/web`、`packages/py-core`、`packages/llm`、`packages/api-client`、`vendor/ppt-master`
-- ステータス: 承認済み・**未実装**
+- ステータス: 承認済み・**実装済み(Task 30 として `feat/remaining-features-completion` へマージ)**。実装は API(`apps/api/src/alinea_api/routers/presentations.py`、`schemas/presentations.py`)、永続化(`presentation_artifacts` テーブル、migration `0018_presentation_artifacts`)、Web(`apps/web/src/components/viewer/presentation/`、`ViewerHeader` の「✦ ツール」)、上流固定(`vendor/ppt-master` を Git submodule でコミット `0c0bdaf0dd953afc2c00322e92f26dc02fc1c51f` に固定)、更新運用(`scripts/update-ppt-master.sh` / `scripts/ppt-master-smoke.sh` / `scripts/verify-ppt-master.py`)を含む。単体・E2E テスト(`apps/api/tests/test_presentations.py`、`apps/web/e2e/specs/pw-presentation.spec.ts`)を追加済み。**受け入れ基準の実測(E2E 実行と PPTX 出力の PowerPoint パッケージ検証)は Task 32 の統合検証で確認する**(本タスクでは未実行)。
 
 ## Context(背景)
 

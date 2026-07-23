@@ -9,6 +9,7 @@ import {
   ingestCheck,
   ingestPdf,
   ingestRecent,
+  ingestSite,
   jobsGet,
   libraryItemsDelete,
   libraryItemsUpdate,
@@ -19,6 +20,8 @@ import {
   type IngestRecentItem,
   type JobOut,
   type MeResponse,
+  type SiteIngestRequest,
+  type SiteIngestResponse,
 } from "@alinea/api-client";
 
 import type { Status } from "./status";
@@ -84,6 +87,40 @@ export async function apiSaveArxiv(
     return { kind: "permanent", status, message: readProblemMessage(res.error, "送信に失敗しました") };
   } catch {
     // fetch reject(ネットワーク不通)は再試行対象。
+    return { kind: "retryable", status: 0 };
+  }
+}
+
+export type SiteSaveOutcome =
+  | { kind: "accepted"; data: SiteIngestResponse }
+  | { kind: "duplicate" }
+  // ネットワーク/5xx/429/取得失敗(provider_error): 拡張はタブ内 PDF 送信へフォールバックする。
+  | { kind: "retryable"; status: number; message?: string }
+  // 422 等(非対応 URL): 再送しても直らない。
+  | { kind: "permanent"; status: number; message: string };
+
+/**
+ * POST /api/ingest/site(S8。ACL Anthology 等の他サイト取り込み)。
+ * 202→accepted / 409 または duplicate フラグ→duplicate / 5xx・429・provider_error・ネットワーク→retryable。
+ * retryable/permanent のとき、呼び出し側(background)はタブ内 PDF 送信へフォールバックできる。
+ */
+export async function apiSaveSite(
+  body: SiteIngestRequest,
+  idempotencyKey: string = crypto.randomUUID(),
+): Promise<SiteSaveOutcome> {
+  try {
+    const res = await ingestSite({ body, headers: { "Idempotency-Key": idempotencyKey } });
+    const status = res.response.status;
+    if (status === 409) return { kind: "duplicate" };
+    if (res.data) {
+      return res.data.duplicate ? { kind: "duplicate" } : { kind: "accepted", data: res.data };
+    }
+    // 5xx / 429 / 502(provider_error: サイト取得失敗)はフォールバック対象。
+    if (status === 429 || status >= 500) {
+      return { kind: "retryable", status, message: readProblemMessage(res.error, "") };
+    }
+    return { kind: "permanent", status, message: readProblemMessage(res.error, "送信に失敗しました") };
+  } catch {
     return { kind: "retryable", status: 0 };
   }
 }

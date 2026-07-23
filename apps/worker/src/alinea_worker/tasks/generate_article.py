@@ -228,8 +228,11 @@ async def _generate_overview_figure_v1(
     成功させ、後から「✦ 書き直し指示」相当の再生成で作り直せるようにする — P3)。
     """
     try:
+        router = await ctx["user_router_factory"].for_job(
+            user_id=str(job.user_id), task="overview_figure_dsl"
+        )
         await create_overview_figure_v1(
-            ctx, store.session, article=article, sources=sources, user=user, job=job
+            ctx, store.session, router=router, article=article, sources=sources, user=user, job=job
         )
     except (OverviewFigureGenerationError, ProviderChainExhausted) as exc:
         await store.record_partial_failure(
@@ -479,7 +482,7 @@ async def _run_generate(ctx: dict[str, Any], store: JobStore, job: Job) -> None:
     )
 
     await store.checkpoint(str(job.id), "generating", progress=40)
-    router = ctx["router"]
+    router = await ctx["user_router_factory"].for_job(user_id=str(job.user_id), task="article")
     system = build_article_system_prompt(preset, include_math=include_math)
     user_text = build_article_user_prompt(sources)
     normalized, resp = await _generate_with_retry(
@@ -567,7 +570,7 @@ async def _run_regenerate(ctx: dict[str, Any], store: JobStore, job: Job) -> Non
         )
 
     await store.checkpoint(str(job.id), "generating", progress=40)
-    router = ctx["router"]
+    router = await ctx["user_router_factory"].for_job(user_id=str(job.user_id), task="article")
     system = build_article_system_prompt(preset, include_math=include_math)
     user_text = build_article_user_prompt(sources, regenerate_suffix=regen_suffix)
     normalized, resp = await _generate_with_retry(
@@ -701,7 +704,7 @@ async def _run_block_rewrite(ctx: dict[str, Any], store: JobStore, job: Job) -> 
     )
 
     await store.checkpoint(str(job.id), "generating", progress=40)
-    router = ctx["router"]
+    router = await ctx["user_router_factory"].for_job(user_id=str(job.user_id), task="article")
     system = build_article_block_system_prompt(include_math=include_math)
     user_text = build_block_rewrite_user_prompt(
         headings_outline=headings_outline or "(なし)",

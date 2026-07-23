@@ -18,6 +18,8 @@ import { ReingestConfirmModal } from "@/components/viewer/ReingestConfirmModal";
 import { CancelIngestConfirmModal } from "@/components/library/CancelIngestConfirmModal";
 import { AuthorGlyph, MetadataChip, SmartInlineLink } from "@/components/viewer/SmartInlineLink";
 import { useCancelIngest } from "@/hooks/useCancelIngest";
+import { RevisionDiffPanel } from "@/components/viewer/RevisionDiffPanel";
+import { SimilarPapers } from "@/components/viewer/SimilarPapers";
 
 export interface InfoPanelProps {
   paper: PaperBib;
@@ -413,7 +415,15 @@ export function InfoPanel({
 
         <div role="separator" style={{ height: 1, background: "var(--pr-border-hair)" }} />
 
-        {/* (d) エクスポート */}
+        {/* (d) 改版差分(Task 9: arXiv revision diff, read-only) */}
+        <RevisionDiffPanel paperId={paper.id} />
+
+        <div role="separator" style={{ height: 1, background: "var(--pr-border-hair)" }} />
+
+        {/* (d2) 似た論文(S12: セマンティック検索。フラグ off / 未整備は自動で非表示) */}
+        <SimilarPapers itemId={itemId} />
+
+        {/* (e) エクスポート */}
         <section style={{ display: "flex", flexDirection: "column", gap: 7 }}>
           <div style={headingStyle}>エクスポート</div>
           <div style={{ display: "flex", gap: 6 }}>

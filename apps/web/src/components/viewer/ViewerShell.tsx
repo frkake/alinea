@@ -2,13 +2,17 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   libraryItemsUpdate,
   translationsSectionTranslate,
+  vocabCandidatesList,
+  type MeResponse,
   type ViewerInit,
 } from "@alinea/api-client";
 import { Z_INDEX, type ReadingStatus } from "@alinea/tokens";
+import { meQueryKey } from "@/components/notifications/queryKeys";
+import { buildPaperCacheUrls, postCachePaper } from "@/lib/offline-viewer";
 import { useToast } from "@/components/ui/Toast";
 import { useFinishReadingStore } from "@/components/library/finishReadingStore";
 import { useViewerStore } from "@/stores/viewer-store";
@@ -152,6 +156,22 @@ export function ViewerShell({
     },
   });
 
+  // Task 23: オンライン表示が確定したら、この論文の viewer データ+関連 asset を SW へ保存
+  // 依頼する(CACHE_PAPER)。SW 側で同一 paper group として記録し、LRU/サイズ eviction を
+  // 適用する。認証ユーザー ID は SET_ACTIVE_USER で共有済みの me クエリから読む(per-user
+  // 分離のため userId を必ず付ける。未取得時は保存を見送る)。
+  useEffect(() => {
+    const me = qc.getQueryData<MeResponse | null>(meQueryKey);
+    const userId = me?.user.id;
+    if (!userId) return;
+    postCachePaper({
+      userId,
+      itemId,
+      revisionId,
+      urls: buildPaperCacheUrls({ itemId, revisionId, translationStyle }),
+    });
+  }, [qc, itemId, revisionId, translationStyle]);
+
   const onBack = () => {
     if (typeof window !== "undefined" && window.history.length <= 1) {
       router.push("/library");
@@ -196,6 +216,20 @@ export function ViewerShell({
       () => toast({ kind: "error", message: "翻訳を開始できませんでした" }),
     );
   };
+
+  // 単語候補タブのペンディング件数バッジ(Task-8 Step 4)。
+  // staleTime を長めにして過剰リクエストを防ぐ(タブを開いた瞬間に VocabCandidatesPanel が
+  // staleTime:0 で独自フェッチするため、この query はバッジ表示だけに使う)。
+  const vocabCandidatesQuery = useQuery({
+    queryKey: ["vocab-candidates", itemId],
+    queryFn: async () => {
+      const res = await vocabCandidatesList({ path: { item_id: itemId }, throwOnError: true });
+      return res.data;
+    },
+    enabled: !isMobile,
+    staleTime: 60_000,
+  });
+  const vocabCandidatesCount = vocabCandidatesQuery.data?.count ?? 0;
 
   const progressPct = viewer.translation?.progress_pct ?? 0;
   const translationSetId =
@@ -334,8 +368,12 @@ export function ViewerShell({
           </>
         ) : (
           <SidePanel
-            milestone="M2"
-            counts={{ annotations: viewer.counts.annotations, resources: viewer.counts.resources }}
+            milestone="M3"
+            counts={{
+              annotations: viewer.counts.annotations,
+              resources: viewer.counts.resources,
+              "vocab-candidates": vocabCandidatesCount || undefined,
+            }}
             renderTab={(tab) => {
               if (tab === "chat") return <ChatPanel itemId={itemId} />;
               if (tab === "figures")

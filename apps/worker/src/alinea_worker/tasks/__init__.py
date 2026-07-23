@@ -5,12 +5,16 @@
 """
 
 from alinea_worker.main import HANDLERS
+from alinea_worker.tasks.analyze_code import run_analyze_code_job
+from alinea_worker.tasks.export_paper import run_export_paper_job
 from alinea_worker.tasks.export_user_data import run_export_full_job
 from alinea_worker.tasks.extract_vocab_candidates import run_extract_vocab_candidates
 from alinea_worker.tasks.fetch_resource_meta import run_fetch_resource_meta_job
 from alinea_worker.tasks.generate_explainer_figure import run_figure_job
+from alinea_worker.tasks.generate_presentation import run_presentation_job
 from alinea_worker.tasks.generate_vocab_ai import run_generate_vocab_ai
 from alinea_worker.tasks.import_user_data import run_import_full_job
+from alinea_worker.tasks.index_embeddings import EMBEDDING_JOB_KIND, run_index_embeddings_job
 from alinea_worker.tasks.ingest import ingest_paper
 from alinea_worker.tasks.translate import run_translation_job
 
@@ -28,16 +32,31 @@ HANDLERS["resource_meta"] = run_fetch_resource_meta_job
 HANDLERS["figure"] = run_figure_job
 # kind='export'(JSON 一括エクスポート。plans/03 §18・M2-15)。
 HANDLERS["export"] = run_export_full_job
+# kind='paper_export'(論文単位スタンドアロンエクスポート。Feature S3・Task 11)。
+HANDLERS["paper_export"] = run_export_paper_job
 # kind='import'(zip 展開+冪等マージ復元。完全データ移行 Task 4)。
 HANDLERS["import"] = run_import_full_job
+# kind='index_embeddings'(セマンティック検索の埋め込みインデクシング。S12・Task 19)。
+# フラグ off のときは no-op。統合時に ck_jobs_kind へ 'index_embeddings' を union する。
+HANDLERS[EMBEDDING_JOB_KIND] = run_index_embeddings_job
+# kind='code_analysis'(論文主張 → GitHub コード対応。Task 21)。router は自前解決するため
+# _LLM_REQUIRED_KINDS には入れない(vocab_extract と同方針)。
+HANDLERS["code_analysis"] = run_analyze_code_job
+# kind='presentation'(論文→PPTX。根拠付き構成→SVG→ppt-master 変換→原子的置換。Task 29)。
+HANDLERS["presentation"] = run_presentation_job
 
 __all__ = [
+    "EMBEDDING_JOB_KIND",
     "ingest_paper",
+    "run_analyze_code_job",
     "run_export_full_job",
+    "run_export_paper_job",
     "run_extract_vocab_candidates",
     "run_fetch_resource_meta_job",
     "run_figure_job",
     "run_generate_vocab_ai",
     "run_import_full_job",
+    "run_index_embeddings_job",
+    "run_presentation_job",
     "run_translation_job",
 ]

@@ -122,7 +122,12 @@ OVERVIEW_FIGURE_DSL_JSON_SCHEMA: dict[str, Any] = {
     "$id": "https://alinea.app/schemas/overview_figure_dsl_v1.json",
     "type": "object",
     "additionalProperties": False,
-    "required": ["layout", "cards", "connectors"],
+    # OpenAI の strict structured outputs は properties の全キーを required に含めることを要求する
+    # (欠けると 400 invalid_json_schema)。evidence は意味的には任意(空配列可)だが strict 準拠の
+    # ため required に入れる。Pydantic 側(OverviewFigureDslGenerated)は default_factory=list で
+    # 空配列を許容し、prompt でも 2〜4 個選ぶよう指示している(vocab_candidates_v1 と同じ
+    # all-required パターン)。
+    "required": ["layout", "cards", "connectors", "evidence"],
     "properties": {
         "layout": {"const": "flow-3"},
         "cards": {

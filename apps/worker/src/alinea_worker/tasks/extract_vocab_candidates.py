@@ -57,7 +57,11 @@ _JSON_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["term", "kind", "block_id"],
+                # OpenAI の strict structured outputs は properties の全キーを required に
+                # 含めることを要求する(欠けると 400 invalid_json_schema)。reason は意味的には
+                # 任意だが、strict 準拠のため required に入れ、空文字を許容する(下の prompt でも
+                # 「無ければ空文字」と指示。generate_vocab_ai と同じ all-required パターン)。
+                "required": ["term", "kind", "block_id", "reason"],
                 "properties": {
                     "term": {"type": "string", "maxLength": 80},
                     "kind": {"enum": list(_KINDS)},
@@ -82,7 +86,7 @@ VOCAB_EXTRACT_SYSTEM = "\n".join(
         "- kind: 単一語なら word、決まった語の組合せなら collocation、字面から意味が推測しにくい"
         "定型表現なら idiom。",
         f"- 候補は最大 {MAX_CANDIDATES} 件。重要度の高い順に絞る。",
-        "- reason(任意): なぜ学ぶ価値があるかを一言(日本語、短く)。",
+        "- reason: なぜ学ぶ価値があるかを一言(日本語、短く)。特に無ければ空文字にする。",
     ]
 )
 
@@ -215,7 +219,7 @@ async def run_extract_vocab_candidates(ctx: dict[str, Any], store: JobStore, job
         return
 
     request = _build_request(_render_context(block_text))
-    router = ctx["router"]
+    router = await ctx["user_router_factory"].for_job(user_id=str(job.user_id), task="vocab")
     try:
         resp = await router.complete(
             VOCAB_TASK,

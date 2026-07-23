@@ -311,13 +311,17 @@ def raster_mode_enabled(user: User) -> bool:
 
 
 async def _maybe_generate_raster(
-    ctx: dict[str, Any], *, cards: list[Card], user: User, job: Job
+    ctx: dict[str, Any],
+    router: LLMRouter | None,
+    *,
+    cards: list[Card],
+    user: User,
+    job: Job,
 ) -> tuple[bytes, str, str, str] | None:
     """ラスター画像(bytes, provider, model, prompt)を返す。無効時/未構成時は None。"""
     if not raster_mode_enabled(user):
         return None
     image_router: ImageRouter | None = ctx.get("image_router")
-    router: LLMRouter | None = ctx.get("router")
     if image_router is None or router is None:
         log.warning("overview_raster_skipped_no_router", job_id=str(job.id))
         return None
@@ -352,6 +356,7 @@ async def create_overview_figure_v1(
     ctx: dict[str, Any],
     session: AsyncSession,
     *,
+    router: LLMRouter,
     article: Article,
     sources: ArticleSources,
     user: User,
@@ -360,6 +365,7 @@ async def create_overview_figure_v1(
     return await _create_or_rewrite(
         ctx,
         session,
+        router=router,
         article=article,
         sources=sources,
         user=user,
@@ -374,6 +380,7 @@ async def rewrite_overview_figure(
     ctx: dict[str, Any],
     session: AsyncSession,
     *,
+    router: LLMRouter,
     article: Article,
     sources: ArticleSources,
     user: User,
@@ -384,6 +391,7 @@ async def rewrite_overview_figure(
     return await _create_or_rewrite(
         ctx,
         session,
+        router=router,
         article=article,
         sources=sources,
         user=user,
@@ -398,6 +406,7 @@ async def _create_or_rewrite(
     ctx: dict[str, Any],
     session: AsyncSession,
     *,
+    router: LLMRouter,
     article: Article,
     sources: ArticleSources,
     user: User,
@@ -406,9 +415,6 @@ async def _create_or_rewrite(
     instruction: str | None,
     current: OverviewFigure | None,
 ) -> OverviewFigure:
-    router: LLMRouter | None = ctx.get("router")
-    if router is None:
-        raise RuntimeError("no LLM provider configured (ctx['router'] is None)")
 
     material_text = build_overview_material_text(sources)
     generated, _resp = await generate_overview_dsl_with_retry(
@@ -433,7 +439,7 @@ async def _create_or_rewrite(
     render_mode = "svg"
     image_key: str | None = None
     raster_provider, raster_model, raster_prompt = "", "", ""
-    raster = await _maybe_generate_raster(ctx, cards=render_dsl.cards, user=user, job=job)
+    raster = await _maybe_generate_raster(ctx, router, cards=render_dsl.cards, user=user, job=job)
     if raster is not None:
         image_bytes, raster_provider, raster_model, raster_prompt = raster
         render_mode = "raster"
@@ -523,10 +529,14 @@ async def run_overview_figure_job(ctx: dict[str, Any], store: JobStore, job: Job
         include_math=article.include_math,
     )
 
+    router = await ctx["user_router_factory"].for_job(
+        user_id=str(job.user_id), task="overview_figure_dsl"
+    )
     await store.checkpoint(str(job.id), "rendering_svg", progress=70)
     row = await rewrite_overview_figure(
         ctx,
         session,
+        router=router,
         article=article,
         sources=sources,
         user=user,

@@ -13,14 +13,28 @@ arq へは起床通知(``run_job``)を best-effort で投げる(plans/01 §4)。
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import hashlib
 import json
+import uuid
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
+from urllib.parse import urlsplit
 
 import structlog
+from alinea_core.adapters import SiteAdapter, SiteMeta, SiteRef, resolve_adapter
+from alinea_core.adapters.fetch import (
+    SiteFetchError,
+    adapter_allowed_hosts,
+    fetch_html,
+    fetch_note,
+)
+from alinea_core.adapters.fetch import (
+    fetch_pdf as fetch_site_pdf,
+)
 from alinea_core.arxiv.fetch import FetchError, fetch_pdf, probe_latex_available
 from alinea_core.arxiv.ids import ArxivId, parse_arxiv_url, pdf_url
+from alinea_core.arxiv.limits import MAX_ARXIV_PDF_BYTES
 from alinea_core.arxiv.metadata import ArxivMeta, fetch_metadata
 from alinea_core.db.models import (
     BlockSearchIndex,
@@ -30,12 +44,15 @@ from alinea_core.db.models import (
     Job,
     LibraryItem,
     Paper,
+    PaperExternalId,
     SourceAsset,
 )
 from alinea_core.db.revisions import get_latest_paper_revision, get_paper_revision
 from alinea_core.document.blocks import DocumentContent
 from alinea_core.ingest.dedupe import detect_duplicate
 from alinea_core.jobs.store import JobStore
+from alinea_core.licenses import is_public_shareable_license
+from alinea_core.parsing.source_candidates import site_source_candidates
 from alinea_core.settings import CoreSettings
 from alinea_core.storage.s3 import S3Storage, StorageKeys
 from fastapi import APIRouter, Depends, Form, Header, Query, Request, UploadFile
@@ -44,7 +61,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from alinea_api.deps import CurrentUserOrExt, DbDep, SettingsDep
+from alinea_api.deps import CurrentUserOrExt, DbDep, RedisDep, SettingsDep
 from alinea_api.errors import PROBLEM_CONTENT_TYPE, ProblemError, ProblemException, build_problem
 from alinea_api.schemas.ingest import (
     IngestArxivRequest,
@@ -52,11 +69,14 @@ from alinea_api.schemas.ingest import (
     IngestCheckBib,
     IngestCheckResponse,
     IngestCheckSaved,
+    IngestHuggingFaceInfo,
     IngestLastPosition,
     IngestPdfMeta,
     IngestPipelineState,
     IngestRecentItem,
     IngestRecentResponse,
+    SiteIngestRequest,
+    SiteIngestResponse,
     authors_short,
     build_pipeline_state,
 )
@@ -107,6 +127,118 @@ def get_arxiv_gateway() -> ArxivGateway:
 
 ArxivGatewayDep = Annotated[ArxivGateway, Depends(get_arxiv_gateway)]
 
+_MAX_SITE_PDF_BYTES = MAX_ARXIV_PDF_BYTES
+
+
+class SiteGateway:
+    """他サイト取り込みの HTTP 副作用ラッパ(SSRF 対策付き。テストで差し替え可能)。
+
+    アダプタ(純粋)が宣言するホストだけを許可し、landing HTML → SiteMeta 写像、本文 PDF の
+    取得を :mod:`alinea_core.adapters.fetch` の境界付きクライアント経由で行う。
+
+    OpenReview は API2 note を優先取得し、note 不在なら citation_* フォールバックを使う。
+    ACL Anthology 等の他アダプタは従来通り landing HTML → parse_metadata。
+    """
+
+    async def fetch_metadata(self, adapter: SiteAdapter, ref: SiteRef) -> SiteMeta:
+        from alinea_core.adapters.openreview import OpenReviewAdapter
+
+        allowed = adapter_allowed_hosts(adapter, ref)
+        html = await fetch_html(adapter.landing_url(ref), allowed_hosts=allowed)
+
+        if isinstance(adapter, OpenReviewAdapter):
+            # OpenReview: API2 note を試み、取れたら note 経由の高品質メタを使う。
+            # note が None/403/empty の場合は citation_* フォールバックへ。
+            note = await fetch_note(adapter, ref)
+            return adapter.parse_metadata_from_note_and_citation(
+                note=note, citation_html=html, ref=ref
+            )
+
+        return adapter.parse_metadata(html, ref)
+
+    async def fetch_pdf(
+        self, adapter: SiteAdapter, ref: SiteRef, meta: SiteMeta, settings: CoreSettings
+    ) -> bytes:
+        if not meta.pdf_url:
+            raise SiteFetchError("source_not_found", "site metadata has no pdf url")
+        # SSRF: allow-list は「アダプタが宣言したホスト」だけから作る。meta.pdf_url は
+        # 取得済み landing HTML(citation_pdf_url)由来で攻撃者が操作し得るため、その
+        # ホストが adapter の allow-list に入っていることをフェッチ前に検証する
+        # (自己参照 allow-list を作らない)。リダイレクトも fetch_pdf 内で同一 allow-list
+        # に照らして再検証される。
+        allowed = adapter_allowed_hosts(adapter, ref)
+        pdf_host = urlsplit(meta.pdf_url).hostname
+        if pdf_host is None or pdf_host.lower() not in allowed:
+            raise SiteFetchError(
+                "source_not_found", "pdf url host is not in the adapter allow-list"
+            )
+        return await fetch_site_pdf(
+            meta.pdf_url,
+            allowed_hosts=allowed,
+            settings=settings,
+            max_bytes=_MAX_SITE_PDF_BYTES,
+        )
+
+
+def get_site_gateway() -> SiteGateway:
+    return SiteGateway()
+
+
+SiteGatewayDep = Annotated[SiteGateway, Depends(get_site_gateway)]
+
+
+class HuggingFaceGateway:
+    """Hugging Face 公開 Hub API の副作用ラッパ(Task 18。テストで差し替え可能)。
+
+    Hugging Face を「論文本文の取得元」ではなく「論文同定 + 関連ソース収集」の情報源として扱う。
+    したがって Paper URL は arXiv ID を path から取り、Model/Dataset/Space URL は repo の
+    ``arxiv:<ID>`` タグから **一意に決まる場合だけ** arXiv ID を返す(0/複数 → 選択可能な診断)。
+    """
+
+    def _client(self, settings: CoreSettings) -> Any:
+        from alinea_core.adapters.huggingface import HuggingFaceClient, HuggingFaceConfig
+
+        return HuggingFaceClient(config=HuggingFaceConfig.from_settings(settings))
+
+    async def resolve_arxiv_id(
+        self, ref: Any, *, settings: CoreSettings
+    ) -> tuple[str | None, list[str]]:
+        """(arxiv_id, candidates)。Paper は一意、Model/Dataset/Space はタグ由来。"""
+        from alinea_core.adapters.huggingface import arxiv_id_from_tags
+
+        if ref.kind == "paper":
+            return ref.external_id, [ref.external_id]
+        client = self._client(settings)
+        tags = await client.fetch_repo_tags(ref.kind, ref.external_id)
+        candidates = sorted(
+            {
+                t.split(":", 1)[1].strip()
+                for t in tags
+                if isinstance(t, str)
+                and t.lower().startswith("arxiv:")
+                and t.split(":", 1)[1].strip()
+            }
+        )
+        return arxiv_id_from_tags(tags), candidates
+
+    async def discover_resources(self, arxiv_id: str, *, settings: CoreSettings) -> list[Any]:
+        """Paper API から関連ソース候補を導出する(取得失敗時は空)。"""
+        from alinea_core.adapters.huggingface import discover_paper_resources
+
+        client = self._client(settings)
+        try:
+            payload = await client.fetch_paper(arxiv_id)
+        except SiteFetchError:
+            return []
+        return discover_paper_resources(payload, arxiv_id=arxiv_id)
+
+
+def get_huggingface_gateway() -> HuggingFaceGateway:
+    return HuggingFaceGateway()
+
+
+HuggingFaceGatewayDep = Annotated[HuggingFaceGateway, Depends(get_huggingface_gateway)]
+
 JobWakeup = Callable[[str], Awaitable[None]]
 
 
@@ -144,10 +276,25 @@ async def ingest_check(
     user: CurrentUserOrExt,
     db: DbDep,
     gateway: ArxivGatewayDep,
+    site_gateway: SiteGatewayDep,
+    hf_gateway: HuggingFaceGatewayDep,
+    settings: SettingsDep,
     url: str = Query(..., description="現在タブの URL"),
 ) -> IngestCheckResponse:
     ref = parse_arxiv_url(url)
     if ref is None:
+        # Hugging Face(Paper/Model/Dataset/Space)は arXiv ID を解決して既存 arXiv 経路へ渡す。
+        # 本文取得元にはしない(品質 B のサイト取り込みではない)。Task 18。
+        hf_check = await _huggingface_check(db, hf_gateway, gateway, url, settings=settings)
+        if hf_check is not None:
+            return hf_check
+        # 他サイトアダプタ(ACL Anthology 等)の論文ページなら kind="site" を返す。
+        resolved = resolve_adapter(url)
+        if resolved is not None:
+            adapter, site_ref = resolved
+            return await _site_check(
+                db, site_gateway, adapter, site_ref, user_id=str(user.id)
+            )
         # 一般ページ PDF(状態4。3a §6.5・plans/10 §11.2・lib/popup-state.ts の kind==="pdf"
         # 分岐が唯一の消費者)。拡張ポップアップはこの kind を見て GenericPdf 状態へ遷移する。
         clean_url = url.split("?", 1)[0].split("#", 1)[0]
@@ -201,6 +348,149 @@ async def _new_preview(
     except Exception:
         latex = None
     return bib, latex, list(meta.arxiv_categories)
+
+
+async def _find_paper_by_external_id(db: DbDep, site: str, external_id: str) -> Paper | None:
+    """(site, external_id) の外部識別子から既存 Paper を返す(冪等化の第 2 判定)。"""
+    paper_id = (
+        await db.execute(
+            select(PaperExternalId.paper_id).where(
+                PaperExternalId.site == site, PaperExternalId.external_id == external_id
+            )
+        )
+    ).scalar_one_or_none()
+    if paper_id is None:
+        return None
+    return await db.get(Paper, str(paper_id))
+
+
+async def _library_item_for_paper(db: DbDep, paper_id: str, user_id: str) -> LibraryItem | None:
+    return (
+        (
+            await db.execute(
+                select(LibraryItem).where(
+                    LibraryItem.paper_id == paper_id, LibraryItem.user_id == user_id
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+
+def _site_body_unavailable(adapter: SiteAdapter, ref: SiteRef) -> bool:
+    """本文取得経路が無いサイト参照か(PubMed 単体など)を判定する。
+
+    候補順(source_candidates)が JATS を含めば OK(PMC)。PDF のみのサイトは、アダプタが
+    PDF 直リンク(または landing の citation_pdf_url)を出せる限り OK(ACL Anthology 等)。
+    PubMed は JATS 本文が無く pdf_url も None のため、この経路では本文へ到達できない。
+    JATS/NCBI 経路が API に配線されるまでは終端シグナル(415)を返すためのゲート。
+    """
+    candidates = site_source_candidates(adapter.site)
+    if "jats" in candidates:
+        # JATS を第一候補にするサイト(PMC)。JATS/PDF いずれかで本文へ到達可能。
+        return False
+    # PDF のみのサイト。PDF 直リンクを予測できないアダプタ(PubMed: pdf_url=None)は本文取得不可。
+    return adapter.pdf_url(ref) is None
+
+
+async def _huggingface_check(
+    db: DbDep,
+    hf_gateway: HuggingFaceGateway,
+    arxiv_gateway: ArxivGateway,
+    url: str,
+    *,
+    settings: CoreSettings,
+) -> IngestCheckResponse | None:
+    """Hugging Face URL → arXiv ID 解決(Task 18)。HF でなければ ``None``。
+
+    Paper URL は path の arXiv ID をそのまま既存 arXiv 経路へ。Model/Dataset/Space は repo の
+    ``arxiv:<ID>`` タグから一意に決まる場合だけ arXiv 経路へ。0/複数件なら選択可能な診断を返す
+    (kind="huggingface" + arxiv_candidates)。
+    """
+    from alinea_core.adapters.huggingface import parse_huggingface_url
+
+    hf_ref = parse_huggingface_url(url)
+    if hf_ref is None:
+        return None
+
+    try:
+        arxiv_id, candidates = await hf_gateway.resolve_arxiv_id(hf_ref, settings=settings)
+    except SiteFetchError:
+        arxiv_id, candidates = None, []
+
+    hf_info = IngestHuggingFaceInfo(
+        repo_kind=hf_ref.kind,
+        repo_id=hf_ref.external_id,
+        arxiv_id=arxiv_id,
+        arxiv_candidates=candidates,
+    )
+
+    if arxiv_id is None:
+        # 一意に決まらない(0 件 = 関連論文なし / 複数件 = 選択が必要)。
+        return IngestCheckResponse(kind="huggingface", huggingface=hf_info)
+
+    # 一意に決まったら既存 arXiv 経路の check を実行し、HF 補助情報を添える。
+    arxiv_ref = parse_arxiv_url(arxiv_id)
+    if arxiv_ref is None:
+        return IngestCheckResponse(kind="huggingface", huggingface=hf_info)
+    bib, latex, tags = await _new_preview(arxiv_gateway, arxiv_ref)
+    return IngestCheckResponse(
+        kind="huggingface",
+        arxiv_id=arxiv_ref.id,
+        arxiv_version=arxiv_ref.version_suffix or None,
+        bib=bib,
+        latex_available=latex,
+        suggested_tags=tags,
+        huggingface=hf_info,
+    )
+
+
+async def _site_check(
+    db: DbDep,
+    site_gateway: SiteGateway,
+    adapter: SiteAdapter,
+    ref: SiteRef,
+    *,
+    user_id: str,
+) -> IngestCheckResponse:
+    """kind="site" のプレビュー(既存なら saved、無ければ landing メタから書誌プレビュー)。"""
+    existing = await _find_paper_by_external_id(db, adapter.site, ref.external_id)
+    if existing is not None:
+        item = await _library_item_for_paper(db, str(existing.id), user_id)
+        saved_bib = IngestCheckBib(
+            title=existing.title,
+            authors_short=authors_short(list(existing.authors)),
+            venue=existing.venue,
+            year=existing.published_on.year if existing.published_on else None,
+        )
+        return IngestCheckResponse(
+            kind="site",
+            site=adapter.site,
+            external_id=ref.external_id,
+            bib=saved_bib,
+            saved=(await _build_saved(db, item)) if item is not None else None,
+        )
+
+    try:
+        meta = await site_gateway.fetch_metadata(adapter, ref)
+    except Exception:
+        # プレビュー取得失敗は unsupported にせず、書誌なしの site として返す(§3.1 と同方針)。
+        return IngestCheckResponse(kind="site", site=adapter.site, external_id=ref.external_id)
+    bib = IngestCheckBib(
+        title=meta.title,
+        authors_short=authors_short(list(meta.authors)),
+        venue=meta.venue,
+        year=_year_of(meta.published_on),
+    )
+    return IngestCheckResponse(
+        kind="site",
+        site=adapter.site,
+        external_id=ref.external_id,
+        bib=bib,
+        suggested_tags=list(meta.categories),
+        saved=None,
+    )
 
 
 async def _saved_preview(
@@ -418,6 +708,7 @@ async def ingest_arxiv(
     db: DbDep,
     wakeup: JobWakeupDep,
     gateway: ArxivGatewayDep,
+    hf_gateway: HuggingFaceGatewayDep,
     storage: PdfStorageDep,
     settings: SettingsDep,
     body: IngestArxivRequest,
@@ -437,7 +728,14 @@ async def ingest_arxiv(
                 job_id=str(prior.id),
             )
 
+    # Hugging Face URL(Paper/Model/Dataset/Space)は arXiv ID を解決して既存 arXiv 経路へ渡す。
+    # 取り込みに使った HF URL は active Resource、関連リンクは suggested Resource(Task 18)。
+    hf_ingest_url: str | None = None
     ref = parse_arxiv_url(body.url)
+    if ref is None:
+        hf_resolved = await _resolve_huggingface_ingest_url(hf_gateway, body.url, settings=settings)
+        if hf_resolved is not None:
+            ref, hf_ingest_url = hf_resolved
     if ref is None:
         raise ProblemException(
             "validation_error",
@@ -497,6 +795,13 @@ async def ingest_arxiv(
     if body.collection_id:
         await _add_to_collection(db, user_id, body.collection_id, library_item_id)
 
+    # Hugging Face 経由の取り込みなら、使った HF URL を active Resource、Paper API の関連リンクを
+    # suggested Resource として保存する(候補は勝手に確定しない。設計 §3)。
+    if hf_ingest_url is not None:
+        await _persist_huggingface_resources(
+            db, hf_gateway, item, arxiv_id=ref.id, ingest_url=hf_ingest_url, settings=settings
+        )
+
     await db.commit()
 
     # 稼働中 ingest があれば再利用(uq_jobs_ingest_active との競合回避)。
@@ -524,6 +829,129 @@ async def ingest_arxiv(
         await wakeup(job_id)
 
     return IngestArxivResponse(paper_id=paper_id, library_item_id=library_item_id, job_id=job_id)
+
+
+async def _resolve_huggingface_ingest_url(
+    hf_gateway: HuggingFaceGateway, url: str, *, settings: CoreSettings
+) -> tuple[ArxivId, str] | None:
+    """Hugging Face URL → (ArxivId, 正規化 HF URL)。HF でない/一意に決まらない場合は ``None``。
+
+    Paper URL は path の arXiv ID、Model/Dataset/Space は ``arxiv:<ID>`` タグから一意に決まる場合
+    だけ解決する(0/複数 → None で 422)。
+    """
+    from alinea_core.adapters.huggingface import parse_huggingface_url
+
+    hf_ref = parse_huggingface_url(url)
+    if hf_ref is None:
+        return None
+    try:
+        arxiv_id, _candidates = await hf_gateway.resolve_arxiv_id(hf_ref, settings=settings)
+    except SiteFetchError:
+        return None
+    if arxiv_id is None:
+        return None
+    arxiv_ref = parse_arxiv_url(arxiv_id)
+    if arxiv_ref is None:
+        return None
+    return arxiv_ref, url.strip()
+
+
+async def _persist_huggingface_resources(
+    db: DbDep,
+    hf_gateway: HuggingFaceGateway,
+    item: LibraryItem,
+    *,
+    arxiv_id: str,
+    ingest_url: str,
+    settings: CoreSettings,
+) -> None:
+    """取り込みに使った HF URL を active、Paper API の関連リンクを suggested として保存する。
+
+    dedup は正規化 URL(``uq_resource_links_item_url``)で行い、dismissed 済みの候補は復活させない
+    (行が既にあれば挿入しない)。apps 間 import 禁止のため ResourceLink は core モデルを直接使う。
+    """
+    from alinea_core.db.models import ResourceLink as _ResourceLink
+
+    from alinea_api.routers.resources import normalize_url
+
+    item_id = str(item.id)
+
+    async def _existing_norms() -> set[str]:
+        rows = (
+            (
+                await db.execute(
+                    select(_ResourceLink.url_normalized).where(
+                        _ResourceLink.library_item_id == item_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return set(rows)
+
+    existing = await _existing_norms()
+
+    def _hf_norm(u: str) -> str:
+        # resource_links.url_normalized は resources ルータの normalize_url に揃える
+        # (手動追加・dedup・dismiss 再提案防止と同一キー空間にするため。設計 §3)。
+        return normalize_url(u)
+
+    discovered = await hf_gateway.discover_resources(arxiv_id, settings=settings)
+
+    # 1) 取り込みに使った HF URL 自体 → active Resource。
+    ingest_norm = _hf_norm(ingest_url)
+    matched = next(
+        (d for d in discovered if _hf_norm(d.url) == ingest_norm),
+        None,
+    )
+    if ingest_norm not in existing:
+        db.add(
+            _ResourceLink(
+                id=str(uuid.uuid4()),
+                library_item_id=item_id,
+                status="active",
+                kind=(matched.kind if matched is not None else "huggingface"),
+                url=ingest_url,
+                url_normalized=ingest_norm,
+                official=False,
+                title=(matched.title if matched is not None else ingest_url),
+                source_domain="huggingface.co",
+                meta=(dict(matched.meta) if matched is not None else {}),
+                fetch_status="ok",
+                note_md="",
+                note_anchors=[],
+            )
+        )
+        existing.add(ingest_norm)
+
+    # 2) それ以外の関連リンク → suggested Resource(dedup・dismissed 非復活)。
+    for cand in discovered:
+        norm = _hf_norm(cand.url)
+        if norm in existing:
+            continue
+        meta = dict(cand.meta)
+        meta["relation"] = cand.relation
+        meta["official_candidate"] = cand.official_candidate
+        meta["detected_from"] = "huggingface_paper"
+        db.add(
+            _ResourceLink(
+                id=str(uuid.uuid4()),
+                library_item_id=item_id,
+                status="suggested",
+                kind=cand.kind,
+                url=cand.url,
+                url_normalized=norm,
+                official=False,
+                title=cand.title,
+                source_domain=urlsplit(cand.url).hostname or "",
+                meta=meta,
+                fetch_status="ok",
+                note_md="",
+                note_anchors=[],
+            )
+        )
+        existing.add(norm)
 
 
 async def _ensure_arxiv_pdf_available(
@@ -703,6 +1131,313 @@ async def _duplicate_response(
         "last_position": last_position.model_dump() if last_position is not None else None,
     }
     return JSONResponse(status_code=409, content=content, media_type=PROBLEM_CONTENT_TYPE)
+
+
+# --- POST /api/ingest/site(S8。他サイト取り込み) -------------------------------------
+
+
+@router.post(
+    "/api/ingest/site",
+    response_model=SiteIngestResponse,
+    status_code=202,
+    operation_id="ingest_site",
+)
+async def ingest_site(
+    user: CurrentUserOrExt,
+    db: DbDep,
+    wakeup: JobWakeupDep,
+    site_gateway: SiteGatewayDep,
+    storage: PdfStorageDep,
+    settings: SettingsDep,
+    redis: RedisDep,
+    body: SiteIngestRequest,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> SiteIngestResponse | JSONResponse:
+    """ACL Anthology 等のサイト論文ページを取り込む(landing→PDF を取得し品質 B で構造化)。
+
+    冪等化順(§7.1 相当): DOI → (site, external_id) → PDF SHA-256 の順に既存 Paper を探し、
+    どれにも一致しなければ新規作成する。互換ライセンスが機械判定できないときは
+    ``visibility="private"`` + ``owner_user_id``、明示された CC/CC0 のみ ``public`` を許す。
+    """
+    user_id = str(user.id)
+    stored_idempotency_key = (
+        _scoped_ingest_idempotency_key(user_id, idempotency_key) if idempotency_key else None
+    )
+    if idempotency_key:
+        prior = await _prior_ingest_job(db, user_id=user_id, request_key=idempotency_key)
+        if prior is not None:
+            return SiteIngestResponse(
+                paper_id=str(prior.paper_id),
+                library_item_id=str(prior.library_item_id),
+                job_id=str(prior.id),
+            )
+
+    resolved = resolve_adapter(body.url)
+    if resolved is None:
+        raise ProblemException(
+            "validation_error",
+            detail="url is not a supported site URL",
+            errors=[ProblemError(field="url", message="対応サイトの URL ではありません")],
+        )
+    adapter, ref = resolved
+
+    status_value = body.status or "planned"
+    if status_value not in _VALID_STATUSES:
+        raise ProblemException(
+            "validation_error",
+            errors=[ProblemError(field="status", message="不正なステータスです")],
+        )
+
+    landing_url = adapter.landing_url(ref)
+
+    # JATS 品質 A 経路を持つサイト(PMC)は NCBI E-utilities から JATS XML を取得し S3 に
+    # 先行保存する。worker は source_format="jats" のとき原本 PDF を一切触らず JATS から
+    # 品質 A で構造化する(pipeline.py is_jats 経路)。PDF のみのサイト(ACL 等)は従来通り。
+    use_jats = "jats" in site_source_candidates(adapter.site)
+
+    # 本文取得経路が無いサイト(PubMed 単体: JATS 本文なし・PDF 直リンクなし)は、常に失敗する
+    # provider_error(502=リトライ示唆)ではなく、明確な終端シグナル(415=未対応)を返す。
+    if _site_body_unavailable(adapter, ref):
+        raise ProblemException(
+            "unsupported_media_type",
+            detail="このサイトの本文取得はまだ対応していません(書誌のみ取得可能)",
+            errors=[ProblemError(field="url", message="本文取得は未対応です")],
+        )
+
+    # (site, external_id) の既存 Paper があり、かつユーザーが既に所有していれば duplicate。
+    existing_paper = await _find_paper_by_external_id(db, adapter.site, ref.external_id)
+    if existing_paper is not None:
+        existing_item = await _library_item_for_paper(db, str(existing_paper.id), user_id)
+        if existing_item is not None:
+            return await _duplicate_response(db, existing_item, instance="/api/ingest/site")
+
+    # 本文取得(JATS 優先。JATS 経路は原本 PDF を取らない)。SSRF/上限対策付き。
+    pdf_bytes: bytes | None = None
+    jats_bytes: bytes | None = None
+    try:
+        meta = await site_gateway.fetch_metadata(adapter, ref)
+        if use_jats:
+            from alinea_core.adapters.pubmed import NcbiClient, NcbiConfig
+            from alinea_core.arxiv.fetch import RedisLike
+
+            # redis.Redis は RedisLike と構造的に厳密一致しないため cast する(cron.py と同方針)。
+            ncbi = NcbiClient(
+                config=NcbiConfig.from_settings(settings),
+                redis=cast(RedisLike, redis),
+            )
+            jats_bytes = await ncbi.fetch_pmc_jats(ref.external_id)
+        else:
+            pdf_bytes = await site_gateway.fetch_pdf(adapter, ref, meta, settings)
+    except SiteFetchError as exc:
+        raise ProblemException(
+            "provider_error", detail=f"サイトからの取得に失敗しました({exc.kind})"
+        ) from exc
+
+    if use_jats:
+        assert jats_bytes is not None
+        sha256 = hashlib.sha256(jats_bytes).hexdigest()
+    else:
+        assert pdf_bytes is not None
+        if not pdf_bytes.startswith(_PDF_MAGIC):
+            raise ProblemException("provider_error", detail="取得した本文が PDF ではありません")
+        sha256 = hashlib.sha256(pdf_bytes).hexdigest()
+
+    # 冪等化: DOI → (site, external_id) → PDF SHA-256 の順に既存 Paper を探す。
+    # 再利用は「public か自分の所有」に限る(他人の private には寄せない。§7.1)。
+    paper = await _resolve_site_paper(
+        db, meta=meta, existing_by_external_id=existing_paper, sha256=sha256, user_id=user_id
+    )
+    created_new = paper is None
+    is_public = is_public_shareable_license(meta.license)
+    if paper is None:
+        paper = Paper(
+            title=meta.title or landing_url,
+            authors=list(meta.authors),
+            abstract=meta.abstract or "",
+            published_on=_site_date(meta.published_on),
+            venue=meta.venue,
+            doi=meta.doi,
+            license=meta.license or "unknown",
+            pdf_sha256=sha256,
+            visibility="public" if is_public else "private",
+            owner_user_id=None if is_public else user_id,
+        )
+        db.add(paper)
+        await db.flush()
+    paper_id = str(paper.id)
+
+    # 外部識別子を保存((site, external_id) unique。冪等: 既存があれば作らない)。
+    await _ensure_paper_external_id(db, paper_id, adapter.site, ref.external_id, landing_url)
+
+    # 既にこのユーザーが所有していれば duplicate(external-id 名寄せで再利用したケース)。
+    existing_item = await _library_item_for_paper(db, paper_id, user_id)
+    if existing_item is not None:
+        await db.commit()
+        return await _duplicate_response(db, existing_item, instance="/api/ingest/site")
+
+    # 本文の保存は「新規作成した Paper」に対してのみ行う。再利用した(public または自分の)
+    # Paper は最初の取り込みで既に本文・リビジョンを持つため、上書き保存しない
+    # (他ユーザーの共有 Paper の本文を untrusted なサイト取得で破壊しない)。
+    if created_new:
+        if use_jats:
+            # JATS XML を S3(sources/<paper>/v1/jats.xml)へ先行保存する。worker の is_jats
+            # 経路がこの規約キーを直接読み品質 A リビジョンを生成する(SourceAsset 行や PDF
+            # プレースホルダは worker 契約上不要 — ck_source_assets_kind に 'jats' も無い)。
+            assert jats_bytes is not None
+            await storage.put(
+                storage.sources_bucket,
+                StorageKeys.jats_xml(paper_id, "v1"),
+                jats_bytes,
+                content_type="application/xml",
+            )
+        else:
+            assert pdf_bytes is not None
+            storage_key = StorageKeys.original_pdf(paper_id, "v1")
+            await storage.put(
+                storage.sources_bucket, storage_key, pdf_bytes, content_type="application/pdf"
+            )
+            db.add(
+                SourceAsset(
+                    paper_id=paper_id,
+                    kind="pdf",
+                    source_url=landing_url,
+                    source_version="v1",
+                    storage_key=storage_key,
+                    content_type="application/pdf",
+                    byte_size=len(pdf_bytes),
+                    sha256=sha256,
+                )
+            )
+            await _ensure_pdf_placeholder_revision(db, paper, "v1")
+
+    item = LibraryItem(
+        user_id=user_id,
+        paper_id=paper_id,
+        status=status_value,
+        tags=list(body.tags or []),
+        one_line_note=body.quick_note or "",
+    )
+    db.add(item)
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        again = await _library_item_for_paper(db, paper_id, user_id)
+        if again is not None:
+            return await _duplicate_response(db, again, instance="/api/ingest/site")
+        raise
+    library_item_id = str(item.id)
+
+    if body.collection_id:
+        await _add_to_collection(db, user_id, body.collection_id, library_item_id)
+
+    await db.commit()
+
+    ingest_payload: dict[str, Any] = {
+        "mode": "initial",
+        "source": "site",
+        "site": adapter.site,
+        "external_id": ref.external_id,
+        "landing_url": landing_url,
+        "library_item_id": library_item_id,
+    }
+    if use_jats:
+        # worker の is_jats 経路を起動する(先行保存した jats.xml を品質 A で構造化)。
+        ingest_payload["source_format"] = "jats"
+
+    store = JobStore(db)
+    job_id = await store.enqueue(
+        kind="ingest",
+        payload=ingest_payload,
+        idempotency_key=stored_idempotency_key,
+        priority="bulk",
+        user_id=user_id,
+        paper_id=paper_id,
+        library_item_id=library_item_id,
+    )
+    await wakeup(job_id)
+
+    return SiteIngestResponse(paper_id=paper_id, library_item_id=library_item_id, job_id=job_id)
+
+
+def _site_date(published_on: str | None) -> Any:
+    if not published_on:
+        return None
+    try:
+        return dt.date.fromisoformat(published_on)
+    except ValueError:
+        return None
+
+
+def _reusable_for_user(paper: Paper | None, user_id: str) -> Paper | None:
+    """他ユーザーの private Paper への name-match を禁止する(§7.1・arXiv 経路と同方針)。
+
+    再利用してよいのは「public」または「自分が所有する Paper」だけ。他人の private Paper に
+    寄せると、その論文へ LibraryItem を貼り原本 PDF を上書きしてしまう(情報漏えい・破壊)。
+    """
+    if paper is None:
+        return None
+    if paper.visibility == "public" or str(paper.owner_user_id) == user_id:
+        return paper
+    return None
+
+
+async def _resolve_site_paper(
+    db: DbDep,
+    *,
+    meta: SiteMeta,
+    existing_by_external_id: Paper | None,
+    sha256: str,
+    user_id: str,
+) -> Paper | None:
+    """DOI → (site, external_id) → PDF SHA-256 の順に既存 Paper を探す(§7.1)。
+
+    いずれの一致でも「public か自分の所有」に限って再利用する(他人の private には寄せない)。
+    """
+    if meta.doi:
+        by_doi = (
+            (await db.execute(select(Paper).where(Paper.doi == meta.doi))).scalars().first()
+        )
+        reusable = _reusable_for_user(by_doi, user_id)
+        if reusable is not None:
+            return reusable
+    reusable = _reusable_for_user(existing_by_external_id, user_id)
+    if reusable is not None:
+        return reusable
+    by_sha = (
+        (
+            await db.execute(
+                select(Paper).where(Paper.pdf_sha256 == sha256, Paper.owner_user_id == user_id)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    return by_sha
+
+
+async def _ensure_paper_external_id(
+    db: DbDep, paper_id: str, site: str, external_id: str, canonical_url: str
+) -> None:
+    """(site, external_id) 行を冪等に作る(既存があれば何もしない)。"""
+    existing = (
+        await db.execute(
+            select(PaperExternalId.id).where(
+                PaperExternalId.site == site, PaperExternalId.external_id == external_id
+            )
+        )
+    ).first()
+    if existing is not None:
+        return
+    db.add(
+        PaperExternalId(
+            paper_id=paper_id,
+            site=site,
+            external_id=external_id,
+            canonical_url=canonical_url,
+        )
+    )
+    await db.flush()
 
 
 # --- POST /api/ingest/pdf(§3.3) ------------------------------------------------------

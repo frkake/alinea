@@ -188,6 +188,48 @@ describe("SearchGroupCard (4e §4.5)", () => {
     expect(screen.getByText("7 件")).toBeInTheDocument();
   });
 
+  test("shows the semantic match-type badge (意味) when match_type is semantic", () => {
+    const group: SearchGroup = {
+      library_item: libraryItem(),
+      hit_count: 1,
+      article: null,
+      hits: [bodyHit()],
+      match_type: "semantic",
+    };
+    render(<SearchGroupCard group={group} q="rectified flow" />);
+    expect(screen.getByText("意味")).toBeInTheDocument();
+    expect(screen.getByTestId("match-type-badge")).toHaveAttribute(
+      "title",
+      "意味的に関連(セマンティック検索)",
+    );
+  });
+
+  test("shows 全文 for lexical and 両方 for both", () => {
+    const base: Omit<SearchGroup, "match_type"> = {
+      library_item: libraryItem(),
+      hit_count: 1,
+      article: null,
+      hits: [bodyHit()],
+    };
+    const { rerender } = render(
+      <SearchGroupCard group={{ ...base, match_type: "lexical" }} q="q" />,
+    );
+    expect(screen.getByText("全文")).toBeInTheDocument();
+    rerender(<SearchGroupCard group={{ ...base, match_type: "both" }} q="q" />);
+    expect(screen.getByText("両方")).toBeInTheDocument();
+  });
+
+  test("omits the match-type badge entirely when match_type is absent (flag off)", () => {
+    const group: SearchGroup = {
+      library_item: libraryItem(),
+      hit_count: 1,
+      article: null,
+      hits: [bodyHit()],
+    };
+    render(<SearchGroupCard group={group} q="q" />);
+    expect(screen.queryByTestId("match-type-badge")).not.toBeInTheDocument();
+  });
+
   test("article-only group swaps the header for the article variant", () => {
     const group: SearchGroup = {
       library_item: libraryItem(),

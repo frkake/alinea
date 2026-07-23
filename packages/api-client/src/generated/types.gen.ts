@@ -717,6 +717,48 @@ export type ChatThreadListResponse = {
 };
 
 /**
+ * CodeAnalysisEstimateResponse
+ */
+export type CodeAnalysisEstimateResponse = {
+    /**
+     * Estimate Id
+     */
+    estimate_id: string;
+    /**
+     * Commit Sha
+     */
+    commit_sha: string;
+    /**
+     * Files
+     */
+    files: number;
+    /**
+     * Estimated Input Tokens
+     */
+    estimated_input_tokens: number;
+    /**
+     * Estimated Output Tokens
+     */
+    estimated_output_tokens: number;
+    /**
+     * Estimated Embedding Tokens
+     */
+    estimated_embedding_tokens: number;
+    /**
+     * Estimated Cost Usd
+     */
+    estimated_cost_usd: string;
+    /**
+     * Budget Remaining Usd
+     */
+    budget_remaining_usd: string;
+    /**
+     * Expires At
+     */
+    expires_at: string;
+};
+
+/**
  * CollectionCreateBody
  * §13.1 ``POST /api/collections``。
  */
@@ -890,6 +932,113 @@ export type CollectionProgress = {
      * Total
      */
     total: number;
+};
+
+/**
+ * CommentCreateRequest
+ */
+export type CommentCreateRequest = {
+    /**
+     * Block Id
+     */
+    block_id: string;
+    /**
+     * Body
+     */
+    body: string;
+    /**
+     * Parent Id
+     */
+    parent_id?: string | null;
+};
+
+/**
+ * CommentOut
+ * コメント 1 件。hidden / deleted は本文を伏せて返す(status で状態を伝える)。
+ */
+export type CommentOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Block Id
+     */
+    block_id: string;
+    /**
+     * Parent Id
+     */
+    parent_id?: string | null;
+    /**
+     * Body
+     */
+    body: string;
+    /**
+     * Status
+     */
+    status: 'visible' | 'hidden' | 'deleted';
+    /**
+     * Created At
+     */
+    created_at?: string | null;
+    /**
+     * Updated At
+     */
+    updated_at?: string | null;
+};
+
+/**
+ * CommentUpdateRequest
+ */
+export type CommentUpdateRequest = {
+    /**
+     * Body
+     */
+    body: string;
+};
+
+/**
+ * CorrespondenceOut
+ */
+export type CorrespondenceOut = {
+    /**
+     * Paper Anchor
+     */
+    paper_anchor?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Claim Text
+     */
+    claim_text: string;
+    /**
+     * Path
+     */
+    path: string;
+    /**
+     * Symbol
+     */
+    symbol: string;
+    /**
+     * Start Line
+     */
+    start_line: number;
+    /**
+     * End Line
+     */
+    end_line: number;
+    /**
+     * Code Excerpt
+     */
+    code_excerpt: string;
+    /**
+     * Explanation Ja
+     */
+    explanation_ja: string;
+    /**
+     * Confidence
+     */
+    confidence: string;
 };
 
 /**
@@ -1126,6 +1275,20 @@ export type EntryPatchBody = {
      * Note
      */
     note?: string | null;
+};
+
+/**
+ * EstimateRequest
+ */
+export type EstimateRequest = {
+    /**
+     * Resource Id
+     */
+    resource_id: string;
+    /**
+     * Section Ids
+     */
+    section_ids?: Array<string> | null;
 };
 
 /**
@@ -1698,7 +1861,7 @@ export type IngestCheckResponse = {
     /**
      * Kind
      */
-    kind: 'arxiv' | 'pdf' | 'unsupported';
+    kind: 'arxiv' | 'site' | 'pdf' | 'unsupported' | 'huggingface';
     /**
      * Arxiv Id
      */
@@ -1707,6 +1870,14 @@ export type IngestCheckResponse = {
      * Arxiv Version
      */
     arxiv_version?: string | null;
+    /**
+     * Site
+     */
+    site?: string | null;
+    /**
+     * External Id
+     */
+    external_id?: string | null;
     bib?: IngestCheckBib | null;
     /**
      * Latex Available
@@ -1717,6 +1888,7 @@ export type IngestCheckResponse = {
      */
     suggested_tags?: Array<string>;
     saved?: IngestCheckSaved | null;
+    huggingface?: IngestHuggingFaceInfo | null;
 };
 
 /**
@@ -1763,6 +1935,35 @@ export type IngestFailure = {
      * Code
      */
     code?: string | null;
+};
+
+/**
+ * IngestHuggingFaceInfo
+ * kind="huggingface" のときの補助情報(Task 18)。
+ *
+ * - ``repo_kind``: paper / model / dataset / space。
+ * - ``arxiv_id``: 一意に決まった arXiv ID(Paper URL は path から、Model/Dataset/Space は
+ * ``arxiv:<ID>`` タグから)。決められない場合は ``None``。
+ * - ``arxiv_candidates``: Model/Dataset/Space の ``arxiv:<ID>`` タグが 0 件/複数件で一意に
+ * 決まらないとき、選択可能な候補一覧(空 = 関連論文が見つからない)。
+ */
+export type IngestHuggingFaceInfo = {
+    /**
+     * Repo Kind
+     */
+    repo_kind: 'paper' | 'model' | 'dataset' | 'space';
+    /**
+     * Repo Id
+     */
+    repo_id: string;
+    /**
+     * Arxiv Id
+     */
+    arxiv_id?: string | null;
+    /**
+     * Arxiv Candidates
+     */
+    arxiv_candidates?: Array<string>;
 };
 
 /**
@@ -2594,6 +2795,50 @@ export type PaperBib = {
 };
 
 /**
+ * PaperExportRequest
+ * ``POST .../export/standalone`` の本文。複数選択した成果物(値域は Literal で検証)。
+ */
+export type PaperExportRequest = {
+    /**
+     * Artifacts
+     */
+    artifacts: Array<'source_html' | 'translation_html' | 'bilingual_html' | 'article_html' | 'pdf_original' | 'pdf_translated' | 'pdf_bilingual'>;
+};
+
+/**
+ * PaperExportStartResponse
+ * ``POST .../export/standalone`` のレスポンス。
+ *
+ * - ``mode="sync"``: 単一 HTML 選択。``download_url`` は同期 HTML エンドポイントの相対 URL。
+ * - ``mode="job"``: paper_export job を enqueue。``job_id`` を status でポーリングする。
+ */
+export type PaperExportStartResponse = {
+    /**
+     * Mode
+     */
+    mode: string;
+    /**
+     * Job Id
+     */
+    job_id?: string | null;
+    /**
+     * Download Url
+     */
+    download_url?: string | null;
+};
+
+/**
+ * PaperExportStatusResponse
+ */
+export type PaperExportStatusResponse = {
+    job: JobOut;
+    /**
+     * Download Url
+     */
+    download_url: string | null;
+};
+
+/**
  * PapersIngestLogEntry
  * §4.3 の処理ログ 1 行(joblog.project_ingest_log の射影と同型)。
  */
@@ -2698,6 +2943,96 @@ export type PositionResponse = {
 };
 
 /**
+ * PresentationArtifactOut
+ */
+export type PresentationArtifactOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+    /**
+     * Source Revision Id
+     */
+    source_revision_id: string;
+    /**
+     * Generation Job Id
+     */
+    generation_job_id?: string | null;
+    /**
+     * Preset
+     */
+    preset: string;
+    /**
+     * Audience
+     */
+    audience: string;
+    /**
+     * Instruction
+     */
+    instruction: string;
+    /**
+     * Model Provider
+     */
+    model_provider: string;
+    /**
+     * Model Id
+     */
+    model_id: string;
+    /**
+     * Ppt Master Revision
+     */
+    ppt_master_revision: string;
+    /**
+     * Generated At
+     */
+    generated_at: string;
+    /**
+     * Updated At
+     */
+    updated_at: string;
+};
+
+/**
+ * PresentationGenerateRequest
+ */
+export type PresentationGenerateRequest = {
+    /**
+     * Preset
+     */
+    preset: 'reading_group' | 'research_talk' | 'implementation';
+    /**
+     * Audience
+     */
+    audience?: string | null;
+    /**
+     * Instruction
+     */
+    instruction?: string | null;
+};
+
+/**
+ * PresentationJobResponse
+ */
+export type PresentationJobResponse = {
+    /**
+     * Job Id
+     */
+    job_id: string;
+};
+
+/**
+ * PresentationStatusResponse
+ */
+export type PresentationStatusResponse = {
+    artifact?: PresentationArtifactOut | null;
+    job?: JobOut | null;
+};
+
+/**
  * PrioritizeRequest
  */
 export type PrioritizeRequest = {
@@ -2782,6 +3117,112 @@ export type ProposalAcceptResponse = {
      * State
      */
     state: string;
+};
+
+/**
+ * PublicArticleOut
+ * slug 読み取り(認証不要)で返す公開スナップショット本体。
+ */
+export type PublicArticleOut = {
+    /**
+     * Slug
+     */
+    slug: string;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Visibility
+     */
+    visibility: 'unlisted' | 'public';
+    /**
+     * Snapshot Version
+     */
+    snapshot_version: number;
+    /**
+     * Noindex
+     */
+    noindex: boolean;
+    /**
+     * Paper Meta
+     */
+    paper_meta: {
+        [key: string]: unknown;
+    };
+    /**
+     * Blocks
+     */
+    blocks: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
+     * Published At
+     */
+    published_at?: string | null;
+};
+
+/**
+ * PublicationCreateRequest
+ */
+export type PublicationCreateRequest = {
+    /**
+     * Visibility
+     */
+    visibility?: 'unlisted' | 'public';
+    /**
+     * Slug
+     */
+    slug?: string | null;
+};
+
+/**
+ * PublicationOut
+ * 所有者向けの公開メタ(管理用)。
+ */
+export type PublicationOut = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Article Id
+     */
+    article_id: string;
+    /**
+     * Slug
+     */
+    slug: string;
+    /**
+     * Visibility
+     */
+    visibility: 'unlisted' | 'public';
+    /**
+     * Snapshot Version
+     */
+    snapshot_version: number;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Published At
+     */
+    published_at?: string | null;
+    /**
+     * Updated At
+     */
+    updated_at?: string | null;
+};
+
+/**
+ * PublicationUpdateRequest
+ */
+export type PublicationUpdateRequest = {
+    /**
+     * Visibility
+     */
+    visibility: 'unlisted' | 'public';
 };
 
 /**
@@ -3073,7 +3514,7 @@ export type ResourceLink = {
     /**
      * Kind
      */
-    kind: 'github' | 'youtube' | 'slides' | 'article';
+    kind: 'github' | 'youtube' | 'slides' | 'article' | 'huggingface' | 'project';
     /**
      * Url
      */
@@ -3117,6 +3558,8 @@ export type ResourceLink = {
 /**
  * ResourceListResponse
  * GET /api/library-items/{id}/resources(plans/03 §12.1)。
+ *
+ * ``suggestions``(複数)が正典。``suggestion``(単数)は互換期間中のみ先頭候補を返す。
  */
 export type ResourceListResponse = {
     /**
@@ -3124,6 +3567,10 @@ export type ResourceListResponse = {
      */
     items: Array<ResourceLink>;
     suggestion?: ResourceSuggestion | null;
+    /**
+     * Suggestions
+     */
+    suggestions?: Array<ResourceSuggestion>;
     /**
      * Count
      */
@@ -3145,7 +3592,7 @@ export type ResourcePatchRequest = {
     /**
      * Kind
      */
-    kind?: ('github' | 'youtube' | 'slides' | 'article') | null;
+    kind?: ('github' | 'youtube' | 'slides' | 'article' | 'huggingface' | 'project') | null;
     /**
      * Note
      */
@@ -3154,7 +3601,11 @@ export type ResourcePatchRequest = {
 
 /**
  * ResourceSuggestion
- * 公式実装の自動検出提案(docs/12 §5)。件数バッジには数えない。
+ * 関連ソース候補(docs/12 §5・設計 §3)。件数バッジには数えない。
+ *
+ * - arXiv 公式実装の動的候補(``papers.official_repo_url`` 由来)は ``resource_id=None``。
+ * - Hugging Face Paper API 由来の永続候補(``resource_links.status='suggested'``)は
+ * ``resource_id`` を持ち、ID 指定の accept/dismiss で個別に採用・却下できる。
  */
 export type ResourceSuggestion = {
     /**
@@ -3164,7 +3615,33 @@ export type ResourceSuggestion = {
     /**
      * Detected From
      */
-    detected_from?: 'arxiv_page';
+    detected_from?: 'arxiv_page' | 'huggingface_paper';
+    /**
+     * Resource Id
+     */
+    resource_id?: string | null;
+    /**
+     * Kind
+     */
+    kind?: ('github' | 'youtube' | 'slides' | 'article' | 'huggingface' | 'project') | null;
+    /**
+     * Relation
+     */
+    relation?: string | null;
+    /**
+     * Title
+     */
+    title?: string | null;
+    /**
+     * Official Candidate
+     */
+    official_candidate?: boolean;
+    /**
+     * Meta
+     */
+    meta?: {
+        [key: string]: unknown;
+    };
 };
 
 /**
@@ -3377,6 +3854,79 @@ export type RevisionListResponse = {
 };
 
 /**
+ * RunOut
+ */
+export type RunOut = {
+    /**
+     * Run Id
+     */
+    run_id: string;
+    /**
+     * Resource Id
+     */
+    resource_id: string;
+    /**
+     * Revision Id
+     */
+    revision_id: string;
+    /**
+     * Commit Sha
+     */
+    commit_sha: string;
+    /**
+     * Trigger
+     */
+    trigger: string;
+    /**
+     * Status
+     */
+    status: string;
+    /**
+     * Stale
+     */
+    stale: boolean;
+    /**
+     * Estimated Cost Usd
+     */
+    estimated_cost_usd: string;
+    /**
+     * Actual Cost Usd
+     */
+    actual_cost_usd: string;
+    /**
+     * Error
+     */
+    error?: string | null;
+    /**
+     * Created At
+     */
+    created_at?: string | null;
+    /**
+     * Finished At
+     */
+    finished_at?: string | null;
+};
+
+/**
+ * RunsResponse
+ */
+export type RunsResponse = {
+    /**
+     * Runs
+     */
+    runs: Array<RunOut>;
+    current_result?: RunOut | null;
+    /**
+     * Correspondences
+     */
+    correspondences?: Array<CorrespondenceOut>;
+    /**
+     * Stale
+     */
+    stale?: boolean;
+};
+
+/**
  * SavedFilterBody
  * POST/PATCH /api/saved-filters の共通リクエスト(§5.14。両者とも全項目送信)。
  */
@@ -3522,8 +4072,16 @@ export type SearchFacets = {
 /**
  * SearchGroup
  * 論文単位グループ化(plans/03 §15.1 + plans/11 R-2)。
+ *
+ * ``match_type``(``_DropNullMatchType`` 由来)は S12 セマンティック検索の一致種別(全文=
+ * lexical / 意味=semantic / 両方=both)。フラグ off のときは常に ``None`` で、その場合は JSON
+ * に **一切現れない**(flag-off byte-identical の保証。§4)。
  */
 export type SearchGroup = {
+    /**
+     * Match Type
+     */
+    match_type?: ('lexical' | 'semantic' | 'both') | null;
     library_item: LibraryItemSummary;
     /**
      * Hit Count
@@ -3973,6 +4531,100 @@ export type SharePatchBody = {
 };
 
 /**
+ * SimilarPaper
+ * 「似た論文」の 1 件(S12 セマンティック検索。docs/10 §5・spec §6.3)。
+ *
+ * ``similarity`` は 0〜1 のコサイン類似度(``1 - cosine_distance``)。自分のライブラリ内の
+ * 論文だけを対象にし、``library_item_id`` で情報パネルからリンクする。
+ */
+export type SimilarPaper = {
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Authors
+     */
+    authors: Array<string>;
+    /**
+     * Similarity
+     */
+    similarity: number;
+};
+
+/**
+ * SimilarPapersResponse
+ * ``GET /api/library-items/{id}/similar`` レスポンス(spec §6.3)。
+ *
+ * ``indexing`` は対象論文の埋め込みが未生成のとき ``true``(空配列を返す)。フラグ off や
+ * 埋め込み未整備でも 200 で空配列を返し、検索導線を壊さない(P3)。
+ */
+export type SimilarPapersResponse = {
+    /**
+     * Items
+     */
+    items: Array<SimilarPaper>;
+    /**
+     * Indexing
+     */
+    indexing?: boolean;
+};
+
+/**
+ * SiteIngestRequest
+ * POST /api/ingest/site のリクエスト本文(ACL Anthology 等の論文ページ URL)。
+ */
+export type SiteIngestRequest = {
+    /**
+     * Url
+     */
+    url: string;
+    /**
+     * Status
+     */
+    status?: string | null;
+    /**
+     * Tags
+     */
+    tags?: Array<string> | null;
+    /**
+     * Collection Id
+     */
+    collection_id?: string | null;
+    /**
+     * Quick Note
+     */
+    quick_note?: string | null;
+};
+
+/**
+ * SiteIngestResponse
+ * POST /api/ingest/site の 202 応答(§3.2 と同型 + duplicate)。
+ */
+export type SiteIngestResponse = {
+    /**
+     * Job Id
+     */
+    job_id: string;
+    /**
+     * Library Item Id
+     */
+    library_item_id: string;
+    /**
+     * Paper Id
+     */
+    paper_id: string;
+    /**
+     * Duplicate
+     */
+    duplicate?: boolean;
+};
+
+/**
  * StandaloneAvailability
  * 成果物ごとの生成有無(UI の選択可否判定に使う。最新リビジョン基準)。
  */
@@ -4005,6 +4657,42 @@ export type StandaloneAvailability = {
      * Pdf Bilingual
      */
     pdf_bilingual: boolean;
+};
+
+/**
+ * StartRequest
+ */
+export type StartRequest = {
+    /**
+     * Resource Id
+     */
+    resource_id: string;
+    /**
+     * Estimate Id
+     */
+    estimate_id: string;
+    /**
+     * Section Ids
+     */
+    section_ids?: Array<string> | null;
+};
+
+/**
+ * StartResponse
+ */
+export type StartResponse = {
+    /**
+     * Job Id
+     */
+    job_id: string;
+    /**
+     * Run Id
+     */
+    run_id: string;
+    /**
+     * Status
+     */
+    status: string;
 };
 
 /**
@@ -5245,6 +5933,37 @@ export type IngestArxivResponses = {
 
 export type IngestArxivResponse2 = IngestArxivResponses[keyof IngestArxivResponses];
 
+export type IngestSiteData = {
+    body: SiteIngestRequest;
+    headers?: {
+        /**
+         * Idempotency-Key
+         */
+        'Idempotency-Key'?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/ingest/site';
+};
+
+export type IngestSiteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type IngestSiteError = IngestSiteErrors[keyof IngestSiteErrors];
+
+export type IngestSiteResponses = {
+    /**
+     * Successful Response
+     */
+    202: SiteIngestResponse;
+};
+
+export type IngestSiteResponse = IngestSiteResponses[keyof IngestSiteResponses];
+
 export type IngestPdfData = {
     body: BodyIngestPdf;
     headers?: {
@@ -5816,7 +6535,7 @@ export type TranslationsListSetsResponses = {
 
 export type TranslationsListSetsResponse = TranslationsListSetsResponses[keyof TranslationsListSetsResponses];
 
-export type TranslationsStartLiteralData = {
+export type TranslationsStartEasyData = {
     /**
      * Body
      */
@@ -5835,23 +6554,23 @@ export type TranslationsStartLiteralData = {
     url: '/api/revisions/{revision_id}/translations';
 };
 
-export type TranslationsStartLiteralErrors = {
+export type TranslationsStartEasyErrors = {
     /**
      * Validation Error
      */
     422: HttpValidationError;
 };
 
-export type TranslationsStartLiteralError = TranslationsStartLiteralErrors[keyof TranslationsStartLiteralErrors];
+export type TranslationsStartEasyError = TranslationsStartEasyErrors[keyof TranslationsStartEasyErrors];
 
-export type TranslationsStartLiteralResponses = {
+export type TranslationsStartEasyResponses = {
     /**
      * Successful Response
      */
     202: LiteralTranslationResponse;
 };
 
-export type TranslationsStartLiteralResponse = TranslationsStartLiteralResponses[keyof TranslationsStartLiteralResponses];
+export type TranslationsStartEasyResponse = TranslationsStartEasyResponses[keyof TranslationsStartEasyResponses];
 
 export type TranslationsListUnitsData = {
     body?: never;
@@ -6598,6 +7317,36 @@ export type LibraryItemsUpdateResponses = {
 };
 
 export type LibraryItemsUpdateResponse = LibraryItemsUpdateResponses[keyof LibraryItemsUpdateResponses];
+
+export type LibraryItemsSimilarData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/similar';
+};
+
+export type LibraryItemsSimilarErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type LibraryItemsSimilarError = LibraryItemsSimilarErrors[keyof LibraryItemsSimilarErrors];
+
+export type LibraryItemsSimilarResponses = {
+    /**
+     * Successful Response
+     */
+    200: SimilarPapersResponse;
+};
+
+export type LibraryItemsSimilarResponse = LibraryItemsSimilarResponses[keyof LibraryItemsSimilarResponses];
 
 export type LibraryItemsBulkData = {
     body: BulkOperationBody;
@@ -8024,6 +8773,76 @@ export type ExportStandaloneArticleHtmlResponses = {
     200: unknown;
 };
 
+export type ExportStandaloneStartData = {
+    body: PaperExportRequest;
+    headers?: {
+        /**
+         * Idempotency-Key
+         */
+        'Idempotency-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone';
+};
+
+export type ExportStandaloneStartErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneStartError = ExportStandaloneStartErrors[keyof ExportStandaloneStartErrors];
+
+export type ExportStandaloneStartResponses = {
+    /**
+     * Successful Response
+     */
+    200: PaperExportStartResponse;
+};
+
+export type ExportStandaloneStartResponse = ExportStandaloneStartResponses[keyof ExportStandaloneStartResponses];
+
+export type ExportStandaloneStatusData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/export/standalone/{job_id}';
+};
+
+export type ExportStandaloneStatusErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ExportStandaloneStatusError = ExportStandaloneStatusErrors[keyof ExportStandaloneStatusErrors];
+
+export type ExportStandaloneStatusResponses = {
+    /**
+     * Successful Response
+     */
+    200: PaperExportStatusResponse;
+};
+
+export type ExportStandaloneStatusResponse = ExportStandaloneStatusResponses[keyof ExportStandaloneStatusResponses];
+
 export type ArticlesGetData = {
     body?: never;
     path: {
@@ -9411,6 +10230,561 @@ export type ResourcesSuggestionDismissResponses = {
 };
 
 export type ResourcesSuggestionDismissResponse = ResourcesSuggestionDismissResponses[keyof ResourcesSuggestionDismissResponses];
+
+export type ResourcesAcceptSuggestionData = {
+    body?: never;
+    path: {
+        /**
+         * Resource Id
+         */
+        resource_id: string;
+    };
+    query?: never;
+    url: '/api/resources/{resource_id}/accept-suggestion';
+};
+
+export type ResourcesAcceptSuggestionErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ResourcesAcceptSuggestionError = ResourcesAcceptSuggestionErrors[keyof ResourcesAcceptSuggestionErrors];
+
+export type ResourcesAcceptSuggestionResponses = {
+    /**
+     * Successful Response
+     */
+    200: ResourceLink;
+};
+
+export type ResourcesAcceptSuggestionResponse = ResourcesAcceptSuggestionResponses[keyof ResourcesAcceptSuggestionResponses];
+
+export type ResourcesDismissSuggestionData = {
+    body?: never;
+    path: {
+        /**
+         * Resource Id
+         */
+        resource_id: string;
+    };
+    query?: never;
+    url: '/api/resources/{resource_id}/dismiss-suggestion';
+};
+
+export type ResourcesDismissSuggestionErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ResourcesDismissSuggestionError = ResourcesDismissSuggestionErrors[keyof ResourcesDismissSuggestionErrors];
+
+export type ResourcesDismissSuggestionResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type ResourcesDismissSuggestionResponse = ResourcesDismissSuggestionResponses[keyof ResourcesDismissSuggestionResponses];
+
+export type PublicationsUnpublishData = {
+    body?: never;
+    path: {
+        /**
+         * Article Id
+         */
+        article_id: string;
+    };
+    query?: never;
+    url: '/api/articles/{article_id}/publication';
+};
+
+export type PublicationsUnpublishErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationsUnpublishError = PublicationsUnpublishErrors[keyof PublicationsUnpublishErrors];
+
+export type PublicationsUnpublishResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type PublicationsUnpublishResponse = PublicationsUnpublishResponses[keyof PublicationsUnpublishResponses];
+
+export type PublicationsUpdateData = {
+    body: PublicationUpdateRequest;
+    path: {
+        /**
+         * Article Id
+         */
+        article_id: string;
+    };
+    query?: never;
+    url: '/api/articles/{article_id}/publication';
+};
+
+export type PublicationsUpdateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationsUpdateError = PublicationsUpdateErrors[keyof PublicationsUpdateErrors];
+
+export type PublicationsUpdateResponses = {
+    /**
+     * Successful Response
+     */
+    200: PublicationOut;
+};
+
+export type PublicationsUpdateResponse = PublicationsUpdateResponses[keyof PublicationsUpdateResponses];
+
+export type PublicationsCreateData = {
+    body: PublicationCreateRequest;
+    path: {
+        /**
+         * Article Id
+         */
+        article_id: string;
+    };
+    query?: never;
+    url: '/api/articles/{article_id}/publication';
+};
+
+export type PublicationsCreateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationsCreateError = PublicationsCreateErrors[keyof PublicationsCreateErrors];
+
+export type PublicationsCreateResponses = {
+    /**
+     * Successful Response
+     */
+    200: PublicationOut;
+};
+
+export type PublicationsCreateResponse = PublicationsCreateResponses[keyof PublicationsCreateResponses];
+
+export type PublicationsReadBySlugData = {
+    body?: never;
+    path: {
+        /**
+         * Slug
+         */
+        slug: string;
+    };
+    query?: never;
+    url: '/api/p/{slug}';
+};
+
+export type PublicationsReadBySlugErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationsReadBySlugError = PublicationsReadBySlugErrors[keyof PublicationsReadBySlugErrors];
+
+export type PublicationsReadBySlugResponses = {
+    /**
+     * Successful Response
+     */
+    200: PublicArticleOut;
+};
+
+export type PublicationsReadBySlugResponse = PublicationsReadBySlugResponses[keyof PublicationsReadBySlugResponses];
+
+export type PublicationCommentsListData = {
+    body?: never;
+    path: {
+        /**
+         * Slug
+         */
+        slug: string;
+    };
+    query?: never;
+    url: '/api/p/{slug}/comments';
+};
+
+export type PublicationCommentsListErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationCommentsListError = PublicationCommentsListErrors[keyof PublicationCommentsListErrors];
+
+export type PublicationCommentsListResponses = {
+    /**
+     * Response Publication Comments List
+     * Successful Response
+     */
+    200: Array<CommentOut>;
+};
+
+export type PublicationCommentsListResponse = PublicationCommentsListResponses[keyof PublicationCommentsListResponses];
+
+export type PublicationCommentsCreateData = {
+    body: CommentCreateRequest;
+    path: {
+        /**
+         * Slug
+         */
+        slug: string;
+    };
+    query?: never;
+    url: '/api/p/{slug}/comments';
+};
+
+export type PublicationCommentsCreateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationCommentsCreateError = PublicationCommentsCreateErrors[keyof PublicationCommentsCreateErrors];
+
+export type PublicationCommentsCreateResponses = {
+    /**
+     * Successful Response
+     */
+    200: CommentOut;
+};
+
+export type PublicationCommentsCreateResponse = PublicationCommentsCreateResponses[keyof PublicationCommentsCreateResponses];
+
+export type PublicationCommentsDeleteData = {
+    body?: never;
+    path: {
+        /**
+         * Slug
+         */
+        slug: string;
+        /**
+         * Comment Id
+         */
+        comment_id: string;
+    };
+    query?: never;
+    url: '/api/p/{slug}/comments/{comment_id}';
+};
+
+export type PublicationCommentsDeleteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationCommentsDeleteError = PublicationCommentsDeleteErrors[keyof PublicationCommentsDeleteErrors];
+
+export type PublicationCommentsDeleteResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type PublicationCommentsDeleteResponse = PublicationCommentsDeleteResponses[keyof PublicationCommentsDeleteResponses];
+
+export type PublicationCommentsUpdateData = {
+    body: CommentUpdateRequest;
+    path: {
+        /**
+         * Slug
+         */
+        slug: string;
+        /**
+         * Comment Id
+         */
+        comment_id: string;
+    };
+    query?: never;
+    url: '/api/p/{slug}/comments/{comment_id}';
+};
+
+export type PublicationCommentsUpdateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationCommentsUpdateError = PublicationCommentsUpdateErrors[keyof PublicationCommentsUpdateErrors];
+
+export type PublicationCommentsUpdateResponses = {
+    /**
+     * Successful Response
+     */
+    200: CommentOut;
+};
+
+export type PublicationCommentsUpdateResponse = PublicationCommentsUpdateResponses[keyof PublicationCommentsUpdateResponses];
+
+export type PublicationCommentsHideData = {
+    body?: never;
+    path: {
+        /**
+         * Slug
+         */
+        slug: string;
+        /**
+         * Comment Id
+         */
+        comment_id: string;
+    };
+    query?: never;
+    url: '/api/p/{slug}/comments/{comment_id}/hide';
+};
+
+export type PublicationCommentsHideErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationCommentsHideError = PublicationCommentsHideErrors[keyof PublicationCommentsHideErrors];
+
+export type PublicationCommentsHideResponses = {
+    /**
+     * Successful Response
+     */
+    200: CommentOut;
+};
+
+export type PublicationCommentsHideResponse = PublicationCommentsHideResponses[keyof PublicationCommentsHideResponses];
+
+export type PublicationCommentsRestoreData = {
+    body?: never;
+    path: {
+        /**
+         * Slug
+         */
+        slug: string;
+        /**
+         * Comment Id
+         */
+        comment_id: string;
+    };
+    query?: never;
+    url: '/api/p/{slug}/comments/{comment_id}/restore';
+};
+
+export type PublicationCommentsRestoreErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PublicationCommentsRestoreError = PublicationCommentsRestoreErrors[keyof PublicationCommentsRestoreErrors];
+
+export type PublicationCommentsRestoreResponses = {
+    /**
+     * Successful Response
+     */
+    200: CommentOut;
+};
+
+export type PublicationCommentsRestoreResponse = PublicationCommentsRestoreResponses[keyof PublicationCommentsRestoreResponses];
+
+export type PresentationsGetData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/presentation';
+};
+
+export type PresentationsGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PresentationsGetError = PresentationsGetErrors[keyof PresentationsGetErrors];
+
+export type PresentationsGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: PresentationStatusResponse;
+};
+
+export type PresentationsGetResponse = PresentationsGetResponses[keyof PresentationsGetResponses];
+
+export type PresentationsGenerateData = {
+    body: PresentationGenerateRequest;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/presentation';
+};
+
+export type PresentationsGenerateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PresentationsGenerateError = PresentationsGenerateErrors[keyof PresentationsGenerateErrors];
+
+export type PresentationsGenerateResponses = {
+    /**
+     * Successful Response
+     */
+    202: PresentationJobResponse;
+};
+
+export type PresentationsGenerateResponse = PresentationsGenerateResponses[keyof PresentationsGenerateResponses];
+
+export type PresentationsDownloadData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/presentation/download';
+};
+
+export type PresentationsDownloadErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PresentationsDownloadError = PresentationsDownloadErrors[keyof PresentationsDownloadErrors];
+
+export type PresentationsDownloadResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type CodeAnalysisEstimateData = {
+    body: EstimateRequest;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/code-analysis/estimate';
+};
+
+export type CodeAnalysisEstimateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CodeAnalysisEstimateError = CodeAnalysisEstimateErrors[keyof CodeAnalysisEstimateErrors];
+
+export type CodeAnalysisEstimateResponses = {
+    /**
+     * Successful Response
+     */
+    200: CodeAnalysisEstimateResponse;
+};
+
+export type CodeAnalysisEstimateResponse2 = CodeAnalysisEstimateResponses[keyof CodeAnalysisEstimateResponses];
+
+export type CodeAnalysisListData = {
+    body?: never;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/code-analysis';
+};
+
+export type CodeAnalysisListErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CodeAnalysisListError = CodeAnalysisListErrors[keyof CodeAnalysisListErrors];
+
+export type CodeAnalysisListResponses = {
+    /**
+     * Successful Response
+     */
+    200: RunsResponse;
+};
+
+export type CodeAnalysisListResponse = CodeAnalysisListResponses[keyof CodeAnalysisListResponses];
+
+export type CodeAnalysisStartData = {
+    body: StartRequest;
+    path: {
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/library-items/{item_id}/code-analysis';
+};
+
+export type CodeAnalysisStartErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CodeAnalysisStartError = CodeAnalysisStartErrors[keyof CodeAnalysisStartErrors];
+
+export type CodeAnalysisStartResponses = {
+    /**
+     * Successful Response
+     */
+    202: StartResponse;
+};
+
+export type CodeAnalysisStartResponse = CodeAnalysisStartResponses[keyof CodeAnalysisStartResponses];
 
 export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});

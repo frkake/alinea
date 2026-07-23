@@ -18,6 +18,8 @@ export interface ParallelPopoverProps {
   onRefClick?: (ref: string, kind?: string | null) => void;
   /** 再翻訳ジョブ実行中(フッタを非活性化)。 */
   retranslating?: boolean;
+  /** 再翻訳エラーメッセージ(Popover 内に表示)。 */
+  retranslationError?: string;
   /** モバイル縮退(mobile.md §4.4)。再翻訳フッタ(操作系)を非描画にする。 */
   isMobile?: boolean;
 }
@@ -41,6 +43,7 @@ export function ParallelPopover({
   onCitationClick,
   onRefClick,
   retranslating = false,
+  retranslationError,
   isMobile = false,
 }: ParallelPopoverProps) {
   return (
@@ -101,6 +104,7 @@ export function ParallelPopover({
             marginTop: 10,
             paddingTop: 8,
             borderTop: "1px solid var(--pr-border-hair)",
+            flexWrap: "wrap",
           }}
         >
           <span style={{ color: "var(--pr-acc)", fontWeight: 600 }}>訳がおかしい?</span>
@@ -113,6 +117,11 @@ export function ParallelPopover({
             再翻訳
           </button>
           {retranslating ? <span>再翻訳中…</span> : null}
+          {retranslationError ? (
+            <span style={{ color: "var(--pr-warn, #e05c5c)", fontSize: 10.5 }}>
+              {retranslationError}
+            </span>
+          ) : null}
           <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 5 }}>
             <Keycap mono>t</Keycap> で開閉
           </span>

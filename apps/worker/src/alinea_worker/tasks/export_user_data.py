@@ -29,8 +29,11 @@ from alinea_core.db.models import (
     Annotation,
     Article,
     ArticleBlock,
+    ArticlePublication,
     ChatMessage,
     ChatThread,
+    CodeAnalysisRun,
+    CodeCorrespondence,
     Collection,
     CollectionEntry,
     CollectionShareToken,
@@ -44,6 +47,9 @@ from alinea_core.db.models import (
     Notification,
     OverviewFigure,
     Paper,
+    PaperExternalId,
+    PresentationArtifact,
+    PublicationComment,
     ReadingSession,
     ResourceLink,
     SavedFilter,
@@ -54,9 +60,10 @@ from alinea_core.db.models import (
     VocabCandidate,
     VocabEntry,
 )
+from alinea_core.document.blocks import iter_document_asset_keys
 from alinea_core.jobs.store import JobStore
 from alinea_core.storage.s3 import S3Storage, StorageKeys
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 _EXPORT_URL_TTL_SECONDS = 24 * 60 * 60  # 有効 24 時間(plans/03 §18)
@@ -85,25 +92,47 @@ async def _serialize_library(session: AsyncSession, user_id: str) -> list[dict[s
     ).all()
     return [
         {
+            # --- 共有エンティティ識別子 ---
             "library_item_id": str(item.id),
             "paper_id": str(paper.id),
-            "title": paper.title,
-            "authors": _author_names(paper.authors),
-            "venue": paper.venue,
-            "year": paper.published_on.year if paper.published_on else None,
-            "arxiv_id": paper.arxiv_id,
-            "doi": paper.doi,
             "latest_revision_id": str(paper.latest_revision_id)
             if paper.latest_revision_id
             else None,
+            # --- PAPER_EXPORT_FIELDS ---
+            "arxiv_id": paper.arxiv_id,
+            "doi": paper.doi,
+            "pdf_sha256": paper.pdf_sha256,
+            "title": paper.title,
+            "authors": _author_names(paper.authors),
+            "abstract": paper.abstract,
+            "abstract_ja": paper.abstract_ja,
+            "summary_lines": paper.summary_lines,
+            "published_on": _iso(paper.published_on),
+            "venue": paper.venue,
+            "arxiv_categories": list(paper.arxiv_categories or []),
+            "license": paper.license,
+            "bib_estimated": paper.bib_estimated,
+            "visibility": paper.visibility,
+            "latest_version": paper.latest_version,
+            "official_repo_url": paper.official_repo_url,
+            "extracted_terms": list(paper.extracted_terms or []),
+            # thumbnail_key は LibraryItem のものを使う(Paper のは下の paper_thumbnail_key)
+            "paper_thumbnail_key": paper.thumbnail_key,
+            # legacy: year は published_on から導出(後方互換)
+            "year": paper.published_on.year if paper.published_on else None,
+            # --- LIBRARY_EXPORT_FIELDS ---
             "status": item.status,
             "priority": item.priority,
             "deadline": _iso(item.deadline),
             "tags": list(item.tags or []),
+            "suggested_tags": list(item.suggested_tags or []),
             "one_line_note": item.one_line_note,
             "understanding": item.understanding,
             "importance": item.importance,
+            "reading_position": item.reading_position,
+            "queue_order": item.queue_order,
             "total_active_seconds": item.total_active_seconds,
+            "thumbnail_key": item.thumbnail_key,
             "added_at": _iso(item.added_at),
             "finished_at": _iso(item.finished_at),
         }
@@ -341,6 +370,7 @@ async def _serialize_resources(
             "status": r.status,
             "kind": r.kind,
             "url": r.url,
+            "url_normalized": r.url_normalized,
             "title": r.title,
             "official": r.official,
             "note_md": r.note_md,
@@ -348,6 +378,80 @@ async def _serialize_resources(
         }
         for r in rows
     ]
+
+
+async def _serialize_code_analysis(
+    session: AsyncSession, library_item_ids: list[str]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """コード対応解析の runs と correspondences(Task 21・設計 §11)。
+
+    生成コストの高いユーザーデータなので完全バックアップへ含める(固定 commit URL を保つ)。
+    見積り(estimates)は短命な派生データなので含めない。
+    """
+    if not library_item_ids:
+        return [], []
+    runs = (
+        (
+            await session.execute(
+                select(CodeAnalysisRun)
+                .where(CodeAnalysisRun.library_item_id.in_(library_item_ids))
+                .order_by(CodeAnalysisRun.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    run_rows = [
+        {
+            "id": str(r.id),
+            "library_item_id": str(r.library_item_id),
+            "resource_id": str(r.resource_id),
+            "revision_id": str(r.revision_id),
+            "commit_sha": r.commit_sha,
+            "analysis_version": r.analysis_version,
+            "trigger": r.trigger,
+            "status": r.status,
+            "stale": r.stale,
+            "estimated_cost_usd": str(r.estimated_cost_usd),
+            "actual_cost_usd": str(r.actual_cost_usd),
+            "error": r.error,
+            "created_at": _iso(r.created_at),
+            "finished_at": _iso(r.finished_at),
+        }
+        for r in runs
+    ]
+    run_ids = [str(r.id) for r in runs]
+    corr_rows: list[dict[str, Any]] = []
+    if run_ids:
+        corrs = (
+            (
+                await session.execute(
+                    select(CodeCorrespondence)
+                    .where(CodeCorrespondence.run_id.in_(run_ids))
+                    .order_by(CodeCorrespondence.run_id, CodeCorrespondence.position)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        corr_rows = [
+            {
+                "id": str(c.id),
+                "run_id": str(c.run_id),
+                "position": c.position,
+                "paper_anchor": c.paper_anchor,
+                "claim_text": c.claim_text,
+                "path": c.path,
+                "symbol": c.symbol,
+                "start_line": c.start_line,
+                "end_line": c.end_line,
+                "code_excerpt": c.code_excerpt,
+                "explanation_ja": c.explanation_ja,
+                "confidence": c.confidence,
+            }
+            for c in corrs
+        ]
+    return run_rows, corr_rows
 
 
 async def _serialize_articles(
@@ -470,12 +574,25 @@ async def _serialize_document_revisions(
     ]
 
 
-async def _serialize_translation_sets(session: AsyncSession, user_id: str) -> list[dict[str, Any]]:
+async def _serialize_translation_sets(
+    session: AsyncSession, user_id: str, revision_ids: list[str]
+) -> list[dict[str, Any]]:
+    # 所有者(personal)に加え、エクスポート対象リビジョンから到達可能な共有翻訳
+    # (user_id IS NULL / scope='shared')も含める。完全バックアップは共有翻訳を落とさない。
+    predicate = TranslationSet.user_id == user_id
+    if revision_ids:
+        predicate = or_(
+            predicate,
+            and_(
+                TranslationSet.user_id.is_(None),
+                TranslationSet.revision_id.in_(revision_ids),
+            ),
+        )
     rows = (
         (
             await session.execute(
                 select(TranslationSet)
-                .where(TranslationSet.user_id == user_id)
+                .where(predicate)
                 .order_by(TranslationSet.created_at.asc())
             )
         )
@@ -536,12 +653,19 @@ async def _serialize_translation_units(
     ]
 
 
-async def _serialize_glossaries(session: AsyncSession, user_id: str) -> list[dict[str, Any]]:
+async def _serialize_glossaries(
+    session: AsyncSession, user_id: str, library_item_ids: list[str]
+) -> list[dict[str, Any]]:
+    # 所有者(scope='user')に加え、エクスポート対象ライブラリ項目に紐づく論文用用語集
+    # (user_id IS NULL / scope='paper')も含める。完全バックアップは論文用語集を落とさない。
+    predicate = Glossary.user_id == user_id
+    if library_item_ids:
+        predicate = or_(predicate, Glossary.library_item_id.in_(library_item_ids))
     rows = (
         (
             await session.execute(
                 select(Glossary)
-                .where(Glossary.user_id == user_id)
+                .where(predicate)
                 .order_by(Glossary.created_at.asc())
             )
         )
@@ -750,6 +874,122 @@ async def _serialize_explainer_figures(
     ]
 
 
+async def _serialize_publications(
+    session: AsyncSession, article_ids: list[str]
+) -> list[dict[str, Any]]:
+    """記事公開スナップショット(Task 24)。既にサニタイズ済みの安全な部分集合のみを保存する。"""
+    if not article_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(ArticlePublication)
+                .where(ArticlePublication.article_id.in_(article_ids))
+                .order_by(ArticlePublication.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "article_id": str(r.article_id),
+            "slug": r.slug,
+            "visibility": r.visibility,
+            "snapshot_version": r.snapshot_version,
+            "title": r.title,
+            "paper_meta": r.paper_meta,
+            "blocks": r.blocks,
+            "published_at": _iso(r.published_at),
+            "created_at": _iso(r.created_at),
+            "updated_at": _iso(r.updated_at),
+        }
+        for r in rows
+    ]
+
+
+async def _serialize_publication_comments(
+    session: AsyncSession, user_id: str, publication_ids: list[str]
+) -> list[dict[str, Any]]:
+    """本人が自分の公開記事に投稿したコメント(Task 25)。
+
+    バックアップは「本人が自分の publication へ投稿したコメント」だけを含める。第三者が
+    残したコメントは本人所有データではないため複製しない(``user_id == 本人`` かつ
+    ``publication_id ∈ 本人の publication`` の積集合で絞る)。
+    """
+    if not publication_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(PublicationComment)
+                .where(
+                    PublicationComment.user_id == user_id,
+                    PublicationComment.publication_id.in_(publication_ids),
+                )
+                .order_by(PublicationComment.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "publication_id": str(r.publication_id),
+            "parent_id": str(r.parent_id) if r.parent_id else None,
+            "block_id": r.block_id,
+            "body": r.body,
+            "status": r.status,
+            "created_at": _iso(r.created_at),
+            "updated_at": _iso(r.updated_at),
+        }
+        for r in rows
+    ]
+
+
+async def _serialize_presentations(
+    session: AsyncSession, library_item_ids: list[str]
+) -> list[dict[str, Any]]:
+    """プレゼンテーション成果物(Task 28)。library_item ごとに最新版のみ。
+
+    PPTX 本体は assets バケットの ``pptx_storage_key`` を指し、collect_asset_keys で回収して
+    アーカイブへ束ねる。BYOK 秘密鍵は成果物に含まれない(model_provider / model_id のみ)。
+    """
+    if not library_item_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(PresentationArtifact)
+                .where(PresentationArtifact.library_item_id.in_(library_item_ids))
+                .order_by(PresentationArtifact.generated_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "library_item_id": str(r.library_item_id),
+            "source_revision_id": str(r.source_revision_id),
+            "generation_job_id": str(r.generation_job_id) if r.generation_job_id else None,
+            "preset": r.preset,
+            "audience": r.audience,
+            "instruction": r.instruction,
+            "model_provider": r.model_provider,
+            "model_id": r.model_id,
+            "ppt_master_revision": r.ppt_master_revision,
+            "pptx_storage_key": r.pptx_storage_key,
+            "generated_at": _iso(r.generated_at),
+            "updated_at": _iso(r.updated_at),
+        }
+        for r in rows
+    ]
+
+
 async def _serialize_source_assets(
     session: AsyncSession, paper_ids: list[str]
 ) -> list[dict[str, Any]]:
@@ -778,6 +1018,36 @@ async def _serialize_source_assets(
             "byte_size": r.byte_size,
             "sha256": r.sha256,
             "fetched_at": _iso(r.fetched_at),
+            "created_at": _iso(r.created_at),
+        }
+        for r in rows
+    ]
+
+
+async def _serialize_paper_external_ids(
+    session: AsyncSession, paper_ids: list[str]
+) -> list[dict[str, Any]]:
+    """サイト取り込み由来の外部識別子(名寄せ用)。完全バックアップに含める。"""
+    if not paper_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                select(PaperExternalId)
+                .where(PaperExternalId.paper_id.in_(paper_ids))
+                .order_by(PaperExternalId.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "paper_id": str(r.paper_id),
+            "site": r.site,
+            "external_id": r.external_id,
+            "canonical_url": r.canonical_url,
             "created_at": _iso(r.created_at),
         }
         for r in rows
@@ -821,10 +1091,13 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
     library_item_ids = [str(row["library_item_id"]) for row in library]
     paper_ids = [str(row["paper_id"]) for row in library]
 
-    translation_sets = await _serialize_translation_sets(session, user_id)
+    document_revisions = await _serialize_document_revisions(session, paper_ids)
+    revision_ids = [str(r["id"]) for r in document_revisions]
+
+    translation_sets = await _serialize_translation_sets(session, user_id, revision_ids)
     set_ids = [ts["id"] for ts in translation_sets]
 
-    glossaries = await _serialize_glossaries(session, user_id)
+    glossaries = await _serialize_glossaries(session, user_id, library_item_ids)
     glossary_ids = [g["id"] for g in glossaries]
 
     articles = await _serialize_articles(session, library_item_ids)
@@ -832,6 +1105,13 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
 
     collections = await _serialize_collections(session, user_id)
     collection_ids = [c["id"] for c in collections]
+
+    publications = await _serialize_publications(session, article_ids)
+    publication_ids = [p["id"] for p in publications]
+
+    code_analysis_runs, code_correspondences = await _serialize_code_analysis(
+        session, library_item_ids
+    )
 
     return {
         "schema_version": EXPORT_SCHEMA_VERSION,
@@ -851,7 +1131,7 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
         "articles": articles,
         "collections": collections,
         "settings": user.settings if user is not None and isinstance(user.settings, dict) else {},
-        "document_revisions": await _serialize_document_revisions(session, paper_ids),
+        "document_revisions": document_revisions,
         "translation_sets": translation_sets,
         "translation_units": await _serialize_translation_units(session, set_ids),
         "glossaries": glossaries,
@@ -861,8 +1141,16 @@ async def build_export_payload(session: AsyncSession, user_id: str) -> dict[str,
         "notifications": await _serialize_notifications(session, user_id),
         "overview_figures": await _serialize_overview_figures(session, article_ids),
         "explainer_figures": await _serialize_explainer_figures(session, article_ids),
+        "publications": publications,
+        "publication_comments": await _serialize_publication_comments(
+            session, user_id, publication_ids
+        ),
         "source_assets": await _serialize_source_assets(session, paper_ids),
+        "paper_external_ids": await _serialize_paper_external_ids(session, paper_ids),
         "share_tokens": await _serialize_share_tokens(session, collection_ids),
+        "presentations": await _serialize_presentations(session, library_item_ids),
+        "code_analysis_runs": code_analysis_runs,
+        "code_correspondences": code_correspondences,
     }
 
 
@@ -891,6 +1179,38 @@ def collect_asset_keys(payload: dict[str, Any]) -> list[tuple[str, str]]:
     # explainer figures: raster 画像
     for f in payload.get("explainer_figures", []):
         add("assets", f.get("image_storage_key"))
+
+    # presentation 成果物: PPTX(assets バケット)
+    for p in payload.get("presentations", []):
+        add("assets", p.get("pptx_storage_key"))
+
+    # DocumentRevision の本文ブロック内の figure/table asset_key
+    for rev in payload.get("document_revisions", []):
+        content = rev.get("content")
+        if isinstance(content, dict):
+            for key in iter_document_asset_keys(content):
+                add("assets", key)
+
+    # Paper と LibraryItem のサムネイル + retina(@2x)兄弟
+    for entry in payload.get("library", []):
+        # LibraryItem のサムネイル
+        item_thumb = entry.get("thumbnail_key")
+        if isinstance(item_thumb, str) and item_thumb:
+            add("assets", item_thumb)
+            retina = StorageKeys.thumbnail_retina_sibling(
+                item_thumb, paper_id=str(entry.get("paper_id", ""))
+            )
+            if retina:
+                add("assets", retina)
+        # Paper のサムネイル
+        paper_thumb = entry.get("paper_thumbnail_key")
+        if isinstance(paper_thumb, str) and paper_thumb:
+            add("assets", paper_thumb)
+            retina = StorageKeys.thumbnail_retina_sibling(
+                paper_thumb, paper_id=str(entry.get("paper_id", ""))
+            )
+            if retina:
+                add("assets", retina)
 
     return keys
 

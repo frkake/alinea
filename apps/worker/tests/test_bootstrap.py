@@ -21,12 +21,15 @@ import pytest
 import pytest_asyncio
 import redis.asyncio as redis
 from alinea_core.db.models import LibraryItem, Paper, User
+from alinea_core.llm import LLMRuntimeConfig
 from alinea_core.parsing.pdf_parser import PdfOcrReadiness
+from alinea_core.testing import testdb
 from alinea_llm.router import LLMRouter
-from alinea_llm.testing.fake_provider import FakeLLMProvider
+from alinea_llm.testing.fake_provider import FakeEmbeddingProvider, FakeLLMProvider
 from alinea_worker import bootstrap as worker_bootstrap
 from alinea_worker.bootstrap import (
     TaskAwareLLMRouter,
+    build_embedding_provider,
     build_fake_router,
     build_router,
     build_task_router,
@@ -37,18 +40,19 @@ from alinea_worker.bootstrap import (
     operator_keys_from_env,
     stream_key,
 )
+from alinea_worker.user_router import UserRouterFactory
+from cryptography.fernet import Fernet
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql+asyncpg://alinea:alinea@localhost:5432/alinea",
-)
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 
 @pytest_asyncio.fixture
 async def maker() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    engine = create_async_engine(DATABASE_URL, poolclass=None)
+    # Task 32 の分離テスト DB をフィクスチャ呼び出し時に解決する(import 時の env 焼き込みは
+    # ``db_session`` と DB が食い違う。test_cron_deadline_reminders.py の同名 fixture 参照)。
+    engine = create_async_engine(testdb.database_url(), poolclass=None)
     yield async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     await engine.dispose()
 
@@ -165,6 +169,165 @@ async def test_build_task_router_uses_task_specific_chains(
 def test_build_fake_router_is_usable() -> None:
     router = build_fake_router()
     assert isinstance(router, LLMRouter)
+
+
+# =========================================================================== #
+# build_embedding_provider — index_embeddings / code_analysis のセマンティック検索
+# =========================================================================== #
+
+
+def test_build_embedding_provider_returns_none_without_openai_key() -> None:
+    # 運営 openai キーが無ければ None(handler は no_embedding_provider で可視 skip)。
+    assert build_embedding_provider(operator_keys={}) is None
+    assert build_embedding_provider(operator_keys={"anthropic": "sk-x"}) is None
+
+
+def test_build_embedding_provider_uses_openai_operator_key() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def factory(provider: str, key: str) -> Any:
+        calls.append((provider, key))
+        return FakeEmbeddingProvider(dim=1536)
+
+    provider = build_embedding_provider(
+        operator_keys={"openai": "sk-openai"}, provider_factory=factory
+    )
+    assert provider is not None
+    # 埋め込みはルーティングせず provider を "openai" 固定で構築する(apps/api と一致)。
+    assert calls == [("openai", "sk-openai")]
+
+
+# =========================================================================== #
+# UserRouterFactory — 同一プロセスでユーザーごとに別プロバイダへ解決する(Task 13)
+# =========================================================================== #
+
+
+def _runtime_config(**overrides: Any) -> LLMRuntimeConfig:
+    """テスト用 LLMRuntimeConfig。operator キーとキー暗号化秘密を明示する。"""
+    defaults: dict[str, Any] = {
+        "operator_api_keys": {},
+        "key_encryption_secret": Fernet.generate_key().decode(),
+        "route_cache_ttl_s": 60,
+    }
+    defaults.update(overrides)
+    return LLMRuntimeConfig(**defaults)
+
+
+def _byok_factory() -> Any:
+    """provider 名だけを覚える決定的な FakeLLMProvider ファクトリ。"""
+
+    def factory(provider: str, _key: str) -> Any:
+        return FakeLLMProvider(name=provider)
+
+    return factory
+
+
+async def _seed_user(session: AsyncSession) -> str:
+    uid = (
+        await session.execute(
+            text("INSERT INTO users (email) VALUES (:email) RETURNING id"),
+            {"email": f"router-{uuid.uuid4().hex}@example.com"},
+        )
+    ).scalar_one()
+    return str(uid)
+
+
+async def _set_override(session: AsyncSession, user_id: str, task: str, model_id: str) -> None:
+    await session.execute(
+        text(
+            "INSERT INTO user_task_model_overrides (user_id, task, model_id) "
+            "VALUES (CAST(:u AS uuid), :t, :m) "
+            "ON CONFLICT (user_id, task) DO UPDATE SET model_id = EXCLUDED.model_id"
+        ),
+        {"u": user_id, "t": task, "m": model_id},
+    )
+
+
+async def test_per_user_routes_do_not_cross_contaminate(
+    maker: async_sessionmaker[AsyncSession],
+) -> None:
+    """同一 Worker プロセスで user A は OpenAI、user B は Google を選び混ざらない。
+
+    chat の既定チェーン先頭は anthropic(claude-opus-4-8)。各ユーザーの override で
+    先頭モデルを別プロバイダへ差し替え、同じ factory・同じ task の解決結果が
+    ユーザー間で独立していることを検査する。
+    """
+    async with maker() as session:
+        user_a = await _seed_user(session)
+        user_b = await _seed_user(session)
+        # A → openai(gpt-5.5)、B → google(gemini-3.5-flash)を先頭に。
+        await _set_override(session, user_a, "chat", "gpt-5.5")
+        await _set_override(session, user_b, "chat", "gemini-3.5-flash")
+        await session.commit()
+
+    config = _runtime_config(
+        operator_api_keys={"openai": "sk-op-openai", "google": "sk-op-google"}
+    )
+    factory = UserRouterFactory(
+        sessionmaker=maker,
+        redis=None,
+        config=config,
+        provider_factory=_byok_factory(),
+    )
+
+    # 同じプロセスで A と B を交互に解決しても互いを汚染しない。
+    router_a = await factory.for_job(user_id=user_a, task="chat")
+    router_b = await factory.for_job(user_id=user_b, task="chat")
+    resp_a = await router_a.complete("chat", prompt="hi", user_id=user_a)
+    resp_b = await router_b.complete("chat", prompt="hi", user_id=user_b)
+
+    assert resp_a.provider == "openai"
+    assert resp_a.model == "gpt-5.5"
+    assert resp_b.provider == "google"
+    assert resp_b.model == "gemini-3.5-flash"
+
+    # 再度 A を解決しても B の結果に引きずられない。
+    router_a2 = await factory.for_job(user_id=user_a, task="chat")
+    resp_a2 = await router_a2.complete("chat", prompt="hi", user_id=user_a)
+    assert resp_a2.provider == "openai"
+
+
+async def test_route_invalidation_after_route_change(
+    maker: async_sessionmaker[AsyncSession],
+    redis_client: redis.Redis,
+) -> None:
+    """route 変更 → 60 秒キャッシュ失効後は次ジョブで新しい override が使われる。
+
+    override の書き換え + キャッシュ invalidate 後、同じ factory から取り直した
+    router は新しいプロバイダへ解決する(秘密鍵はキャッシュされない)。
+    """
+    async with maker() as session:
+        user_id = await _seed_user(session)
+        await _set_override(session, user_id, "chat", "gpt-5.5")  # 最初は openai
+        await session.commit()
+
+    config = _runtime_config(
+        operator_api_keys={"openai": "sk-op-openai", "google": "sk-op-google"}
+    )
+    factory = UserRouterFactory(
+        sessionmaker=maker,
+        redis=redis_client,
+        config=config,
+        provider_factory=_byok_factory(),
+    )
+
+    router1 = await factory.for_job(user_id=user_id, task="chat")
+    resp1 = await router1.complete("chat", prompt="hi", user_id=user_id)
+    assert resp1.provider == "openai"
+
+    # route を google へ変更し、キャッシュを失効させる。
+    async with maker() as session:
+        await _set_override(session, user_id, "chat", "gemini-3.5-flash")
+        await session.commit()
+    await factory.invalidate(task="chat", user_id=user_id)
+
+    router2 = await factory.for_job(user_id=user_id, task="chat")
+    resp2 = await router2.complete("chat", prompt="hi", user_id=user_id)
+    assert resp2.provider == "google"
+    assert resp2.model == "gemini-3.5-flash"
+
+    # クリーンアップ(実 Redis のキャッシュキーを消す)。
+    await factory.invalidate(task="chat", user_id=user_id)
 
 
 class _StubSettings:
@@ -317,6 +480,14 @@ async def test_on_startup_configures_ctx_with_fake_llm(
     await on_startup(ctx)
     try:
         assert isinstance(ctx["router"], LLMRouter)
+        # Task 13: per-user ルーターファクトリが ctx に載る(移行期間は router も残す)。
+        assert isinstance(ctx["user_router_factory"], UserRouterFactory)
+        # 埋め込みプロバイダが ctx に載る(index_embeddings / code_analysis 用)。これが無いと
+        # 両ハンドラが no_embedding_provider で常に skip し、paper_embeddings /
+        # block_embeddings が実運用で永久に空になる(fake モードでも Fake が張られること)。
+        assert isinstance(ctx["embedding_provider"], FakeEmbeddingProvider)
+        assert ctx["embedding_model"]  # 既定 text-embedding-3-small
+        assert ctx["embedding_dim"] == 1536  # pgvector 列 dim と一致
         assert ctx["sessionmaker"] is not None
         assert ctx["redis"] is not None
         assert ctx["arq_pool"] is not None
@@ -326,6 +497,56 @@ async def test_on_startup_configures_ctx_with_fake_llm(
         assert ctx["settings"] is not None
     finally:
         await on_shutdown(ctx)
+
+
+async def test_fake_llm_factory_never_builds_real_providers(
+    maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ALINEA_FAKE_LLM=1 のとき build_user_router_factory も Fake を注入する(回帰)。
+
+    Task 14 以降、article/vocab/overview_figure/presentation/code_analysis は
+    共有 ``ctx['router']`` ではなく ``ctx['user_router_factory'].for_job`` を通る。
+    以前は ``build_user_router_factory`` が fake フラグを受け取らず、運営キー(.env の実
+    OPENAI_API_KEY 等)で実プロバイダを構築していたため、``ALINEA_FAKE_LLM=1`` でも article 等が
+    実 API を叩いていた(E2E 非決定 + 実外部通信)。fake_llm=True で全 factory ルートの
+    provider インスタンスが FakeLLMProvider になることを固定する。
+
+    ``on_startup`` を通さず ``maker`` フィクスチャ(適切に teardown される sessionmaker)で
+    factory を直接構築する。実運営キーの有無に依存しないよう ``operator_keys_from_env`` を
+    スタブする(fake モードではキー値は provider 構築に使われないが、チェーン解決の
+    available 判定には provider 名が要る)。
+    """
+    monkeypatch.setattr(
+        worker_bootstrap,
+        "operator_keys_from_env",
+        lambda: {"openai": "sk-stub", "anthropic": "sk-stub", "google": "sk-stub"},
+    )
+    settings = worker_bootstrap.get_settings()
+    factory = worker_bootstrap.build_user_router_factory(
+        maker, None, settings, fake_llm=True
+    )
+    assert isinstance(factory, UserRouterFactory)
+
+    async with maker() as session:
+        user_id = await _seed_user(session)
+        await session.commit()
+
+    for task in (
+        "translation",
+        "article",
+        "vocab",
+        "overview_figure_dsl",
+        "presentation",
+        "code_analysis",
+    ):
+        router = await factory.for_job(user_id=user_id, task=task)
+        instances = [inst for (_provider, _model, inst) in router._chain]
+        # チェーンは空でなく、各エントリの provider インスタンスはすべて Fake。
+        assert instances, f"empty chain for task={task}"
+        assert all(
+            isinstance(inst, FakeLLMProvider) for inst in instances
+        ), f"non-fake provider leaked for task={task}: {[type(i).__name__ for i in instances]}"
 
 
 async def test_on_startup_reports_ocr_unavailable_without_failing_worker(

@@ -233,6 +233,7 @@ async def test_cells_enabled_plan_uses_exact_physical_ids_and_preserves_math(
 
     assert provider.target_batches == [["blk-table::caption", "blk-table::r0c0", "blk-table::r1c0"]]
     assert result.translated == 1
+    assert isinstance(row.content_ja, dict)
     assert row.content_ja["kind"] == "table"
     assert row.content_ja["caption"] == [{"t": "text", "v": "訳文"}]
     assert row.content_ja["cells"] == [["訳文", None], ["訳文$x^2$訳文", None]]
@@ -271,6 +272,7 @@ async def test_explicit_table_reason_overrides_caption_only_plan_and_hash(
         "blk-table::r1c0",
     ]
     assert row.source_hash != caption_hash
+    assert isinstance(row.content_ja, dict)
     assert row.content_ja["cells"] is not None
 
 
@@ -348,6 +350,7 @@ async def test_explicit_table_augments_manual_caption_without_silent_skip(
     assert result.translated == 1
     assert provider.target_batches == [["blk-table::r0c0", "blk-table::r1c0"]]
     assert row.state == state
+    assert isinstance(row.content_ja, dict)
     assert row.content_ja["caption"] == [{"t": "text", "v": "手動キャプション"}]
     assert row.content_ja["cells"] == [["訳文", None], ["訳文$x^2$訳文", None]]
 
@@ -431,6 +434,7 @@ async def test_broken_cell_retry_can_recover_before_atomic_aggregation(
 
     assert provider.calls == 2
     assert result.fallback == 0
+    assert isinstance(row.content_ja, dict)
     assert row.content_ja["cells"] == [["訳文", None], ["訳文$x^2$訳文", None]]
 
 

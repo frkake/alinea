@@ -124,6 +124,7 @@ def test_article_table_rows_overlay_typed_physical_cells() -> None:
 
 def test_article_table_caption_projects_nested_emphasis_children() -> None:
     unit = _table_unit([["手法群", "得点"], ["基準法", "高速モード", None]])
+    assert isinstance(unit.content_ja, dict)
     unit.content_ja["caption"] = [
         {
             "t": "emphasis",

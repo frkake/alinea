@@ -1,5 +1,6 @@
 # タスクルーティングのシード(plans/04 §8)。実行時の正は DB(llm_task_routes /
-# user_task_model_overrides)。タスクは 8 種で固定(DB の CHECK 制約とも一致)。
+# user_task_model_overrides)。タスクは固定(DB の CHECK 制約とも一致)。
+# Task 28 で presentation(論文→PPTX)を追加(8→9 タスク)。
 version: "2026-07-06"
 
 retry_defaults:                       # §9 のモデル内リトライ規則
@@ -58,3 +59,24 @@ tasks:
     size: "1536x1024"
     quality: standard
     timeout_s: 120
+  presentation:                       # Task 28: 論文→PPTX の SVG/notes 構造生成
+    chain: [gpt-5.5]                   # ユーザー指示(2026-07-23): presentation は OpenAI のみ
+    effort: high
+    max_output_tokens: 32000
+    timeout_s: 300
+    structured: true                  # スライド/ノート構造 JSON(Task 29 で schema 定義)
+  code_analysis:                      # Task 21: 論文主張 → GitHub コード対応(構造化出力)
+    chain: [claude-sonnet-5, gpt-5.5]  # 既定 claude-sonnet-5(設計 §6)。構造化出力対応モデル
+    effort: high
+    max_output_tokens: 8192
+    timeout_s: 180
+    structured: true                  # code_correspondence_v1(alinea_core.code_analysis.contracts)
+
+# 埋め込み(S12 セマンティック検索)。tasks: の 8 タスク(DB の CHECK 制約と一致)には
+# 混ぜない。埋め込みはベクトル空間の非互換制約があり、フォールバックを同一次元・同一モデル
+# 系列に限定する(spec §D1)。既定は OpenAI text-embedding-3-small(1536 次元)。
+embedding:
+  provider: openai
+  model: text-embedding-3-small
+  dimensions: 1536
+  timeout_s: 60

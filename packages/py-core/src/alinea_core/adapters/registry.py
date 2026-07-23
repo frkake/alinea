@@ -9,9 +9,23 @@ from __future__ import annotations
 
 from alinea_core.adapters.acl_anthology import AclAnthologyAdapter
 from alinea_core.adapters.base import SiteAdapter, SiteRef
+from alinea_core.adapters.huggingface import HuggingFaceAdapter
+from alinea_core.adapters.openreview import OpenReviewAdapter
+from alinea_core.adapters.pubmed import PmcAdapter, PubMedAdapter
 
-# 検出優先順(docs/02 §8): ACL Anthology → (将来)OpenReview → PubMed/PMC。
-_ADAPTERS: tuple[SiteAdapter, ...] = (AclAnthologyAdapter(),)
+# 検出優先順(docs/02 §8): ACL Anthology → OpenReview → PubMed / PMC → Hugging Face。
+# URL 空間は重ならない(各アダプタの match は自サイトのホスト/パスにのみ当たる)。
+#
+# 注(Task 18): HuggingFaceAdapter は registry 解決(検出)と SSRF allow-list のために登録するが、
+# 他アダプタと違い「品質 B のサイト取り込み」ではない。上位(API)は Hugging Face URL を検出したら
+# arXiv ID を解決して **既存 arXiv パイプライン** へ渡す(Paper 本文の取得元にはしない)。
+_ADAPTERS: tuple[SiteAdapter, ...] = (
+    AclAnthologyAdapter(),
+    OpenReviewAdapter(),
+    PubMedAdapter(),
+    PmcAdapter(),
+    HuggingFaceAdapter(),
+)
 
 
 def registered_adapters() -> tuple[SiteAdapter, ...]:

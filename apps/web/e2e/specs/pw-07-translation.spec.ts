@@ -57,8 +57,43 @@ test.describe("PW-07 翻訳操作(M0)", () => {
     await expect(page.getByText("訳がおかしい?")).toBeVisible();
   });
 
-  // 指示つき再翻訳(proposal 差分→採用)・スタイル初回=生成開始は M1(retranslate レーン)。
-  test.fixme("指示つき再翻訳の proposal→採用(M1)", async () => {});
+  test("再翻訳ボタンで proposal カードが表示され採用できる(Task 6)", async ({
+    page,
+  }) => {
+    // 前回位置バナーが本文上部を覆う場合は閉じる。
+    const dismiss = page.getByRole("button", { name: "閉じる" });
+    if (await dismiss.isVisible().catch(() => false)) await dismiss.click();
+
+    // .first() は Abstract ¶1(seed が state="edited" に固定)。指示なし再翻訳は
+    // discard_edit を送らないため 409 edit_protected になり proposal が出ない。
+    // state="machine" の Introduction ¶1(nth(1))を対象にする。
+    const para = page.locator(".alinea-paragraph[data-block-id]").nth(1);
+    await expect(para).toBeVisible();
+    await para.scrollIntoViewIfNeeded();
+    await para.hover();
+    const toggle = para.getByRole("button", { name: "対訳を表示" });
+    await expect(toggle).toBeVisible();
+    await toggle.click();
+
+    // 対訳ポップの再翻訳ボタンをクリック。
+    const popover = page.getByRole("dialog", { name: "対訳" });
+    await expect(popover).toBeVisible();
+    const retranslateBtn = popover.getByRole("button", { name: /再翻訳/ });
+    await expect(retranslateBtn).toBeEnabled();
+    await retranslateBtn.click();
+
+    // 再翻訳中はボタンが disabled になる(または再翻訳中インジケータが表示される)。
+    // 完了後に proposal カードが表示される(最大 30 秒待機)。
+    const proposalCard = page.getByTestId("retranslation-proposal");
+    await expect(proposalCard).toBeVisible({ timeout: 30_000 });
+
+    // 採用ボタンをクリックして proposal を確定。
+    await proposalCard.getByRole("button", { name: "採用" }).click();
+
+    // proposal カードが消える(採用完了)。
+    await expect(proposalCard).not.toBeVisible({ timeout: 10_000 });
+  });
+
   // 未翻訳付録を開く→オンデマンド翻訳開始は seed の付録セクション状態に依存(PY-TR-08 が担保)。
   test.fixme("未翻訳付録のオンデマンド翻訳(PY-TR-08 が担保)", async () => {});
 });

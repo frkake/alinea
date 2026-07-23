@@ -5,6 +5,10 @@
 - LLM は決定的なスクリプトプロバイダ(translation_batch_v1 / summary_3line_v1)を注入する。
 - DB は実 PostgreSQL、S3 は実 MinIO、Redis は in-memory フェイク(スロットルは no-op)。
   すべてユニーク UUID データで衝突を避ける(SQLite 代替禁止)。
+- **分離(Task 32)**: pytest-xdist の worker ごとに専用テスト DB を作成・マイグレーションし
+  (0002 のシードを保持)、suite 終了時に drop する。api/worker を同一セッションで回しても
+  同じ worker DB を共有する(``testdb.setup_test_database`` は冪等)。詳細は
+  ``alinea_core.testing.testdb``。
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ import json
 import os
 import re
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 import httpx
@@ -23,6 +27,7 @@ from alinea_core.arxiv.fetch import RedisLike
 from alinea_core.db.models import LibraryItem, Paper, User
 from alinea_core.jobs.store import JobStore
 from alinea_core.settings import CoreSettings
+from alinea_core.testing import testdb
 from alinea_core.translation.placeholder import TOKEN_RE
 from alinea_llm.router import LLMRouter
 from alinea_llm.testing._assets import png_bytes
@@ -36,10 +41,46 @@ from starlette.routing import Route
 os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1")
 os.environ.setdefault("no_proxy", "localhost,127.0.0.1")
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql+asyncpg://alinea:alinea@localhost:5432/alinea",
-)
+
+def _database_url() -> str:
+    """アクティブなテスト DB の URL(worker 分離済み)。"""
+    return testdb.database_url()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_test_database() -> Iterator[None]:
+    """worker 専用のテスト DB を作成・マイグレーションし、suite 終了時に drop する。"""
+    testdb.setup_test_database()
+    try:
+        yield
+    finally:
+        testdb.teardown_test_database()
+
+
+@pytest.fixture(scope="session")
+def pgvector_available() -> bool:
+    return testdb.pgvector_enabled()
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """``@pytest.mark.requires_pgvector`` を pgvector 非同梱環境で理由付き skip する。"""
+    if testdb.pgvector_enabled():
+        return
+    skip = pytest.mark.skip(
+        reason="pgvector(vector 拡張)非同梱の DB。埋め込みテーブルは stamp 経路で未作成。"
+    )
+    for item in items:
+        if item.get_closest_marker("requires_pgvector") is not None:
+            item.add_marker(skip)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "requires_pgvector: 実 pgvector(vector 拡張)を要する。非同梱環境では skip。",
+    )
 
 # --------------------------------------------------------------------------- #
 # LaTeXML フィクスチャ HTML(arXiv 公式 HTML と同じ ltx_* クラス体系)
@@ -296,7 +337,7 @@ def router(script_provider: ScriptProvider) -> LLMRouter:
 
 @pytest_asyncio.fixture
 async def db_session() -> AsyncIterator[AsyncSession]:
-    engine = create_async_engine(DATABASE_URL, poolclass=None)
+    engine = create_async_engine(_database_url(), poolclass=None)
     maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     async with maker() as session:
         yield session

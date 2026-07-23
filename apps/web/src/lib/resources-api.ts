@@ -1,9 +1,22 @@
 /**
  * リソース API(plans/03 §12)。
  *
- * `@alinea/api-client` は本エンドポイント群を未生成のため(main.py 未登録。M2-13 deviations
- * 参照)、`fetch()` 直書きで契約どおりに呼ぶ(apps/web/src/hooks/use-reading-session.ts と同方針)。
+ * `@alinea/api-client` の生成 SDK 関数をラップし、呼び出し元が既存の
+ * `ResourceApiError` でエラーを判別できる薄い mapper を提供する。
  */
+import {
+  resourcesList,
+  resourcesCreate,
+  resourcesUpdate,
+  resourcesDelete,
+  resourcesRefreshMeta,
+  resourcesSuggestionAccept,
+  resourcesSuggestionDismiss,
+  resourcesAcceptSuggestion,
+  resourcesDismissSuggestion,
+  type ResourceLink as SdkResourceLink,
+  type ResourceListResponse as SdkResourceListResponse,
+} from "@alinea/api-client";
 import type { ResKind, ResourceLink, ResourceListResponse } from "@/components/viewer/resources/types";
 
 export class ResourceApiError extends Error {
@@ -17,65 +30,87 @@ export class ResourceApiError extends Error {
   }
 }
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  if (!res.ok) {
-    let body: unknown = null;
-    try {
-      body = await res.json();
-    } catch {
-      // 本文が JSON でない場合は無視(P3。呼び出し側は status のみでも判定できる)。
-    }
-    throw new ResourceApiError(res.status, body);
+function throwIfError(result: { error?: unknown; response: Response }): void {
+  if (result.error !== undefined) {
+    throw new ResourceApiError(result.response.status, result.error);
   }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
 }
 
-export function listResources(itemId: string): Promise<ResourceListResponse> {
-  return request<ResourceListResponse>(`/api/library-items/${itemId}/resources`);
+/** SDK `ResourceLink` の optional nullable フィールドを `T | null` へ正規化する。 */
+function toResourceLink(raw: SdkResourceLink): ResourceLink {
+  return {
+    ...raw,
+    thumbnail_url: raw.thumbnail_url ?? null,
+    note: raw.note ?? null,
+    meta: raw.meta ?? {},
+  };
 }
 
-export function createResource(
+/** SDK `ResourceListResponse` の items を正規化済み `ResourceLink` 配列に変換する。 */
+function toResourceListResponse(raw: SdkResourceListResponse): ResourceListResponse {
+  return {
+    ...raw,
+    items: raw.items.map(toResourceLink),
+    suggestion: raw.suggestion ?? null,
+    suggestions: raw.suggestions ?? [],
+  };
+}
+
+export async function listResources(itemId: string): Promise<ResourceListResponse> {
+  const r = await resourcesList({ path: { item_id: itemId } });
+  throwIfError(r);
+  return toResourceListResponse(r.data as SdkResourceListResponse);
+}
+
+export async function createResource(
   itemId: string,
   payload: { url: string; note?: string },
 ): Promise<ResourceLink> {
-  return request<ResourceLink>(`/api/library-items/${itemId}/resources`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
+  const r = await resourcesCreate({ path: { item_id: itemId }, body: payload });
+  throwIfError(r);
+  return toResourceLink(r.data as SdkResourceLink);
 }
 
-export function patchResource(
+export async function patchResource(
   resourceId: string,
   patch: { title?: string; kind?: ResKind; note?: string | null },
 ): Promise<ResourceLink> {
-  return request<ResourceLink>(`/api/resources/${resourceId}`, {
-    method: "PATCH",
-    body: JSON.stringify(patch),
-  });
+  const r = await resourcesUpdate({ path: { resource_id: resourceId }, body: patch });
+  throwIfError(r);
+  return toResourceLink(r.data as SdkResourceLink);
 }
 
 export async function deleteResource(resourceId: string): Promise<void> {
-  await request(`/api/resources/${resourceId}`, { method: "DELETE" });
+  const r = await resourcesDelete({ path: { resource_id: resourceId } });
+  throwIfError(r);
 }
 
-export function refreshResourceMeta(resourceId: string): Promise<ResourceLink> {
-  return request<ResourceLink>(`/api/resources/${resourceId}/refresh-meta`, { method: "POST" });
+export async function refreshResourceMeta(resourceId: string): Promise<ResourceLink> {
+  const r = await resourcesRefreshMeta({ path: { resource_id: resourceId } });
+  throwIfError(r);
+  return toResourceLink(r.data as SdkResourceLink);
 }
 
-export function acceptResourceSuggestion(itemId: string): Promise<ResourceLink> {
-  return request<ResourceLink>(`/api/library-items/${itemId}/resource-suggestion/accept`, {
-    method: "POST",
-  });
+export async function acceptResourceSuggestion(itemId: string): Promise<ResourceLink> {
+  const r = await resourcesSuggestionAccept({ path: { item_id: itemId } });
+  throwIfError(r);
+  return toResourceLink(r.data as SdkResourceLink);
 }
 
 export async function dismissResourceSuggestion(itemId: string): Promise<void> {
-  await request(`/api/library-items/${itemId}/resource-suggestion/dismiss`, {
-    method: "POST",
-  });
+  const r = await resourcesSuggestionDismiss({ path: { item_id: itemId } });
+  throwIfError(r);
+}
+
+/** ID 指定で候補(suggested)を採用する(Hugging Face 等の永続候補。Task 18)。 */
+export async function acceptResourceSuggestionById(resourceId: string): Promise<ResourceLink> {
+  const r = await resourcesAcceptSuggestion({ path: { resource_id: resourceId } });
+  throwIfError(r);
+  return toResourceLink(r.data as SdkResourceLink);
+}
+
+/** ID 指定で候補(suggested)を却下する(再同期で復活しない。Task 18)。 */
+export async function dismissResourceSuggestionById(resourceId: string): Promise<void> {
+  const r = await resourcesDismissSuggestion({ path: { resource_id: resourceId } });
+  throwIfError(r);
 }

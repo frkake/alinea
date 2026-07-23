@@ -8,7 +8,7 @@
 import { defineBackground } from "wxt/utils/define-background";
 import { browser } from "wxt/browser";
 
-import { apiCheck, apiGetJob, apiMe, apiSaveArxiv, siteUrl } from "@/lib/api";
+import { apiCheck, apiGetJob, apiMe, apiSaveArxiv, apiSaveSite, siteUrl } from "@/lib/api";
 import { badgeStateFor, type BadgeState } from "@/lib/badge";
 import { isPillMessage, type PillMessage, type PillResult } from "@/lib/pill-protocol";
 import { addActiveJob, getActiveJobs, removeActiveJob } from "@/lib/storage";
@@ -93,8 +93,54 @@ async function checkPill(url: string): Promise<PillResult> {
   }
 }
 
-/** クリック: 状態1の既定値(planned・タグ無し・コレクション無し・メモ無し)で保存する。 */
+/** クリック: 状態1の既定値(planned・タグ無し・コレクション無し・メモ無し)で保存する。
+ *
+ * ACL Anthology 等の対応サイト URL(check.kind==="site")は arXiv ではなく site エンドポイントを
+ * 選ぶ。site 取り込みが失敗した場合は、ポップアップの既存タブ内 PDF 送信へ誘導する
+ * (ピルは 1 クリック UI のため、ここでは error を返して詳細操作をポップアップに委ねる)。 */
 async function savePill(url: string): Promise<PillResult> {
+  let useSite = false;
+  try {
+    const check = await apiCheck(url);
+    useSite = check.kind === "site";
+    // Hugging Face(Task 18): サーバーが HF URL の arXiv ID を解決して既存 arXiv 経路で取り込む。
+    // 対象 repo に arXiv タグが無い(関連論文が見つからない)場合は保存せず error を返す
+    // (ピルは 1 クリック UI。詳細診断・候補選択はポップアップに委ねる)。
+    if (check.kind === "huggingface") {
+      if (!check.huggingface || check.huggingface.arxiv_id == null) {
+        return { state: "error" };
+      }
+      // arXiv ID が一意に決まった → HF URL をそのまま arXiv 保存へ渡す(サーバーが解決)。
+    }
+  } catch {
+    // 判定失敗時は従来どおり arXiv 経路を試す(non-arxiv なら 422 で error になる)。
+  }
+
+  if (useSite) {
+    const outcome = await apiSaveSite({
+      url,
+      status: "planned",
+      tags: [],
+      collection_id: null,
+      quick_note: null,
+    });
+    switch (outcome.kind) {
+      case "accepted":
+        await addActiveJob(outcome.data.job_id);
+        void runLoop();
+        return { state: "saved" };
+      case "duplicate":
+        return { state: "saved" };
+      default:
+        // retryable(サイト取得失敗含む)/ permanent: ポップアップのタブ内 PDF 送信へ誘導。
+        if (outcome.kind === "permanent" && outcome.status === 401) {
+          void browser.tabs.create({ url: siteUrl("/login?from=extension") });
+          return { state: "idle" };
+        }
+        return { state: "error" };
+    }
+  }
+
   const outcome = await apiSaveArxiv({
     url,
     status: "planned",

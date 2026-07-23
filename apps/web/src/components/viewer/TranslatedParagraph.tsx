@@ -7,6 +7,7 @@ import {
   PaperFrontMatterBlock,
 } from "@/components/viewer/PaperFrontMatter";
 import { ParallelPopover } from "@/components/viewer/ParallelPopover";
+import { RetranslationProposal } from "@/components/viewer/RetranslationProposal";
 import { type PlacedHighlight } from "@/components/viewer/highlight-render";
 import { SKIP_OFFSET_ATTR, SOURCE_TEXT_ATTR } from "@/components/viewer/text-offset";
 import {
@@ -14,6 +15,7 @@ import {
   hasTranslatedText,
 } from "@/components/viewer/translation-content";
 import type { DocBlock } from "@/components/viewer/document-types";
+import { useRetranslation } from "@/components/viewer/use-retranslation";
 
 // PlacedHighlight は BilingualPane・SourcePane(InlineRenderer 経由)とも共有するため
 // components/viewer/highlight-render.tsx に定義を移した(M1 統合ポリッシュ)。既存の
@@ -51,6 +53,11 @@ export interface TranslatedParagraphProps {
    * 対訳ポップを開閉する。対訳ポップ内の再翻訳フッタも非描画にする(決定)。
    */
   isMobile?: boolean;
+  /**
+   * units クエリキー(Task 6)。再翻訳後の invalidation に使用する。
+   * 省略時は再翻訳フローを無効化する。
+   */
+  unitsQueryKey?: readonly unknown[];
 }
 
 /** 訳文段落(1b §4.5-5)。ホバーで「対」ボタン、開くと対訳ポップ。未訳は原文+理由(P3)。 */
@@ -60,17 +67,24 @@ export function TranslatedParagraph({
   parallelLabel,
   popOpen,
   onTogglePop,
-  onRetranslate,
+  onRetranslate: _onRetranslateExternalProp,
   onCitationClick,
   onRefClick,
   highlights = [],
   onAnnotationClick,
   searchHighlight = null,
   isMobile = false,
+  unitsQueryKey,
 }: TranslatedParagraphProps) {
   const inlines = block.inlines ?? [];
   const hasTranslation = hasTranslatedText(unit);
   const failed = !hasTranslation && (unit?.quality_flags ?? []).some((f) => FAILURE_FLAGS.has(f));
+
+  // 再翻訳フック(Task 6)。unit_id と units queryKey が揃っているときのみアクティブ。
+  const retranslation = useRetranslation(
+    unitsQueryKey != null ? (unit?.unit_id ?? null) : null,
+    unitsQueryKey ?? [],
+  );
 
   if (isPaperFrontMatterBlock(block)) {
     return (
@@ -191,10 +205,21 @@ export function TranslatedParagraph({
           displayLabel={parallelLabel}
           sourceInlines={inlines}
           onClose={onTogglePop}
-          onRetranslate={onRetranslate}
+          onRetranslate={unitsQueryKey != null ? () => retranslation.mutate() : undefined}
+          retranslating={retranslation.isPending}
+          retranslationError={retranslation.error ?? undefined}
           onCitationClick={onCitationClick}
           onRefClick={onRefClick}
           isMobile={isMobile}
+        />
+      ) : null}
+
+      {unit?.proposal != null && unit.text_ja != null && unitsQueryKey != null ? (
+        <RetranslationProposal
+          unitId={unit.unit_id}
+          currentTextJa={unit.text_ja}
+          proposal={unit.proposal}
+          queryKey={unitsQueryKey}
         />
       ) : null}
     </div>

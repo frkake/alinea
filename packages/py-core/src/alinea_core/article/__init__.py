@@ -29,6 +29,12 @@ from alinea_core.article.prompts import (
     build_block_rewrite_user_prompt,
     build_regenerate_suffix,
 )
+from alinea_core.article.publication import (
+    PUBLISHABLE_BLOCK_TYPES,
+    build_paper_meta,
+    sanitize_article_blocks,
+    sanitize_overview_figure,
+)
 from alinea_core.article.sources import ArticleSources, collect_article_sources
 from alinea_core.article.storage_keys import (
     article_snapshot_key,
@@ -49,6 +55,7 @@ __all__ = [
     "ARTICLE_SCHEMA_SPEC",
     "PRESET_INCLUDE_MATH_DEFAULT",
     "PRESET_OUTLINES",
+    "PUBLISHABLE_BLOCK_TYPES",
     "ArticleGenerationError",
     "ArticleSources",
     "BlockTypeMismatchError",
@@ -68,9 +75,12 @@ __all__ = [
     "build_block_rewrite_user_prompt",
     "build_disclaimer",
     "build_evidence_wire",
+    "build_paper_meta",
     "build_regenerate_suffix",
     "collect_article_sources",
     "normalize_article",
     "normalize_rewritten_block",
     "parse_article_block_pk",
+    "sanitize_article_blocks",
+    "sanitize_overview_figure",
 ]

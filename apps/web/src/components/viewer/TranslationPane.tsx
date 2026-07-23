@@ -574,6 +574,7 @@ function SectionView({
           if (block.type === "paragraph") {
             paraOrdinal += 1;
             const label = `¶${paraOrdinal} / ${sectionLabel}`;
+            const unitsQueryKey = ["units", revisionId, style, section.id] as const;
             return (
               <TranslatedParagraph
                 key={block.id}
@@ -588,6 +589,7 @@ function SectionView({
                 onRefClick={onRefClick}
                 searchHighlight={hlBlockId === block.id ? pendingHighlightQuery : null}
                 isMobile={isMobile}
+                unitsQueryKey={unitsQueryKey}
               />
             );
           }

@@ -13,7 +13,7 @@ from typing import Any, Literal
 import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
 
-# 8 タスクで固定(DB の CHECK 制約とも一致。§8)
+# タスク値域(DB の CHECK 制約とも一致。§8)。Task 28 で presentation を追加(8→9 タスク)。
 Task = Literal[
     "translation",
     "retranslation_escalation",
@@ -23,6 +23,7 @@ Task = Literal[
     "overview_figure_dsl",
     "vocab",
     "explainer_image",
+    "presentation",
 ]
 
 TASKS: tuple[str, ...] = (
@@ -34,6 +35,8 @@ TASKS: tuple[str, ...] = (
     "overview_figure_dsl",
     "vocab",
     "explainer_image",
+    "presentation",
+    "code_analysis",
 )
 
 

@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import type { ApiKeyItem, MeResponse, QuotaResponse } from "@alinea/api-client";
+import { purgeUserAndWait } from "@/lib/offline-viewer";
 import { Card } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
 import { SettingsSection } from "@/components/settings/SettingsSection";
@@ -9,10 +10,16 @@ import { SettingsControlRow } from "@/components/settings/SettingsControlRow";
 import { SettingToggleRow } from "@/components/settings/SettingToggleRow";
 import { ModelRoutingRow } from "@/components/settings/ModelRoutingRow";
 import { ApiKeyRow } from "@/components/settings/ApiKeyRow";
+import { CodeAnalysisSettings } from "@/components/settings/CodeAnalysisSettings";
 import {
   BYOK_PROVIDERS,
+  PRESENTATION_PROVIDERS,
+  PROVIDER_LABELS,
+  type AvailableModels,
   type ByokProvider,
+  type CodeAnalysisMode,
   type LlmUseCase,
+  type ProviderId,
   type RouteEntry,
   type SettingsData,
 } from "@/components/settings/types";
@@ -29,6 +36,10 @@ export interface AccountSettingsProps {
   onDeleteKey: (provider: ByokProvider) => void;
   onLogout: () => void;
   onDeleteAccount: () => void;
+  /** GitHub コード対応解析の当月実費(USD)。未取得時は null(Task 22)。 */
+  codeAnalysisMonthCostUsd?: number | null;
+  onCodeAnalysisModeChange: (mode: CodeAnalysisMode) => void;
+  onCodeAnalysisBudgetChange: (usd: number) => void;
   /** モバイル縮退(mobile.md §1.2-7)。API キーの設定/削除・危険操作(変更系)を非描画にする。参照は可。 */
   readOnly?: boolean;
 }
@@ -80,9 +91,23 @@ export function AccountSettings({
   onDeleteKey,
   onLogout,
   onDeleteAccount,
+  codeAnalysisMonthCostUsd = null,
+  onCodeAnalysisModeChange,
+  onCodeAnalysisBudgetChange,
   readOnly = false,
 }: AccountSettingsProps) {
   const byProvider = new Map(apiKeys.map((k) => [k.provider, k]));
+
+  // Task 23(オフライン閲覧の per-user 分離): 明示ログアウト / アカウント削除では、
+  // この端末に残る当該ユーザーのオフラインキャッシュ(直近論文の本文・訳文・図)を
+  // Service Worker から完全に削除し、その「完了を待ってから」実際のログアウト/削除
+  // (=ログイン画面への遷移を伴う親コールバック)を実行する。SW 非対応・controller 不在時は
+  // purgeUserAndWait が即解決するため遷移を妨げない。
+  const purgeThen = async (next: () => void) => {
+    const userId = me?.user.id;
+    if (userId) await purgeUserAndWait(userId);
+    next();
+  };
 
   return (
     <>
@@ -101,7 +126,11 @@ export function AccountSettings({
           </SettingsControlRow>
           {!readOnly ? (
             <SettingsControlRow title="ログアウト" description="このデバイスのセッションを終了します">
-              <button type="button" onClick={onLogout} style={secondaryButtonStyle}>
+              <button
+                type="button"
+                onClick={() => void purgeThen(onLogout)}
+                style={secondaryButtonStyle}
+              >
                 ログアウト
               </button>
             </SettingsControlRow>
@@ -184,11 +213,33 @@ export function AccountSettings({
               divider
             />
           ))}
+          {/* Task 30 §6: スライド生成モデルのルート表示。選択中 model id と利用可否のみを
+              表示し、API キー値は一切扱わない(available_models の openai/anthropic の有無で判定)。 */}
+          <PresentationRouteRow
+            route={settings.llm_routing.presentation}
+            availableModels={settings.available_models}
+            divider
+          />
           <SettingToggleRow
             title="概要図をラスター画像で生成"
             description="オフ(既定)では SVG 決定的レンダリング。オンで画像生成 API を使用"
             checked={settings.llm_routing.overview_figure_raster_mode}
             onChange={onRasterChange}
+          />
+        </Card>
+      </SettingsSection>
+
+      <SettingsSection
+        title="GitHub コード対応解析"
+        titleNote="論文の主張とリポジトリのコードを対応付けます(LLM・埋め込み API を使用)"
+      >
+        <Card padding="none">
+          <CodeAnalysisSettings
+            mode={settings.code_analysis.mode}
+            monthlyBudgetUsd={settings.code_analysis.monthly_budget_usd}
+            currentMonthCostUsd={codeAnalysisMonthCostUsd}
+            onModeChange={onCodeAnalysisModeChange}
+            onBudgetChange={onCodeAnalysisBudgetChange}
           />
         </Card>
       </SettingsSection>
@@ -200,7 +251,7 @@ export function AccountSettings({
               title="アカウントを完全に削除"
               description="ライブラリ・注釈・メモ・チャットを含む全データを削除します。取り消せません"
             >
-              <DeleteAccountButton onConfirm={onDeleteAccount} />
+              <DeleteAccountButton onConfirm={() => void purgeThen(onDeleteAccount)} />
             </SettingsControlRow>
           </Card>
         </SettingsSection>
@@ -281,5 +332,58 @@ function DeleteAccountButton({ onConfirm }: { onConfirm: () => void }) {
         </div>
       </Modal>
     </>
+  );
+}
+
+/**
+ * スライド生成モデルのルート表示(Task 30 §6)。ユーザーが provider/model を選べる
+ * ModelRoutingRow とは異なり、ここは「選択中 model id + 利用可否」の参照専用行にする
+ * (設計: 色・書体などと同じく詳細設定は安全既定に固定。プロバイダ選択は運営 + 鍵の有無で
+ * 自動決定される)。API キー値は一切扱わず、available_models に openai/anthropic の
+ * モデルが存在するかだけで可否を判定する。
+ */
+function PresentationRouteRow({
+  route,
+  availableModels,
+  divider = false,
+}: {
+  route: RouteEntry;
+  availableModels: AvailableModels;
+  divider?: boolean;
+}) {
+  const available = PRESENTATION_PROVIDERS.filter((p) => (availableModels[p]?.length ?? 0) > 0);
+  const availabilityNote =
+    available.length === 0
+      ? "利用できるモデルがありません(API キーを登録してください)"
+      : `${available.map((p) => PROVIDER_LABELS[p as ProviderId]).join("・")} が利用できます`;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "12px 18px",
+        borderBottom: divider ? "1px solid var(--pr-border-hair)" : undefined,
+      }}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minWidth: 0 }}>
+        <span style={{ fontSize: 12, fontWeight: 600 }}>スライド生成</span>
+        <span style={{ fontSize: 10.5, color: "var(--pr-text-muted)" }}>
+          論文からの PowerPoint 生成に使用。プロバイダは登録済みキーに応じて自動選択されます
+        </span>
+        <span
+          style={{
+            fontSize: 10.5,
+            color: available.length === 0 ? "var(--pr-warn)" : "var(--pr-text-muted)",
+          }}
+        >
+          {availabilityNote}
+        </span>
+      </div>
+      <span style={{ fontSize: 12, color: "var(--pr-text-mid)", fontVariantNumeric: "tabular-nums" }}>
+        {route.model || "—"}
+      </span>
+    </div>
   );
 }

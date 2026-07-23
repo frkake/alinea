@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Annotated, Any
 
 from alinea_core.db.models import (
     Annotation,
@@ -32,6 +32,7 @@ from alinea_core.db.models import (
 )
 from alinea_core.db.revisions import get_paper_revisions, reading_position_revision_id
 from alinea_core.document.blocks import DocumentContent
+from alinea_core.search.fusion import blend_lexical_semantic
 from alinea_core.search.pgroonga_query import (
     chat_qa_snippet,
     finalize_snippet_html,
@@ -40,12 +41,12 @@ from alinea_core.search.pgroonga_query import (
     normalize_query,
     snippet_lang_for,
 )
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, text
 from sqlalchemy.sql.elements import TextClause
 
 from alinea_api.chat.evidence import BlockRow, derive_display
-from alinea_api.deps import CurrentUser, DbDep
+from alinea_api.deps import CurrentUser, DbDep, SettingsDep
 from alinea_api.errors import ProblemException
 from alinea_api.routers.viewer import resolve_accessible_revision
 from alinea_api.schemas.chat import AnchorRef
@@ -74,10 +75,38 @@ from alinea_api.schemas.search import (
     SearchSort,
     SearchSourceFilter,
 )
+from alinea_api.search_semantic import (
+    EmbeddingProviderFactory,
+    SemanticIndexFactory,
+    default_embedding_provider_factory,
+    default_semantic_index_factory,
+    match_type_for,
+    semantic_item_order,
+)
 
 router = APIRouter(tags=["search"])
 
+
+# ---------------------------------------------------------------------------
+# テスト注入点: 埋め込みプロバイダ factory と ANN(pgvector)factory。
+# 既定は実 OpenAI 埋め込み + pgvector。テストは Fake + in-memory を dependency_overrides で差す。
+# ---------------------------------------------------------------------------
+def get_embedding_provider_factory() -> EmbeddingProviderFactory:
+    return default_embedding_provider_factory()
+
+
+def get_semantic_index_factory() -> SemanticIndexFactory:
+    return default_semantic_index_factory()
+
+
+EmbeddingProviderFactoryDep = Annotated[
+    EmbeddingProviderFactory, Depends(get_embedding_provider_factory)
+]
+SemanticIndexFactoryDep = Annotated[SemanticIndexFactory, Depends(get_semantic_index_factory)]
+
 _DEFAULT_STYLE = "natural"
+# 合成 semantic ヒットの hit_at 番兵(実ヒット時刻を持たない = 新しい順で末尾に沈める)。
+_EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
 _PAGE_LIMIT_DEFAULT = 10
 _PAGE_LIMIT_MAX = 20
 _GROUP_TOP_HITS = 5
@@ -326,7 +355,8 @@ async def _fetch_all_hits(db: DbDep, user_id: str, query: str, style: str) -> li
 
 
 _SOURCE_FILTER_KINDS: dict[str, tuple[str, ...]] = {
-    "body": ("body", "biblio"),
+    # semantic(意味的近傍。フラグ on 時のみ生成)は論文粒度のヒットなので body 源に合流する。
+    "body": ("body", "biblio", "semantic"),
     "notes": ("note", "annotation"),
     "chat": ("chat",),
     "article": ("article",),
@@ -346,7 +376,7 @@ def _apply_filters(
 
 
 def _facet_source_counts(hits: list[_HitRow]) -> SearchFacetSource:
-    body = sum(1 for h in hits if h.kind in ("body", "biblio"))
+    body = sum(1 for h in hits if h.kind in ("body", "biblio", "semantic"))
     notes = sum(1 for h in hits if h.kind in ("note", "annotation"))
     chat = sum(1 for h in hits if h.kind == "chat")
     article = sum(1 for h in hits if h.kind == "article")
@@ -531,7 +561,24 @@ class _SearchRenderer:
             return await self._render_chat(hit)
         if hit.kind == "article":
             return await self._render_article(hit)
+        if hit.kind == "semantic":
+            return await self._render_semantic(hit)
         raise ProblemException("internal_error", detail=f"unexpected hit kind: {hit.kind}")
+
+    # -- 意味的近傍(S12。lexical に無い論文を abstract で提示。書誌ヒットと同格) -------------
+    async def _render_semantic(self, hit: _HitRow) -> SearchHit:
+        """埋め込み近傍だけで拾った論文(本文一致なし)。abstract を提示し先頭を開く。"""
+        paper = await self._paper_of(hit.library_item_id)
+        snippet_source = (paper.abstract or "").strip()[:300]
+        snippet = await _pg_snippet(self.db, snippet_source, self.query) if snippet_source else ""
+        return SearchHit(
+            source="body",
+            matched_in=None,
+            display="意味的に関連",
+            snippet=snippet,
+            snippet_lang="en",
+            target=SearchHitTargetViewer(library_item_id=hit.library_item_id, anchor=None),
+        )
 
     # -- リビジョン索引(block_search_index を revision 単位で一括ロード) -----------------
     async def _rev_index(self, revision_id: str) -> tuple[dict[str, _RevBlockInfo], dict[str, str]]:
@@ -991,6 +1038,9 @@ async def search_all(
     q: str,
     user: CurrentUser,
     db: DbDep,
+    settings: SettingsDep,
+    provider_factory: EmbeddingProviderFactoryDep,
+    index_factory: SemanticIndexFactoryDep,
     source: SearchSourceFilter = "all",
     library_item_id: str | None = Query(default=None),
     sort: SearchSort = "relevance",
@@ -1001,12 +1051,46 @@ async def search_all(
     style = _resolve_style(user)
     all_hits = await _fetch_all_hits(db, str(user.id), query, style)
 
+    # --- セマンティック拡張(S12。フラグ off / provider 失敗 / 空 index は None = 現行挙動) ---
+    # ``semantic`` が None の間は match_type を一切付けない → flag-off byte-identical。
+    lexical_item_ids = [h.library_item_id for h in all_hits]
+    semantic = await semantic_item_order(
+        db, settings, str(user.id), query,
+        provider_factory=provider_factory, index_factory=index_factory,
+    )
+    match_types: dict[str, str] | None = None
+    fused_order: list[str] | None = None
+    if semantic is not None:
+        # semantic のみで拾った論文(lexical に無い)へ合成 body ヒット(kind="semantic")を足す。
+        # hit_at は epoch(= 実ヒット時刻を持たない)。関連度は下の RRF 融合順で載せ替えるため
+        # 影響せず、新しい順では「最近の活動が無い」= 末尾に来る(now() で先頭に来る誤りを防ぐ)。
+        lexical_set = set(lexical_item_ids)
+        semantic_ids_ranked = [n.library_item_id for n in semantic]
+        for lid in semantic_ids_ranked:
+            if lid not in lexical_set:
+                all_hits.append(
+                    _HitRow(
+                        library_item_id=lid, kind="semantic", score=0.0,
+                        hit_at=_EPOCH, ref={},
+                    )
+                )
+        # RRF: lexical(スコア降順で dedup)と semantic(類似度降順)を k=60・重み 1:1 で融合。
+        lexical_ranked = _lexical_item_ranking(all_hits)
+        fused_order = blend_lexical_semantic(lexical_ranked, semantic_ids_ranked)
+        match_types = {
+            lid: match_type_for(lid, lexical_set, set(semantic_ids_ranked))
+            for lid in {*lexical_ranked, *semantic_ids_ranked}
+        }
+
     facets = await _compute_facets(db, all_hits)
     total = len(all_hits)
     paper_count = len({h.library_item_id for h in all_hits})
 
     filtered = _apply_filters(all_hits, source=source, library_item_id=library_item_id)
     groups = _sort_groups(_build_groups(filtered), sort)
+    if fused_order is not None and sort == "relevance":
+        # 関連度ソートのときだけ融合順に載せ替える(新しい順は時系列が正・§6.2)。
+        groups = _apply_fused_order(groups, fused_order)
     after_cursor = _apply_group_cursor(groups, cursor)
     page = after_cursor[:limit]
     has_more = len(after_cursor) > limit
@@ -1032,7 +1116,13 @@ async def search_all(
                 article_id=str(art.id), title=art.title, generated_at=art.generated_at.isoformat()
             )
         result_groups.append(
-            SearchGroup(library_item=summary, hit_count=g.hit_count, article=article, hits=rendered)
+            SearchGroup(
+                library_item=summary,
+                hit_count=g.hit_count,
+                article=article,
+                hits=rendered,
+                match_type=match_types.get(g.library_item_id) if match_types else None,
+            )
         )
 
     return SearchResponse(
@@ -1042,6 +1132,35 @@ async def search_all(
         facets=facets,
         groups=result_groups,
         next_cursor=next_cursor,
+    )
+
+
+def _lexical_item_ranking(hits: list[_HitRow]) -> list[str]:
+    """lexical ヒットを論文粒度で関連度降順に dedup した ID 列(RRF の lexical 側入力)。
+
+    論文ごとに最大スコア・最新ヒット時刻を代表値にして ``_sort_groups`` と同じ関連度規則で並べ、
+    semantic 合成行(kind="semantic")は lexical 側から除外する(意味だけの論文は semantic 側で
+    順位が付く)。
+    """
+    best: dict[str, tuple[float, float]] = {}
+    for h in hits:
+        if h.kind == "semantic":
+            continue
+        cur = best.get(h.library_item_id)
+        cand = (h.score, _ts(h.hit_at))
+        if cur is None or cand > cur:
+            best[h.library_item_id] = cand
+    ordered = sorted(best.items(), key=lambda kv: (-kv[1][0], -kv[1][1], kv[0]))
+    return [lid for lid, _ in ordered]
+
+
+def _apply_fused_order(groups: list[_Group], fused_order: list[str]) -> list[_Group]:
+    """RRF 融合順で groups を並べ替える。融合順に無い group は末尾に元順で残す(安全網)。"""
+    rank = {lid: i for i, lid in enumerate(fused_order)}
+    fallback = len(fused_order)
+    return sorted(
+        groups,
+        key=lambda g: (rank.get(g.library_item_id, fallback), g.library_item_id),
     )
 
 

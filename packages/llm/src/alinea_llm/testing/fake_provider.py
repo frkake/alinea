@@ -70,6 +70,13 @@ _DEFAULT_STRUCTURED: dict[str, dict[str, Any]] = {
             },
         ],
         "connectors": [{"from": 0, "to": 1}, {"from": 1, "to": 2}],
+        # 決定(live-acceptance): schema 側(alinea_figures.dsl)がコミット 3c90c95 で
+        # ``evidence`` を required 化(OpenAI strict structured outputs 準拠)した際、この共有
+        # fixture が追随せず ALINEA_FAKE_LLM=1 経路で attach_parsed が schema_validation で
+        # 必ず落ち、概要図ジョブが partial_failure で握り潰されて記事に「✦ 全体概要図」が
+        # 出なくなっていた(E2E PW-13 失敗の根本原因)。実データ由来のブロックID未解決でも
+        # _evidence_anchor_dicts が黙って skip するため任意のパターン一致IDで安全。
+        "evidence": ["blk-p1", "blk-p2"],
     },
     # alinea_worker.tasks.generate_vocab_ai の実スキーマ名・9 フィールドと一致させる
     # (plans/07 §7.2)。旧名 vocab_entry_v1 は実装のどこからも参照されない死んだキーだった。
@@ -101,33 +108,119 @@ _DEFAULT_STRUCTURED: dict[str, dict[str, Any]] = {
             }
         ]
     },
+    # article_v1: 各ブロックは schema(ARTICLE_V1_JSON_SCHEMA)の required 全キー
+    # {type, heading, markdown, quote, figure, explainer, discussion, evidence} を持つ
+    # 判別共用体(適用外は null / evidence は空配列)。schema を締めた際にこの fixture が
+    # 追随していないと attach_parsed が schema_validation で落ちるため、形は schema に合わせる。
     "article_v1": {
         "title": "Rectified Flow を読む",
         "blocks": [
-            {"type": "heading", "heading": {"level": 2, "text": "概要"}},
-            {"type": "paragraph", "markdown": "本稿は Rectified Flow を解説する。"},
-            {"type": "heading", "heading": {"level": 2, "text": "手法"}},
+            {
+                "type": "heading",
+                "heading": {"level": 2, "text": "概要"},
+                "markdown": None,
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
+                "evidence": [],
+            },
             {
                 "type": "paragraph",
+                "heading": None,
+                "markdown": "本稿は Rectified Flow を解説する。",
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
+                "evidence": [],
+            },
+            {
+                "type": "heading",
+                "heading": {"level": 2, "text": "手法"},
+                "markdown": None,
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
+                "evidence": [],
+            },
+            {
+                "type": "paragraph",
+                "heading": None,
                 "markdown": "確率フローを直線化する。",
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
                 # E2E(rectified-flow シード)の実セクション ID。根拠チップ→原文ジャンプの
                 # 検証対象(PW-13)。§4.5 step2 は未知参照を無害に落とすため、シード以外の
                 # コンテキストで使っても記事生成自体は失敗しない。
                 "evidence": ["sec-2"],
             },
-            {"type": "heading", "heading": {"level": 2, "text": "結果"}},
-            {"type": "paragraph", "markdown": "少ステップで高品質を得る。"},
+            {
+                "type": "heading",
+                "heading": {"level": 2, "text": "結果"},
+                "markdown": None,
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
+                "evidence": [],
+            },
+            {
+                "type": "paragraph",
+                "heading": None,
+                "markdown": "少ステップで高品質を得る。",
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
+                "evidence": [],
+            },
             {
                 "type": "discussion",
+                "heading": None,
+                "markdown": None,
+                "quote": None,
+                "figure": None,
+                "explainer": None,
                 "discussion": {
                     "items": [
-                        {"text": "少ないステップでの生成品質はどこまで改善するか?", "origin": "ai"},
-                        {"text": "他のドメインへの応用可能性は?", "origin": "ai"},
+                        {
+                            "text": "少ないステップでの生成品質はどこまで改善するか?",
+                            "origin": "ai",
+                            "annotation_id": None,
+                        },
+                        {
+                            "text": "他のドメインへの応用可能性は?",
+                            "origin": "ai",
+                            "annotation_id": None,
+                        },
                     ]
                 },
+                "evidence": [],
             },
-            {"type": "heading", "heading": {"level": 2, "text": "まとめ"}},
-            {"type": "paragraph", "markdown": "本稿の要点を振り返る。"},
+            {
+                "type": "heading",
+                "heading": {"level": 2, "text": "まとめ"},
+                "markdown": None,
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
+                "evidence": [],
+            },
+            {
+                "type": "paragraph",
+                "heading": None,
+                "markdown": "本稿の要点を振り返る。",
+                "quote": None,
+                "figure": None,
+                "explainer": None,
+                "discussion": None,
+                "evidence": [],
+            },
         ],
     },
     "chat_answer_v1": {
