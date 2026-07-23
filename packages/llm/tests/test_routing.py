@@ -18,8 +18,8 @@ def test_routing_yaml_defines_all_tasks() -> None:
     assert set(cfg.tasks.keys()) == set(TASKS)
     assert cfg.tasks["translation"].chain[0] == "deepseek-v4-flash"
     assert cfg.tasks["retranslation_escalation"].chain[0] == "claude-sonnet-5"
-    # Task 28: presentation は OpenAI + Anthropic の構造化出力対応チェーン。
-    assert cfg.tasks["presentation"].chain == ["gpt-5.5", "claude-opus-4-8"]
+    # Task 28: presentation は OpenAI のみ(ユーザー指示 2026-07-23: ppt-master は OPENAI_API_KEY だけを使う)。
+    assert cfg.tasks["presentation"].chain == ["gpt-5.5"]
     assert cfg.tasks["presentation"].structured is True
     assert cfg.retry_defaults.max_attempts == 3
     assert cfg.retry_defaults.retry_after_cap_s == 30

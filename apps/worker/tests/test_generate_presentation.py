@@ -59,7 +59,12 @@ from alinea_worker.presentation.runner import (
     validate_slide_plan,
 )
 from alinea_worker.presentation.schemas import SlidePlan, SlidePlanDocument
-from alinea_worker.presentation.source_packet import build_source_packet
+from alinea_worker.presentation.source_packet import (
+    PacketBlock,
+    PacketSection,
+    SourcePacket,
+    build_source_packet,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -432,6 +437,94 @@ def test_valid_plan_has_no_errors() -> None:
     plan = SlidePlanDocument.model_validate(_valid_plan(packet.revision_id, 14))
     errors = validate_slide_plan(plan, packet, preset="research_talk")
     assert errors == []
+
+
+# --------------------------------------------------------------------------- #
+# Regression (live UAT 2026-07-23): grounding false positives.
+#
+# On the real ViT paper, plan validation rejected 13 items that were all
+# genuinely grounded:
+#  A) 10 "存在しない evidence anchor" — every rejected anchor was a REAL figure/
+#     table id. The model cites a table as evidence for a numeric claim, putting
+#     its id in evidence_anchors; a figure id is a valid packet id, not a
+#     nonexistent one, so it must not be rejected as "nonexistent".
+#  B) 3 "根拠なし" numbers — 88.55% / 1,000 / 4× ARE in the paper but were hidden
+#     by raw-LaTeX formatting in the grounding text (88.55\%, 1\,000, 4x). The
+#     numeric grounding must normalise LaTeX escapes + the × glyph so real
+#     numbers match while hallucinated ones still fail.
+# Both made a full deck impossible to ground -> repair -> planning failure ->
+# infinite arq retry, even though the model's output was correct.
+# --------------------------------------------------------------------------- #
+def _small_packet_with_figure() -> SourcePacket:
+    rev = _uid()
+    return SourcePacket(
+        revision_id=rev,
+        bibliography="タイトル: T\n著者: A\nvenue: V (2022)\narXiv: 1\nライセンス: cc-by-4.0",
+        sections=[PacketSection(anchor=f"{rev}:sec-1", section_id="sec-1", number="1", title="序論")],
+        blocks=[
+            PacketBlock(anchor=f"{rev}:blk-1-1", block_id="blk-1-1", section_id="sec-1",
+                        kind="paragraph", text="本手法は精度 88.55\\% を達成し、1\\,000 枚で学習する。"),
+        ],
+        figures=[],
+    )
+
+
+def test_validate_accepts_figure_id_as_evidence_anchor() -> None:
+    # A real figure/table id cited in evidence_anchors is grounded, not
+    # "nonexistent": the model legitimately points a claim at a table.
+    packet = _packet_from_content()
+    figure_id = packet.figure_ids[0]
+    assert figure_id not in set(packet.anchor_ids)  # figures live in their own namespace
+    plan = SlidePlanDocument.model_validate(_valid_plan(packet.revision_id, 12))
+    plan.slides[1].evidence_anchors = [figure_id]  # cite a figure as evidence
+    errors = validate_slide_plan(plan, packet, preset="research_talk")
+    assert not any("存在しない evidence anchor" in e for e in errors)
+
+
+def test_validate_still_rejects_truly_nonexistent_evidence_anchor() -> None:
+    # The fix must not blunt the real check: a made-up id is still rejected.
+    packet = _packet_from_content()
+    plan = SlidePlanDocument.model_validate(_valid_plan(packet.revision_id, 12))
+    plan.slides[1].evidence_anchors = [f"{packet.revision_id}:blk-totally-made-up"]
+    errors = validate_slide_plan(plan, packet, preset="research_talk")
+    assert any("存在しない evidence anchor" in e for e in errors)
+
+
+def test_validate_grounds_number_written_with_latex_escapes() -> None:
+    # 88.55% / 1,000 appear in the packet as 88.55\% / 1\,000 (LaTeX). They are
+    # grounded and must not be flagged.
+    packet = _small_packet_with_figure()
+    plan = SlidePlanDocument.model_validate(_valid_plan(packet.revision_id, 12))
+    plan.slides[3].claims = ["精度 88.55% を達成。"]
+    plan.slides[2].claims = ["1,000 枚で学習する。"]
+    errors = validate_slide_plan(plan, packet, preset="research_talk")
+    assert not any("根拠なし" in e for e in errors)
+
+
+def test_validate_grounds_times_glyph_number() -> None:
+    # "4×" is grounded when the paper writes "4x" (glyph-normalised match).
+    rev = _uid()
+    packet = SourcePacket(
+        revision_id=rev,
+        bibliography="タイトル: T\n著者: A\nvenue: V (2022)\narXiv: 1\nライセンス: cc-by-4.0",
+        sections=[PacketSection(anchor=f"{rev}:sec-1", section_id="sec-1", number="1", title="序論")],
+        blocks=[PacketBlock(anchor=f"{rev}:blk-1-1", block_id="blk-1-1", section_id="sec-1",
+                            kind="paragraph", text="推論は 4x 高速である。")],
+        figures=[],
+    )
+    plan = SlidePlanDocument.model_validate(_valid_plan(packet.revision_id, 12))
+    plan.slides[3].claims = ["推論が 4× 速い。"]
+    errors = validate_slide_plan(plan, packet, preset="research_talk")
+    assert not any("根拠なし" in e for e in errors)
+
+
+def test_validate_still_rejects_hallucinated_number_after_normalisation() -> None:
+    # Normalisation must not let fabricated numbers pass.
+    packet = _small_packet_with_figure()
+    plan = SlidePlanDocument.model_validate(_valid_plan(packet.revision_id, 12))
+    plan.slides[3].claims = ["精度 88.56% を達成。"]  # off by one, not in the paper
+    errors = validate_slide_plan(plan, packet, preset="research_talk")
+    assert any("根拠なし" in e for e in errors)
 
 
 async def test_plan_slides_repairs_once_then_succeeds() -> None:
@@ -1041,6 +1134,190 @@ async def test_hostile_instruction_still_yields_schema_valid_plan(
         for part in req.system:
             assert secret not in (part.text or "")
             assert "SYSTEM OVERRIDE" not in (part.text or "")
+
+
+# =========================================================================== #
+# Regression: the plan-call output budget must fit a full research_talk deck.
+#
+# Live UAT (2026-07-23) found runner._call_plan requested max_output_tokens=8192.
+# For a real ~18-slide research_talk deck of a large paper, gpt-5.5 at
+# effort=high truncated the plan JSON mid-string at the 8192 cap
+# (stop_reason=max_tokens). The unterminated JSON failed json.loads ->
+# SCHEMA_VALIDATION -> ProviderChainExhausted (no fallback, OpenAI-only), so the
+# job failed at planning and arq retried it forever. The fix raises the
+# plan-call budget well above a full deck's serialized size.
+# =========================================================================== #
+_NOTE_SENTENCE = (
+    "この直線化された確率フローにより少ないステップでも高品質な生成が可能になる理由を、"
+    "本文の定式化と図の対応に基づいて聴衆へ丁寧に説明し、実装上の注意点も平易に補足する。"
+)
+_LONG_NOTE = _NOTE_SENTENCE * 5  # digit-free prose (no ungrounded numbers)
+
+
+def _verbose_grounded_plan(revision_id: str, slide_count: int) -> dict[str, Any]:
+    """A fully-grounded plan whose serialized JSON is large (> the old 8192 cap).
+
+    Reuses the grounded anchors/claims/figures of :func:`_valid_plan` (so plan
+    validation passes) but inflates every slide's speaker_notes with digit-free
+    Japanese prose, mimicking a real verbose research_talk deck.
+    """
+    plan = _valid_plan(revision_id, slide_count)
+    for slide in plan["slides"]:
+        slide["speaker_notes"] = _LONG_NOTE
+    return plan
+
+
+class _TruncatingPlanProvider:
+    """Emits the plan JSON truncated to ``req.max_output_tokens`` characters.
+
+    A deterministic, tokenizer-free stand-in for the live failure mechanism:
+    when the requested output budget is smaller than the plan's serialized size,
+    the JSON is cut off mid-string and fails validation (exactly as gpt-5.5 did
+    at max_output_tokens=8192). SVG requests are answered normally. The unit is
+    characters (a proxy for tokens) purely so the test stays deterministic.
+    """
+
+    name = "truncating"
+
+    def __init__(self, *, plan: dict[str, Any]) -> None:
+        self.plan = plan
+        self.full_json = json.dumps(plan, ensure_ascii=False)
+        self.requests: list[LLMRequest] = []
+        self.plan_calls = 0
+
+    async def generate_structured(self, req: LLMRequest) -> LLMResponse:
+        self.requests.append(req)
+        spec = req.json_schema
+        assert spec is not None
+        if spec.name == "presentation_slide_plan_v1":
+            self.plan_calls += 1
+            budget = req.max_output_tokens or 0
+            text = self.full_json[:budget]  # truncate to the requested budget
+        elif spec.name == "presentation_slide_svg_v1":
+            text = json.dumps({"svg": _GOOD_SVG}, ensure_ascii=False)
+        else:  # pragma: no cover - defensive
+            raise AssertionError(f"unexpected schema {spec.name}")
+        resp = LLMResponse(
+            text=text,
+            provider=self.name,
+            model="truncating-model",
+            request_id=f"trunc-{len(self.requests)}",
+        )
+        return attach_parsed(resp, spec)  # raises on truncated (invalid) JSON
+
+    async def generate(self, req: LLMRequest) -> LLMResponse:  # pragma: no cover
+        raise NotImplementedError
+
+    async def generate_stream(self, req: LLMRequest) -> Any:  # pragma: no cover
+        raise NotImplementedError
+        yield StreamEvent(type="end")
+
+    async def count_tokens(self, req: LLMRequest) -> int:  # pragma: no cover
+        return 1
+
+
+async def test_plan_call_budget_fits_a_full_research_talk_deck() -> None:
+    packet = _packet_from_content()
+    verbose = _verbose_grounded_plan(packet.revision_id, 18)  # research_talk max
+    provider = _TruncatingPlanProvider(plan=verbose)
+    # Guard the test's own premise: a real full deck is larger than the old cap,
+    # so the old 8192 budget WOULD truncate it (this is what made the test red).
+    assert len(provider.full_json) > 8192
+    router = _router_for(cast(Any, provider))
+    from types import SimpleNamespace
+
+    job = cast(Job, SimpleNamespace(id=_uid(), user_id=_uid(), library_item_id=_uid()))
+    # With a sufficient budget the whole deck comes back intact; with the old
+    # 8192 cap this raises ProviderChainExhausted (truncated JSON, no fallback).
+    plan, _resp = await plan_slides(
+        router, packet=packet, preset="research_talk", audience="researcher",
+        instruction=None, job=job,
+    )
+    assert len(plan.slides) == 18
+    assert validate_slide_plan(plan, packet, preset="research_talk") == []
+    # The plan call requested enough output budget to fit the whole deck ...
+    assert provider.requests[0].max_output_tokens is not None
+    assert provider.requests[0].max_output_tokens >= len(provider.full_json)
+    # ... and comfortably above the old 8192 cap that truncated live decks.
+    assert provider.requests[0].max_output_tokens >= 16384
+
+
+# =========================================================================== #
+# Authoring throughput: per-slide SVG calls fan out with bounded concurrency
+# =========================================================================== #
+class _ConcurrencyProbeProvider:
+    """Answers every SVG request, recording the peak simultaneous in-flight count.
+
+    Each call holds its slot with a short ``sleep`` so overlapping calls are
+    observable. A sequential ``for``-loop peaks at 1 in-flight; a bounded fan-out
+    peaks at the concurrency limit. This is the deterministic stand-in for the
+    live failure: 16 real slides at 68-176 s each, awaited one at a time, blew
+    past the 1800 s BulkWorker ``job_timeout`` during ``authoring_slides``.
+    """
+
+    name = "concurrency-probe"
+
+    def __init__(self) -> None:
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self.svg_calls = 0
+
+    async def generate_structured(self, req: LLMRequest) -> LLMResponse:
+        spec = req.json_schema
+        assert spec is not None and spec.name == "presentation_slide_svg_v1"
+        self.svg_calls += 1
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await __import__("asyncio").sleep(0.05)  # hold the slot so peers overlap
+        finally:
+            self.in_flight -= 1
+        resp = LLMResponse(
+            text=json.dumps({"svg": _GOOD_SVG}, ensure_ascii=False),
+            provider=self.name,
+            model="probe-model",
+            request_id=f"probe-{self.svg_calls}",
+        )
+        return attach_parsed(resp, spec)
+
+    async def generate(self, req: LLMRequest) -> LLMResponse:  # pragma: no cover
+        raise NotImplementedError
+
+    async def generate_stream(self, req: LLMRequest) -> Any:  # pragma: no cover
+        raise NotImplementedError
+        yield StreamEvent(type="end")
+
+    async def count_tokens(self, req: LLMRequest) -> int:  # pragma: no cover
+        return 1
+
+
+async def test_author_slide_svgs_fans_out_with_bounded_concurrency() -> None:
+    from types import SimpleNamespace
+
+    from alinea_worker.presentation.runner import (
+        SVG_AUTHOR_CONCURRENCY,
+        author_slide_svgs,
+    )
+
+    packet = _packet_from_content()
+    plan = SlidePlanDocument.model_validate(_valid_plan(packet.revision_id, 12))
+    provider = _ConcurrencyProbeProvider()
+    router = _router_for(cast(Any, provider))
+    job = cast(Job, SimpleNamespace(id=_uid(), user_id=_uid(), library_item_id=_uid()))
+
+    svgs = await author_slide_svgs(
+        router, plan=plan, packet=packet, instruction=None, job=job
+    )
+
+    # Every slide was authored, in plan order, with sequential filenames.
+    assert provider.svg_calls == 12
+    assert [s.index for s in svgs] == sorted(s.index for s in plan.slides)
+    assert [s.filename for s in svgs] == [f"{i:02d}.svg" for i in range(1, 13)]
+    # Independent slides ran concurrently — a sequential loop would peak at 1 ...
+    assert provider.max_in_flight > 1
+    # ... but never exceeded the bound that protects the provider/proxy.
+    assert 1 < SVG_AUTHOR_CONCURRENCY
+    assert provider.max_in_flight <= SVG_AUTHOR_CONCURRENCY
 
 
 # =========================================================================== #

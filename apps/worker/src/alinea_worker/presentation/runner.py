@@ -28,6 +28,7 @@ Boundaries enforced here:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import shutil
@@ -66,6 +67,7 @@ from alinea_worker.presentation.schemas import (
     SlideSvg,
 )
 from alinea_worker.presentation.source_packet import SourcePacket, build_source_packet
+from alinea_worker.presentation.svg_ppt import flatten_svg_for_ppt
 
 log = structlog.get_logger("alinea.worker.presentation")
 
@@ -79,6 +81,13 @@ STAGES = (
 )
 
 MAX_PPTX_BYTES = 100 * 1024 * 1024
+# Per-slide SVG authoring fans out with this bound. Each call is independent
+# (only its own slide's material) but slow at effort=high — live decks measured
+# 68-176 s/slide, so a full 16-18 slide research_talk awaited one-at-a-time
+# overran the 1800 s BulkWorker job_timeout during authoring_slides. A modest
+# bound (well under the provider/proxy connection limits) collapses the wall
+# clock to ~ceil(slides / bound) waves while keeping request pressure sane.
+SVG_AUTHOR_CONCURRENCY = 4
 _PPTX_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 )
@@ -132,10 +141,23 @@ def _grounding_text(packet: SourcePacket) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _normalize_numeric(text: str) -> str:
+    """Fold LaTeX escapes / glyph variants so grounded numbers match verbatim.
+
+    The paper body keeps LaTeX verbatim, so a grounded figure like ``88.55\\%``,
+    ``1\\,000`` or ``2 \\times 2`` would never substring-match a slide's plain
+    ``88.55%`` / ``1,000`` / ``4×``. Dropping the backslash and mapping the ×
+    glyph to ``x`` makes the *paper's own* numbers match while leaving fabricated
+    numbers unmatched.
+    """
+    return text.replace("\\", "").replace("×", "x")  # noqa: RUF001
+
+
 def _ungrounded_number(texts: list[str], grounding: str) -> str | None:
+    normalized_grounding = _normalize_numeric(grounding)
     for text in texts:
         for token in _NUMERIC_TOKEN.findall(text):
-            if token not in grounding:
+            if _normalize_numeric(token) not in normalized_grounding:
                 return str(token)
     return None
 
@@ -153,8 +175,12 @@ def validate_slide_plan(
             f"スライド枚数 {len(slides)} が用途の範囲 {low}〜{high} 外です。"
         )
 
-    valid_anchors = set(packet.anchor_ids)
     valid_figures = set(packet.figure_ids)
+    # A slide may legitimately cite a figure/table as the evidence for a claim
+    # (e.g. "Table 1 reports 88.55%"), so a figure id is a *grounded* evidence
+    # anchor -- not a nonexistent one. Accept both prose/section anchors and
+    # figure ids here; only ids absent from the packet entirely are rejected.
+    valid_anchors = set(packet.anchor_ids) | valid_figures
     grounding = _grounding_text(packet)
 
     seen_figures: set[str] = set()
@@ -200,7 +226,14 @@ async def _call_plan(
         model="",
         system=[ContentPart.from_text(PLAN_SYSTEM_PROMPT, cache_hint=True)],
         messages=[Message(role="user", parts=[ContentPart.from_text(user_text)])],
-        max_output_tokens=8192,
+        # A full research_talk deck (up to 18 slides, each with claims +
+        # evidence anchors + verbose grounded speaker notes) serializes well
+        # beyond 8192 tokens; with high-effort reasoning also drawing from the
+        # completion budget, 8192 truncated the plan JSON mid-string
+        # (stop_reason=max_tokens) -> schema_validation -> chain exhausted on an
+        # OpenAI-only route. Give the plan the same generous budget as SVG
+        # authoring so the whole grounded plan always fits.
+        max_output_tokens=32768,
         effort="high",
         timeout_s=180.0,
         metadata={"task": "presentation"},
@@ -309,11 +342,20 @@ async def author_slide_svgs(
     instruction: str | None,
     job: Job,
 ) -> list[SlideSvg]:
-    """Generate one sanitized SVG per slide from that slide's material only."""
+    """Generate one sanitized SVG per slide from that slide's material only.
+
+    Slides are independent (each SVG call receives only its own slide's claims +
+    cited excerpts/captions), so they are authored with bounded concurrency
+    (:data:`SVG_AUTHOR_CONCURRENCY`) rather than strictly one-at-a-time; a full
+    research_talk deck authored sequentially overran the BulkWorker
+    ``job_timeout``. Results are reassembled in plan order so filenames stay
+    deterministic regardless of completion order.
+    """
 
     slides = sorted(plan.slides, key=lambda s: s.index)
-    out: list[SlideSvg] = []
-    for position, slide in enumerate(slides, start=1):
+    semaphore = asyncio.Semaphore(SVG_AUTHOR_CONCURRENCY)
+
+    async def _author(position: int, slide: SlidePlan) -> SlideSvg:
         excerpts, captions = _slide_excerpts(slide, packet)
         user_text = build_svg_user_prompt(
             title=slide.title,
@@ -324,7 +366,8 @@ async def author_slide_svgs(
             layout=slide.layout,
             instruction=instruction,
         )
-        resp = await _call_svg(router, user_text=user_text, job=job)
+        async with semaphore:
+            resp = await _call_svg(router, user_text=user_text, job=job)
         raw_svg = str((resp.parsed or {}).get("svg", ""))
         # SVG safety gate BEFORE any downstream (ppt-master) processing.
         try:
@@ -334,14 +377,23 @@ async def author_slide_svgs(
                 "authoring_slides",
                 f"slide {slide.index}: 生成された SVG が安全検査で拒否されました ({exc.code})。",
             ) from exc
-        out.append(
-            SlideSvg(
-                index=slide.index,
-                filename=f"{position:02d}.svg",
-                svg=sanitized.decode("utf-8"),
-            )
+        # The safety sanitizer keeps <style>/class/<g opacity> (they are safe),
+        # but ppt-master's quality gate hard-errors on all three and its
+        # converter ignores CSS classes entirely. Flatten to inline presentation
+        # attributes so the deck both passes the gate and keeps its styling.
+        flattened = flatten_svg_for_ppt(sanitized)
+        return SlideSvg(
+            index=slide.index,
+            filename=f"{position:02d}.svg",
+            svg=flattened.decode("utf-8"),
         )
-    return out
+
+    # gather preserves input order, so the returned list stays in plan order.
+    return list(
+        await asyncio.gather(
+            *(_author(position, slide) for position, slide in enumerate(slides, start=1))
+        )
+    )
 
 
 def build_notes_markdown(plan: SlidePlanDocument) -> str:

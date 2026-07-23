@@ -60,7 +60,7 @@ tasks:
     quality: standard
     timeout_s: 120
   presentation:                       # Task 28: 論文→PPTX の SVG/notes 構造生成
-    chain: [gpt-5.5, claude-opus-4-8]  # OpenAI + Anthropic の構造化出力対応モデル
+    chain: [gpt-5.5]                   # ユーザー指示(2026-07-23): presentation は OpenAI のみ
     effort: high
     max_output_tokens: 32000
     timeout_s: 300
