@@ -51,3 +51,6 @@ apps/web/e2e/.auth/
 .DS_Store
 *.log
 *.tsbuildinfo
+
+# Local UAT DB safety backups (contains sessions + encrypted BYOK) - never commit
+.uat-backups/
